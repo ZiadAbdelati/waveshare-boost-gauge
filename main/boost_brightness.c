@@ -32,9 +32,10 @@ void boost_brightness_set(int percent)
 {
     s_percent = clamp_percent(percent);
 #ifdef ESP_PLATFORM
-    bsp_display_brightness_set(s_percent);
-    if (s_percent > 0) {
-        bsp_display_backlight_on();
+    esp_err_t err = bsp_display_brightness_set(s_percent);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "bsp_display_brightness_set(%d) failed: %s",
+                 s_percent, esp_err_to_name(err));
     }
 #endif
     ESP_LOGI(TAG, "brightness %d%%", s_percent);

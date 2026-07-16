@@ -58,9 +58,11 @@
 #define DISP_SIZE     466
 #define ARC_DIAMETER  400
 #define ARC_WIDTH     27   /* ~1.5× the original 18px track */
+#define ZERO_LINE_W   13   /* ~2.5× previous 5px white zero mark */
+#define ZERO_GAP_DEG  1.8f /* keep colored fill from peeking past zero mark */
 #define TICK_FONT     (&lv_font_montserrat_16)
 #define TICK_RADIUS   152.0f  /* inside the thicker arc */
-#define NOTCH_RADIUS  200.0f
+#define HOLD_DIM_MS   2000
 
 static const char *TAG = "boost_gauge";
 
@@ -77,6 +79,8 @@ static lv_obj_t *s_tick_labels[5];
 static float s_display_psi;
 static float s_peak_psi;
 static bool s_ui_ready;
+static bool s_hold_dim_fired;
+static uint32_t s_press_start_ms;
 
 static lv_color_t c(uint32_t rgb)
 {
@@ -101,10 +105,10 @@ static float psi_to_angle(float psi)
     const float t = (psi - PSI_MIN) / (PSI_MAX - PSI_MIN);
     return (float)ARC_START + t * (float)ARC_RANGE;
 }
-
 /*
  * Fill from the zero notch toward the current PSI.
  * Vacuum grows counter-clockwise from 0; boost clockwise from 0.
+ * Flat ends + a small angular gap keep the fill behind the white zero mark.
  */
 static void set_value_arc(float psi)
 {
@@ -114,11 +118,17 @@ static void set_value_arc(float psi)
     float end;
 
     if (psi >= 0.0f) {
-        start = zero_a;
+        start = zero_a + ZERO_GAP_DEG;
         end = val_a;
+        if (end < start) {
+            end = start;
+        }
     } else {
         start = val_a;
-        end = zero_a;
+        end = zero_a - ZERO_GAP_DEG;
+        if (end < start) {
+            end = start;
+        }
     }
 
     /* Collapse near zero so the indicator doesn't leave a stub. */
@@ -164,27 +174,58 @@ static void format_signed_psi(char *buf, size_t n, float psi)
     snprintf(buf, n, "%+.1f", (double)psi);
 }
 
+static void reset_peak_ui(void)
+{
+    boost_sim_reset_peak();
+    /* Peak is boost-oriented: never display a vacuum peak. */
+    s_peak_psi = s_display_psi > 0.0f ? s_display_psi : 0.0f;
+    if (s_peak_label) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "PEAK  %+.1f", (double)s_peak_psi);
+        lv_label_set_text(s_peak_label, buf);
+        lv_obj_set_style_text_color(s_peak_label, c(COLOR_AMBER), 0);
+    }
+    ESP_LOGI(TAG, "peak reset");
+}
+
 static void on_screen_event(lv_event_t *e)
 {
     const lv_event_code_t code = lv_event_get_code(e);
 
-    if (code == LV_EVENT_SHORT_CLICKED) {
-        boost_sim_reset_peak();
-        /* Peak is boost-oriented: never display a vacuum peak. */
-        s_peak_psi = s_display_psi > 0.0f ? s_display_psi : 0.0f;
-        if (s_peak_label) {
-            char buf[32];
-            snprintf(buf, sizeof(buf), "PEAK  %+.1f", (double)s_peak_psi);
-            lv_label_set_text(s_peak_label, buf);
-            lv_obj_set_style_text_color(s_peak_label, c(COLOR_AMBER), 0);
-        }
-        ESP_LOGI(TAG, "peak reset");
+    /*
+     * Manual hold timing is more reliable than depending solely on
+     * LV_EVENT_LONG_PRESSED (BSP touch indev timing can vary).
+     */
+    if (code == LV_EVENT_PRESSED) {
+        s_press_start_ms = lv_tick_get();
+        s_hold_dim_fired = false;
         return;
     }
 
-    if (code == LV_EVENT_LONG_PRESSED) {
+    if (code == LV_EVENT_PRESSING) {
+        if (!s_hold_dim_fired &&
+            lv_tick_elaps(s_press_start_ms) >= HOLD_DIM_MS) {
+            s_hold_dim_fired = true;
+            boost_brightness_toggle_max_min();
+            ESP_LOGI(TAG, "brightness toggle -> %d%%", boost_brightness_get());
+        }
+        return;
+    }
+
+    if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+        if (!s_hold_dim_fired &&
+            lv_tick_elaps(s_press_start_ms) < HOLD_DIM_MS) {
+            reset_peak_ui();
+        }
+        s_hold_dim_fired = false;
+        return;
+    }
+
+    /* Fallback if only LONG_PRESSED is delivered by the port. */
+    if (code == LV_EVENT_LONG_PRESSED && !s_hold_dim_fired) {
+        s_hold_dim_fired = true;
         boost_brightness_toggle_max_min();
-        ESP_LOGI(TAG, "brightness toggle -> %d%%", boost_brightness_get());
+        ESP_LOGI(TAG, "brightness toggle (long_pressed) -> %d%%", boost_brightness_get());
     }
 }
 
@@ -222,17 +263,17 @@ void boost_gauge_create(void)
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(scr, LV_OBJ_FLAG_CLICKABLE);
-    /* Short tap = peak reset; hold ~2s = brightness toggle. */
-    lv_obj_add_event_cb(scr, on_screen_event, LV_EVENT_SHORT_CLICKED, NULL);
+    /*
+     * Gestures:
+     *  - short press/release = peak reset
+     *  - hold ~2s = brightness max/min toggle
+     * Track PRESSED/PRESSING/RELEASED manually for reliable 2s hold.
+     */
+    lv_obj_add_event_cb(scr, on_screen_event, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(scr, on_screen_event, LV_EVENT_PRESSING, NULL);
+    lv_obj_add_event_cb(scr, on_screen_event, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(scr, on_screen_event, LV_EVENT_PRESS_LOST, NULL);
     lv_obj_add_event_cb(scr, on_screen_event, LV_EVENT_LONG_PRESSED, NULL);
-
-    lv_indev_t *indev = lv_indev_get_next(NULL);
-    while (indev) {
-        if (lv_indev_get_type(indev) == LV_INDEV_TYPE_POINTER) {
-            lv_indev_set_long_press_time(indev, 2000);
-        }
-        indev = lv_indev_get_next(indev);
-    }
 
     /* Soft vignette well under the arc. */
     lv_obj_t *well = lv_obj_create(scr);
@@ -260,10 +301,10 @@ void boost_gauge_create(void)
     lv_obj_set_style_arc_color(s_arc_track, c(COLOR_MUTED), LV_PART_INDICATOR);
     lv_obj_set_style_arc_opa(s_arc_track, LV_OPA_60, LV_PART_MAIN);
     lv_obj_set_style_arc_opa(s_arc_track, LV_OPA_0, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_rounded(s_arc_track, true, LV_PART_MAIN);
+    lv_obj_set_style_arc_rounded(s_arc_track, false, LV_PART_MAIN);
     lv_obj_clear_flag(s_arc_track, LV_OBJ_FLAG_CLICKABLE);
 
-    /* Value arc — angles set so vacuum/boost both grow from the zero notch. */
+    /* Value arc — flat ends, sits behind the white zero mark. */
     s_arc_value = lv_arc_create(scr);
     lv_obj_set_size(s_arc_value, ARC_DIAMETER, ARC_DIAMETER);
     lv_obj_center(s_arc_value);
@@ -275,10 +316,13 @@ void boost_gauge_create(void)
     lv_obj_set_style_arc_width(s_arc_value, ARC_WIDTH, LV_PART_INDICATOR);
     lv_obj_set_style_arc_opa(s_arc_value, LV_OPA_0, LV_PART_MAIN);
     lv_obj_set_style_arc_color(s_arc_value, c(COLOR_TEAL), LV_PART_INDICATOR);
-    lv_obj_set_style_arc_rounded(s_arc_value, true, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_rounded(s_arc_value, false, LV_PART_INDICATOR);
     lv_obj_clear_flag(s_arc_value, LV_OBJ_FLAG_CLICKABLE);
 
-    /* Zero mark — radial ice tick (always perpendicular to the arc). */
+    /*
+     * Zero mark — thicker radial ice tick that fits inside the gray ring only.
+     * Drawn after the value arc so it covers the flat fill end.
+     */
     s_zero_notch = lv_line_create(scr);
     {
         static lv_point_precise_t zero_pts[2];
@@ -286,15 +330,17 @@ void boost_gauge_create(void)
         const float rad = deg * (float)M_PI / 180.0f;
         const float cx = DISP_SIZE * 0.5f;
         const float cy = DISP_SIZE * 0.5f;
-        const float r_outer = (float)ARC_DIAMETER * 0.5f + 2.0f;
-        const float r_inner = r_outer - (float)ARC_WIDTH - 6.0f;
+        /* Arc outer/inner radii for a widget of diameter D and stroke W:
+         * outer ≈ D/2, inner ≈ D/2 - W. Keep mark fully inside the ring. */
+        const float r_outer = (float)ARC_DIAMETER * 0.5f - 1.0f;
+        const float r_inner = r_outer - (float)ARC_WIDTH + 1.0f;
         zero_pts[0].x = cx + r_inner * cosf(rad);
         zero_pts[0].y = cy + r_inner * sinf(rad);
         zero_pts[1].x = cx + r_outer * cosf(rad);
         zero_pts[1].y = cy + r_outer * sinf(rad);
         lv_line_set_points(s_zero_notch, zero_pts, 2);
     }
-    lv_obj_set_style_line_width(s_zero_notch, 5, 0);
+    lv_obj_set_style_line_width(s_zero_notch, ZERO_LINE_W, 0);
     lv_obj_set_style_line_color(s_zero_notch, c(COLOR_ICE), 0);
     lv_obj_set_style_line_rounded(s_zero_notch, true, 0);
     lv_obj_set_style_line_opa(s_zero_notch, LV_OPA_COVER, 0);
