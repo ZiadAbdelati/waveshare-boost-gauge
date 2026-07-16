@@ -59,7 +59,7 @@
 #define ARC_DIAMETER  400
 #define ARC_WIDTH     27   /* ~1.5× the original 18px track */
 #define ZERO_LINE_W   14   /* ~2.8× previous 5px white zero mark */
-#define ZERO_GAP_DEG  2.4f /* keep colored fill from peeking past zero mark */
+#define ZERO_GAP_DEG  3.2f /* tuck rounded zero-side end under the white mark */
 #define TICK_FONT     (&lv_font_montserrat_16)
 #define TICK_RADIUS   152.0f  /* inside the thicker arc */
 #define HOLD_DIM_MS   2000
@@ -108,7 +108,9 @@ static float psi_to_angle(float psi)
 /*
  * Fill from the zero notch toward the current PSI.
  * Vacuum grows counter-clockwise from 0; boost clockwise from 0.
- * Flat ends + a small angular gap keep the fill behind the white zero mark.
+ *
+ * LVGL only supports rounded-or-not for both arc ends, so we keep rounded
+ * ends globally and hide the zero-side round under the white mark with a gap.
  */
 static void set_value_arc(float psi)
 {
@@ -118,12 +120,14 @@ static void set_value_arc(float psi)
     float end;
 
     if (psi >= 0.0f) {
+        /* Boost: leave a gap after zero so the rounded start sits under the mark. */
         start = zero_a + ZERO_GAP_DEG;
         end = val_a;
         if (end < start) {
             end = start;
         }
     } else {
+        /* Vacuum: leave a gap before zero for the same reason. */
         start = val_a;
         end = zero_a - ZERO_GAP_DEG;
         if (end < start) {
@@ -302,10 +306,13 @@ void boost_gauge_create(void)
     lv_obj_set_style_arc_color(s_arc_track, c(COLOR_MUTED), LV_PART_INDICATOR);
     lv_obj_set_style_arc_opa(s_arc_track, LV_OPA_60, LV_PART_MAIN);
     lv_obj_set_style_arc_opa(s_arc_track, LV_OPA_0, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_rounded(s_arc_track, false, LV_PART_MAIN);
+    lv_obj_set_style_arc_rounded(s_arc_track, true, LV_PART_MAIN);
     lv_obj_clear_flag(s_arc_track, LV_OBJ_FLAG_CLICKABLE);
 
-    /* Value arc — flat ends, sits behind the white zero mark. */
+    /*
+     * Value arc: rounded tip at the live end; zero-side rounded end is hidden
+     * under the white zero mark via ZERO_GAP_DEG.
+     */
     s_arc_value = lv_arc_create(scr);
     lv_obj_set_size(s_arc_value, ARC_DIAMETER, ARC_DIAMETER);
     lv_obj_center(s_arc_value);
@@ -317,12 +324,12 @@ void boost_gauge_create(void)
     lv_obj_set_style_arc_width(s_arc_value, ARC_WIDTH, LV_PART_INDICATOR);
     lv_obj_set_style_arc_opa(s_arc_value, LV_OPA_0, LV_PART_MAIN);
     lv_obj_set_style_arc_color(s_arc_value, c(COLOR_TEAL), LV_PART_INDICATOR);
-    lv_obj_set_style_arc_rounded(s_arc_value, false, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_rounded(s_arc_value, true, LV_PART_INDICATOR);
     lv_obj_clear_flag(s_arc_value, LV_OBJ_FLAG_CLICKABLE);
 
     /*
      * Zero mark — thicker radial ice tick that fits inside the gray ring only.
-     * Drawn after the value arc so it covers the flat fill end.
+     * Drawn after the value arc so it covers the zero-side fill end.
      */
     s_zero_notch = lv_line_create(scr);
     {
