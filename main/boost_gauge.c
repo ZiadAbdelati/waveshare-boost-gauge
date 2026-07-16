@@ -58,16 +58,16 @@
 #define ARC_RANGE     270
 
 #define DISP_SIZE     466
-/* Full-bleed face; arc inset 5px from panel edge (diameter -10). */
-#define ARC_DIAMETER  452
+/* Full-bleed face; arc inset 2px from panel edge (diameter -4). */
+#define ARC_DIAMETER  462
 #define ARC_WIDTH     45   /* ~1.5× the previous 30px stroke */
 #define ZERO_LINE_W   20
 /* Zero-side hide gap — boost tuned via sim pixels (3.8 clean; 4.0 margin). */
 #define ZERO_GAP_VAC_DEG   3.6f
 #define ZERO_GAP_BOOST_DEG 4.00f
 #define TICK_FONT     (&lv_font_montserrat_20)
-/* Tick labels sit just inside the thicker inset arc. */
-#define TICK_RADIUS   160.0f
+/* Tick labels sit just inside the thicker arc. */
+#define TICK_RADIUS   165.0f
 #define HOLD_DIM_MS   2000
 /* Soft well under the face — full panel, no black outer ring. */
 #define WELL_SIZE     DISP_SIZE
