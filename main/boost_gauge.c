@@ -64,7 +64,7 @@
 #define ZERO_LINE_W   20   /* +2px to cover residual join under the mark */
 /* Zero-side hide gap — keep boost matched to vacuum (boost was over-gapped). */
 #define ZERO_GAP_VAC_DEG   3.6f
-#define ZERO_GAP_BOOST_DEG 3.6f
+#define ZERO_GAP_BOOST_DEG 4.00f
 #define TICK_FONT     (&lv_font_montserrat_20)
 /* Tick labels sit just inside the thicker full-size arc. */
 #define TICK_RADIUS   165.0f
