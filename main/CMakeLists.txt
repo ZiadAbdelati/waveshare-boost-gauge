@@ -3,6 +3,7 @@ idf_component_register(
         "main.c"
         "boost_gauge.c"
         "boost_sim.c"
+        "boost_brightness.c"
     INCLUDE_DIRS
         "."
 )

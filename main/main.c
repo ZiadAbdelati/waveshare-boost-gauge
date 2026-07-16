@@ -5,6 +5,7 @@
 #include "bsp/esp-bsp.h"
 #include "bsp/display.h"
 
+#include "boost_brightness.h"
 #include "boost_gauge.h"
 #include "boost_sim.h"
 
@@ -38,9 +39,8 @@ void app_main(void)
         return;
     }
 
-    /* AMOLED brightness via panel — 70% is cabin-friendly for first flash. */
-    bsp_display_brightness_set(70);
-    bsp_display_backlight_on();
+    /* Start bright; long-press toggles max/min. */
+    boost_brightness_init(BOOST_BRIGHTNESS_MAX);
 
     boost_sim_init();
 
@@ -64,5 +64,5 @@ void app_main(void)
         ESP_LOGE(TAG, "failed to start sensor task");
     }
 
-    ESP_LOGI(TAG, "running — tap screen to reset peak");
+    ESP_LOGI(TAG, "tap=reset peak · hold 2s=brightness toggle");
 }

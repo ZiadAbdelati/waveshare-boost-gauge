@@ -9,7 +9,8 @@ Right now the MAP path is **simulated** (vacuum ↔ boost sweep). Swap `boost_si
 - Full-screen dark cabin gauge (“Pit Lane Night”)
 - Dual-climate arc: **teal** vacuum · **amber** boost · **flare red** overboost (≥ 18 psi)
 - Big signed PSI, zone label (`VAC` / `ATMO` / `BOOST` / `OVER`)
-- Peak hold; **tap the screen** to reset peak
+- Peak hold; **short tap** resets peak
+- **Hold ~2s** toggles max/min brightness (100% ↔ 12%)
 - Top chip reads `DEMO` until a live sensor path sets `sample.demo = false`
 
 This firmware **replaces** the factory app launcher.

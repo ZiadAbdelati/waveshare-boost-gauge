@@ -31,6 +31,7 @@ add_executable(boost_gauge_sim
     main.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_gauge.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_sim.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_brightness.c
 )
 
 target_include_directories(boost_gauge_sim PRIVATE
@@ -56,7 +57,6 @@ if(TARGET SDL2::SDL2)
     target_link_libraries(boost_gauge_sim PRIVATE SDL2::SDL2)
 endif()
 
-# Convenience: convert .raw snapshots to PNG after run if Pillow is present.
 add_custom_target(sim-screenshots
     COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_SOURCE_DIR}/../preview/sim
     COMMAND $<TARGET_FILE:boost_gauge_sim> --screenshot ${CMAKE_SOURCE_DIR}/../preview/sim

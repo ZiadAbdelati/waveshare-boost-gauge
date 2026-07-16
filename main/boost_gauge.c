@@ -13,6 +13,7 @@
 #endif
 
 #include "lvgl.h"
+#include "boost_brightness.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -163,19 +164,28 @@ static void format_signed_psi(char *buf, size_t n, float psi)
     snprintf(buf, n, "%+.1f", (double)psi);
 }
 
-static void on_screen_clicked(lv_event_t *e)
+static void on_screen_event(lv_event_t *e)
 {
-    (void)e;
-    boost_sim_reset_peak();
-    /* Peak is boost-oriented: never display a vacuum peak. */
-    s_peak_psi = s_display_psi > 0.0f ? s_display_psi : 0.0f;
-    if (s_peak_label) {
-        char buf[32];
-        snprintf(buf, sizeof(buf), "PEAK  %+.1f", (double)s_peak_psi);
-        lv_label_set_text(s_peak_label, buf);
-        lv_obj_set_style_text_color(s_peak_label, c(COLOR_AMBER), 0);
+    const lv_event_code_t code = lv_event_get_code(e);
+
+    if (code == LV_EVENT_SHORT_CLICKED) {
+        boost_sim_reset_peak();
+        /* Peak is boost-oriented: never display a vacuum peak. */
+        s_peak_psi = s_display_psi > 0.0f ? s_display_psi : 0.0f;
+        if (s_peak_label) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), "PEAK  %+.1f", (double)s_peak_psi);
+            lv_label_set_text(s_peak_label, buf);
+            lv_obj_set_style_text_color(s_peak_label, c(COLOR_AMBER), 0);
+        }
+        ESP_LOGI(TAG, "peak reset");
+        return;
     }
-    ESP_LOGI(TAG, "peak reset");
+
+    if (code == LV_EVENT_LONG_PRESSED) {
+        boost_brightness_toggle_max_min();
+        ESP_LOGI(TAG, "brightness toggle -> %d%%", boost_brightness_get());
+    }
 }
 
 static void add_tick_label(int idx, float psi, const char *text)
@@ -212,7 +222,17 @@ void boost_gauge_create(void)
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(scr, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(scr, on_screen_clicked, LV_EVENT_CLICKED, NULL);
+    /* Short tap = peak reset; hold ~2s = brightness toggle. */
+    lv_obj_add_event_cb(scr, on_screen_event, LV_EVENT_SHORT_CLICKED, NULL);
+    lv_obj_add_event_cb(scr, on_screen_event, LV_EVENT_LONG_PRESSED, NULL);
+
+    lv_indev_t *indev = lv_indev_get_next(NULL);
+    while (indev) {
+        if (lv_indev_get_type(indev) == LV_INDEV_TYPE_POINTER) {
+            lv_indev_set_long_press_time(indev, 2000);
+        }
+        indev = lv_indev_get_next(indev);
+    }
 
     /* Soft vignette well under the arc. */
     lv_obj_t *well = lv_obj_create(scr);
@@ -324,10 +344,10 @@ void boost_gauge_create(void)
     lv_obj_align(s_mode_label, LV_ALIGN_CENTER, 0, 84);
 
     lv_obj_t *hint = lv_label_create(scr);
-    lv_label_set_text(hint, "TAP  RESET  PEAK");
+    lv_label_set_text(hint, "TAP PEAK · HOLD DIM");
     lv_obj_set_style_text_font(hint, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(hint, c(COLOR_MUTED), 0);
-    lv_obj_set_style_text_letter_space(hint, 2, 0);
+    lv_obj_set_style_text_letter_space(hint, 1, 0);
     lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -28);
 
     s_display_psi = 0.0f;
