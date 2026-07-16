@@ -50,6 +50,25 @@ Hold **BOOT**, tap **RESET**, start flash, release **BOOT** if download mode fai
 Details and split binaries: [`release/README.md`](release/README.md).
 
 ---
+## Desktop simulator
+
+Same LVGL UI, no board required:
+
+```bash
+cmake -S sim -B sim/build
+cmake --build sim/build -j"$(nproc)"
+./sim/build/boost_gauge_sim --screenshot preview/sim
+python3 sim/raw_to_png.py preview/sim
+```
+
+Headless LXC/CI works as-is (memory display + snapshot). Windowed:
+
+```bash
+xvfb-run -a ./sim/build/boost_gauge_sim --window
+```
+
+See [`sim/README.md`](sim/README.md). Real LVGL screenshots live under [`preview/sim/`](preview/sim/).
+
 
 ## UI design tokens
 

@@ -4,7 +4,14 @@
 #include <stddef.h>
 #include <stdio.h>
 
+#ifdef ESP_PLATFORM
 #include "esp_log.h"
+#else
+#define ESP_LOGI(tag, fmt, ...) printf("[I][%s] " fmt "\n", tag, ##__VA_ARGS__)
+#define ESP_LOGW(tag, fmt, ...) printf("[W][%s] " fmt "\n", tag, ##__VA_ARGS__)
+#define ESP_LOGE(tag, fmt, ...) printf("[E][%s] " fmt "\n", tag, ##__VA_ARGS__)
+#endif
+
 #include "lvgl.h"
 
 #ifndef M_PI
@@ -70,15 +77,51 @@ static lv_color_t c(uint32_t rgb)
     return lv_color_hex(rgb);
 }
 
-static int32_t psi_to_arc(float psi)
+static float clampf(float v, float lo, float hi)
 {
-    if (psi < PSI_MIN) {
-        psi = PSI_MIN;
-    } else if (psi > PSI_MAX) {
-        psi = PSI_MAX;
+    if (v < lo) {
+        return lo;
     }
+    if (v > hi) {
+        return hi;
+    }
+    return v;
+}
+
+/* Map PSI onto the 270° face: LVGL 0° = east, clockwise. */
+static float psi_to_angle(float psi)
+{
+    psi = clampf(psi, PSI_MIN, PSI_MAX);
     const float t = (psi - PSI_MIN) / (PSI_MAX - PSI_MIN);
-    return (int32_t)lroundf(t * 1000.0f);
+    return (float)ARC_START + t * (float)ARC_RANGE;
+}
+
+/*
+ * Fill from the zero notch toward the current PSI.
+ * Vacuum grows counter-clockwise from 0; boost clockwise from 0.
+ */
+static void set_value_arc(float psi)
+{
+    const float zero_a = psi_to_angle(0.0f);
+    const float val_a = psi_to_angle(psi);
+    float start;
+    float end;
+
+    if (psi >= 0.0f) {
+        start = zero_a;
+        end = val_a;
+    } else {
+        start = val_a;
+        end = zero_a;
+    }
+
+    /* Collapse near zero so the indicator doesn't leave a stub. */
+    if (fabsf(end - start) < 0.4f) {
+        start = zero_a;
+        end = zero_a;
+    }
+
+    lv_arc_set_angles(s_arc_value, start, end);
 }
 
 static lv_color_t color_for_psi(float psi)
@@ -189,14 +232,14 @@ void boost_gauge_create(void)
     lv_obj_set_style_arc_opa(s_arc_track, LV_OPA_0, LV_PART_INDICATOR);
     lv_obj_clear_flag(s_arc_track, LV_OBJ_FLAG_CLICKABLE);
 
-    /* Value arc (colored). */
+    /* Value arc (colored). Angles are set explicitly so vacuum fills
+     * from the zero notch instead of from the scale minimum. */
     s_arc_value = lv_arc_create(scr);
     lv_obj_set_size(s_arc_value, 400, 400);
     lv_obj_center(s_arc_value);
     lv_arc_set_rotation(s_arc_value, 0);
     lv_arc_set_bg_angles(s_arc_value, ARC_START, ARC_END);
-    lv_arc_set_range(s_arc_value, 0, 1000);
-    lv_arc_set_value(s_arc_value, psi_to_arc(0.0f));
+    lv_arc_set_angles(s_arc_value, psi_to_angle(0.0f), psi_to_angle(0.0f));
     lv_obj_remove_style(s_arc_value, NULL, LV_PART_KNOB);
     lv_obj_set_style_arc_width(s_arc_value, 18, LV_PART_MAIN);
     lv_obj_set_style_arc_width(s_arc_value, 18, LV_PART_INDICATOR);
@@ -290,8 +333,7 @@ void boost_gauge_update(const boost_sample_t *sample)
     s_display_psi = sample->psi;
     s_peak_psi = sample->peak_psi;
 
-    const int32_t arc_v = psi_to_arc(sample->psi);
-    lv_arc_set_value(s_arc_value, arc_v);
+    set_value_arc(sample->psi);
 
     const lv_color_t col = color_for_psi(sample->psi);
     lv_obj_set_style_arc_color(s_arc_value, col, LV_PART_INDICATOR);
