@@ -58,8 +58,8 @@
 #define DISP_SIZE     466
 #define ARC_DIAMETER  400
 #define ARC_WIDTH     27   /* ~1.5× the original 18px track */
-#define ZERO_LINE_W   13   /* ~2.5× previous 5px white zero mark */
-#define ZERO_GAP_DEG  1.8f /* keep colored fill from peeking past zero mark */
+#define ZERO_LINE_W   14   /* ~2.8× previous 5px white zero mark */
+#define ZERO_GAP_DEG  2.4f /* keep colored fill from peeking past zero mark */
 #define TICK_FONT     (&lv_font_montserrat_16)
 #define TICK_RADIUS   152.0f  /* inside the thicker arc */
 #define HOLD_DIM_MS   2000
@@ -213,6 +213,9 @@ static void on_screen_event(lv_event_t *e)
     }
 
     if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+    /* Labels must not steal pointer events from the screen gestures. */
+    lv_obj_clear_flag(lab, LV_OBJ_FLAG_CLICKABLE);
+
         if (!s_hold_dim_fired &&
             lv_tick_elaps(s_press_start_ms) < HOLD_DIM_MS) {
             reset_peak_ui();
@@ -362,12 +365,14 @@ void boost_gauge_create(void)
     lv_obj_set_style_text_color(s_zone_label, c(COLOR_ICE), 0);
     lv_obj_set_style_text_letter_space(s_zone_label, 4, 0);
     lv_obj_align(s_zone_label, LV_ALIGN_CENTER, 0, -78);
+    lv_obj_clear_flag(s_zone_label, LV_OBJ_FLAG_CLICKABLE);
 
     s_value_label = lv_label_create(scr);
     lv_label_set_text(s_value_label, "+0.0");
     lv_obj_set_style_text_font(s_value_label, &lv_font_montserrat_48, 0);
     lv_obj_set_style_text_color(s_value_label, c(COLOR_ICE), 0);
     lv_obj_align(s_value_label, LV_ALIGN_CENTER, 0, -18);
+    lv_obj_clear_flag(s_value_label, LV_OBJ_FLAG_CLICKABLE);
 
     s_unit_label = lv_label_create(scr);
     lv_label_set_text(s_unit_label, "PSI");
@@ -375,12 +380,14 @@ void boost_gauge_create(void)
     lv_obj_set_style_text_color(s_unit_label, c(COLOR_STEEL), 0);
     lv_obj_set_style_text_letter_space(s_unit_label, 4, 0);
     lv_obj_align(s_unit_label, LV_ALIGN_CENTER, 0, 28);
+    lv_obj_clear_flag(s_unit_label, LV_OBJ_FLAG_CLICKABLE);
 
     s_peak_label = lv_label_create(scr);
     lv_label_set_text(s_peak_label, "PEAK  +0.0");
     lv_obj_set_style_text_font(s_peak_label, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_peak_label, c(COLOR_AMBER), 0);
     lv_obj_align(s_peak_label, LV_ALIGN_CENTER, 0, 56);
+    lv_obj_clear_flag(s_peak_label, LV_OBJ_FLAG_CLICKABLE);
 
     s_mode_label = lv_label_create(scr);
     lv_label_set_text(s_mode_label, "DEMO");
@@ -388,6 +395,7 @@ void boost_gauge_create(void)
     lv_obj_set_style_text_color(s_mode_label, c(COLOR_STEEL), 0);
     lv_obj_set_style_text_letter_space(s_mode_label, 3, 0);
     lv_obj_align(s_mode_label, LV_ALIGN_CENTER, 0, 84);
+    lv_obj_clear_flag(s_mode_label, LV_OBJ_FLAG_CLICKABLE);
 
     lv_obj_t *hint = lv_label_create(scr);
     lv_label_set_text(hint, "TAP PEAK · HOLD DIM");
@@ -395,6 +403,7 @@ void boost_gauge_create(void)
     lv_obj_set_style_text_color(hint, c(COLOR_MUTED), 0);
     lv_obj_set_style_text_letter_space(hint, 1, 0);
     lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -28);
+    lv_obj_clear_flag(hint, LV_OBJ_FLAG_CLICKABLE);
 
     s_display_psi = 0.0f;
     s_peak_psi = 0.0f;
