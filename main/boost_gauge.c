@@ -56,13 +56,17 @@
 #define ARC_RANGE     270
 
 #define DISP_SIZE     466
-#define ARC_DIAMETER  400
-#define ARC_WIDTH     27   /* ~1.5× the original 18px track */
-#define ZERO_LINE_W   14   /* ~2.8× previous 5px white zero mark */
-#define ZERO_GAP_DEG  3.2f /* tuck rounded zero-side end under the white mark */
+/* Fill the AMOLED almost edge-to-edge (leave a couple px so rounded caps clip cleanly). */
+#define ARC_DIAMETER  462
+#define ARC_WIDTH     30
+#define ZERO_LINE_W   14
+#define ZERO_GAP_DEG  3.2f
 #define TICK_FONT     (&lv_font_montserrat_16)
-#define TICK_RADIUS   152.0f  /* inside the thicker arc */
+/* Tick labels sit just inside the thicker full-size arc. */
+#define TICK_RADIUS   178.0f
 #define HOLD_DIM_MS   2000
+/* Soft well under the face — full panel, no black outer ring. */
+#define WELL_SIZE     DISP_SIZE
 
 static const char *TAG = "boost_gauge";
 
@@ -280,14 +284,15 @@ void boost_gauge_create(void)
     lv_obj_add_event_cb(scr, on_screen_event, LV_EVENT_PRESS_LOST, NULL);
     lv_obj_add_event_cb(scr, on_screen_event, LV_EVENT_LONG_PRESSED, NULL);
 
-    /* Soft vignette well under the arc. */
+    /* Full-panel face fill — removes the empty black ring outside the graphics. */
     lv_obj_t *well = lv_obj_create(scr);
-    lv_obj_set_size(well, 424, 424);
+    lv_obj_set_size(well, WELL_SIZE, WELL_SIZE);
     lv_obj_center(well);
     lv_obj_set_style_radius(well, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(well, c(COLOR_GHOST), 0);
-    lv_obj_set_style_bg_opa(well, LV_OPA_40, 0);
+    lv_obj_set_style_bg_opa(well, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(well, 0, 0);
+    lv_obj_set_style_pad_all(well, 0, 0);
     lv_obj_clear_flag(well, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
 
     /* Background track. */
@@ -369,14 +374,14 @@ void boost_gauge_create(void)
     lv_obj_set_style_text_font(s_zone_label, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(s_zone_label, c(COLOR_ICE), 0);
     lv_obj_set_style_text_letter_space(s_zone_label, 4, 0);
-    lv_obj_align(s_zone_label, LV_ALIGN_CENTER, 0, -78);
+    lv_obj_align(s_zone_label, LV_ALIGN_CENTER, 0, -88);
     lv_obj_clear_flag(s_zone_label, LV_OBJ_FLAG_CLICKABLE);
 
     s_value_label = lv_label_create(scr);
     lv_label_set_text(s_value_label, "+0.0");
     lv_obj_set_style_text_font(s_value_label, &lv_font_montserrat_48, 0);
     lv_obj_set_style_text_color(s_value_label, c(COLOR_ICE), 0);
-    lv_obj_align(s_value_label, LV_ALIGN_CENTER, 0, -18);
+    lv_obj_align(s_value_label, LV_ALIGN_CENTER, 0, -22);
     lv_obj_clear_flag(s_value_label, LV_OBJ_FLAG_CLICKABLE);
 
     s_unit_label = lv_label_create(scr);
@@ -384,14 +389,14 @@ void boost_gauge_create(void)
     lv_obj_set_style_text_font(s_unit_label, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(s_unit_label, c(COLOR_STEEL), 0);
     lv_obj_set_style_text_letter_space(s_unit_label, 4, 0);
-    lv_obj_align(s_unit_label, LV_ALIGN_CENTER, 0, 28);
+    lv_obj_align(s_unit_label, LV_ALIGN_CENTER, 0, 26);
     lv_obj_clear_flag(s_unit_label, LV_OBJ_FLAG_CLICKABLE);
 
     s_peak_label = lv_label_create(scr);
     lv_label_set_text(s_peak_label, "PEAK  +0.0");
     lv_obj_set_style_text_font(s_peak_label, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_peak_label, c(COLOR_AMBER), 0);
-    lv_obj_align(s_peak_label, LV_ALIGN_CENTER, 0, 56);
+    lv_obj_align(s_peak_label, LV_ALIGN_CENTER, 0, 54);
     lv_obj_clear_flag(s_peak_label, LV_OBJ_FLAG_CLICKABLE);
 
     s_mode_label = lv_label_create(scr);
@@ -399,7 +404,7 @@ void boost_gauge_create(void)
     lv_obj_set_style_text_font(s_mode_label, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(s_mode_label, c(COLOR_STEEL), 0);
     lv_obj_set_style_text_letter_space(s_mode_label, 3, 0);
-    lv_obj_align(s_mode_label, LV_ALIGN_CENTER, 0, 84);
+    lv_obj_align(s_mode_label, LV_ALIGN_CENTER, 0, 82);
     lv_obj_clear_flag(s_mode_label, LV_OBJ_FLAG_CLICKABLE);
 
     lv_obj_t *hint = lv_label_create(scr);
@@ -407,13 +412,14 @@ void boost_gauge_create(void)
     lv_obj_set_style_text_font(hint, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(hint, c(COLOR_MUTED), 0);
     lv_obj_set_style_text_letter_space(hint, 1, 0);
-    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -28);
+    /* Keep inside the open bottom of the 270° arc, not the outer black margin. */
+    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -36);
     lv_obj_clear_flag(hint, LV_OBJ_FLAG_CLICKABLE);
 
     s_display_psi = 0.0f;
     s_peak_psi = 0.0f;
     s_ui_ready = true;
-    ESP_LOGI(TAG, "UI ready (arc %dpx wide, ticks 16pt)", ARC_WIDTH);
+    ESP_LOGI(TAG, "UI ready (full-bleed arc %dpx, stroke %d)", ARC_DIAMETER, ARC_WIDTH);
 }
 
 void boost_gauge_update(const boost_sample_t *sample)
