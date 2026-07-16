@@ -58,16 +58,16 @@
 #define ARC_RANGE     270
 
 #define DISP_SIZE     466
-/* Fill the AMOLED almost edge-to-edge (leave a couple px so rounded caps clip cleanly). */
-#define ARC_DIAMETER  462
+/* Full-bleed face; arc inset 5px from panel edge (diameter -10). */
+#define ARC_DIAMETER  452
 #define ARC_WIDTH     45   /* ~1.5× the previous 30px stroke */
-#define ZERO_LINE_W   20   /* +2px to cover residual join under the mark */
-/* Zero-side hide gap — keep boost matched to vacuum (boost was over-gapped). */
+#define ZERO_LINE_W   20
+/* Zero-side hide gap — boost tuned via sim pixels (3.8 clean; 4.0 margin). */
 #define ZERO_GAP_VAC_DEG   3.6f
 #define ZERO_GAP_BOOST_DEG 4.00f
 #define TICK_FONT     (&lv_font_montserrat_20)
-/* Tick labels sit just inside the thicker full-size arc. */
-#define TICK_RADIUS   165.0f
+/* Tick labels sit just inside the thicker inset arc. */
+#define TICK_RADIUS   160.0f
 #define HOLD_DIM_MS   2000
 /* Soft well under the face — full panel, no black outer ring. */
 #define WELL_SIZE     DISP_SIZE
