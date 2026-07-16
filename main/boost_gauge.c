@@ -61,10 +61,10 @@
 /* Fill the AMOLED almost edge-to-edge (leave a couple px so rounded caps clip cleanly). */
 #define ARC_DIAMETER  462
 #define ARC_WIDTH     45   /* ~1.5× the previous 30px stroke */
-#define ZERO_LINE_W   18
-/* Zero-side hide gap. Boost needs more than vacuum (rounded start peeks past the mark). */
+#define ZERO_LINE_W   20   /* +2px to cover residual join under the mark */
+/* Zero-side hide gap — keep boost matched to vacuum (boost was over-gapped). */
 #define ZERO_GAP_VAC_DEG   3.6f
-#define ZERO_GAP_BOOST_DEG 6.5f
+#define ZERO_GAP_BOOST_DEG 3.6f
 #define TICK_FONT     (&lv_font_montserrat_20)
 /* Tick labels sit just inside the thicker full-size arc. */
 #define TICK_RADIUS   165.0f
