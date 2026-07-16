@@ -38,14 +38,16 @@
  * flare past the overboost threshold — with a hard zero notch at top.
  */
 
-#define COLOR_VOID   0x050608
-#define COLOR_GHOST  0x1A1D24
+#define COLOR_VOID   0x000000  /* pure black AMOLED face (active) */
+#define COLOR_GHOST  0x1A1D24  /* standby gray face — swap FACE_BG back to this to revert */
 #define COLOR_STEEL  0x6B7280
 #define COLOR_ICE    0xE8ECF2
 #define COLOR_TEAL   0x2EE6C5
 #define COLOR_AMBER  0xFFB020
 #define COLOR_FLARE  0xFF3B30
 #define COLOR_MUTED  0x3A3F4A
+/* Active face fill. Gray standby: set FACE_BG to COLOR_GHOST. */
+#define FACE_BG      COLOR_VOID
 
 /* Gauge range (psi). Arc sweeps 270° from 135° to 45° (classic auto face). */
 #define PSI_MIN       (-15.0f)
@@ -60,7 +62,9 @@
 #define ARC_DIAMETER  462
 #define ARC_WIDTH     45   /* ~1.5× the previous 30px stroke */
 #define ZERO_LINE_W   18
-#define ZERO_GAP_DEG  3.6f
+/* Zero-side hide gap. Boost needs more than vacuum (rounded start peeks past the mark). */
+#define ZERO_GAP_VAC_DEG   3.6f
+#define ZERO_GAP_BOOST_DEG 6.5f
 #define TICK_FONT     (&lv_font_montserrat_20)
 /* Tick labels sit just inside the thicker full-size arc. */
 #define TICK_RADIUS   165.0f
@@ -126,16 +130,16 @@ static void set_value_arc(float psi)
     float end;
 
     if (psi >= 0.0f) {
-        /* Boost: leave a gap after zero so the rounded start sits under the mark. */
-        start = zero_a + ZERO_GAP_DEG;
+        /* Boost: larger gap — rounded start was peeking past the zero mark. */
+        start = zero_a + ZERO_GAP_BOOST_DEG;
         end = val_a;
         if (end < start) {
             end = start;
         }
     } else {
-        /* Vacuum: leave a gap before zero for the same reason. */
+        /* Vacuum: smaller gap is enough on this side. */
         start = val_a;
-        end = zero_a - ZERO_GAP_DEG;
+        end = zero_a - ZERO_GAP_VAC_DEG;
         if (end < start) {
             end = start;
         }
@@ -270,7 +274,7 @@ void boost_gauge_create(void)
 {
     lv_obj_t *scr = lv_screen_active();
     /* Same as the face fill so no black ring remains outside the graphics. */
-    lv_obj_set_style_bg_color(scr, c(COLOR_GHOST), 0);
+    lv_obj_set_style_bg_color(scr, c(FACE_BG), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(scr, LV_OBJ_FLAG_CLICKABLE);
@@ -291,7 +295,7 @@ void boost_gauge_create(void)
     lv_obj_set_size(well, WELL_SIZE, WELL_SIZE);
     lv_obj_center(well);
     lv_obj_set_style_radius(well, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(well, c(COLOR_GHOST), 0);
+    lv_obj_set_style_bg_color(well, c(FACE_BG), 0);
     lv_obj_set_style_bg_opa(well, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(well, 0, 0);
     lv_obj_set_style_pad_all(well, 0, 0);
