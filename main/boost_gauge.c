@@ -268,7 +268,8 @@ static void add_tick_label(int idx, float psi, const char *text)
 void boost_gauge_create(void)
 {
     lv_obj_t *scr = lv_screen_active();
-    lv_obj_set_style_bg_color(scr, c(COLOR_VOID), 0);
+    /* Same as the face fill so no black ring remains outside the graphics. */
+    lv_obj_set_style_bg_color(scr, c(COLOR_GHOST), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(scr, LV_OBJ_FLAG_CLICKABLE);
