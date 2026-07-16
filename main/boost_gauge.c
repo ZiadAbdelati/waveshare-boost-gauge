@@ -258,25 +258,27 @@ void boost_gauge_create(void)
     lv_obj_set_style_arc_rounded(s_arc_value, true, LV_PART_INDICATOR);
     lv_obj_clear_flag(s_arc_value, LV_OBJ_FLAG_CLICKABLE);
 
-    /* Zero notch — radial ice tick spanning the thicker track. */
-    s_zero_notch = lv_obj_create(scr);
-    lv_obj_set_size(s_zero_notch, 5, ARC_WIDTH + 8);
-    lv_obj_set_style_radius(s_zero_notch, 2, 0);
-    lv_obj_set_style_bg_color(s_zero_notch, c(COLOR_ICE), 0);
-    lv_obj_set_style_bg_opa(s_zero_notch, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(s_zero_notch, 0, 0);
-    lv_obj_clear_flag(s_zero_notch, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    /* Zero mark — radial ice tick (always perpendicular to the arc). */
+    s_zero_notch = lv_line_create(scr);
     {
+        static lv_point_precise_t zero_pts[2];
         const float deg = psi_to_angle(0.0f);
         const float rad = deg * (float)M_PI / 180.0f;
         const float cx = DISP_SIZE * 0.5f;
         const float cy = DISP_SIZE * 0.5f;
-        /* Center the notch on the arc midline. */
-        const float r_mid = (float)ARC_DIAMETER * 0.5f - (float)ARC_WIDTH * 0.5f;
-        const float x = cx + r_mid * cosf(rad) - 2.5f;
-        const float y = cy + r_mid * sinf(rad) - (ARC_WIDTH + 8) * 0.5f;
-        lv_obj_set_pos(s_zero_notch, (lv_coord_t)lroundf(x), (lv_coord_t)lroundf(y));
+        const float r_outer = (float)ARC_DIAMETER * 0.5f + 2.0f;
+        const float r_inner = r_outer - (float)ARC_WIDTH - 6.0f;
+        zero_pts[0].x = cx + r_inner * cosf(rad);
+        zero_pts[0].y = cy + r_inner * sinf(rad);
+        zero_pts[1].x = cx + r_outer * cosf(rad);
+        zero_pts[1].y = cy + r_outer * sinf(rad);
+        lv_line_set_points(s_zero_notch, zero_pts, 2);
     }
+    lv_obj_set_style_line_width(s_zero_notch, 5, 0);
+    lv_obj_set_style_line_color(s_zero_notch, c(COLOR_ICE), 0);
+    lv_obj_set_style_line_rounded(s_zero_notch, true, 0);
+    lv_obj_set_style_line_opa(s_zero_notch, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(s_zero_notch, LV_OBJ_FLAG_CLICKABLE);
 
     add_tick_label(0, -15.0f, "-15");
     add_tick_label(1, 0.0f, "0");
