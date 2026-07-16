@@ -58,15 +58,17 @@
 #define DISP_SIZE     466
 /* Fill the AMOLED almost edge-to-edge (leave a couple px so rounded caps clip cleanly). */
 #define ARC_DIAMETER  462
-#define ARC_WIDTH     30
-#define ZERO_LINE_W   14
-#define ZERO_GAP_DEG  3.2f
-#define TICK_FONT     (&lv_font_montserrat_16)
+#define ARC_WIDTH     45   /* ~1.5× the previous 30px stroke */
+#define ZERO_LINE_W   18
+#define ZERO_GAP_DEG  3.6f
+#define TICK_FONT     (&lv_font_montserrat_20)
 /* Tick labels sit just inside the thicker full-size arc. */
-#define TICK_RADIUS   178.0f
+#define TICK_RADIUS   165.0f
 #define HOLD_DIM_MS   2000
 /* Soft well under the face — full panel, no black outer ring. */
 #define WELL_SIZE     DISP_SIZE
+/* Center PSI: built-in max is 48pt; scale slightly above that. */
+#define VALUE_SCALE   280  /* 256 = 1.0x */
 
 static const char *TAG = "boost_gauge";
 
@@ -253,11 +255,10 @@ static void add_tick_label(int idx, float psi, const char *text)
 
     const lv_coord_t w = lv_obj_get_width(lab);
     const lv_coord_t h = lv_obj_get_height(lab);
-    /* Pull slightly inward so thicker arc never covers the digits. */
     float r = TICK_RADIUS;
     /* Zero sits under the ice notch — nudge further inward. */
     if (fabsf(psi) < 0.01f) {
-        r = TICK_RADIUS - 14.0f;
+        r = TICK_RADIUS - 18.0f;
     }
     const float x = cx + r * cosf(rad) - w * 0.5f;
     const float y = cy + r * sinf(rad) - h * 0.5f;
@@ -382,6 +383,9 @@ void boost_gauge_create(void)
     lv_label_set_text(s_value_label, "+0.0");
     lv_obj_set_style_text_font(s_value_label, &lv_font_montserrat_48, 0);
     lv_obj_set_style_text_color(s_value_label, c(COLOR_ICE), 0);
+    lv_obj_set_style_transform_pivot_x(s_value_label, lv_pct(50), 0);
+    lv_obj_set_style_transform_pivot_y(s_value_label, lv_pct(50), 0);
+    lv_obj_set_style_transform_scale(s_value_label, VALUE_SCALE, 0);
     lv_obj_align(s_value_label, LV_ALIGN_CENTER, 0, -22);
     lv_obj_clear_flag(s_value_label, LV_OBJ_FLAG_CLICKABLE);
 
