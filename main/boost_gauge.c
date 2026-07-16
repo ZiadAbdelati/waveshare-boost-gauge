@@ -213,9 +213,6 @@ static void on_screen_event(lv_event_t *e)
     }
 
     if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
-    /* Labels must not steal pointer events from the screen gestures. */
-    lv_obj_clear_flag(lab, LV_OBJ_FLAG_CLICKABLE);
-
         if (!s_hold_dim_fired &&
             lv_tick_elaps(s_press_start_ms) < HOLD_DIM_MS) {
             reset_peak_ui();
@@ -243,6 +240,7 @@ static void add_tick_label(int idx, float psi, const char *text)
     lv_label_set_text(lab, text);
     lv_obj_set_style_text_font(lab, TICK_FONT, 0);
     lv_obj_set_style_text_color(lab, c(COLOR_STEEL), 0);
+    lv_obj_clear_flag(lab, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_update_layout(lab);
 
     const lv_coord_t w = lv_obj_get_width(lab);
