@@ -54,7 +54,12 @@
 #define ARC_END       45
 #define ARC_RANGE     270
 
-#define DISP_SIZE 466
+#define DISP_SIZE     466
+#define ARC_DIAMETER  400
+#define ARC_WIDTH     27   /* ~1.5× the original 18px track */
+#define TICK_FONT     (&lv_font_montserrat_16)
+#define TICK_RADIUS   152.0f  /* inside the thicker arc */
+#define NOTCH_RADIUS  200.0f
 
 static const char *TAG = "boost_gauge";
 
@@ -129,8 +134,11 @@ static lv_color_t color_for_psi(float psi)
     if (psi >= PSI_OVERBOOST) {
         return c(COLOR_FLARE);
     }
-    if (psi >= 0.0f) {
+    if (psi >= 0.35f) {
         return c(COLOR_AMBER);
+    }
+    if (psi > -0.35f) {
+        return c(COLOR_ICE); /* ATMO: neutral, not boost-amber */
     }
     return c(COLOR_TEAL);
 }
@@ -159,36 +167,38 @@ static void on_screen_clicked(lv_event_t *e)
 {
     (void)e;
     boost_sim_reset_peak();
+    /* Peak is boost-oriented: never display a vacuum peak. */
     s_peak_psi = s_display_psi > 0.0f ? s_display_psi : 0.0f;
     if (s_peak_label) {
         char buf[32];
         snprintf(buf, sizeof(buf), "PEAK  %+.1f", (double)s_peak_psi);
         lv_label_set_text(s_peak_label, buf);
+        lv_obj_set_style_text_color(s_peak_label, c(COLOR_AMBER), 0);
     }
     ESP_LOGI(TAG, "peak reset");
 }
 
 static void add_tick_label(int idx, float psi, const char *text)
 {
-    const float t = (psi - PSI_MIN) / (PSI_MAX - PSI_MIN);
-    /* Map along the 270° arc; LVGL 0° is right, clockwise positive.
-     * Our arc starts at 135° and ends at 45° going clockwise → 270°. */
-    const float deg = (float)ARC_START + t * (float)ARC_RANGE;
+    const float deg = psi_to_angle(psi);
     const float rad = deg * (float)M_PI / 180.0f;
-
     const float cx = DISP_SIZE * 0.5f;
     const float cy = DISP_SIZE * 0.5f;
-    const float r = 188.0f; /* just inside the arc */
 
     lv_obj_t *lab = lv_label_create(lv_screen_active());
     lv_label_set_text(lab, text);
-    lv_obj_set_style_text_font(lab, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(lab, TICK_FONT, 0);
     lv_obj_set_style_text_color(lab, c(COLOR_STEEL), 0);
     lv_obj_update_layout(lab);
 
     const lv_coord_t w = lv_obj_get_width(lab);
     const lv_coord_t h = lv_obj_get_height(lab);
-    /* Unit circle: 0° = east, clockwise — matches LVGL arc angles. */
+    /* Pull slightly inward so thicker arc never covers the digits. */
+    float r = TICK_RADIUS;
+    /* Zero sits under the ice notch — nudge further inward. */
+    if (fabsf(psi) < 0.01f) {
+        r = TICK_RADIUS - 14.0f;
+    }
     const float x = cx + r * cosf(rad) - w * 0.5f;
     const float y = cy + r * sinf(rad) - h * 0.5f;
     lv_obj_set_pos(lab, (lv_coord_t)lroundf(x), (lv_coord_t)lroundf(y));
@@ -204,9 +214,9 @@ void boost_gauge_create(void)
     lv_obj_add_flag(scr, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(scr, on_screen_clicked, LV_EVENT_CLICKED, NULL);
 
-    /* Soft vignette well under the arc — keeps the face from floating. */
+    /* Soft vignette well under the arc. */
     lv_obj_t *well = lv_obj_create(scr);
-    lv_obj_set_size(well, 420, 420);
+    lv_obj_set_size(well, 424, 424);
     lv_obj_center(well);
     lv_obj_set_style_radius(well, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(well, c(COLOR_GHOST), 0);
@@ -216,7 +226,7 @@ void boost_gauge_create(void)
 
     /* Background track. */
     s_arc_track = lv_arc_create(scr);
-    lv_obj_set_size(s_arc_track, 400, 400);
+    lv_obj_set_size(s_arc_track, ARC_DIAMETER, ARC_DIAMETER);
     lv_obj_center(s_arc_track);
     lv_arc_set_rotation(s_arc_track, 0);
     lv_arc_set_bg_angles(s_arc_track, ARC_START, ARC_END);
@@ -224,47 +234,47 @@ void boost_gauge_create(void)
     lv_arc_set_range(s_arc_track, 0, 1000);
     lv_arc_set_value(s_arc_track, 0);
     lv_obj_remove_style(s_arc_track, NULL, LV_PART_KNOB);
-    lv_obj_set_style_arc_width(s_arc_track, 18, LV_PART_MAIN);
-    lv_obj_set_style_arc_width(s_arc_track, 18, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_width(s_arc_track, ARC_WIDTH, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(s_arc_track, ARC_WIDTH, LV_PART_INDICATOR);
     lv_obj_set_style_arc_color(s_arc_track, c(COLOR_MUTED), LV_PART_MAIN);
     lv_obj_set_style_arc_color(s_arc_track, c(COLOR_MUTED), LV_PART_INDICATOR);
     lv_obj_set_style_arc_opa(s_arc_track, LV_OPA_60, LV_PART_MAIN);
     lv_obj_set_style_arc_opa(s_arc_track, LV_OPA_0, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_rounded(s_arc_track, true, LV_PART_MAIN);
     lv_obj_clear_flag(s_arc_track, LV_OBJ_FLAG_CLICKABLE);
 
-    /* Value arc (colored). Angles are set explicitly so vacuum fills
-     * from the zero notch instead of from the scale minimum. */
+    /* Value arc — angles set so vacuum/boost both grow from the zero notch. */
     s_arc_value = lv_arc_create(scr);
-    lv_obj_set_size(s_arc_value, 400, 400);
+    lv_obj_set_size(s_arc_value, ARC_DIAMETER, ARC_DIAMETER);
     lv_obj_center(s_arc_value);
     lv_arc_set_rotation(s_arc_value, 0);
     lv_arc_set_bg_angles(s_arc_value, ARC_START, ARC_END);
     lv_arc_set_angles(s_arc_value, psi_to_angle(0.0f), psi_to_angle(0.0f));
     lv_obj_remove_style(s_arc_value, NULL, LV_PART_KNOB);
-    lv_obj_set_style_arc_width(s_arc_value, 18, LV_PART_MAIN);
-    lv_obj_set_style_arc_width(s_arc_value, 18, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_width(s_arc_value, ARC_WIDTH, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(s_arc_value, ARC_WIDTH, LV_PART_INDICATOR);
     lv_obj_set_style_arc_opa(s_arc_value, LV_OPA_0, LV_PART_MAIN);
     lv_obj_set_style_arc_color(s_arc_value, c(COLOR_TEAL), LV_PART_INDICATOR);
     lv_obj_set_style_arc_rounded(s_arc_value, true, LV_PART_INDICATOR);
     lv_obj_clear_flag(s_arc_value, LV_OBJ_FLAG_CLICKABLE);
 
-    /* Zero notch on the arc at 0 psi (ice tick). */
+    /* Zero notch — radial ice tick spanning the thicker track. */
     s_zero_notch = lv_obj_create(scr);
-    lv_obj_set_size(s_zero_notch, 4, 22);
+    lv_obj_set_size(s_zero_notch, 5, ARC_WIDTH + 8);
     lv_obj_set_style_radius(s_zero_notch, 2, 0);
     lv_obj_set_style_bg_color(s_zero_notch, c(COLOR_ICE), 0);
     lv_obj_set_style_bg_opa(s_zero_notch, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(s_zero_notch, 0, 0);
     lv_obj_clear_flag(s_zero_notch, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
     {
-        const float t0 = (0.0f - PSI_MIN) / (PSI_MAX - PSI_MIN);
-        const float deg = (float)ARC_START + t0 * (float)ARC_RANGE;
+        const float deg = psi_to_angle(0.0f);
         const float rad = deg * (float)M_PI / 180.0f;
         const float cx = DISP_SIZE * 0.5f;
         const float cy = DISP_SIZE * 0.5f;
-        const float r = 200.0f;
-        const float x = cx + r * cosf(rad) - 2.0f;
-        const float y = cy + r * sinf(rad) - 11.0f;
+        /* Center the notch on the arc midline. */
+        const float r_mid = (float)ARC_DIAMETER * 0.5f - (float)ARC_WIDTH * 0.5f;
+        const float x = cx + r_mid * cosf(rad) - 2.5f;
+        const float y = cy + r_mid * sinf(rad) - (ARC_WIDTH + 8) * 0.5f;
         lv_obj_set_pos(s_zero_notch, (lv_coord_t)lroundf(x), (lv_coord_t)lroundf(y));
     }
 
@@ -274,54 +284,54 @@ void boost_gauge_create(void)
     add_tick_label(3, 18.0f, "18");
     add_tick_label(4, 25.0f, "25");
 
-    /* Mode chip — DEMO until real ADS1115 path is enabled. */
-    s_mode_label = lv_label_create(scr);
-    lv_label_set_text(s_mode_label, "DEMO");
-    lv_obj_set_style_text_font(s_mode_label, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(s_mode_label, c(COLOR_STEEL), 0);
-    lv_obj_set_style_text_letter_space(s_mode_label, 3, 0);
-    lv_obj_align(s_mode_label, LV_ALIGN_TOP_MID, 0, 36);
-
-    /* Zone word under the mode chip. */
+    /*
+     * Center stack lives in the open face (inside the 270° arc).
+     * Keeps DEMO / zone off the top track where the arc runs.
+     */
     s_zone_label = lv_label_create(scr);
     lv_label_set_text(s_zone_label, "ATMO");
-    lv_obj_set_style_text_font(s_zone_label, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(s_zone_label, c(COLOR_TEAL), 0);
+    lv_obj_set_style_text_font(s_zone_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(s_zone_label, c(COLOR_ICE), 0);
     lv_obj_set_style_text_letter_space(s_zone_label, 4, 0);
-    lv_obj_align(s_zone_label, LV_ALIGN_TOP_MID, 0, 56);
+    lv_obj_align(s_zone_label, LV_ALIGN_CENTER, 0, -78);
 
-    /* Hero number. */
     s_value_label = lv_label_create(scr);
     lv_label_set_text(s_value_label, "+0.0");
     lv_obj_set_style_text_font(s_value_label, &lv_font_montserrat_48, 0);
     lv_obj_set_style_text_color(s_value_label, c(COLOR_ICE), 0);
-    lv_obj_align(s_value_label, LV_ALIGN_CENTER, 0, -8);
+    lv_obj_align(s_value_label, LV_ALIGN_CENTER, 0, -18);
 
     s_unit_label = lv_label_create(scr);
     lv_label_set_text(s_unit_label, "PSI");
     lv_obj_set_style_text_font(s_unit_label, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(s_unit_label, c(COLOR_STEEL), 0);
     lv_obj_set_style_text_letter_space(s_unit_label, 4, 0);
-    lv_obj_align(s_unit_label, LV_ALIGN_CENTER, 0, 36);
+    lv_obj_align(s_unit_label, LV_ALIGN_CENTER, 0, 28);
 
     s_peak_label = lv_label_create(scr);
     lv_label_set_text(s_peak_label, "PEAK  +0.0");
     lv_obj_set_style_text_font(s_peak_label, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_peak_label, c(COLOR_AMBER), 0);
-    lv_obj_align(s_peak_label, LV_ALIGN_CENTER, 0, 68);
+    lv_obj_align(s_peak_label, LV_ALIGN_CENTER, 0, 56);
 
-    /* Hint: tap to clear peak — quiet, bottom. */
+    s_mode_label = lv_label_create(scr);
+    lv_label_set_text(s_mode_label, "DEMO");
+    lv_obj_set_style_text_font(s_mode_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_mode_label, c(COLOR_STEEL), 0);
+    lv_obj_set_style_text_letter_space(s_mode_label, 3, 0);
+    lv_obj_align(s_mode_label, LV_ALIGN_CENTER, 0, 84);
+
     lv_obj_t *hint = lv_label_create(scr);
     lv_label_set_text(hint, "TAP  RESET  PEAK");
     lv_obj_set_style_text_font(hint, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(hint, c(COLOR_MUTED), 0);
     lv_obj_set_style_text_letter_space(hint, 2, 0);
-    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -42);
+    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -28);
 
     s_display_psi = 0.0f;
     s_peak_psi = 0.0f;
     s_ui_ready = true;
-    ESP_LOGI(TAG, "UI ready (466x466 dual-climate arc)");
+    ESP_LOGI(TAG, "UI ready (arc %dpx wide, ticks 16pt)", ARC_WIDTH);
 }
 
 void boost_gauge_update(const boost_sample_t *sample)
@@ -331,7 +341,8 @@ void boost_gauge_update(const boost_sample_t *sample)
     }
 
     s_display_psi = sample->psi;
-    s_peak_psi = sample->peak_psi;
+    /* Peak is boost-oriented for the readout. */
+    s_peak_psi = sample->peak_psi > 0.0f ? sample->peak_psi : 0.0f;
 
     set_value_arc(sample->psi);
 
@@ -346,11 +357,11 @@ void boost_gauge_update(const boost_sample_t *sample)
 
     lv_label_set_text(s_zone_label, zone_for_psi(sample->psi));
 
-    snprintf(buf, sizeof(buf), "PEAK  %+.1f", (double)sample->peak_psi);
+    snprintf(buf, sizeof(buf), "PEAK  %+.1f", (double)s_peak_psi);
     lv_label_set_text(s_peak_label, buf);
     lv_obj_set_style_text_color(
         s_peak_label,
-        sample->peak_psi >= PSI_OVERBOOST ? c(COLOR_FLARE) : c(COLOR_AMBER),
+        s_peak_psi >= PSI_OVERBOOST ? c(COLOR_FLARE) : c(COLOR_AMBER),
         0);
 
     lv_label_set_text(s_mode_label, sample->demo ? "DEMO" : "LIVE");
