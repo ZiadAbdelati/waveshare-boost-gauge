@@ -29,7 +29,7 @@ boost-gauge/
 
 ## Fast path: flash prebuilt (no ESP-IDF)
 
-A verified build (ESP-IDF **5.5.1**, app size ~738 KB) is in [`release/`](release/).
+A verified build (ESP-IDF **5.5.1**, app size ~1.35 MB) is in [`release/`](release/).
 
 ```bash
 git clone https://github.com/ZiadAbdelati/waveshare-boost-gauge.git
