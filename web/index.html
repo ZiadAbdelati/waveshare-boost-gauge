@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Boost Gauge Control</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="boot" id="boot" aria-hidden="true">
+    <div class="boot-ring"></div>
+    <div class="boot-text">BOOST GAUGE</div>
+  </div>
+
+  <main class="shell">
+    <section class="gauge-bay" aria-label="Live boost gauge">
+      <div class="mast">
+        <div>
+          <p class="eyebrow">Waveshare 1.75 AMOLED</p>
+          <h1>Boost Gauge</h1>
+        </div>
+        <div class="connection" id="connection">
+          <span class="dot"></span>
+          <span id="connectionText">Connecting</span>
+        </div>
+      </div>
+
+      <div class="gauge-wrap">
+        <div class="gauge-device" id="gaugeDevice">
+          <div class="well"></div>
+          <canvas id="gaugeCanvas" width="466" height="466"></canvas>
+          <div class="chip" id="modeChip">DEMO</div>
+          <div class="zone" id="zone">ATMO</div>
+          <div class="readout">
+            <div class="psi" id="psi">+0.0</div>
+            <div class="unit">PSI</div>
+            <div class="peak" id="peak">PEAK +0.0</div>
+          </div>
+          <div class="hint">LIVE MIRROR</div>
+        </div>
+      </div>
+
+      <div class="sparkline-wrap">
+        <div class="strip-head">
+          <span>Session pressure</span>
+          <span id="sampleCount">0 samples</span>
+        </div>
+        <canvas id="sparkline" width="860" height="126"></canvas>
+        <div class="empty" id="emptyState">Waiting for the first gauge sample.</div>
+      </div>
+    </section>
+
+    <aside class="service-rail" aria-label="Gauge controls">
+      <section class="panel status-panel">
+        <div class="section-title">
+          <span>Status</span>
+          <button class="icon-btn" id="refreshBtn" title="Refresh state" aria-label="Refresh state">↻</button>
+        </div>
+        <div class="status-grid">
+          <div><span>Firmware</span><strong id="firmwareVersion">--</strong></div>
+          <div><span>Uptime</span><strong id="uptime">--</strong></div>
+          <div><span>Clock</span><strong id="deviceClock">--</strong></div>
+          <div><span>Brightness</span><strong id="brightnessNow">--</strong></div>
+        </div>
+        <div class="error" id="errorBox" hidden></div>
+      </section>
+
+      <section class="panel">
+        <div class="section-title">
+          <span>Time sync</span>
+          <button id="syncTimeBtn">Sync</button>
+        </div>
+        <label class="field">
+          <span>UTC offset minutes</span>
+          <input id="tzOffset" type="number" step="15" inputmode="numeric">
+        </label>
+      </section>
+
+      <section class="panel">
+        <div class="section-title">
+          <span>Dim schedule</span>
+          <label class="toggle">
+            <input id="scheduleEnabled" type="checkbox">
+            <span></span>
+          </label>
+        </div>
+        <div class="time-grid">
+          <label class="field">
+            <span>Start</span>
+            <input id="scheduleStart" type="time">
+          </label>
+          <label class="field">
+            <span>End</span>
+            <input id="scheduleEnd" type="time">
+          </label>
+        </div>
+        <div class="range-row">
+          <label class="field">
+            <span>High</span>
+            <input id="brightnessHigh" type="range" min="20" max="100" step="1">
+          </label>
+          <output id="brightnessHighOut">--</output>
+        </div>
+        <div class="range-row">
+          <label class="field">
+            <span>Low</span>
+            <input id="brightnessLow" type="range" min="1" max="60" step="1">
+          </label>
+          <output id="brightnessLowOut">--</output>
+        </div>
+        <button class="wide" id="saveConfigBtn">Save schedule</button>
+      </section>
+
+      <section class="panel themes">
+        <div class="section-title"><span>Themes</span></div>
+        <div class="swatches" id="themeList"></div>
+      </section>
+
+      <section class="panel">
+        <div class="section-title">
+          <span>Logs</span>
+          <button id="clearLogsBtn">Clear</button>
+        </div>
+        <div class="log-summary" id="logSummary">No log summary yet.</div>
+        <div class="button-row">
+          <button id="loadLogsBtn">Load recent</button>
+          <a class="button" href="/api/v1/logs.csv" download>CSV</a>
+        </div>
+      </section>
+
+      <section class="service-bay">
+        <div class="section-title"><span>Media GIF</span></div>
+        <div class="bay-grid">
+          <label class="file-drop">
+            <input id="mediaFile" type="file" accept="image/gif">
+            <span>Choose GIF</span>
+            <small id="mediaStatus">No active GIF</small>
+          </label>
+          <div class="button-row">
+            <button id="uploadMediaBtn">Upload</button>
+            <button id="deleteMediaBtn">Delete</button>
+          </div>
+        </div>
+        <progress id="mediaProgress" max="100" value="0"></progress>
+      </section>
+
+      <section class="service-bay">
+        <div class="section-title"><span>OTA update</span></div>
+        <div class="bay-grid">
+          <label class="file-drop">
+            <input id="otaFile" type="file" accept=".bin,application/octet-stream">
+            <span>Choose app binary</span>
+            <small id="otaStatus">Idle</small>
+          </label>
+          <button id="uploadOtaBtn">Upload OTA</button>
+        </div>
+        <progress id="otaProgress" max="100" value="0"></progress>
+      </section>
+    </aside>
+  </main>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>

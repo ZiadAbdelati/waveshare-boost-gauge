@@ -3,6 +3,7 @@
 #include <math.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <string.h>
 
 #ifdef ESP_PLATFORM
 #include "esp_log.h"
@@ -14,6 +15,9 @@
 
 #include "lvgl.h"
 #include "boost_brightness.h"
+#ifdef ESP_PLATFORM
+#include "boost_model.h"
+#endif
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -78,12 +82,14 @@ static const char *TAG = "boost_gauge";
 
 static lv_obj_t *s_arc_track;
 static lv_obj_t *s_arc_value;
+static lv_obj_t *s_well;
 static lv_obj_t *s_zero_notch;
 static lv_obj_t *s_value_label;
 static lv_obj_t *s_unit_label;
 static lv_obj_t *s_peak_label;
 static lv_obj_t *s_mode_label;
 static lv_obj_t *s_zone_label;
+static lv_obj_t *s_hint_label;
 static lv_obj_t *s_tick_labels[5];
 
 static float s_display_psi;
@@ -91,6 +97,7 @@ static float s_peak_psi;
 static bool s_ui_ready;
 static bool s_hold_dim_fired;
 static uint32_t s_press_start_ms;
+static char s_theme_id[BOOST_THEME_ID_MAX];
 
 static lv_color_t c(uint32_t rgb)
 {
@@ -106,6 +113,29 @@ static float clampf(float v, float lo, float hi)
         return hi;
     }
     return v;
+}
+
+static const boost_theme_t *active_theme(void)
+{
+#ifdef ESP_PLATFORM
+    return boost_model_active_theme();
+#else
+    static const boost_theme_t host_theme = {
+        .id = "pit-lane",
+        .name = "Pit Lane",
+        .face = 0x000000,
+        .track = 0x3A3F4A,
+        .text = 0xE8ECF2,
+        .muted = 0x6B7280,
+        .vacuum = 0x2EE6C5,
+        .boost = 0xFFB020,
+        .overboost = 0xFF3B30,
+        .zero = 0xE8ECF2,
+        .brightness_high = 100,
+        .brightness_low = 12,
+    };
+    return &host_theme;
+#endif
 }
 
 /* Map PSI onto the 270° face: LVGL 0° = east, clockwise. */
@@ -154,18 +184,18 @@ static void set_value_arc(float psi)
     lv_arc_set_angles(s_arc_value, start, end);
 }
 
-static lv_color_t color_for_psi(float psi)
+static lv_color_t color_for_psi(const boost_theme_t *theme, float psi)
 {
     if (psi >= PSI_OVERBOOST) {
-        return c(COLOR_FLARE);
+        return c(theme->overboost);
     }
     if (psi >= 0.35f) {
-        return c(COLOR_AMBER);
+        return c(theme->boost);
     }
     if (psi > -0.35f) {
-        return c(COLOR_ICE); /* ATMO: neutral, not boost-amber */
+        return c(theme->text); /* ATMO: neutral, not boost-amber */
     }
-    return c(COLOR_TEAL);
+    return c(theme->vacuum);
 }
 
 static const char *zone_for_psi(float psi)
@@ -190,6 +220,7 @@ static void format_signed_psi(char *buf, size_t n, float psi)
 
 static void reset_peak_ui(void)
 {
+    const boost_theme_t *theme = active_theme();
     boost_sim_reset_peak();
     /* Peak is boost-oriented: never display a vacuum peak. */
     s_peak_psi = s_display_psi > 0.0f ? s_display_psi : 0.0f;
@@ -197,7 +228,7 @@ static void reset_peak_ui(void)
         char buf[32];
         snprintf(buf, sizeof(buf), "PEAK  %+.1f", (double)s_peak_psi);
         lv_label_set_text(s_peak_label, buf);
-        lv_obj_set_style_text_color(s_peak_label, c(COLOR_AMBER), 0);
+        lv_obj_set_style_text_color(s_peak_label, c(theme->boost), 0);
     }
     ESP_LOGI(TAG, "peak reset");
 }
@@ -245,6 +276,7 @@ static void on_screen_event(lv_event_t *e)
 
 static void add_tick_label(int idx, float psi, const char *text)
 {
+    const boost_theme_t *theme = active_theme();
     const float deg = psi_to_angle(psi);
     const float rad = deg * (float)M_PI / 180.0f;
     const float cx = DISP_SIZE * 0.5f;
@@ -253,7 +285,7 @@ static void add_tick_label(int idx, float psi, const char *text)
     lv_obj_t *lab = lv_label_create(lv_screen_active());
     lv_label_set_text(lab, text);
     lv_obj_set_style_text_font(lab, TICK_FONT, 0);
-    lv_obj_set_style_text_color(lab, c(COLOR_STEEL), 0);
+    lv_obj_set_style_text_color(lab, c(theme->muted), 0);
     lv_obj_clear_flag(lab, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_update_layout(lab);
 
@@ -272,9 +304,11 @@ static void add_tick_label(int idx, float psi, const char *text)
 
 void boost_gauge_create(void)
 {
+    const boost_theme_t *theme = active_theme();
+    snprintf(s_theme_id, sizeof(s_theme_id), "%s", theme->id);
     lv_obj_t *scr = lv_screen_active();
     /* Same as the face fill so no black ring remains outside the graphics. */
-    lv_obj_set_style_bg_color(scr, c(FACE_BG), 0);
+    lv_obj_set_style_bg_color(scr, c(theme->face), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(scr, LV_OBJ_FLAG_CLICKABLE);
@@ -291,15 +325,15 @@ void boost_gauge_create(void)
     lv_obj_add_event_cb(scr, on_screen_event, LV_EVENT_LONG_PRESSED, NULL);
 
     /* Full-panel face fill — removes the empty black ring outside the graphics. */
-    lv_obj_t *well = lv_obj_create(scr);
-    lv_obj_set_size(well, WELL_SIZE, WELL_SIZE);
-    lv_obj_center(well);
-    lv_obj_set_style_radius(well, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(well, c(FACE_BG), 0);
-    lv_obj_set_style_bg_opa(well, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(well, 0, 0);
-    lv_obj_set_style_pad_all(well, 0, 0);
-    lv_obj_clear_flag(well, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    s_well = lv_obj_create(scr);
+    lv_obj_set_size(s_well, WELL_SIZE, WELL_SIZE);
+    lv_obj_center(s_well);
+    lv_obj_set_style_radius(s_well, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(s_well, c(theme->face), 0);
+    lv_obj_set_style_bg_opa(s_well, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(s_well, 0, 0);
+    lv_obj_set_style_pad_all(s_well, 0, 0);
+    lv_obj_clear_flag(s_well, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
 
     /* Background track. */
     s_arc_track = lv_arc_create(scr);
@@ -313,8 +347,8 @@ void boost_gauge_create(void)
     lv_obj_remove_style(s_arc_track, NULL, LV_PART_KNOB);
     lv_obj_set_style_arc_width(s_arc_track, ARC_WIDTH, LV_PART_MAIN);
     lv_obj_set_style_arc_width(s_arc_track, ARC_WIDTH, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_color(s_arc_track, c(COLOR_MUTED), LV_PART_MAIN);
-    lv_obj_set_style_arc_color(s_arc_track, c(COLOR_MUTED), LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(s_arc_track, c(theme->track), LV_PART_MAIN);
+    lv_obj_set_style_arc_color(s_arc_track, c(theme->track), LV_PART_INDICATOR);
     lv_obj_set_style_arc_opa(s_arc_track, LV_OPA_60, LV_PART_MAIN);
     lv_obj_set_style_arc_opa(s_arc_track, LV_OPA_0, LV_PART_INDICATOR);
     lv_obj_set_style_arc_rounded(s_arc_track, true, LV_PART_MAIN);
@@ -334,7 +368,7 @@ void boost_gauge_create(void)
     lv_obj_set_style_arc_width(s_arc_value, ARC_WIDTH, LV_PART_MAIN);
     lv_obj_set_style_arc_width(s_arc_value, ARC_WIDTH, LV_PART_INDICATOR);
     lv_obj_set_style_arc_opa(s_arc_value, LV_OPA_0, LV_PART_MAIN);
-    lv_obj_set_style_arc_color(s_arc_value, c(COLOR_TEAL), LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(s_arc_value, c(theme->vacuum), LV_PART_INDICATOR);
     lv_obj_set_style_arc_rounded(s_arc_value, true, LV_PART_INDICATOR);
     lv_obj_clear_flag(s_arc_value, LV_OBJ_FLAG_CLICKABLE);
 
@@ -360,7 +394,7 @@ void boost_gauge_create(void)
         lv_line_set_points(s_zero_notch, zero_pts, 2);
     }
     lv_obj_set_style_line_width(s_zero_notch, ZERO_LINE_W, 0);
-    lv_obj_set_style_line_color(s_zero_notch, c(COLOR_ICE), 0);
+    lv_obj_set_style_line_color(s_zero_notch, c(theme->zero), 0);
     lv_obj_set_style_line_rounded(s_zero_notch, true, 0);
     lv_obj_set_style_line_opa(s_zero_notch, LV_OPA_COVER, 0);
     lv_obj_clear_flag(s_zero_notch, LV_OBJ_FLAG_CLICKABLE);
@@ -378,7 +412,7 @@ void boost_gauge_create(void)
     s_zone_label = lv_label_create(scr);
     lv_label_set_text(s_zone_label, "ATMO");
     lv_obj_set_style_text_font(s_zone_label, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(s_zone_label, c(COLOR_ICE), 0);
+    lv_obj_set_style_text_color(s_zone_label, c(theme->text), 0);
     lv_obj_set_style_text_letter_space(s_zone_label, 4, 0);
     lv_obj_align(s_zone_label, LV_ALIGN_CENTER, 0, -88);
     lv_obj_clear_flag(s_zone_label, LV_OBJ_FLAG_CLICKABLE);
@@ -386,7 +420,7 @@ void boost_gauge_create(void)
     s_value_label = lv_label_create(scr);
     lv_label_set_text(s_value_label, "+0.0");
     lv_obj_set_style_text_font(s_value_label, &lv_font_montserrat_48, 0);
-    lv_obj_set_style_text_color(s_value_label, c(COLOR_ICE), 0);
+    lv_obj_set_style_text_color(s_value_label, c(theme->text), 0);
     lv_obj_set_style_transform_pivot_x(s_value_label, lv_pct(50), 0);
     lv_obj_set_style_transform_pivot_y(s_value_label, lv_pct(50), 0);
     lv_obj_set_style_transform_scale(s_value_label, VALUE_SCALE, 0);
@@ -396,7 +430,7 @@ void boost_gauge_create(void)
     s_unit_label = lv_label_create(scr);
     lv_label_set_text(s_unit_label, "PSI");
     lv_obj_set_style_text_font(s_unit_label, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(s_unit_label, c(COLOR_STEEL), 0);
+    lv_obj_set_style_text_color(s_unit_label, c(theme->muted), 0);
     lv_obj_set_style_text_letter_space(s_unit_label, 4, 0);
     lv_obj_align(s_unit_label, LV_ALIGN_CENTER, 0, 26);
     lv_obj_clear_flag(s_unit_label, LV_OBJ_FLAG_CLICKABLE);
@@ -404,31 +438,55 @@ void boost_gauge_create(void)
     s_peak_label = lv_label_create(scr);
     lv_label_set_text(s_peak_label, "PEAK  +0.0");
     lv_obj_set_style_text_font(s_peak_label, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(s_peak_label, c(COLOR_AMBER), 0);
+    lv_obj_set_style_text_color(s_peak_label, c(theme->boost), 0);
     lv_obj_align(s_peak_label, LV_ALIGN_CENTER, 0, 54);
     lv_obj_clear_flag(s_peak_label, LV_OBJ_FLAG_CLICKABLE);
 
     s_mode_label = lv_label_create(scr);
     lv_label_set_text(s_mode_label, "DEMO");
     lv_obj_set_style_text_font(s_mode_label, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(s_mode_label, c(COLOR_STEEL), 0);
+    lv_obj_set_style_text_color(s_mode_label, c(theme->muted), 0);
     lv_obj_set_style_text_letter_space(s_mode_label, 3, 0);
     lv_obj_align(s_mode_label, LV_ALIGN_CENTER, 0, 82);
     lv_obj_clear_flag(s_mode_label, LV_OBJ_FLAG_CLICKABLE);
 
-    lv_obj_t *hint = lv_label_create(scr);
-    lv_label_set_text(hint, "TAP PEAK · HOLD DIM");
-    lv_obj_set_style_text_font(hint, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(hint, c(COLOR_MUTED), 0);
-    lv_obj_set_style_text_letter_space(hint, 1, 0);
+    s_hint_label = lv_label_create(scr);
+    lv_label_set_text(s_hint_label, "TAP PEAK · HOLD DIM");
+    lv_obj_set_style_text_font(s_hint_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_hint_label, c(theme->track), 0);
+    lv_obj_set_style_text_letter_space(s_hint_label, 1, 0);
     /* Keep inside the open bottom of the 270° arc, not the outer black margin. */
-    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -36);
-    lv_obj_clear_flag(hint, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align(s_hint_label, LV_ALIGN_BOTTOM_MID, 0, -36);
+    lv_obj_clear_flag(s_hint_label, LV_OBJ_FLAG_CLICKABLE);
 
     s_display_psi = 0.0f;
     s_peak_psi = 0.0f;
     s_ui_ready = true;
     ESP_LOGI(TAG, "UI ready (full-bleed arc %dpx, stroke %d)", ARC_DIAMETER, ARC_WIDTH);
+}
+
+void boost_gauge_apply_theme(const boost_theme_t *theme)
+{
+    if (!s_ui_ready || theme == NULL) {
+        return;
+    }
+    snprintf(s_theme_id, sizeof(s_theme_id), "%s", theme->id);
+    lv_obj_t *scr = lv_screen_active();
+    lv_obj_set_style_bg_color(scr, c(theme->face), 0);
+    if (s_well) {
+        lv_obj_set_style_bg_color(s_well, c(theme->face), 0);
+    }
+    lv_obj_set_style_arc_color(s_arc_track, c(theme->track), LV_PART_MAIN);
+    lv_obj_set_style_arc_color(s_arc_track, c(theme->track), LV_PART_INDICATOR);
+    lv_obj_set_style_line_color(s_zero_notch, c(theme->zero), 0);
+    for (size_t i = 0; i < sizeof(s_tick_labels) / sizeof(s_tick_labels[0]); ++i) {
+        if (s_tick_labels[i]) {
+            lv_obj_set_style_text_color(s_tick_labels[i], c(theme->muted), 0);
+        }
+    }
+    lv_obj_set_style_text_color(s_unit_label, c(theme->muted), 0);
+    lv_obj_set_style_text_color(s_mode_label, c(theme->muted), 0);
+    lv_obj_set_style_text_color(s_hint_label, c(theme->track), 0);
 }
 
 void boost_gauge_update(const boost_sample_t *sample)
@@ -438,15 +496,19 @@ void boost_gauge_update(const boost_sample_t *sample)
     }
 
     s_display_psi = sample->psi;
+    const boost_theme_t *theme = active_theme();
+    if (strcmp(theme->id, s_theme_id) != 0) {
+        boost_gauge_apply_theme(theme);
+    }
     /* Peak is boost-oriented for the readout. */
     s_peak_psi = sample->peak_psi > 0.0f ? sample->peak_psi : 0.0f;
 
     set_value_arc(sample->psi);
 
-    const lv_color_t col = color_for_psi(sample->psi);
+    const lv_color_t col = color_for_psi(theme, sample->psi);
     lv_obj_set_style_arc_color(s_arc_value, col, LV_PART_INDICATOR);
     lv_obj_set_style_text_color(s_zone_label, col, 0);
-    lv_obj_set_style_text_color(s_value_label, sample->psi >= PSI_OVERBOOST ? c(COLOR_FLARE) : c(COLOR_ICE), 0);
+    lv_obj_set_style_text_color(s_value_label, sample->psi >= PSI_OVERBOOST ? c(theme->overboost) : c(theme->text), 0);
 
     char buf[32];
     format_signed_psi(buf, sizeof(buf), sample->psi);
@@ -458,7 +520,7 @@ void boost_gauge_update(const boost_sample_t *sample)
     lv_label_set_text(s_peak_label, buf);
     lv_obj_set_style_text_color(
         s_peak_label,
-        s_peak_psi >= PSI_OVERBOOST ? c(COLOR_FLARE) : c(COLOR_AMBER),
+        s_peak_psi >= PSI_OVERBOOST ? c(theme->overboost) : c(theme->boost),
         0);
 
     lv_label_set_text(s_mode_label, sample->demo ? "DEMO" : "LIVE");

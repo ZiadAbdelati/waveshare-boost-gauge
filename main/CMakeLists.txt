@@ -2,8 +2,23 @@ idf_component_register(
     SRCS
         "main.c"
         "boost_gauge.c"
+        "boost_model.c"
         "boost_sim.c"
         "boost_brightness.c"
+        "boost_theme.c"
+        "boost_web.c"
+        "generated_web_assets.c"
     INCLUDE_DIRS
         "."
+    REQUIRES
+        app_update
+        esp_event
+        esp_http_server
+        esp_netif
+        esp_partition
+        esp_timer
+        esp_wifi
+        json
+        nvs_flash
+        spiffs
 )

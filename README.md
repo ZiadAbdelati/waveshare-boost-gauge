@@ -50,7 +50,29 @@ Hold **BOOT**, tap **RESET**, start flash, release **BOOT** if download mode fai
 
 Details and split binaries: [`release/README.md`](release/README.md).
 
+## Web control plane
+
+The firmware starts a local Wi-Fi access point named `BoostGauge-XXXX` (last four hex digits come from the board MAC). Connect with password `boost1234`, then open `http://192.168.4.1/`.
+
+The embedded dashboard mirrors live boost over SSE and provides brightness/dim scheduling, three themes, time sync, bounded logs with CSV export, validated GIF storage/status, and dual-slot OTA upload. GIF playback is explicitly deferred; uploads are stored but not rendered on the gauge.
+
+For host-only UI development:
+
+```bash
+python3 tools/mock_server.py --host 127.0.0.1 --port 18080
+# open http://127.0.0.1:18080/
+```
+
+After editing top-level files in `web/`, regenerate the firmware assets before building:
+
+```bash
+python3 tools/embed_web.py web main/generated_web_assets.c main/generated_web_assets.h
+```
+
+Do not expose the access point or OTA endpoint beyond a trusted local network; this first local-only control plane has no per-request authentication.
+
 ---
+
 ## Desktop simulator
 
 Same LVGL UI, no board required:
