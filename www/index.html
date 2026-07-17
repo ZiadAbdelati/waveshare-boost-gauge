@@ -11,11 +11,11 @@
 }
 *{box-sizing:border-box}
 body{margin:0;font:15px/1.4 system-ui,sans-serif;background:var(--bg);color:var(--text)}
-header{padding:16px 18px 8px;display:flex;justify-content:space-between;align-items:center}
+header{padding:16px 18px 8px;display:flex;justify-content:space-between;align-items:center;gap:10px}
 header h1{font-size:18px;margin:0;letter-spacing:.04em}
-header .ver{color:var(--muted);font-size:12px}
+header .ver{color:var(--muted);font-size:12px;white-space:nowrap}
 main{padding:0 14px 28px;max-width:520px;margin:0 auto;display:grid;gap:12px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;overflow:hidden}
 .card h2{margin:0 0 10px;font-size:13px;letter-spacing:.08em;color:var(--muted);text-transform:uppercase}
 .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .gauge-wrap{display:flex;justify-content:center;padding:6px 0 2px}
@@ -23,20 +23,21 @@ canvas{width:260px;height:260px;max-width:100%}
 .big{font-size:42px;font-weight:700;letter-spacing:.02em}
 .zone{font-size:13px;letter-spacing:.16em;color:var(--teal)}
 .muted{color:var(--muted)}
-button,select,input[type=file],input[type=time]{
+button,select,input[type=file]{
   background:#1e2430;color:var(--text);border:1px solid var(--line);
-  border-radius:10px;padding:10px 12px;font:inherit;max-width:100%
+  border-radius:10px;padding:10px 12px;font:inherit
 }
 button{cursor:pointer}
 button.primary{background:linear-gradient(180deg,#2a3344,#1c2330)}
 button:active{transform:scale(.98)}
 input[type=range]{width:100%}
-label{font-size:12px;color:var(--muted);display:block}
-.grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-@media (max-width:420px){
-  .grid2{grid-template-columns:1fr}
-  .row{flex-direction:column;align-items:stretch}
-  header{padding:14px}
+label{font-size:12px;color:var(--muted)}
+.time-grid{display:grid;grid-template-columns:1fr;gap:10px}
+@media (min-width:480px){.time-grid{grid-template-columns:1fr 1fr}}
+.field{min-width:0}
+.field input[type=time]{
+  display:block;width:100%;margin-top:4px;background:#1e2430;color:var(--text);
+  border:1px solid var(--line);border-radius:10px;padding:10px;font:inherit
 }
 .chips{display:flex;gap:8px;flex-wrap:wrap}
 .chip{padding:8px 12px;border-radius:999px;border:1px solid var(--line);background:#1a1f28;cursor:pointer}
@@ -44,9 +45,12 @@ label{font-size:12px;color:var(--muted);display:block}
 .foot{font-size:12px;color:var(--muted);padding:4px 2px}
 .status-ok{color:var(--teal)}
 .status-bad{color:var(--flare)}
-.hidden{display:none}
-.field{min-width:0}
-input[type=time]{width:100%;margin-top:4px}
+.check{display:flex;gap:8px;align-items:center}
+@media (max-width:420px){
+  .row{flex-direction:column;align-items:stretch}
+  header{padding:14px}
+  .big{font-size:36px}
+}
 </style>
 </head>
 <body>
@@ -86,10 +90,10 @@ input[type=time]{width:100%;margin-top:4px}
       <button class="primary" id="syncTime">Sync Time From This Device</button>
       <span class="muted" id="timeLbl">—</span>
     </div>
-    <div class="row" style="margin-top:12px">
-      <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="dimEn"/> Enable schedule</label>
+    <div style="margin-top:12px">
+      <label class="check"><input type="checkbox" id="dimEn"/> Enable schedule</label>
     </div>
-    <div class="grid2" style="margin-top:8px">
+    <div class="time-grid" style="margin-top:10px">
       <div class="field">
         <label for="dimStart">Dim start</label>
         <input id="dimStart" type="time" value="21:00"/>
@@ -112,7 +116,8 @@ input[type=time]{width:100%;margin-top:4px}
 
   <section class="card">
     <h2>GIF (coming soon)</h2>
-    <p class="muted" style="margin:0">No microSD required for the plan: GIFs will store in on-chip flash (SPIFFS). Not implemented yet — API returns 501.</p>
+    <p class="muted" style="margin:0">No microSD required. GIFs will use on-chip flash (SPIFFS). Not implemented yet.</p>
+  </section>
 
   <div class="foot" id="foot">Connecting…</div>
 </main>
@@ -121,6 +126,7 @@ const $ = (id) => document.getElementById(id);
 const cv = $('cv');
 const ctx = cv.getContext('2d');
 let state = {psi:0, peak:0, zone:'ATMO', brightness:100, theme:0, version:'', ssid:''};
+let brDragging = false;
 
 function colorFor(psi){
   if (psi >= 18) return '#ff3b30';
@@ -128,133 +134,125 @@ function colorFor(psi){
   if (psi > -0.35) return '#e8ecf2';
   return '#2ee6c5';
 }
-
 function drawGauge(){
   const w=cv.width, h=cv.height, cx=w/2, cy=h/2;
   const face = state.theme===1 ? '#1a1d24' : '#000';
   ctx.clearRect(0,0,w,h);
   ctx.fillStyle=face; ctx.beginPath(); ctx.arc(cx,cy,w/2,0,Math.PI*2); ctx.fill();
-
   const r=w*0.42, lw=w*0.08;
   const start=135*Math.PI/180, span=270*Math.PI/180;
-  // track
   ctx.strokeStyle='#3a3f4a'; ctx.lineWidth=lw; ctx.lineCap='round';
   ctx.beginPath(); ctx.arc(cx,cy,r,start,start+span); ctx.stroke();
-
-  // value from zero
   const psi=Math.max(-15, Math.min(25, state.psi));
-  const t=(psi+15)/40;
-  const zeroT=15/40;
-  const a0=start+zeroT*span;
-  const a1=start+t*span;
+  const t=(psi+15)/40, zeroT=15/40;
+  const a0=start+zeroT*span, a1=start+t*span;
   ctx.strokeStyle=colorFor(psi);
   ctx.beginPath();
-  if (psi>=0) ctx.arc(cx,cy,r,a0+0.04,a1);
-  else ctx.arc(cx,cy,r,a1,a0-0.04);
+  if (psi>=0) ctx.arc(cx,cy,r,a0+0.04,a1); else ctx.arc(cx,cy,r,a1,a0-0.04);
   ctx.stroke();
-
-  // zero mark
   const zx=Math.cos(a0), zy=Math.sin(a0);
-  ctx.strokeStyle='#e8ecf2'; ctx.lineWidth=lw*0.45; ctx.lineCap='round';
+  ctx.strokeStyle='#e8ecf2'; ctx.lineWidth=lw*0.45;
   ctx.beginPath();
   ctx.moveTo(cx+(r-lw*0.55)*zx, cy+(r-lw*0.55)*zy);
   ctx.lineTo(cx+(r+lw*0.55)*zx, cy+(r+lw*0.55)*zy);
   ctx.stroke();
 }
-
 function applyLive(j){
   if (j.psi!=null) state.psi=j.psi;
   if (j.peak!=null) state.peak=j.peak;
   if (j.zone) state.zone=j.zone;
-  if (j.brightness!=null){ state.brightness=j.brightness; $('br').value=j.brightness; $('brv').textContent=j.brightness; }
+  if (j.brightness!=null && !brDragging){
+    state.brightness=j.brightness; $('br').value=j.brightness; $('brv').textContent=j.brightness;
+  }
   if (j.theme_id!=null){ state.theme=j.theme_id; highlightTheme(); }
-  $('psi').textContent=(state.psi>=0?'+':'')+state.psi.toFixed(1);
+  $('psi').textContent=(state.psi>=0?'+':'')+Number(state.psi).toFixed(1);
   $('peak').textContent=(state.peak>=0?'+':'')+Number(state.peak).toFixed(1);
   $('zone').textContent=state.zone;
   $('zone').style.color=colorFor(state.psi);
   drawGauge();
 }
-
-async function api(path, opts){
-  const r=await fetch(path, Object);
-  if(!r.ok) throw new Error(await r.text());
-  const ct=r.headers.get('content-type')||'';
-  if(ct.includes('json')) return r.json();
-  return r.text();
+async function apiGet(path){
+  const r=await fetch(path, {cache:'no-store'});
+  if(!r.ok) throw new Error(r.status+' '+await r.text());
+  return r.json();
 }
-async function apiPost(path, obj){
-  return api(path, {
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify(obj||{})
-  });
-}
-
 function highlightTheme(){
   document.querySelectorAll('.chip').forEach(el=>{
     el.classList.toggle('active', Number(el.dataset.id)===Number(state.theme));
   });
 }
-
 async function refreshStatus(){
-  const j=await api('/api/status');
+  const j=await apiGet('/api/status');
   state.version=j.version||'';
   state.ssid=j.ssid||'';
   state.theme=j.theme_id??0;
   $('ver').textContent=state.version;
   if(j.dim){
     $('dimEn').checked=!!j.dim.enable;
-    const sh=String(j.dim.start_hour??21).padStart(2,'0');
-    const sm=String(j.dim.start_min??0).padStart(2,'0');
-    const eh=String(j.dim.end_hour??7).padStart(2,'0');
-    const em=String(j.dim.end_min??0).padStart(2,'0');
-    $('dimStart').value=`${sh}:${sm}`;
-    $('dimEnd').value=`${eh}:${em}`;
+    $('dimStart').value=`${String(j.dim.start_hour??21).padStart(2,'0')}:${String(j.dim.start_min??0).padStart(2,'0')}`;
+    $('dimEnd').value=`${String(j.dim.end_hour??7).padStart(2,'0')}:${String(j.dim.end_min??0).padStart(2,'0')}`;
   }
   if(j.time_epoch){
     const d=new Date(j.time_epoch*1000);
-    $('timeLbl').textContent=d.toLocaleString();
+    $('timeLbl').textContent = (j.time_epoch < 100000) ? 'not set' : d.toLocaleString();
   }
   applyLive(j);
   $('foot').innerHTML=`SSID <span class="status-ok">${state.ssid||'—'}</span> · heap ${j.free_heap??'—'} · uptime ${j.uptime_s??0}s`;
 }
-
 async function loadThemes(){
-  const j=await api('/api/themes');
+  const j=await apiGet('/api/themes');
   const box=$('themes'); box.innerHTML='';
   (j.themes||[]).forEach(t=>{
     const el=document.createElement('div');
     el.className='chip'; el.dataset.id=t.id; el.textContent=t.name;
-    el.onclick=async()=>{ try{ await apiPost('/api/theme',{id:t.id}); state.theme=t.id; highlightTheme(); drawGauge(); await refreshStatus(); }catch(e){ alert('Theme failed: '+e.message); } };
+    el.onclick=async()=>{
+      try{ await apiGet('/api/theme?id='+t.id); state.theme=t.id; highlightTheme(); drawGauge(); }
+      catch(e){ alert('Theme failed: '+e.message); }
+    };
     box.appendChild(el);
   });
   highlightTheme();
 }
-
 function openStream(){
   const es=new EventSource('/api/stream');
   es.onmessage=(ev)=>{ try{ applyLive(JSON.parse(ev.data)); }catch(e){} };
   es.onerror=()=>{ es.close(); setTimeout(openStream,1500); };
 }
 
+$('br').addEventListener('pointerdown', ()=> brDragging=true);
+$('br').addEventListener('pointerup', ()=> brDragging=false);
 $('br').oninput=()=>{$('brv').textContent=$('br').value};
-$('br').onchange=async()=>{ try{ await apiPost('/api/brightness',{percent:Number($('br').value)}); }catch(e){ console.error(e); alert('Brightness failed: '+e.message); } };
-$('brToggle').onclick=async()=>{ try{ await apiPost('/api/brightness',{toggle:true}); await refreshStatus(); }catch(e){ alert('Toggle failed: '+e.message); } };
-$('peakReset').onclick=async()=>{ try{ await api('/api/peak/reset',{method:'POST'}); }catch(e){ alert('Peak reset failed: '+e.message); } };
+$('br').onchange=async()=>{
+  brDragging=false;
+  try{ await apiGet('/api/brightness?percent='+Number($('br').value)); }
+  catch(e){ alert('Brightness failed: '+e.message); }
+};
+$('brToggle').onclick=async()=>{
+  try{ await apiGet('/api/brightness?toggle=1'); await refreshStatus(); }
+  catch(e){ alert('Toggle failed: '+e.message); }
+};
+$('peakReset').onclick=async()=>{
+  try{ await apiGet('/api/peak/reset'); }
+  catch(e){ alert('Peak reset failed: '+e.message); }
+};
 $('syncTime').onclick=async()=>{
   const epoch=Math.floor(Date.now()/1000);
   const tz=-new Date().getTimezoneOffset();
-  await api('/api/time',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({epoch,tz_offset_min:tz})});
-  refreshStatus();
+  try{ await apiGet(`/api/time?epoch=${epoch}&tz_offset_min=${tz}`); await refreshStatus(); }
+  catch(e){ alert('Time sync failed: '+e.message); }
 };
 $('saveDim').onclick=async()=>{
   const [sh,sm]=$('dimStart').value.split(':').map(Number);
   const [eh,em]=$('dimEnd').value.split(':').map(Number);
-  const cfg=await api('/api/config');
-  cfg.dim_enable=$('dimEn').checked?1:0;
-  cfg.dim_start_hour=sh; cfg.dim_start_min=sm; cfg.dim_end_hour=eh; cfg.dim_end_min=em;
-  await api('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});
-  $('otaStatus').textContent='Schedule saved';
+  const q=new URLSearchParams({
+    dim_enable: $('dimEn').checked?'1':'0',
+    dim_start_hour:String(sh||0),
+    dim_start_min:String(sm||0),
+    dim_end_hour:String(eh||0),
+    dim_end_min:String(em||0),
+  });
+  try{ await apiGet('/api/config?'+q.toString()); $('otaStatus').textContent='Schedule saved'; }
+  catch(e){ alert('Schedule failed: '+e.message); }
 };
 $('otaBtn').onclick=async()=>{
   const f=$('fw').files[0];
@@ -269,7 +267,7 @@ $('otaBtn').onclick=async()=>{
 };
 
 refreshStatus().then(loadThemes).then(openStream).catch(e=>{
-  $('foot').innerHTML=`<span class="status-bad">Offline</span> — connect to SoftAP and open http://192.168.4.1/`;
+  $('foot').innerHTML=`<span class="status-bad">Offline</span> — join SoftAP and open http://192.168.4.1/`;
 });
 drawGauge();
 </script>

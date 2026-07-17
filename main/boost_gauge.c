@@ -6,10 +6,16 @@
 
 #ifdef ESP_PLATFORM
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/portmacro.h"
 #else
 #define ESP_LOGI(tag, fmt, ...) printf("[I][%s] " fmt "\n", tag, ##__VA_ARGS__)
 #define ESP_LOGW(tag, fmt, ...) printf("[W][%s] " fmt "\n", tag, ##__VA_ARGS__)
 #define ESP_LOGE(tag, fmt, ...) printf("[E][%s] " fmt "\n", tag, ##__VA_ARGS__)
+typedef int portMUX_TYPE;
+static inline void portENTER_CRITICAL(portMUX_TYPE *m) { (void)m; }
+static inline void portEXIT_CRITICAL(portMUX_TYPE *m) { (void)m; }
+#define portMUX_INITIALIZER_UNLOCKED 0
 #endif
 
 #include "lvgl.h"
@@ -93,6 +99,11 @@ static bool s_ui_ready;
 static bool s_hold_dim_fired;
 static uint32_t s_press_start_ms;
 static uint32_t s_face_color = FACE_BG_DEFAULT;
+static bool s_theme_dirty;
+static bool s_sample_dirty;
+static bool s_peak_dirty;
+static boost_sample_t s_pending_sample;
+static portMUX_TYPE s_ui_mux = portMUX_INITIALIZER_UNLOCKED;
 static bool s_theme_dirty;
 static lv_color_t c(uint32_t rgb)
 {
@@ -272,6 +283,10 @@ static void add_tick_label(int idx, float psi, const char *text)
     s_tick_labels[idx] = lab;
 }
 
+static void apply_sample_locked(const boost_sample_t *sample);
+static void apply_theme_locked(void);
+static void ui_timer_cb(lv_timer_t *t);
+
 void boost_gauge_create(void)
 {
     lv_obj_t *scr = lv_screen_active();
@@ -430,71 +445,97 @@ void boost_gauge_create(void)
     s_display_psi = 0.0f;
     s_peak_psi = 0.0f;
     s_ui_ready = true;
+    lv_timer_create(ui_timer_cb, 50, NULL);
     ESP_LOGI(TAG, "UI ready (full-bleed arc %dpx, stroke %d)", ARC_DIAMETER, ARC_WIDTH);
 }
 
-void boost_gauge_update(const boost_sample_t *sample)
+
+static void apply_sample_locked(const boost_sample_t *sample)
 {
-    if (!s_ui_ready || sample == NULL) {
-        return;
-    }
-
     s_display_psi = sample->psi;
-    /* Peak is boost-oriented for the readout. */
     s_peak_psi = sample->peak_psi > 0.0f ? sample->peak_psi : 0.0f;
-
     set_value_arc(sample->psi);
-
     const lv_color_t col = color_for_psi(sample->psi);
     lv_obj_set_style_arc_color(s_arc_value, col, LV_PART_INDICATOR);
     lv_obj_set_style_text_color(s_zone_label, col, 0);
     lv_obj_set_style_text_color(s_value_label, sample->psi >= PSI_OVERBOOST ? c(COLOR_FLARE) : c(COLOR_ICE), 0);
-
     char buf[32];
     format_signed_psi(buf, sizeof(buf), sample->psi);
     lv_label_set_text(s_value_label, buf);
-
     lv_label_set_text(s_zone_label, zone_for_psi(sample->psi));
-
     snprintf(buf, sizeof(buf), "PEAK  %+.1f", (double)s_peak_psi);
     lv_label_set_text(s_peak_label, buf);
-    lv_obj_set_style_text_color(
-        s_peak_label,
-        s_peak_psi >= PSI_OVERBOOST ? c(COLOR_FLARE) : c(COLOR_AMBER),
-        0);
-
+    lv_obj_set_style_text_color(s_peak_label, s_peak_psi >= PSI_OVERBOOST ? c(COLOR_FLARE) : c(COLOR_AMBER), 0);
     lv_label_set_text(s_mode_label, sample->demo ? "DEMO" : "LIVE");
+}
+
+static void apply_theme_locked(void)
+{
+    lv_obj_t *scr = lv_screen_active();
+    lv_obj_set_style_bg_color(scr, c(s_face_color), 0);
+    if (s_face_well) {
+        lv_obj_set_style_bg_color(s_face_well, c(s_face_color), 0);
+    }
+    s_theme_dirty = false;
+}
+
+static void ui_timer_cb(lv_timer_t *t)
+{
+    LV_UNUSED(t);
+    if (!s_ui_ready) {
+        return;
+    }
+    bool theme_dirty = false;
+    bool sample_dirty = false;
+    bool peak_dirty = false;
+    boost_sample_t sample = {0};
+    portENTER_CRITICAL(&s_ui_mux);
+    theme_dirty = s_theme_dirty;
+    sample_dirty = s_sample_dirty;
+    peak_dirty = s_peak_dirty;
+    if (sample_dirty) {
+        sample = s_pending_sample;
+        s_sample_dirty = false;
+    }
+    if (peak_dirty) {
+        s_peak_dirty = false;
+    }
+    portEXIT_CRITICAL(&s_ui_mux);
+    if (peak_dirty) {
+        reset_peak_ui();
+    }
+    if (theme_dirty) {
+        apply_theme_locked();
+    }
+    if (sample_dirty) {
+        apply_sample_locked(&sample);
+    }
+}
+
+void boost_gauge_update(const boost_sample_t *sample)
+{
+    if (sample == NULL) {
+        return;
+    }
+    portENTER_CRITICAL(&s_ui_mux);
+    s_pending_sample = *sample;
+    s_sample_dirty = true;
+    portEXIT_CRITICAL(&s_ui_mux);
 }
 
 void boost_gauge_set_theme(uint8_t theme_id)
 {
+    portENTER_CRITICAL(&s_ui_mux);
     s_face_color = (theme_id == 1) ? COLOR_GHOST : COLOR_VOID;
     s_theme_dirty = true;
-    if (!s_ui_ready) {
-        return;
-    }
-    lv_obj_t *scr = lv_screen_active();
-    lv_obj_set_style_bg_color(scr, c(s_face_color), 0);
-    if (s_face_well) {
-        lv_obj_set_style_bg_color(s_face_well, c(s_face_color), 0);
-    }
-    s_theme_dirty = false;
+    portEXIT_CRITICAL(&s_ui_mux);
 }
 
 void boost_gauge_reset_peak(void)
 {
-    reset_peak_ui();
-}
-
-void boost_gauge_service(void)
-{
-    if (!s_ui_ready || !s_theme_dirty) {
-        return;
-    }
-    lv_obj_t *scr = lv_screen_active();
-    lv_obj_set_style_bg_color(scr, c(s_face_color), 0);
-    if (s_face_well) {
-        lv_obj_set_style_bg_color(s_face_well, c(s_face_color), 0);
-    }
-    s_theme_dirty = false;
+    boost_sim_reset_peak();
+    portENTER_CRITICAL(&s_ui_mux);
+    s_peak_dirty = true;
+    s_pending_sample.peak_psi = 0.0f;
+    portEXIT_CRITICAL(&s_ui_mux);
 }

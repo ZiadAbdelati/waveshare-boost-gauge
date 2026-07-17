@@ -17,30 +17,18 @@ static const char *TAG = "boost_main";
 static void sensor_task(void *arg)
 {
     (void)arg;
-
-    /* UI at ~20 Hz is enough; lower lock pressure vs httpd/SSE. */
-    const TickType_t period = pdMS_TO_TICKS(50);
+    const TickType_t period = pdMS_TO_TICKS(50); /* 20 Hz sample publish */
     uint32_t ticks = 0;
-    uint32_t lock_fail = 0;
 
     while (true) {
         const boost_sample_t sample = boost_sim_tick();
+        /* Feed both web SSE and LVGL timer (no display lock here). */
         boost_http_set_sample(&sample);
+        boost_gauge_update(&sample);
 
-        if (bsp_display_lock(200) == ESP_OK) {
-            boost_gauge_service();
-            boost_gauge_update(&sample);
-            bsp_display_unlock();
-            lock_fail = 0;
-        } else if ((++lock_fail % 20) == 0) {
-            ESP_LOGW(TAG, "display lock busy (%lu fails)", (unsigned long)lock_fail);
-        }
-
-        /* Auto-dim schedule check ~1 Hz */
         if ((++ticks % 20) == 0) {
             boost_config_apply_schedule();
         }
-
         vTaskDelay(period);
     }
 }
@@ -57,9 +45,7 @@ void app_main(void)
         return;
     }
 
-    /* Config already applied brightness; ensure panel on. */
     boost_brightness_set(boost_config_get()->brightness);
-
     boost_sim_init();
 
     if (bsp_display_lock(-1) == ESP_OK) {
@@ -81,13 +67,12 @@ void app_main(void)
         ESP_LOGI(TAG, "Web UI: join Wi-Fi '%s' → http://192.168.4.1/", ssid);
     }
 
-    /* Pin gauge UI to core 1; leave core 0 for Wi-Fi/httpd. */
     const BaseType_t ok = xTaskCreatePinnedToCore(
         sensor_task,
         "boost_sim",
-        6144,
+        4096,
         NULL,
-        6,
+        5,
         NULL,
         1);
     if (ok != pdPASS) {

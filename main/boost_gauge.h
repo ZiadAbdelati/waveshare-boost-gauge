@@ -11,17 +11,14 @@ extern "C" {
 /** Build the full-screen boost gauge on the active LVGL screen. */
 void boost_gauge_create(void);
 
-/** Push a new sample into the UI. Must be called under bsp_display_lock. */
+/** Push a new sample into the UI. Safe from any task; applied on LVGL timer. */
 void boost_gauge_update(const boost_sample_t *sample);
 
-/** Theme face: 0=night black, 1=ghost gray. Call under display lock. */
+/** Theme face: 0=night black, 1=ghost gray. Safe from any task. */
 void boost_gauge_set_theme(uint8_t theme_id);
 
-/** Reset peak hold (also available via short tap). */
+/** Reset peak hold (also available via short tap). Safe from any task. */
 void boost_gauge_reset_peak(void);
-
-/** Apply any pending theme set while the LVGL lock was busy. */
-void boost_gauge_service(void);
 
 #ifdef __cplusplus
 }
