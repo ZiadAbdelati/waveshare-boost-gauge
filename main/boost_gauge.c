@@ -93,6 +93,7 @@ static bool s_ui_ready;
 static bool s_hold_dim_fired;
 static uint32_t s_press_start_ms;
 static uint32_t s_face_color = FACE_BG_DEFAULT;
+static bool s_theme_dirty;
 static lv_color_t c(uint32_t rgb)
 {
     return lv_color_hex(rgb);
@@ -468,6 +469,7 @@ void boost_gauge_update(const boost_sample_t *sample)
 void boost_gauge_set_theme(uint8_t theme_id)
 {
     s_face_color = (theme_id == 1) ? COLOR_GHOST : COLOR_VOID;
+    s_theme_dirty = true;
     if (!s_ui_ready) {
         return;
     }
@@ -476,9 +478,23 @@ void boost_gauge_set_theme(uint8_t theme_id)
     if (s_face_well) {
         lv_obj_set_style_bg_color(s_face_well, c(s_face_color), 0);
     }
+    s_theme_dirty = false;
 }
 
 void boost_gauge_reset_peak(void)
 {
     reset_peak_ui();
+}
+
+void boost_gauge_service(void)
+{
+    if (!s_ui_ready || !s_theme_dirty) {
+        return;
+    }
+    lv_obj_t *scr = lv_screen_active();
+    lv_obj_set_style_bg_color(scr, c(s_face_color), 0);
+    if (s_face_well) {
+        lv_obj_set_style_bg_color(s_face_well, c(s_face_color), 0);
+    }
+    s_theme_dirty = false;
 }

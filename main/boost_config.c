@@ -34,7 +34,7 @@ static void set_defaults(boost_config_t *c)
 static void apply_side_effects(const boost_config_t *c)
 {
     boost_brightness_set(c->brightness);
-    boost_gauge_set_theme(c->theme_id);
+    /* Theme LVGL objects may not exist yet during early boot. */
 }
 
 static bool load_from_nvs(boost_config_t *c)

@@ -20,6 +20,9 @@ void boost_gauge_set_theme(uint8_t theme_id);
 /** Reset peak hold (also available via short tap). */
 void boost_gauge_reset_peak(void);
 
+/** Apply any pending theme set while the LVGL lock was busy. */
+void boost_gauge_service(void);
+
 #ifdef __cplusplus
 }
 #endif

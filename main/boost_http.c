@@ -132,20 +132,21 @@ static esp_err_t api_stream_get(httpd_req_t *req)
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     httpd_resp_set_hdr(req, "Connection", "keep-alive");
 
-    for (int i = 0; i < 600; i++) { /* ~60s then client reconnects */
+    /* Short SSE sessions (~15s) so httpd workers free quickly; browser reconnects. */
+    for (int i = 0; i < 75; i++) {
         boost_sample_t s = sample_copy();
         char line[192];
         snprintf(line, sizeof(line),
                  "data: {\"psi\":%.2f,\"peak\":%.2f,\"zone\":\"%s\",\"brightness\":%d,\"theme_id\":%u}\n\n",
-                 s.psi,
-                 s.peak_psi > 0 ? s.peak_psi : 0.0,
+                 (double)s.psi,
+                 (double)(s.peak_psi > 0 ? s.peak_psi : 0.0f),
                  zone_name(s.psi),
                  boost_brightness_get(),
                  boost_config_get()->theme_id);
-        if (httpd_resp_send_chunk(req, line, strlen(line)) != ESP_OK) {
+        if (httpd_resp_send_chunk(req, line, HTTPD_RESP_USE_STRLEN) != ESP_OK) {
             break;
         }
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(200));
     }
     httpd_resp_send_chunk(req, NULL, 0);
     return ESP_OK;
@@ -154,19 +155,37 @@ static esp_err_t api_stream_get(httpd_req_t *req)
 static bool read_body(httpd_req_t *req, char *buf, size_t buflen)
 {
     int total = req->content_len;
-    if (total <= 0 || total >= (int)buflen) {
-        return false;
+    /* Some clients omit Content-Length; still try a short read. */
+    if (total < 0) {
+        total = (int)buflen - 1;
+    }
+    if (total == 0) {
+        buf[0] = '\0';
+        return true;
+    }
+    if (total >= (int)buflen) {
+        total = (int)buflen - 1;
     }
     int got = 0;
     while (got < total) {
         int r = httpd_req_recv(req, buf + got, total - got);
+        if (r == HTTPD_SOCK_ERR_TIMEOUT) {
+            continue;
+        }
         if (r <= 0) {
+            if (got > 0) {
+                break;
+            }
             return false;
         }
         got += r;
+        /* If no content-length, stop after first successful chunk. */
+        if (req->content_len <= 0) {
+            break;
+        }
     }
     buf[got] = '\0';
-    return true;
+    return got > 0 || req->content_len == 0;
 }
 
 static esp_err_t api_brightness_post(httpd_req_t *req)
@@ -176,18 +195,20 @@ static esp_err_t api_brightness_post(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "body");
         return ESP_FAIL;
     }
+    ESP_LOGI(TAG, "brightness body: %s", body);
     cJSON *j = cJSON_Parse(body);
     if (!j) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "json");
         return ESP_FAIL;
     }
-    if (cJSON_IsTrue(cJSON_GetObjectItem(j, "toggle"))) {
+    cJSON *tog = cJSON_GetObjectItem(j, "toggle");
+    if (cJSON_IsTrue(tog) || (cJSON_IsNumber(tog) && tog->valueint)) {
         boost_brightness_toggle_max_min();
         boost_config_set_brightness((uint8_t)boost_brightness_get());
     } else {
         cJSON *p = cJSON_GetObjectItem(j, "percent");
         if (cJSON_IsNumber(p)) {
-            int pct = p->valueint;
+            int pct = (int)p->valuedouble;
             if (pct < 0) {
                 pct = 0;
             }
@@ -203,7 +224,9 @@ static esp_err_t api_brightness_post(httpd_req_t *req)
 
 static esp_err_t api_peak_reset_post(httpd_req_t *req)
 {
-    if (bsp_display_lock(100) == ESP_OK) {
+    /* Peak state is independent of LVGL; update labels if lock is free. */
+    boost_sim_reset_peak();
+    if (bsp_display_lock(50) == ESP_OK) {
         boost_gauge_reset_peak();
         bsp_display_unlock();
     }
@@ -272,9 +295,12 @@ static esp_err_t api_config_post(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "save failed");
         return ESP_FAIL;
     }
-    if (bsp_display_lock(100) == ESP_OK) {
+    /* Theme apply is best-effort under LVGL lock; config already persisted. */
+    if (bsp_display_lock(300) == ESP_OK) {
         boost_gauge_set_theme(cfg.theme_id);
         bsp_display_unlock();
+    } else {
+        ESP_LOGW(TAG, "theme saved but display lock busy");
     }
     return send_json(req, status_json());
 }
@@ -360,9 +386,11 @@ static esp_err_t api_theme_post(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "theme");
         return ESP_FAIL;
     }
-    if (bsp_display_lock(100) == ESP_OK) {
+    if (bsp_display_lock(500) == ESP_OK) {
         boost_gauge_set_theme(theme);
         bsp_display_unlock();
+    } else {
+        ESP_LOGW(TAG, "theme saved; UI apply deferred (lock busy)");
     }
     return send_json(req, status_json());
 }
@@ -379,10 +407,11 @@ esp_err_t boost_http_start(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
     config.lru_purge_enable = true;
-    config.recv_wait_timeout = 30;
-    config.send_wait_timeout = 30;
+    config.recv_wait_timeout = 10;
+    config.send_wait_timeout = 10;
     config.max_uri_handlers = 16;
-    config.stack_size = 8192;
+    config.max_open_sockets = 7;
+    config.stack_size = 10240;
 
     esp_err_t err = httpd_start(&s_server, &config);
     if (err != ESP_OK) {

@@ -18,20 +18,26 @@ static void sensor_task(void *arg)
 {
     (void)arg;
 
-    const TickType_t period = pdMS_TO_TICKS(20); /* 50 Hz sample / UI push */
+    /* UI at ~20 Hz is enough; lower lock pressure vs httpd/SSE. */
+    const TickType_t period = pdMS_TO_TICKS(50);
     uint32_t ticks = 0;
+    uint32_t lock_fail = 0;
 
     while (true) {
         const boost_sample_t sample = boost_sim_tick();
         boost_http_set_sample(&sample);
 
-        if (bsp_display_lock(50) == ESP_OK) {
+        if (bsp_display_lock(200) == ESP_OK) {
+            boost_gauge_service();
             boost_gauge_update(&sample);
             bsp_display_unlock();
+            lock_fail = 0;
+        } else if ((++lock_fail % 20) == 0) {
+            ESP_LOGW(TAG, "display lock busy (%lu fails)", (unsigned long)lock_fail);
         }
 
         /* Auto-dim schedule check ~1 Hz */
-        if ((++ticks % 50) == 0) {
+        if ((++ticks % 20) == 0) {
             boost_config_apply_schedule();
         }
 
@@ -75,14 +81,15 @@ void app_main(void)
         ESP_LOGI(TAG, "Web UI: join Wi-Fi '%s' → http://192.168.4.1/", ssid);
     }
 
+    /* Pin gauge UI to core 1; leave core 0 for Wi-Fi/httpd. */
     const BaseType_t ok = xTaskCreatePinnedToCore(
         sensor_task,
         "boost_sim",
-        4096,
+        6144,
         NULL,
-        5,
+        6,
         NULL,
-        0);
+        1);
     if (ok != pdPASS) {
         ESP_LOGE(TAG, "failed to start sensor task");
     }
