@@ -7,7 +7,6 @@
 #include <time.h>
 
 #include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 #include "freertos/portmacro.h"
 
 #include "cJSON.h"
@@ -22,6 +21,7 @@
 #include "boost_ota.h"
 #include "boost_sim.h"
 #include "boost_wifi.h"
+#include "bsp/esp-bsp.h"
 
 static const char *TAG = "boost_http";
 static httpd_handle_t s_server;
@@ -52,15 +52,9 @@ static boost_sample_t sample_copy(void)
 
 static const char *zone_name(float psi)
 {
-    if (psi >= 18.0f) {
-        return "OVER";
-    }
-    if (psi >= 0.35f) {
-        return "BOOST";
-    }
-    if (psi > -0.35f) {
-        return "ATMO";
-    }
+    if (psi >= 18.0f) return "OVER";
+    if (psi >= 0.35f) return "BOOST";
+    if (psi > -0.35f) return "ATMO";
     return "VAC";
 }
 
@@ -101,6 +95,8 @@ static cJSON *status_json(void)
     cJSON_AddNumberToObject(o, "uptime_s", (double)(esp_timer_get_time() / 1000000ULL));
     cJSON_AddNumberToObject(o, "time_epoch", (double)time(NULL));
     cJSON_AddNumberToObject(o, "tz_offset_min", cfg->tz_offset_min);
+    cJSON_AddNumberToObject(o, "ui_ready", boost_gauge_is_ready() ? 1 : 0);
+    cJSON_AddNumberToObject(o, "ui_psi", boost_gauge_last_psi());
 
     cJSON *dim = cJSON_CreateObject();
     cJSON_AddNumberToObject(dim, "enable", cfg->dim_enable);
@@ -112,48 +108,9 @@ static cJSON *status_json(void)
     return o;
 }
 
-static esp_err_t root_get(httpd_req_t *req)
-{
-    const size_t len = (size_t)(index_html_end - index_html_start);
-    httpd_resp_set_type(req, "text/html");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    return httpd_resp_send(req, (const char *)index_html_start, len);
-}
-
-static esp_err_t api_status_get(httpd_req_t *req)
-{
-    return send_json(req, status_json());
-}
-
-static esp_err_t api_stream_get(httpd_req_t *req)
-{
-    httpd_resp_set_type(req, "text/event-stream");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    httpd_resp_set_hdr(req, "Connection", "keep-alive");
-
-    for (int i = 0; i < 50; i++) {
-        boost_sample_t s = sample_copy();
-        char line[192];
-        snprintf(line, sizeof(line),
-                 "data: {\"psi\":%.2f,\"peak\":%.2f,\"zone\":\"%s\",\"brightness\":%d,\"theme_id\":%u}\n\n",
-                 (double)s.psi,
-                 (double)(s.peak_psi > 0 ? s.peak_psi : 0.0f),
-                 zone_name(s.psi),
-                 boost_brightness_get(),
-                 boost_config_get()->theme_id);
-        if (httpd_resp_send_chunk(req, line, HTTPD_RESP_USE_STRLEN) != ESP_OK) {
-            break;
-        }
-        vTaskDelay(pdMS_TO_TICKS(200));
-    }
-    httpd_resp_send_chunk(req, NULL, 0);
-    return ESP_OK;
-}
-
 static int query_int(httpd_req_t *req, const char *key, int def)
 {
-    char q[128];
+    char q[160];
     if (httpd_req_get_url_query_str(req, q, sizeof(q)) != ESP_OK) {
         return def;
     }
@@ -164,56 +121,76 @@ static int query_int(httpd_req_t *req, const char *key, int def)
     return atoi(val);
 }
 
-static esp_err_t api_brightness_get(httpd_req_t *req)
+static bool query_has(httpd_req_t *req, const char *key)
 {
-    char q[128] = {0};
-    httpd_req_get_url_query_str(req, q, sizeof(q));
-    ESP_LOGI(TAG, "brightness query: %s", q);
+    char q[160];
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) != ESP_OK) {
+        return false;
+    }
+    char val[8];
+    return httpd_query_key_value(q, key, val, sizeof(val)) == ESP_OK;
+}
 
-    char tog[8] = {0};
-    if (httpd_query_key_value(q, "toggle", tog, sizeof(tog)) == ESP_OK &&
-        (tog[0] == '1' || tog[0] == 't' || tog[0] == 'T')) {
+static esp_err_t root_get(httpd_req_t *req)
+{
+    const size_t len = (size_t)(index_html_end - index_html_start);
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, (const char *)index_html_start, len);
+}
+
+static esp_err_t api_status(httpd_req_t *req)
+{
+    return send_json(req, status_json());
+}
+
+static esp_err_t api_brightness(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "brightness method=%d", (int)req->method);
+    if (query_has(req, "toggle")) {
         boost_brightness_toggle_max_min();
         boost_config_set_brightness((uint8_t)boost_brightness_get());
         return send_json(req, status_json());
     }
-
     int pct = query_int(req, "percent", -1);
     if (pct >= 0) {
-        if (pct > 100) {
-            pct = 100;
-        }
+        if (pct > 100) pct = 100;
         boost_config_set_brightness((uint8_t)pct);
     }
     return send_json(req, status_json());
 }
 
-static esp_err_t api_peak_reset_get(httpd_req_t *req)
+static esp_err_t api_peak_reset(httpd_req_t *req)
 {
-    boost_gauge_reset_peak();
+    if (bsp_display_lock(200) == ESP_OK) {
+        boost_gauge_reset_peak();
+        bsp_display_unlock();
+    } else {
+        boost_sim_reset_peak();
+    }
     return send_json(req, status_json());
 }
 
-static esp_err_t api_theme_get(httpd_req_t *req)
+static esp_err_t api_theme(httpd_req_t *req)
 {
     int id = query_int(req, "id", -1);
     if (id < 0 || id >= BOOST_THEME_COUNT) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "id");
         return ESP_FAIL;
     }
-    if (!boost_config_set_theme((uint8_t)id)) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "theme");
-        return ESP_FAIL;
+    boost_config_set_theme((uint8_t)id);
+    if (bsp_display_lock(200) == ESP_OK) {
+        boost_gauge_set_theme((uint8_t)id);
+        bsp_display_unlock();
     }
-    boost_gauge_set_theme((uint8_t)id);
     return send_json(req, status_json());
 }
 
-static esp_err_t api_time_get(httpd_req_t *req)
+static esp_err_t api_time(httpd_req_t *req)
 {
     int epoch = query_int(req, "epoch", 0);
     int tz = query_int(req, "tz_offset_min", 0);
-    if (epoch <= 0) {
+    if (epoch <= 100000) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "epoch");
         return ESP_FAIL;
     }
@@ -229,44 +206,27 @@ static esp_err_t api_time_get(httpd_req_t *req)
     int h = off / 60;
     int m = abs(off % 60);
     char tzbuf[32];
-    if (m) {
-        snprintf(tzbuf, sizeof(tzbuf), "UTC%+d:%02d", h, m);
-    } else {
-        snprintf(tzbuf, sizeof(tzbuf), "UTC%+d", h);
-    }
+    if (m) snprintf(tzbuf, sizeof(tzbuf), "UTC%+d:%02d", h, m);
+    else snprintf(tzbuf, sizeof(tzbuf), "UTC%+d", h);
     setenv("TZ", tzbuf, 1);
     tzset();
-    ESP_LOGI(TAG, "time set epoch=%d tz=%s", epoch, tzbuf);
+    ESP_LOGI(TAG, "time set %d %s", epoch, tzbuf);
     return send_json(req, status_json());
 }
 
-static esp_err_t api_config_get(httpd_req_t *req)
+static esp_err_t api_config(httpd_req_t *req)
 {
-    /* Optional query updates for dim schedule (GET-friendly). */
-    char q[160] = {0};
-    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK && q[0]) {
+    if (query_has(req, "dim_enable") || query_has(req, "dim_start_hour")) {
         boost_config_t cfg;
         boost_config_get_copy(&cfg);
-        char val[16];
-        if (httpd_query_key_value(q, "dim_enable", val, sizeof(val)) == ESP_OK) {
-            cfg.dim_enable = (uint8_t)atoi(val);
-        }
-        if (httpd_query_key_value(q, "dim_start_hour", val, sizeof(val)) == ESP_OK) {
-            cfg.dim_start_hour = (uint8_t)atoi(val);
-        }
-        if (httpd_query_key_value(q, "dim_start_min", val, sizeof(val)) == ESP_OK) {
-            cfg.dim_start_min = (uint8_t)atoi(val);
-        }
-        if (httpd_query_key_value(q, "dim_end_hour", val, sizeof(val)) == ESP_OK) {
-            cfg.dim_end_hour = (uint8_t)atoi(val);
-        }
-        if (httpd_query_key_value(q, "dim_end_min", val, sizeof(val)) == ESP_OK) {
-            cfg.dim_end_min = (uint8_t)atoi(val);
-        }
+        if (query_has(req, "dim_enable")) cfg.dim_enable = (uint8_t)query_int(req, "dim_enable", 0);
+        if (query_has(req, "dim_start_hour")) cfg.dim_start_hour = (uint8_t)query_int(req, "dim_start_hour", 21);
+        if (query_has(req, "dim_start_min")) cfg.dim_start_min = (uint8_t)query_int(req, "dim_start_min", 0);
+        if (query_has(req, "dim_end_hour")) cfg.dim_end_hour = (uint8_t)query_int(req, "dim_end_hour", 7);
+        if (query_has(req, "dim_end_min")) cfg.dim_end_min = (uint8_t)query_int(req, "dim_end_min", 0);
         boost_config_set(&cfg);
         return send_json(req, status_json());
     }
-
     const boost_config_t *c = boost_config_get();
     cJSON *o = cJSON_CreateObject();
     cJSON_AddNumberToObject(o, "brightness", c->brightness);
@@ -281,7 +241,7 @@ static esp_err_t api_config_get(httpd_req_t *req)
     return send_json(req, o);
 }
 
-static esp_err_t api_themes_get(httpd_req_t *req)
+static esp_err_t api_themes(httpd_req_t *req)
 {
     cJSON *o = cJSON_CreateObject();
     cJSON *arr = cJSON_AddArrayToObject(o, "themes");
@@ -294,27 +254,22 @@ static esp_err_t api_themes_get(httpd_req_t *req)
     return send_json(req, o);
 }
 
-static esp_err_t api_gif_get(httpd_req_t *req)
+static esp_err_t api_ping(httpd_req_t *req)
 {
-    httpd_resp_set_status(req, "501 Not Implemented");
     httpd_resp_set_type(req, "application/json");
-    return httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"gif storage not enabled yet\"}");
+    return httpd_resp_sendstr(req, "{\"ok\":true,\"api\":\"v1\"}");
 }
 
-static esp_err_t register_uri(httpd_handle_t server, const char *uri, httpd_method_t method, esp_err_t (*handler)(httpd_req_t *))
+static esp_err_t register_any(httpd_handle_t server, const char *uri, esp_err_t (*handler)(httpd_req_t *))
 {
     httpd_uri_t u = {
         .uri = uri,
-        .method = method,
+        .method = HTTP_ANY,
         .handler = handler,
         .user_ctx = NULL,
     };
     esp_err_t err = httpd_register_uri_handler(server, &u);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "register %s failed: %s", uri, esp_err_to_name(err));
-    } else {
-        ESP_LOGI(TAG, "registered %s method=%d", uri, (int)method);
-    }
+    ESP_LOGI(TAG, "register %s -> %s", uri, esp_err_to_name(err));
     return err;
 }
 
@@ -323,11 +278,11 @@ esp_err_t boost_http_start(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
     config.lru_purge_enable = true;
-    config.recv_wait_timeout = 10;
-    config.send_wait_timeout = 10;
-    config.max_uri_handlers = 20;
+    config.max_uri_handlers = 16;
     config.max_open_sockets = 7;
-    config.stack_size = 10240;
+    config.stack_size = 8192;
+    /* Keep URI matching simple and exact. */
+    config.uri_match_fn = NULL;
 
     esp_err_t err = httpd_start(&s_server, &config);
     if (err != ESP_OK) {
@@ -335,19 +290,17 @@ esp_err_t boost_http_start(void)
         return err;
     }
 
-    /* Prefer GET for controls — avoids 405 from picky mobile stacks / proxies. */
-    register_uri(s_server, "/", HTTP_GET, root_get);
-    register_uri(s_server, "/api/status", HTTP_GET, api_status_get);
-    register_uri(s_server, "/api/stream", HTTP_GET, api_stream_get);
-    register_uri(s_server, "/api/brightness", HTTP_GET, api_brightness_get);
-    register_uri(s_server, "/api/peak/reset", HTTP_GET, api_peak_reset_get);
-    register_uri(s_server, "/api/config", HTTP_GET, api_config_get);
-    register_uri(s_server, "/api/time", HTTP_GET, api_time_get);
-    register_uri(s_server, "/api/themes", HTTP_GET, api_themes_get);
-    register_uri(s_server, "/api/theme", HTTP_GET, api_theme_get);
-    register_uri(s_server, "/api/gif", HTTP_GET, api_gif_get);
+    register_any(s_server, "/", root_get);
+    register_any(s_server, "/api/ping", api_ping);
+    register_any(s_server, "/api/status", api_status);
+    register_any(s_server, "/api/brightness", api_brightness);
+    register_any(s_server, "/api/peak/reset", api_peak_reset);
+    register_any(s_server, "/api/config", api_config);
+    register_any(s_server, "/api/time", api_time);
+    register_any(s_server, "/api/themes", api_themes);
+    register_any(s_server, "/api/theme", api_theme);
     boost_ota_register(s_server);
 
-    ESP_LOGI(TAG, "HTTP control UI on http://192.168.4.1/");
+    ESP_LOGI(TAG, "HTTP ready http://192.168.4.1/");
     return ESP_OK;
 }

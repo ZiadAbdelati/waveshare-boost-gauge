@@ -2,55 +2,42 @@
 <html lang="en">
 <head>
 <meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"/>
-<title>Boost Gauge</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+<title>Boost Gauge 0.2.3</title>
 <style>
-:root{
-  --bg:#0b0d10;--card:#151920;--text:#e8ecf2;--muted:#6b7280;
-  --teal:#2ee6c5;--amber:#ffb020;--flare:#ff3b30;--line:#2a303a;
-}
+:root{--bg:#0b0d10;--card:#151920;--text:#e8ecf2;--muted:#6b7280;--teal:#2ee6c5;--amber:#ffb020;--flare:#ff3b30;--line:#2a303a}
 *{box-sizing:border-box}
-body{margin:0;font:15px/1.4 system-ui,sans-serif;background:var(--bg);color:var(--text)}
-header{padding:16px 18px 8px;display:flex;justify-content:space-between;align-items:center;gap:10px}
-header h1{font-size:18px;margin:0;letter-spacing:.04em}
-header .ver{color:var(--muted);font-size:12px;white-space:nowrap}
-main{padding:0 14px 28px;max-width:520px;margin:0 auto;display:grid;gap:12px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;overflow:hidden}
-.card h2{margin:0 0 10px;font-size:13px;letter-spacing:.08em;color:var(--muted);text-transform:uppercase}
-.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-.gauge-wrap{display:flex;justify-content:center;padding:6px 0 2px}
-canvas{width:260px;height:260px;max-width:100%}
-.big{font-size:42px;font-weight:700;letter-spacing:.02em}
-.zone{font-size:13px;letter-spacing:.16em;color:var(--teal)}
+body{margin:0;font:15px/1.4 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;background:var(--bg);color:var(--text)}
+header{padding:14px 16px 6px;display:flex;justify-content:space-between;align-items:center}
+header h1{font-size:17px;margin:0;letter-spacing:.04em}
+header .ver{color:var(--muted);font-size:12px}
+main{padding:0 12px 24px;max-width:520px;margin:0 auto;display:grid;gap:10px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px}
+.card h2{margin:0 0 10px;font-size:12px;letter-spacing:.08em;color:var(--muted);text-transform:uppercase}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.gauge-wrap{display:flex;justify-content:center}
+canvas{width:240px;height:240px;max-width:100%}
+.big{font-size:40px;font-weight:700}
+.zone{font-size:12px;letter-spacing:.16em;color:var(--teal)}
 .muted{color:var(--muted)}
-button,select,input[type=file]{
+button,select{
   background:#1e2430;color:var(--text);border:1px solid var(--line);
-  border-radius:10px;padding:10px 12px;font:inherit
+  border-radius:10px;padding:10px 12px;font:inherit;width:100%
 }
-button{cursor:pointer}
 button.primary{background:linear-gradient(180deg,#2a3344,#1c2330)}
-button:active{transform:scale(.98)}
+button.half, .half{flex:1;min-width:0}
 input[type=range]{width:100%}
-label{font-size:12px;color:var(--muted)}
-.time-grid{display:grid;grid-template-columns:1fr;gap:10px}
-@media (min-width:480px){.time-grid{grid-template-columns:1fr 1fr}}
-.field{min-width:0}
-.field input[type=time]{
-  display:block;width:100%;margin-top:4px;background:#1e2430;color:var(--text);
-  border:1px solid var(--line);border-radius:10px;padding:10px;font:inherit
-}
+label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
+.time-row{display:flex;gap:8px}
+.time-row > div{flex:1;min-width:0}
+.hm{display:flex;gap:6px}
+.hm select{width:100%}
 .chips{display:flex;gap:8px;flex-wrap:wrap}
-.chip{padding:8px 12px;border-radius:999px;border:1px solid var(--line);background:#1a1f28;cursor:pointer}
+.chip{padding:8px 12px;border-radius:999px;border:1px solid var(--line);background:#1a1f28;cursor:pointer;width:auto}
 .chip.active{border-color:var(--amber);color:var(--amber)}
-.foot{font-size:12px;color:var(--muted);padding:4px 2px}
-.status-ok{color:var(--teal)}
-.status-bad{color:var(--flare)}
-.check{display:flex;gap:8px;align-items:center}
-@media (max-width:420px){
-  .row{flex-direction:column;align-items:stretch}
-  header{padding:14px}
-  .big{font-size:36px}
-}
+.foot{font-size:12px;color:var(--muted);padding:2px}
+.ok{color:var(--teal)}.bad{color:var(--flare)}
+.check{display:flex;gap:8px;align-items:center;width:auto}
 </style>
 </head>
 <body>
@@ -61,21 +48,22 @@ label{font-size:12px;color:var(--muted)}
 <main>
   <section class="card">
     <h2>Live</h2>
-    <div class="gauge-wrap"><canvas id="cv" width="320" height="320"></canvas></div>
-    <div class="row" style="justify-content:center;flex-direction:column;gap:2px">
+    <div class="gauge-wrap"><canvas id="cv" width="300" height="300"></canvas></div>
+    <div style="text-align:center">
       <div class="zone" id="zone">ATMO</div>
       <div class="big" id="psi">+0.0</div>
       <div class="muted">PSI · peak <span id="peak">+0.0</span></div>
+      <div class="muted" id="uiDbg" style="margin-top:4px;font-size:11px"></div>
     </div>
   </section>
 
   <section class="card">
     <h2>Brightness</h2>
-    <label for="br">Level <span id="brv">100</span>%</label>
+    <label>Level <span id="brv">100</span>%</label>
     <input id="br" type="range" min="0" max="100" value="100"/>
     <div class="row" style="margin-top:10px">
-      <button class="primary" id="brToggle">Toggle Max / Min</button>
-      <button id="peakReset">Reset Peak</button>
+      <button class="primary half" id="brToggle">Toggle Max/Min</button>
+      <button class="half" id="peakReset">Reset Peak</button>
     </div>
   </section>
 
@@ -88,67 +76,79 @@ label{font-size:12px;color:var(--muted)}
     <h2>Time &amp; Auto-Dim</h2>
     <div class="row">
       <button class="primary" id="syncTime">Sync Time From This Device</button>
-      <span class="muted" id="timeLbl">—</span>
     </div>
-    <div style="margin-top:12px">
-      <label class="check"><input type="checkbox" id="dimEn"/> Enable schedule</label>
-    </div>
-    <div class="time-grid" style="margin-top:10px">
-      <div class="field">
-        <label for="dimStart">Dim start</label>
-        <input id="dimStart" type="time" value="21:00"/>
+    <div class="muted" id="timeLbl" style="margin-top:8px">—</div>
+    <div style="margin-top:12px"><label class="check"><input type="checkbox" id="dimEn"/> Enable schedule</label></div>
+    <div class="time-row" style="margin-top:10px">
+      <div>
+        <label>Dim start</label>
+        <div class="hm">
+          <select id="sh"></select>
+          <select id="sm"></select>
+        </div>
       </div>
-      <div class="field">
-        <label for="dimEnd">Dim end</label>
-        <input id="dimEnd" type="time" value="07:00"/>
+      <div>
+        <label>Dim end</label>
+        <div class="hm">
+          <select id="eh"></select>
+          <select id="em"></select>
+        </div>
       </div>
     </div>
-    <button style="margin-top:10px;width:100%" id="saveDim">Save Schedule</button>
+    <button style="margin-top:10px" id="saveDim">Save Schedule</button>
   </section>
 
   <section class="card">
     <h2>OTA Update</h2>
-    <p class="muted" style="margin:0 0 8px">Upload a <code>.bin</code> app image. Device reboots after success.</p>
+    <p class="muted" style="margin:0 0 8px">Upload app <code>.bin</code>. Device reboots on success.</p>
     <input id="fw" type="file" accept=".bin,application/octet-stream"/>
-    <button class="primary" style="margin-top:10px;width:100%" id="otaBtn">Flash Firmware</button>
+    <button class="primary" style="margin-top:10px" id="otaBtn">Flash Firmware</button>
     <div class="foot" id="otaStatus"></div>
   </section>
 
   <section class="card">
-    <h2>GIF (coming soon)</h2>
-    <p class="muted" style="margin:0">No microSD required. GIFs will use on-chip flash (SPIFFS). Not implemented yet.</p>
+    <h2>GIF</h2>
+    <p class="muted" style="margin:0">Not implemented yet. No microSD required later (SPIFFS).</p>
   </section>
 
   <div class="foot" id="foot">Connecting…</div>
 </main>
 <script>
-const $ = (id) => document.getElementById(id);
-const cv = $('cv');
-const ctx = cv.getContext('2d');
-let state = {psi:0, peak:0, zone:'ATMO', brightness:100, theme:0, version:'', ssid:''};
-let brDragging = false;
+const $ = id => document.getElementById(id);
+const cv = $('cv'), ctx = cv.getContext('2d');
+let state = {psi:0,peak:0,zone:'ATMO',brightness:100,theme:0};
+let brDragging=false;
+
+function fillSelect(sel, max, step=1){
+  sel.innerHTML='';
+  for(let i=0;i<=max;i+=step){
+    const o=document.createElement('option');
+    o.value=String(i); o.textContent=String(i).padStart(2,'0');
+    sel.appendChild(o);
+  }
+}
+fillSelect($('sh'),23); fillSelect($('eh'),23);
+fillSelect($('sm'),59,1); fillSelect($('em'),59,1);
+$('sh').value='21'; $('sm').value='0'; $('eh').value='7'; $('em').value='0';
 
 function colorFor(psi){
-  if (psi >= 18) return '#ff3b30';
-  if (psi >= 0.35) return '#ffb020';
-  if (psi > -0.35) return '#e8ecf2';
+  if(psi>=18) return '#ff3b30';
+  if(psi>=0.35) return '#ffb020';
+  if(psi>-0.35) return '#e8ecf2';
   return '#2ee6c5';
 }
 function drawGauge(){
-  const w=cv.width, h=cv.height, cx=w/2, cy=h/2;
-  const face = state.theme===1 ? '#1a1d24' : '#000';
+  const w=cv.width,h=cv.height,cx=w/2,cy=h/2;
+  const face=state.theme===1?'#1a1d24':'#000';
   ctx.clearRect(0,0,w,h);
   ctx.fillStyle=face; ctx.beginPath(); ctx.arc(cx,cy,w/2,0,Math.PI*2); ctx.fill();
-  const r=w*0.42, lw=w*0.08;
-  const start=135*Math.PI/180, span=270*Math.PI/180;
+  const r=w*0.42,lw=w*0.08,start=135*Math.PI/180,span=270*Math.PI/180;
   ctx.strokeStyle='#3a3f4a'; ctx.lineWidth=lw; ctx.lineCap='round';
   ctx.beginPath(); ctx.arc(cx,cy,r,start,start+span); ctx.stroke();
-  const psi=Math.max(-15, Math.min(25, state.psi));
-  const t=(psi+15)/40, zeroT=15/40;
-  const a0=start+zeroT*span, a1=start+t*span;
-  ctx.strokeStyle=colorFor(psi);
-  ctx.beginPath();
-  if (psi>=0) ctx.arc(cx,cy,r,a0+0.04,a1); else ctx.arc(cx,cy,r,a1,a0-0.04);
+  const psi=Math.max(-15,Math.min(25,state.psi));
+  const t=(psi+15)/40, zeroT=15/40, a0=start+zeroT*span, a1=start+t*span;
+  ctx.strokeStyle=colorFor(psi); ctx.beginPath();
+  if(psi>=0) ctx.arc(cx,cy,r,a0+0.04,a1); else ctx.arc(cx,cy,r,a1,a0-0.04);
   ctx.stroke();
   const zx=Math.cos(a0), zy=Math.sin(a0);
   ctx.strokeStyle='#e8ecf2'; ctx.lineWidth=lw*0.45;
@@ -157,117 +157,88 @@ function drawGauge(){
   ctx.lineTo(cx+(r+lw*0.55)*zx, cy+(r+lw*0.55)*zy);
   ctx.stroke();
 }
-function applyLive(j){
-  if (j.psi!=null) state.psi=j.psi;
-  if (j.peak!=null) state.peak=j.peak;
-  if (j.zone) state.zone=j.zone;
-  if (j.brightness!=null && !brDragging){
-    state.brightness=j.brightness; $('br').value=j.brightness; $('brv').textContent=j.brightness;
-  }
-  if (j.theme_id!=null){ state.theme=j.theme_id; highlightTheme(); }
+function apply(j){
+  if(j.psi!=null) state.psi=j.psi;
+  if(j.peak!=null) state.peak=j.peak;
+  if(j.zone) state.zone=j.zone;
+  if(j.brightness!=null && !brDragging){ state.brightness=j.brightness; $('br').value=j.brightness; $('brv').textContent=j.brightness; }
+  if(j.theme_id!=null){ state.theme=j.theme_id; highlight(); }
   $('psi').textContent=(state.psi>=0?'+':'')+Number(state.psi).toFixed(1);
   $('peak').textContent=(state.peak>=0?'+':'')+Number(state.peak).toFixed(1);
-  $('zone').textContent=state.zone;
-  $('zone').style.color=colorFor(state.psi);
+  $('zone').textContent=state.zone; $('zone').style.color=colorFor(state.psi);
+  if(j.version) $('ver').textContent=j.version;
+  $('uiDbg').textContent = `device ui_psi=${(j.ui_psi??0).toFixed?.(1) ?? j.ui_psi} ready=${j.ui_ready??'?'}`;
   drawGauge();
 }
-async function apiGet(path){
-  const r=await fetch(path, {cache:'no-store'});
+async function api(path){
+  const r = await fetch(path, {cache:'no-store'});
   if(!r.ok) throw new Error(r.status+' '+await r.text());
   return r.json();
 }
-function highlightTheme(){
-  document.querySelectorAll('.chip').forEach(el=>{
-    el.classList.toggle('active', Number(el.dataset.id)===Number(state.theme));
-  });
+function highlight(){
+  document.querySelectorAll('.chip').forEach(el=>el.classList.toggle('active', Number(el.dataset.id)===Number(state.theme)));
 }
-async function refreshStatus(){
-  const j=await apiGet('/api/status');
-  state.version=j.version||'';
-  state.ssid=j.ssid||'';
-  state.theme=j.theme_id??0;
-  $('ver').textContent=state.version;
+async function refresh(){
+  const j = await api('/api/status');
   if(j.dim){
     $('dimEn').checked=!!j.dim.enable;
-    $('dimStart').value=`${String(j.dim.start_hour??21).padStart(2,'0')}:${String(j.dim.start_min??0).padStart(2,'0')}`;
-    $('dimEnd').value=`${String(j.dim.end_hour??7).padStart(2,'0')}:${String(j.dim.end_min??0).padStart(2,'0')}`;
+    $('sh').value=String(j.dim.start_hour??21);
+    $('sm').value=String(j.dim.start_min??0);
+    $('eh').value=String(j.dim.end_hour??7);
+    $('em').value=String(j.dim.end_min??0);
   }
   if(j.time_epoch){
-    const d=new Date(j.time_epoch*1000);
-    $('timeLbl').textContent = (j.time_epoch < 100000) ? 'not set' : d.toLocaleString();
+    $('timeLbl').textContent = j.time_epoch < 100000 ? 'not set' : new Date(j.time_epoch*1000).toLocaleString();
   }
-  applyLive(j);
-  $('foot').innerHTML=`SSID <span class="status-ok">${state.ssid||'—'}</span> · heap ${j.free_heap??'—'} · uptime ${j.uptime_s??0}s`;
+  apply(j);
+  $('foot').innerHTML = `SSID <span class="ok">${j.ssid||'—'}</span> · heap ${j.free_heap??'—'} · up ${j.uptime_s??0}s`;
 }
 async function loadThemes(){
-  const j=await apiGet('/api/themes');
+  const j=await api('/api/themes');
   const box=$('themes'); box.innerHTML='';
   (j.themes||[]).forEach(t=>{
     const el=document.createElement('div');
     el.className='chip'; el.dataset.id=t.id; el.textContent=t.name;
-    el.onclick=async()=>{
-      try{ await apiGet('/api/theme?id='+t.id); state.theme=t.id; highlightTheme(); drawGauge(); }
-      catch(e){ alert('Theme failed: '+e.message); }
-    };
+    el.onclick=async()=>{ try{ await api('/api/theme?id='+t.id); await refresh(); }catch(e){ alert(e.message);} };
     box.appendChild(el);
   });
-  highlightTheme();
-}
-function openStream(){
-  const es=new EventSource('/api/stream');
-  es.onmessage=(ev)=>{ try{ applyLive(JSON.parse(ev.data)); }catch(e){} };
-  es.onerror=()=>{ es.close(); setTimeout(openStream,1500); };
+  highlight();
 }
 
-$('br').addEventListener('pointerdown', ()=> brDragging=true);
-$('br').addEventListener('pointerup', ()=> brDragging=false);
-$('br').oninput=()=>{$('brv').textContent=$('br').value};
-$('br').onchange=async()=>{
-  brDragging=false;
-  try{ await apiGet('/api/brightness?percent='+Number($('br').value)); }
-  catch(e){ alert('Brightness failed: '+e.message); }
-};
-$('brToggle').onclick=async()=>{
-  try{ await apiGet('/api/brightness?toggle=1'); await refreshStatus(); }
-  catch(e){ alert('Toggle failed: '+e.message); }
-};
-$('peakReset').onclick=async()=>{
-  try{ await apiGet('/api/peak/reset'); }
-  catch(e){ alert('Peak reset failed: '+e.message); }
-};
+$('br').addEventListener('pointerdown',()=>brDragging=true);
+$('br').addEventListener('pointerup',()=>brDragging=false);
+$('br').oninput=()=>$('brv').textContent=$('br').value;
+$('br').onchange=async()=>{ brDragging=false; try{ await api('/api/brightness?percent='+$('br').value);}catch(e){alert(e.message);} };
+$('brToggle').onclick=async()=>{ try{ await api('/api/brightness?toggle=1'); await refresh(); }catch(e){alert(e.message);} };
+$('peakReset').onclick=async()=>{ try{ await api('/api/peak/reset'); await refresh(); }catch(e){alert(e.message);} };
 $('syncTime').onclick=async()=>{
   const epoch=Math.floor(Date.now()/1000);
   const tz=-new Date().getTimezoneOffset();
-  try{ await apiGet(`/api/time?epoch=${epoch}&tz_offset_min=${tz}`); await refreshStatus(); }
-  catch(e){ alert('Time sync failed: '+e.message); }
+  try{ await api(`/api/time?epoch=${epoch}&tz_offset_min=${tz}`); await refresh(); }catch(e){alert(e.message);}
 };
 $('saveDim').onclick=async()=>{
-  const [sh,sm]=$('dimStart').value.split(':').map(Number);
-  const [eh,em]=$('dimEnd').value.split(':').map(Number);
   const q=new URLSearchParams({
-    dim_enable: $('dimEn').checked?'1':'0',
-    dim_start_hour:String(sh||0),
-    dim_start_min:String(sm||0),
-    dim_end_hour:String(eh||0),
-    dim_end_min:String(em||0),
+    dim_enable:$('dimEn').checked?'1':'0',
+    dim_start_hour:$('sh').value, dim_start_min:$('sm').value,
+    dim_end_hour:$('eh').value, dim_end_min:$('em').value
   });
-  try{ await apiGet('/api/config?'+q.toString()); $('otaStatus').textContent='Schedule saved'; }
-  catch(e){ alert('Schedule failed: '+e.message); }
+  try{ await api('/api/config?'+q.toString()); $('otaStatus').textContent='Schedule saved'; }catch(e){alert(e.message);}
 };
 $('otaBtn').onclick=async()=>{
-  const f=$('fw').files[0];
-  if(!f){ $('otaStatus').textContent='Choose a .bin first'; return; }
-  $('otaStatus').textContent='Uploading… device will reboot';
+  const f=$('fw').files[0]; if(!f){ $('otaStatus').textContent='Choose a .bin'; return; }
+  $('otaStatus').textContent='Uploading…';
   const fd=new FormData(); fd.append('firmware', f);
-  try{
-    const r=await fetch('/api/ota',{method:'POST',body:fd});
-    const t=await r.text();
-    $('otaStatus').textContent=r.ok?('OK: '+t):('Failed: '+t);
-  }catch(e){ $('otaStatus').textContent='Upload finished / device rebooting'; }
+  try{ const r=await fetch('/api/ota',{method:'POST',body:fd}); $('otaStatus').textContent=await r.text(); }
+  catch(e){ $('otaStatus').textContent='Upload finished / rebooting'; }
 };
 
-refreshStatus().then(loadThemes).then(openStream).catch(e=>{
-  $('foot').innerHTML=`<span class="status-bad">Offline</span> — join SoftAP and open http://192.168.4.1/`;
+// Poll status instead of SSE — much more reliable on SoftAP + mobile Safari.
+async function loop(){
+  try{ await refresh(); }catch(e){ $('foot').innerHTML=`<span class="bad">Offline</span> ${e.message}`; }
+  setTimeout(loop, 250);
+}
+api('/api/ping').then(loadThemes).then(loop).catch(e=>{
+  $('foot').innerHTML=`<span class="bad">Cannot reach API</span> — ${e.message}`;
 });
 drawGauge();
 </script>
