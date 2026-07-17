@@ -1,5 +1,4 @@
 #include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 
 #include "esp_log.h"
 #include "bsp/esp-bsp.h"
@@ -12,24 +11,22 @@
 #include "boost_web.h"
 
 static const char *TAG = "boost_main";
+static uint32_t s_ui_ticks;
 
-static void sensor_task(void *arg)
+/*
+ * Run gauge mutation on LVGL's worker. Cross-core LVGL calls can starve or
+ * corrupt the partial RGB565 flush path on the physical CO5300 panel.
+ */
+static void gauge_timer_cb(lv_timer_t *timer)
 {
-    (void)arg;
+    LV_UNUSED(timer);
 
-    const TickType_t period = pdMS_TO_TICKS(20); /* 50 Hz sample / UI push */
+    const boost_sample_t sample = boost_sim_tick();
+    boost_gauge_update(&sample);
+    boost_model_publish_sample(&sample);
 
-    while (true) {
-        const boost_sample_t sample = boost_sim_tick();
-        boost_model_publish_sample(&sample);
+    if ((++s_ui_ticks % 20) == 0) {
         boost_model_apply_schedule();
-
-        if (bsp_display_lock(50) == ESP_OK) {
-            boost_gauge_update(&sample);
-            bsp_display_unlock();
-        }
-
-        vTaskDelay(period);
     }
 }
 
@@ -54,24 +51,25 @@ void app_main(void)
 
     if (bsp_display_lock(-1) == ESP_OK) {
         boost_gauge_create();
+
+        /* Seed a complete frame before networking starts. */
+        const boost_sample_t initial = boost_sim_tick();
+        boost_gauge_update(&initial);
+        boost_model_publish_sample(&initial);
+        lv_timer_t *gauge_timer = lv_timer_create(gauge_timer_cb, 50, NULL);
+        if (gauge_timer == NULL) {
+            bsp_display_unlock();
+            ESP_LOGE(TAG, "failed to create gauge timer");
+            return;
+        }
+        lv_timer_ready(gauge_timer);
+        lv_obj_invalidate(lv_screen_active());
+        lv_refr_now(disp);
         bsp_display_unlock();
     } else {
         ESP_LOGE(TAG, "display lock failed during UI create");
         return;
     }
-
-    const BaseType_t ok = xTaskCreatePinnedToCore(
-        sensor_task,
-        "boost_sim",
-        4096,
-        NULL,
-        5,
-        NULL,
-        0);
-    if (ok != pdPASS) {
-        ESP_LOGE(TAG, "failed to start sensor task");
-    }
-
     esp_err_t web_err = boost_web_start();
     if (web_err != ESP_OK) {
         ESP_LOGE(TAG, "web control plane failed: %s", esp_err_to_name(web_err));

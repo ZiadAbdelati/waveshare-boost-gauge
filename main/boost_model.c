@@ -169,7 +169,7 @@ esp_err_t boost_model_init(void)
     xSemaphoreTake(s_lock, portMAX_DELAY);
     load_config();
     memset(&s_state, 0, sizeof(s_state));
-    s_state.firmware_version = "0.1.15-web";
+    s_state.firmware_version = "0.1.16-web";
     s_state.brightness = s_config.brightness_high;
     s_state.timezone_offset_minutes = s_config.timezone_offset_minutes;
     strlcpy(s_state.active_theme_id, s_config.active_theme_id, sizeof(s_state.active_theme_id));
