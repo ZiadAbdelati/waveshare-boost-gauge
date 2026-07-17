@@ -62,21 +62,18 @@
 #define ARC_RANGE     270
 
 #define DISP_SIZE     466
-/* Full-bleed face; arc inset 2px from panel edge (diameter -4). */
-#define ARC_DIAMETER  462
-#define ARC_WIDTH     45   /* ~1.5× the previous 30px stroke */
+/* Keep the arc safely inside the CO5300's rounded physical edge. */
+#define ARC_DIAMETER  452
+#define ARC_WIDTH     45
 #define ZERO_LINE_W   20
 /* Zero-side hide gap — boost tuned via sim pixels (3.8 clean; 4.0 margin). */
 #define ZERO_GAP_VAC_DEG   3.6f
 #define ZERO_GAP_BOOST_DEG 4.00f
 #define TICK_FONT     (&lv_font_montserrat_20)
 /* Tick labels sit just inside the thicker arc. */
-#define TICK_RADIUS   165.0f
+#define TICK_RADIUS   160.0f
 #define HOLD_DIM_MS   2000
-/* Soft well under the face — full panel, no black outer ring. */
 #define WELL_SIZE     DISP_SIZE
-/* Center PSI: built-in max is 48pt; scale slightly above that. */
-#define VALUE_SCALE   280  /* 256 = 1.0x */
 
 static const char *TAG = "boost_gauge";
 
@@ -307,10 +304,11 @@ void boost_gauge_create(void)
     const boost_theme_t *theme = active_theme();
     snprintf(s_theme_id, sizeof(s_theme_id), "%s", theme->id);
     lv_obj_t *scr = lv_screen_active();
-    /* Same as the face fill so no black ring remains outside the graphics. */
+    /* Remove the BSP/default white style before the first panel flush. */
+    lv_obj_remove_style_all(scr);
+    lv_obj_set_size(scr, DISP_SIZE, DISP_SIZE);
     lv_obj_set_style_bg_color(scr, c(theme->face), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(scr, LV_OBJ_FLAG_CLICKABLE);
     /*
      * Gestures:
@@ -324,15 +322,14 @@ void boost_gauge_create(void)
     lv_obj_add_event_cb(scr, on_screen_event, LV_EVENT_PRESS_LOST, NULL);
     lv_obj_add_event_cb(scr, on_screen_event, LV_EVENT_LONG_PRESSED, NULL);
 
-    /* Full-panel face fill — removes the empty black ring outside the graphics. */
+    /* Full-panel opaque face; explicit style avoids inherited white defaults. */
     s_well = lv_obj_create(scr);
+    lv_obj_remove_style_all(s_well);
     lv_obj_set_size(s_well, WELL_SIZE, WELL_SIZE);
     lv_obj_center(s_well);
     lv_obj_set_style_radius(s_well, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(s_well, c(theme->face), 0);
     lv_obj_set_style_bg_opa(s_well, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(s_well, 0, 0);
-    lv_obj_set_style_pad_all(s_well, 0, 0);
     lv_obj_clear_flag(s_well, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
 
     /* Background track. */
@@ -421,9 +418,6 @@ void boost_gauge_create(void)
     lv_label_set_text(s_value_label, "+0.0");
     lv_obj_set_style_text_font(s_value_label, &lv_font_montserrat_48, 0);
     lv_obj_set_style_text_color(s_value_label, c(theme->text), 0);
-    lv_obj_set_style_transform_pivot_x(s_value_label, lv_pct(50), 0);
-    lv_obj_set_style_transform_pivot_y(s_value_label, lv_pct(50), 0);
-    lv_obj_set_style_transform_scale(s_value_label, VALUE_SCALE, 0);
     lv_obj_align(s_value_label, LV_ALIGN_CENTER, 0, -22);
     lv_obj_clear_flag(s_value_label, LV_OBJ_FLAG_CLICKABLE);
 
@@ -450,14 +444,7 @@ void boost_gauge_create(void)
     lv_obj_align(s_mode_label, LV_ALIGN_CENTER, 0, 82);
     lv_obj_clear_flag(s_mode_label, LV_OBJ_FLAG_CLICKABLE);
 
-    s_hint_label = lv_label_create(scr);
-    lv_label_set_text(s_hint_label, "TAP PEAK · HOLD DIM");
-    lv_obj_set_style_text_font(s_hint_label, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(s_hint_label, c(theme->track), 0);
-    lv_obj_set_style_text_letter_space(s_hint_label, 1, 0);
-    /* Keep inside the open bottom of the 270° arc, not the outer black margin. */
-    lv_obj_align(s_hint_label, LV_ALIGN_BOTTOM_MID, 0, -36);
-    lv_obj_clear_flag(s_hint_label, LV_OBJ_FLAG_CLICKABLE);
+    /* No bottom hint: it can become a persistent strip on partial-flush panels. */
 
     s_display_psi = 0.0f;
     s_peak_psi = 0.0f;

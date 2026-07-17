@@ -62,6 +62,8 @@ typedef struct {
 esp_err_t boost_model_init(void);
 void boost_model_publish_sample(const boost_sample_t *sample);
 void boost_model_get_state(boost_state_t *out);
+/** Refresh web-visible clocks/brightness; call outside the LVGL worker. */
+void boost_model_refresh_status(void);
 void boost_model_get_config(boost_config_t *out);
 esp_err_t boost_model_update_config(const boost_config_t *patch, uint32_t fields);
 esp_err_t boost_model_set_active_theme(const char *id);

@@ -169,7 +169,7 @@ esp_err_t boost_model_init(void)
     xSemaphoreTake(s_lock, portMAX_DELAY);
     load_config();
     memset(&s_state, 0, sizeof(s_state));
-    s_state.firmware_version = "0.1.16-web";
+    s_state.firmware_version = "0.1.17-web";
     s_state.brightness = s_config.brightness_high;
     s_state.timezone_offset_minutes = s_config.timezone_offset_minutes;
     strlcpy(s_state.active_theme_id, s_config.active_theme_id, sizeof(s_state.active_theme_id));
@@ -211,6 +211,20 @@ void boost_model_publish_sample(const boost_sample_t *sample)
             ++s_log_count;
         }
     }
+    xSemaphoreGive(s_lock);
+}
+
+void boost_model_refresh_status(void)
+{
+    if (s_lock == NULL) {
+        return;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_state.brightness = boost_brightness_get();
+    s_state.uptime_ms = (uint64_t)(esp_timer_get_time() / 1000ULL);
+    s_state.epoch_ms = epoch_ms_now();
+    s_state.timezone_offset_minutes = s_config.timezone_offset_minutes;
+    strlcpy(s_state.active_theme_id, s_config.active_theme_id, sizeof(s_state.active_theme_id));
     xSemaphoreGive(s_lock);
 }
 
