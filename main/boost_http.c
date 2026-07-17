@@ -77,7 +77,8 @@ static esp_err_t send_json(httpd_req_t *req, cJSON *obj)
 static cJSON *status_json(void)
 {
     boost_sample_t s = sample_copy();
-    const boost_config_t *cfg = boost_config_get();
+    boost_config_t cfg;
+    boost_config_get_copy(&cfg);
     char ssid[32];
     boost_wifi_get_ssid(ssid, sizeof(ssid));
 
@@ -88,22 +89,22 @@ static cJSON *status_json(void)
     cJSON_AddStringToObject(o, "zone", zone_name(s.psi));
     cJSON_AddBoolToObject(o, "demo", s.demo);
     cJSON_AddNumberToObject(o, "brightness", boost_brightness_get());
-    cJSON_AddNumberToObject(o, "theme_id", cfg->theme_id);
-    cJSON_AddStringToObject(o, "theme", boost_theme_name(cfg->theme_id));
+    cJSON_AddNumberToObject(o, "theme_id", cfg.theme_id);
+    cJSON_AddStringToObject(o, "theme", boost_theme_name(cfg.theme_id));
     cJSON_AddStringToObject(o, "ssid", ssid);
     cJSON_AddNumberToObject(o, "free_heap", (double)esp_get_free_heap_size());
     cJSON_AddNumberToObject(o, "uptime_s", (double)(esp_timer_get_time() / 1000000ULL));
     cJSON_AddNumberToObject(o, "time_epoch", (double)time(NULL));
-    cJSON_AddNumberToObject(o, "tz_offset_min", cfg->tz_offset_min);
+    cJSON_AddNumberToObject(o, "tz_offset_min", cfg.tz_offset_min);
     cJSON_AddNumberToObject(o, "ui_ready", boost_gauge_is_ready() ? 1 : 0);
     cJSON_AddNumberToObject(o, "ui_psi", boost_gauge_last_psi());
 
     cJSON *dim = cJSON_CreateObject();
-    cJSON_AddNumberToObject(dim, "enable", cfg->dim_enable);
-    cJSON_AddNumberToObject(dim, "start_hour", cfg->dim_start_hour);
-    cJSON_AddNumberToObject(dim, "start_min", cfg->dim_start_min);
-    cJSON_AddNumberToObject(dim, "end_hour", cfg->dim_end_hour);
-    cJSON_AddNumberToObject(dim, "end_min", cfg->dim_end_min);
+    cJSON_AddNumberToObject(dim, "enable", cfg.dim_enable);
+    cJSON_AddNumberToObject(dim, "start_hour", cfg.dim_start_hour);
+    cJSON_AddNumberToObject(dim, "start_min", cfg.dim_start_min);
+    cJSON_AddNumberToObject(dim, "end_hour", cfg.dim_end_hour);
+    cJSON_AddNumberToObject(dim, "end_min", cfg.dim_end_min);
     cJSON_AddItemToObject(o, "dim", dim);
     return o;
 }
@@ -149,13 +150,20 @@ static esp_err_t api_brightness(httpd_req_t *req)
     ESP_LOGI(TAG, "brightness method=%d", (int)req->method);
     if (query_has(req, "toggle")) {
         boost_brightness_toggle_max_min();
-        boost_config_set_brightness((uint8_t)boost_brightness_get());
+        if (!boost_config_set_brightness((uint8_t)boost_brightness_get())) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "brightness persist");
+            return ESP_FAIL;
+        }
         return send_json(req, status_json());
     }
     int pct = query_int(req, "percent", -1);
-    if (pct >= 0) {
-        if (pct > 100) pct = 100;
-        boost_config_set_brightness((uint8_t)pct);
+    if (pct < 0 || pct > 100) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "percent");
+        return ESP_FAIL;
+    }
+    if (!boost_config_set_brightness((uint8_t)pct)) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "brightness persist");
+        return ESP_FAIL;
     }
     return send_json(req, status_json());
 }
@@ -178,10 +186,15 @@ static esp_err_t api_theme(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "id");
         return ESP_FAIL;
     }
-    boost_config_set_theme((uint8_t)id);
-    if (bsp_display_lock(200) == ESP_OK) {
-        boost_gauge_set_theme((uint8_t)id);
-        bsp_display_unlock();
+    if (bsp_display_lock(-1) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "display lock");
+        return ESP_FAIL;
+    }
+    boost_gauge_set_theme((uint8_t)id);
+    bsp_display_unlock();
+    if (!boost_config_set_theme((uint8_t)id)) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "theme persist");
+        return ESP_FAIL;
     }
     return send_json(req, status_json());
 }
@@ -200,7 +213,10 @@ static esp_err_t api_time(httpd_req_t *req)
     boost_config_t cfg;
     boost_config_get_copy(&cfg);
     cfg.tz_offset_min = (int16_t)tz;
-    boost_config_set(&cfg);
+    if (!boost_config_set(&cfg)) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "time config persist");
+        return ESP_FAIL;
+    }
 
     int off = -cfg.tz_offset_min;
     int h = off / 60;
@@ -210,13 +226,21 @@ static esp_err_t api_time(httpd_req_t *req)
     else snprintf(tzbuf, sizeof(tzbuf), "UTC%+d", h);
     setenv("TZ", tzbuf, 1);
     tzset();
-    ESP_LOGI(TAG, "time set %d %s", epoch, tzbuf);
+    const time_t applied = time(NULL);
+    if (llabs((long long)applied - (long long)epoch) > 2) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "clock verify");
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "time set requested=%d applied=%lld %s",
+             epoch, (long long)applied, tzbuf);
     return send_json(req, status_json());
 }
 
 static esp_err_t api_config(httpd_req_t *req)
 {
-    if (query_has(req, "dim_enable") || query_has(req, "dim_start_hour")) {
+    if (query_has(req, "dim_enable") || query_has(req, "dim_start_hour") ||
+        query_has(req, "dim_start_min") || query_has(req, "dim_end_hour") ||
+        query_has(req, "dim_end_min")) {
         boost_config_t cfg;
         boost_config_get_copy(&cfg);
         if (query_has(req, "dim_enable")) cfg.dim_enable = (uint8_t)query_int(req, "dim_enable", 0);
@@ -224,20 +248,24 @@ static esp_err_t api_config(httpd_req_t *req)
         if (query_has(req, "dim_start_min")) cfg.dim_start_min = (uint8_t)query_int(req, "dim_start_min", 0);
         if (query_has(req, "dim_end_hour")) cfg.dim_end_hour = (uint8_t)query_int(req, "dim_end_hour", 7);
         if (query_has(req, "dim_end_min")) cfg.dim_end_min = (uint8_t)query_int(req, "dim_end_min", 0);
-        boost_config_set(&cfg);
+        if (!boost_config_set(&cfg)) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "schedule persist");
+            return ESP_FAIL;
+        }
         return send_json(req, status_json());
     }
-    const boost_config_t *c = boost_config_get();
+    boost_config_t c;
+    boost_config_get_copy(&c);
     cJSON *o = cJSON_CreateObject();
-    cJSON_AddNumberToObject(o, "brightness", c->brightness);
-    cJSON_AddNumberToObject(o, "theme_id", c->theme_id);
-    cJSON_AddNumberToObject(o, "dim_enable", c->dim_enable);
-    cJSON_AddNumberToObject(o, "dim_start_hour", c->dim_start_hour);
-    cJSON_AddNumberToObject(o, "dim_start_min", c->dim_start_min);
-    cJSON_AddNumberToObject(o, "dim_end_hour", c->dim_end_hour);
-    cJSON_AddNumberToObject(o, "dim_end_min", c->dim_end_min);
-    cJSON_AddNumberToObject(o, "tz_offset_min", c->tz_offset_min);
-    cJSON_AddNumberToObject(o, "units", c->units);
+    cJSON_AddNumberToObject(o, "brightness", c.brightness);
+    cJSON_AddNumberToObject(o, "theme_id", c.theme_id);
+    cJSON_AddNumberToObject(o, "dim_enable", c.dim_enable);
+    cJSON_AddNumberToObject(o, "dim_start_hour", c.dim_start_hour);
+    cJSON_AddNumberToObject(o, "dim_start_min", c.dim_start_min);
+    cJSON_AddNumberToObject(o, "dim_end_hour", c.dim_end_hour);
+    cJSON_AddNumberToObject(o, "dim_end_min", c.dim_end_min);
+    cJSON_AddNumberToObject(o, "tz_offset_min", c.tz_offset_min);
+    cJSON_AddNumberToObject(o, "units", c.units);
     return send_json(req, o);
 }
 

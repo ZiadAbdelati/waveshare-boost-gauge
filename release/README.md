@@ -1,4 +1,4 @@
-# Prebuilt firmware (v0.2.0 web control)
+# Prebuilt firmware (v0.2.4 control reliability)
 
 ESP-IDF 5.5.1 · dual OTA slots · SoftAP web UI
 

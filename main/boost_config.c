@@ -8,6 +8,8 @@
 #include "nvs_flash.h"
 
 #include "boost_brightness.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "boost_gauge.h"
 
 static const char *TAG = "boost_cfg";
@@ -15,6 +17,22 @@ static const char *NVS_NS = "boost";
 
 static boost_config_t s_cfg;
 static bool s_ready;
+static SemaphoreHandle_t s_mutex;
+static StaticSemaphore_t s_mutex_storage;
+
+static void config_lock(void)
+{
+    if (s_mutex) {
+        xSemaphoreTake(s_mutex, portMAX_DELAY);
+    }
+}
+
+static void config_unlock(void)
+{
+    if (s_mutex) {
+        xSemaphoreGive(s_mutex);
+    }
+}
 
 static void set_defaults(boost_config_t *c)
 {
@@ -82,6 +100,7 @@ void boost_config_init(void)
         err = nvs_flash_init();
     }
     ESP_ERROR_CHECK(err);
+    s_mutex = xSemaphoreCreateMutexStatic(&s_mutex_storage);
 
     set_defaults(&s_cfg);
     if (!load_from_nvs(&s_cfg)) {
@@ -95,16 +114,15 @@ void boost_config_init(void)
     s_ready = true;
 }
 
-const boost_config_t *boost_config_get(void)
-{
-    return &s_cfg;
-}
 
 void boost_config_get_copy(boost_config_t *out)
 {
-    if (out) {
-        *out = s_cfg;
+    if (!out) {
+        return;
     }
+    config_lock();
+    *out = s_cfg;
+    config_unlock();
 }
 
 bool boost_config_set(const boost_config_t *cfg)
@@ -129,9 +147,11 @@ bool boost_config_set(const boost_config_t *cfg)
     }
     tmp.ap_pass[sizeof(tmp.ap_pass) - 1] = '\0';
 
+    config_lock();
     s_cfg = tmp;
-    apply_side_effects(&s_cfg);
-    return save_to_nvs(&s_cfg);
+    config_unlock();
+    apply_side_effects(&tmp);
+    return save_to_nvs(&tmp);
 }
 
 bool boost_config_set_brightness(uint8_t percent)
@@ -139,9 +159,13 @@ bool boost_config_set_brightness(uint8_t percent)
     if (percent > 100) {
         percent = 100;
     }
+    config_lock();
     s_cfg.brightness = percent;
+    config_unlock();
     boost_brightness_set(percent);
-    return save_to_nvs(&s_cfg);
+    boost_config_t snapshot;
+    boost_config_get_copy(&snapshot);
+    return save_to_nvs(&snapshot);
 }
 
 bool boost_config_set_theme(uint8_t theme_id)
@@ -149,14 +173,20 @@ bool boost_config_set_theme(uint8_t theme_id)
     if (theme_id >= BOOST_THEME_COUNT) {
         return false;
     }
+    /* Persist only. Caller applies LVGL theme while holding display lock. */
+    config_lock();
     s_cfg.theme_id = theme_id;
-    boost_gauge_set_theme(theme_id);
-    return save_to_nvs(&s_cfg);
+    config_unlock();
+    boost_config_t snapshot;
+    boost_config_get_copy(&snapshot);
+    return save_to_nvs(&snapshot);
 }
 
 bool boost_config_dim_window_active(void)
 {
-    if (!s_cfg.dim_enable) {
+    boost_config_t cfg;
+    boost_config_get_copy(&cfg);
+    if (!cfg.dim_enable) {
         return false;
     }
 
@@ -165,8 +195,8 @@ bool boost_config_dim_window_active(void)
     localtime_r(&now, &tm_local);
 
     const int now_m = tm_local.tm_hour * 60 + tm_local.tm_min;
-    const int start_m = s_cfg.dim_start_hour * 60 + s_cfg.dim_start_min;
-    const int end_m = s_cfg.dim_end_hour * 60 + s_cfg.dim_end_min;
+    const int start_m = cfg.dim_start_hour * 60 + cfg.dim_start_min;
+    const int end_m = cfg.dim_end_hour * 60 + cfg.dim_end_min;
 
     if (start_m == end_m) {
         return false;
@@ -174,13 +204,14 @@ bool boost_config_dim_window_active(void)
     if (start_m < end_m) {
         return now_m >= start_m && now_m < end_m;
     }
-    /* wraps midnight, e.g. 21:00 → 07:00 */
     return now_m >= start_m || now_m < end_m;
 }
 
 void boost_config_apply_schedule(void)
 {
-    if (!s_ready || !s_cfg.dim_enable) {
+    boost_config_t cfg;
+    boost_config_get_copy(&cfg);
+    if (!s_ready || !cfg.dim_enable) {
         return;
     }
     if (boost_config_dim_window_active()) {
@@ -188,9 +219,8 @@ void boost_config_apply_schedule(void)
             boost_brightness_set(BOOST_BRIGHTNESS_MIN);
         }
     } else if (boost_brightness_get() == BOOST_BRIGHTNESS_MIN &&
-               s_cfg.brightness != BOOST_BRIGHTNESS_MIN) {
-        /* Outside window: restore configured day brightness if currently at min. */
-        boost_brightness_set(s_cfg.brightness);
+               cfg.brightness != BOOST_BRIGHTNESS_MIN) {
+        boost_brightness_set(cfg.brightness);
     }
 }
 

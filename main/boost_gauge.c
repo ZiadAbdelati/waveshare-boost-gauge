@@ -13,6 +13,14 @@
 #define ESP_LOGW(tag, fmt, ...) printf("[W][%s] " fmt "\n", tag, ##__VA_ARGS__)
 #define ESP_LOGE(tag, fmt, ...) printf("[E][%s] " fmt "\n", tag, ##__VA_ARGS__)
 #endif
+#ifdef ESP_PLATFORM
+static portMUX_TYPE s_state_mux = portMUX_INITIALIZER_UNLOCKED;
+#define STATE_LOCK() portENTER_CRITICAL(&s_state_mux)
+#define STATE_UNLOCK() portEXIT_CRITICAL(&s_state_mux)
+#else
+#define STATE_LOCK() ((void)0)
+#define STATE_UNLOCK() ((void)0)
+#endif
 
 #include "lvgl.h"
 #include "boost_brightness.h"
@@ -326,8 +334,10 @@ void boost_gauge_create(void)
 
     s_display_psi = 0.0f;
     s_peak_psi = 0.0f;
+    STATE_LOCK();
     s_last_applied_psi = 0.0f;
     s_ui_ready = true;
+    STATE_UNLOCK();
     ESP_LOGI(TAG, "UI ready arc=%d stroke=%d", ARC_DIAMETER, ARC_WIDTH);
 }
 
@@ -340,7 +350,6 @@ void boost_gauge_update(const boost_sample_t *sample)
 
     s_display_psi = sample->psi;
     s_peak_psi = sample->peak_psi > 0.0f ? sample->peak_psi : 0.0f;
-    s_last_applied_psi = sample->psi;
 
     set_value_arc(sample->psi);
 
@@ -358,6 +367,9 @@ void boost_gauge_update(const boost_sample_t *sample)
     lv_label_set_text(s_peak_label, buf);
     lv_obj_set_style_text_color(s_peak_label, s_peak_psi >= PSI_OVERBOOST ? c(COLOR_FLARE) : c(COLOR_AMBER), 0);
     lv_label_set_text(s_mode_label, sample->demo ? "DEMO" : "LIVE");
+    STATE_LOCK();
+    s_last_applied_psi = sample->psi;
+    STATE_UNLOCK();
 }
 
 void boost_gauge_set_theme(uint8_t theme_id)
@@ -384,10 +396,16 @@ void boost_gauge_reset_peak(void)
 
 float boost_gauge_last_psi(void)
 {
-    return s_last_applied_psi;
+    STATE_LOCK();
+    const float psi = s_last_applied_psi;
+    STATE_UNLOCK();
+    return psi;
 }
 
 bool boost_gauge_is_ready(void)
 {
-    return s_ui_ready;
+    STATE_LOCK();
+    const bool ready = s_ui_ready;
+    STATE_UNLOCK();
+    return ready;
 }

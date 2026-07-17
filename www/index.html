@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
-<title>Boost Gauge 0.2.3</title>
+<title>Boost Gauge 0.2.4</title>
 <style>
 :root{--bg:#0b0d10;--card:#151920;--text:#e8ecf2;--muted:#6b7280;--teal:#2ee6c5;--amber:#ffb020;--flare:#ff3b30;--line:#2a303a}
 *{box-sizing:border-box}
@@ -115,10 +115,17 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
 </main>
 <script>
 const $ = id => document.getElementById(id);
-const cv = $('cv'), ctx = cv.getContext('2d');
+const cv=$('cv');
+const ctx=cv.getContext('2d');
+async function api(path){
+  const r=await fetch(path,{cache:'no-store'});
+  const text=await r.text();
+  if(!r.ok) throw new Error(text || `HTTP ${r.status}`);
+  try{return JSON.parse(text);}catch(_){return {};}
+}
 let state = {psi:0,peak:0,zone:'ATMO',brightness:100,theme:0};
-let brDragging=false;
-
+let controlsHydrated=false;
+let pollBusy=false;
 function fillSelect(sel, max, step=1){
   sel.innerHTML='';
   for(let i=0;i<=max;i+=step){
@@ -157,30 +164,31 @@ function drawGauge(){
   ctx.lineTo(cx+(r+lw*0.55)*zx, cy+(r+lw*0.55)*zy);
   ctx.stroke();
 }
-function apply(j){
+function apply(j, hydrateControls=false){
   if(j.psi!=null) state.psi=j.psi;
   if(j.peak!=null) state.peak=j.peak;
   if(j.zone) state.zone=j.zone;
-  if(j.brightness!=null && !brDragging){ state.brightness=j.brightness; $('br').value=j.brightness; $('brv').textContent=j.brightness; }
+  if(j.brightness!=null){
+    state.brightness=j.brightness;
+    if(hydrateControls){
+      $('br').value=j.brightness;
+      $('brv').textContent=j.brightness;
+    }
+  }
   if(j.theme_id!=null){ state.theme=j.theme_id; highlight(); }
   $('psi').textContent=(state.psi>=0?'+':'')+Number(state.psi).toFixed(1);
   $('peak').textContent=(state.peak>=0?'+':'')+Number(state.peak).toFixed(1);
   $('zone').textContent=state.zone; $('zone').style.color=colorFor(state.psi);
   if(j.version) $('ver').textContent=j.version;
-  $('uiDbg').textContent = `device ui_psi=${(j.ui_psi??0).toFixed?.(1) ?? j.ui_psi} ready=${j.ui_ready??'?'}`;
+  $('uiDbg').textContent = `device ui_psi=${Number(j.ui_psi??0).toFixed(1)} ready=${j.ui_ready??'?'}`;
   drawGauge();
-}
-async function api(path){
-  const r = await fetch(path, {cache:'no-store'});
-  if(!r.ok) throw new Error(r.status+' '+await r.text());
-  return r.json();
 }
 function highlight(){
   document.querySelectorAll('.chip').forEach(el=>el.classList.toggle('active', Number(el.dataset.id)===Number(state.theme)));
 }
-async function refresh(){
+async function refresh(hydrateControls=false){
   const j = await api('/api/status');
-  if(j.dim){
+  if(j.dim && (hydrateControls || !controlsHydrated)){
     $('dimEn').checked=!!j.dim.enable;
     $('sh').value=String(j.dim.start_hour??21);
     $('sm').value=String(j.dim.start_min??0);
@@ -190,39 +198,66 @@ async function refresh(){
   if(j.time_epoch){
     $('timeLbl').textContent = j.time_epoch < 100000 ? 'not set' : new Date(j.time_epoch*1000).toLocaleString();
   }
-  apply(j);
+  apply(j, hydrateControls);
+  if(hydrateControls) controlsHydrated=true;
   $('foot').innerHTML = `SSID <span class="ok">${j.ssid||'—'}</span> · heap ${j.free_heap??'—'} · up ${j.uptime_s??0}s`;
 }
 async function loadThemes(){
   const j=await api('/api/themes');
   const box=$('themes'); box.innerHTML='';
   (j.themes||[]).forEach(t=>{
-    const el=document.createElement('div');
+    const el=document.createElement('button');
+    el.type='button';
     el.className='chip'; el.dataset.id=t.id; el.textContent=t.name;
-    el.onclick=async()=>{ try{ await api('/api/theme?id='+t.id); await refresh(); }catch(e){ alert(e.message);} };
+    el.addEventListener('click',async()=>{
+      el.disabled=true;
+      try{
+        const j=await api('/api/theme?id='+t.id);
+        apply(j,false);
+      }catch(e){ alert(e.message); }
+      finally{ el.disabled=false; }
+    });
     box.appendChild(el);
   });
   highlight();
 }
 
-$('br').addEventListener('pointerdown',()=>brDragging=true);
-$('br').addEventListener('pointerup',()=>brDragging=false);
-$('br').oninput=()=>$('brv').textContent=$('br').value;
-$('br').onchange=async()=>{ brDragging=false; try{ await api('/api/brightness?percent='+$('br').value);}catch(e){alert(e.message);} };
-$('brToggle').onclick=async()=>{ try{ await api('/api/brightness?toggle=1'); await refresh(); }catch(e){alert(e.message);} };
-$('peakReset').onclick=async()=>{ try{ await api('/api/peak/reset'); await refresh(); }catch(e){alert(e.message);} };
+let brTimer=0;
+async function setBrightness(pct){
+  try{
+    const j=await api('/api/brightness?percent='+pct);
+    apply(j,false);
+  }catch(e){ alert(e.message); }
+}
+$('br').oninput=()=>{
+  const pct=$('br').value;
+  $('brv').textContent=pct;
+  clearTimeout(brTimer);
+  brTimer=setTimeout(()=>setBrightness(pct),120);
+};
+$('br').onchange=()=>{
+  clearTimeout(brTimer);
+  setBrightness($('br').value);
+};
+$('brToggle').onclick=async()=>{ try{ const j=await api('/api/brightness?toggle=1'); apply(j,true); }catch(e){alert(e.message);} };
+$('peakReset').onclick=async()=>{ try{ await api('/api/peak/reset'); }catch(e){alert(e.message);} };
 $('syncTime').onclick=async()=>{
   const epoch=Math.floor(Date.now()/1000);
   const tz=-new Date().getTimezoneOffset();
-  try{ await api(`/api/time?epoch=${epoch}&tz_offset_min=${tz}`); await refresh(); }catch(e){alert(e.message);}
+  try{ await api(`/api/time?epoch=${epoch}&tz_offset_min=${tz}`); await refresh(false); }catch(e){alert(e.message);}
 };
+$('dimEn').onchange=()=>{};
+['sh','sm','eh','em'].forEach(id=>$(id).onchange=()=>{});
 $('saveDim').onclick=async()=>{
   const q=new URLSearchParams({
     dim_enable:$('dimEn').checked?'1':'0',
     dim_start_hour:$('sh').value, dim_start_min:$('sm').value,
     dim_end_hour:$('eh').value, dim_end_min:$('em').value
   });
-  try{ await api('/api/config?'+q.toString()); $('otaStatus').textContent='Schedule saved'; }catch(e){alert(e.message);}
+  try{
+    await api('/api/config?'+q.toString());
+    $('otaStatus').textContent='Schedule saved';
+  }catch(e){alert(e.message);}
 };
 $('otaBtn').onclick=async()=>{
   const f=$('fw').files[0]; if(!f){ $('otaStatus').textContent='Choose a .bin'; return; }
@@ -234,13 +269,22 @@ $('otaBtn').onclick=async()=>{
 
 // Poll status instead of SSE — much more reliable on SoftAP + mobile Safari.
 async function loop(){
-  try{ await refresh(); }catch(e){ $('foot').innerHTML=`<span class="bad">Offline</span> ${e.message}`; }
-  setTimeout(loop, 250);
+  if(pollBusy) return;
+  pollBusy=true;
+  try{ await refresh(false); }
+  catch(e){ $('foot').innerHTML=`<span class="bad">Offline</span> ${e.message}`; }
+  finally{
+    pollBusy=false;
+    setTimeout(loop,500);
+  }
 }
-api('/api/ping').then(loadThemes).then(loop).catch(e=>{
-  $('foot').innerHTML=`<span class="bad">Cannot reach API</span> — ${e.message}`;
-});
-drawGauge();
+api('/api/ping')
+  .then(loadThemes)
+  .then(()=>refresh(true))
+  .then(()=>setTimeout(loop,500))
+  .catch(e=>{
+    $('foot').innerHTML=`<span class="bad">Cannot reach API</span> — ${e.message}`;
+  });
 </script>
 </body>
 </html>

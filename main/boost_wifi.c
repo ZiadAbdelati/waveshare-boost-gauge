@@ -43,9 +43,10 @@ esp_err_t boost_wifi_start_ap(void)
     wifi_config.ap.max_connection = 4;
     wifi_config.ap.beacon_interval = 100;
 
-    const boost_config_t *bc = boost_config_get();
-    if (bc->ap_pass[0] != '\0' && strlen(bc->ap_pass) >= 8) {
-        strncpy((char *)wifi_config.ap.password, bc->ap_pass, sizeof(wifi_config.ap.password) - 1);
+    boost_config_t bc;
+    boost_config_get_copy(&bc);
+    if (bc.ap_pass[0] != '\0' && strlen(bc.ap_pass) >= 8) {
+        strncpy((char *)wifi_config.ap.password, bc.ap_pass, sizeof(wifi_config.ap.password) - 1);
         wifi_config.ap.authmode = WIFI_AUTH_WPA2_PSK;
     } else {
         wifi_config.ap.authmode = WIFI_AUTH_OPEN;

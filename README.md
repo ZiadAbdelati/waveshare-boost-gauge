@@ -23,7 +23,7 @@ Firmware hosts an open SoftAP and control UI:
 2. Open **http://192.168.4.1/**
 
 Pages/features:
-- Live PSI mirror (SSE)
+- Live PSI mirror (500 ms status polling)
 - Brightness + peak reset
 - Theme: Night Black / Ghost Gray
 - Time sync from browser + auto-dim schedule

@@ -7,7 +7,7 @@
 extern "C" {
 #endif
 
-#define BOOST_FW_VERSION_STR "0.2.3"
+#define BOOST_FW_VERSION_STR "0.2.4"
 typedef enum {
     BOOST_THEME_NIGHT_BLACK = 0,
     BOOST_THEME_GHOST_GRAY  = 1,
@@ -32,10 +32,9 @@ typedef struct {
 } boost_config_t;
 
 void boost_config_init(void);
-const boost_config_t *boost_config_get(void);
 void boost_config_get_copy(boost_config_t *out);
 
-/** Replace config, persist to NVS, apply side effects (brightness/theme). */
+/** Replace config, persist to NVS, and apply non-LVGL side effects. */
 bool boost_config_set(const boost_config_t *cfg);
 
 bool boost_config_set_brightness(uint8_t percent);
