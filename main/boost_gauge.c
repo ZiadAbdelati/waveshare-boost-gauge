@@ -46,8 +46,8 @@
 #define COLOR_AMBER  0xFFB020
 #define COLOR_FLARE  0xFF3B30
 #define COLOR_MUTED  0x3A3F4A
-/* Active face fill. Gray standby: set FACE_BG to COLOR_GHOST. */
-#define FACE_BG      COLOR_VOID
+/* Default face; runtime theme overrides via boost_gauge_set_theme(). */
+#define FACE_BG_DEFAULT COLOR_VOID
 
 /* Gauge range (psi). Arc sweeps 270° from 135° to 45° (classic auto face). */
 #define PSI_MIN       (-15.0f)
@@ -81,17 +81,18 @@ static lv_obj_t *s_arc_value;
 static lv_obj_t *s_zero_notch;
 static lv_obj_t *s_value_label;
 static lv_obj_t *s_unit_label;
-static lv_obj_t *s_peak_label;
-static lv_obj_t *s_mode_label;
-static lv_obj_t *s_zone_label;
 static lv_obj_t *s_tick_labels[5];
+static lv_obj_t *s_peak_label;
+static lv_obj_t *s_zone_label;
+static lv_obj_t *s_mode_label;
+static lv_obj_t *s_face_well;
 
 static float s_display_psi;
 static float s_peak_psi;
 static bool s_ui_ready;
 static bool s_hold_dim_fired;
 static uint32_t s_press_start_ms;
-
+static uint32_t s_face_color = FACE_BG_DEFAULT;
 static lv_color_t c(uint32_t rgb)
 {
     return lv_color_hex(rgb);
@@ -274,7 +275,7 @@ void boost_gauge_create(void)
 {
     lv_obj_t *scr = lv_screen_active();
     /* Same as the face fill so no black ring remains outside the graphics. */
-    lv_obj_set_style_bg_color(scr, c(FACE_BG), 0);
+    lv_obj_set_style_bg_color(scr, c(s_face_color), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(scr, LV_OBJ_FLAG_CLICKABLE);
@@ -291,15 +292,15 @@ void boost_gauge_create(void)
     lv_obj_add_event_cb(scr, on_screen_event, LV_EVENT_LONG_PRESSED, NULL);
 
     /* Full-panel face fill — removes the empty black ring outside the graphics. */
-    lv_obj_t *well = lv_obj_create(scr);
-    lv_obj_set_size(well, WELL_SIZE, WELL_SIZE);
-    lv_obj_center(well);
-    lv_obj_set_style_radius(well, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(well, c(FACE_BG), 0);
-    lv_obj_set_style_bg_opa(well, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(well, 0, 0);
-    lv_obj_set_style_pad_all(well, 0, 0);
-    lv_obj_clear_flag(well, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    s_face_well = lv_obj_create(scr);
+    lv_obj_set_size(s_face_well, WELL_SIZE, WELL_SIZE);
+    lv_obj_center(s_face_well);
+    lv_obj_set_style_radius(s_face_well, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(s_face_well, c(s_face_color), 0);
+    lv_obj_set_style_bg_opa(s_face_well, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(s_face_well, 0, 0);
+    lv_obj_set_style_pad_all(s_face_well, 0, 0);
+    lv_obj_clear_flag(s_face_well, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
 
     /* Background track. */
     s_arc_track = lv_arc_create(scr);
@@ -462,4 +463,22 @@ void boost_gauge_update(const boost_sample_t *sample)
         0);
 
     lv_label_set_text(s_mode_label, sample->demo ? "DEMO" : "LIVE");
+}
+
+void boost_gauge_set_theme(uint8_t theme_id)
+{
+    s_face_color = (theme_id == 1) ? COLOR_GHOST : COLOR_VOID;
+    if (!s_ui_ready) {
+        return;
+    }
+    lv_obj_t *scr = lv_screen_active();
+    lv_obj_set_style_bg_color(scr, c(s_face_color), 0);
+    if (s_face_well) {
+        lv_obj_set_style_bg_color(s_face_well, c(s_face_color), 0);
+    }
+}
+
+void boost_gauge_reset_peak(void)
+{
+    reset_peak_ui();
 }

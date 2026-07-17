@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"/>
+<title>Boost Gauge</title>
+<style>
+:root{
+  --bg:#0b0d10;--card:#151920;--text:#e8ecf2;--muted:#6b7280;
+  --teal:#2ee6c5;--amber:#ffb020;--flare:#ff3b30;--line:#2a303a;
+}
+*{box-sizing:border-box}
+body{margin:0;font:15px/1.4 system-ui,sans-serif;background:var(--bg);color:var(--text)}
+header{padding:16px 18px 8px;display:flex;justify-content:space-between;align-items:center}
+header h1{font-size:18px;margin:0;letter-spacing:.04em}
+header .ver{color:var(--muted);font-size:12px}
+main{padding:0 14px 28px;max-width:520px;margin:0 auto;display:grid;gap:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px}
+.card h2{margin:0 0 10px;font-size:13px;letter-spacing:.08em;color:var(--muted);text-transform:uppercase}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.gauge-wrap{display:flex;justify-content:center;padding:6px 0 2px}
+canvas{width:260px;height:260px;max-width:100%}
+.big{font-size:42px;font-weight:700;letter-spacing:.02em}
+.zone{font-size:13px;letter-spacing:.16em;color:var(--teal)}
+.muted{color:var(--muted)}
+button,select,input[type=file]{
+  background:#1e2430;color:var(--text);border:1px solid var(--line);
+  border-radius:10px;padding:10px 12px;font:inherit
+}
+button{cursor:pointer}
+button.primary{background:linear-gradient(180deg,#2a3344,#1c2330)}
+button:active{transform:scale(.98)}
+input[type=range]{width:100%}
+label{font-size:12px;color:var(--muted)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.chips{display:flex;gap:8px;flex-wrap:wrap}
+.chip{padding:8px 12px;border-radius:999px;border:1px solid var(--line);background:#1a1f28;cursor:pointer}
+.chip.active{border-color:var(--amber);color:var(--amber)}
+.foot{font-size:12px;color:var(--muted);padding:4px 2px}
+.status-ok{color:var(--teal)}
+.status-bad{color:var(--flare)}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<header>
+  <h1>BOOST GAUGE</h1>
+  <div class="ver" id="ver">…</div>
+</header>
+<main>
+  <section class="card">
+    <h2>Live</h2>
+    <div class="gauge-wrap"><canvas id="cv" width="320" height="320"></canvas></div>
+    <div class="row" style="justify-content:center;flex-direction:column;gap:2px">
+      <div class="zone" id="zone">ATMO</div>
+      <div class="big" id="psi">+0.0</div>
+      <div class="muted">PSI · peak <span id="peak">+0.0</span></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Brightness</h2>
+    <label for="br">Level <span id="brv">100</span>%</label>
+    <input id="br" type="range" min="0" max="100" value="100"/>
+    <div class="row" style="margin-top:10px">
+      <button class="primary" id="brToggle">Toggle Max / Min</button>
+      <button id="peakReset">Reset Peak</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Theme</h2>
+    <div class="chips" id="themes"></div>
+  </section>
+
+  <section class="card">
+    <h2>Time &amp; Auto-Dim</h2>
+    <div class="row">
+      <button class="primary" id="syncTime">Sync Time From This Device</button>
+      <span class="muted" id="timeLbl">—</span>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <label><input type="checkbox" id="dimEn"/> Enable schedule</label>
+    </div>
+    <div class="grid2" style="margin-top:8px">
+      <div>
+        <label>Dim start</label>
+        <input id="dimStart" type="time" value="21:00" style="width:100%;margin-top:4px;background:#1e2430;color:var(--text);border:1px solid var(--line);border-radius:10px;padding:10px"/>
+      </div>
+      <div>
+        <label>Dim end</label>
+        <input id="dimEnd" type="time" value="07:00" style="width:100%;margin-top:4px;background:#1e2430;color:var(--text);border:1px solid var(--line);border-radius:10px;padding:10px"/>
+      </div>
+    </div>
+    <button style="margin-top:10px;width:100%" id="saveDim">Save Schedule</button>
+  </section>
+
+  <section class="card">
+    <h2>OTA Update</h2>
+    <p class="muted" style="margin:0 0 8px">Upload a <code>.bin</code> app image. Device reboots after success.</p>
+    <input id="fw" type="file" accept=".bin,application/octet-stream"/>
+    <button class="primary" style="margin-top:10px;width:100%" id="otaBtn">Flash Firmware</button>
+    <div class="foot" id="otaStatus"></div>
+  </section>
+
+  <section class="card">
+    <h2>GIF (coming soon)</h2>
+    <p class="muted" style="margin:0">API stub is present. Idle/boot GIF display will land after SPIFFS media storage.</p>
+  </section>
+
+  <div class="foot" id="foot">Connecting…</div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const cv = $('cv');
+const ctx = cv.getContext('2d');
+let state = {psi:0, peak:0, zone:'ATMO', brightness:100, theme:0, version:'', ssid:''};
+
+function colorFor(psi){
+  if (psi >= 18) return '#ff3b30';
+  if (psi >= 0.35) return '#ffb020';
+  if (psi > -0.35) return '#e8ecf2';
+  return '#2ee6c5';
+}
+
+function drawGauge(){
+  const w=cv.width, h=cv.height, cx=w/2, cy=h/2;
+  const face = state.theme===1 ? '#1a1d24' : '#000';
+  ctx.clearRect(0,0,w,h);
+  ctx.fillStyle=face; ctx.beginPath(); ctx.arc(cx,cy,w/2,0,Math.PI*2); ctx.fill();
+
+  const r=w*0.42, lw=w*0.08;
+  const start=135*Math.PI/180, span=270*Math.PI/180;
+  // track
+  ctx.strokeStyle='#3a3f4a'; ctx.lineWidth=lw; ctx.lineCap='round';
+  ctx.beginPath(); ctx.arc(cx,cy,r,start,start+span); ctx.stroke();
+
+  // value from zero
+  const psi=Math.max(-15, Math.min(25, state.psi));
+  const t=(psi+15)/40;
+  const zeroT=15/40;
+  const a0=start+zeroT*span;
+  const a1=start+t*span;
+  ctx.strokeStyle=colorFor(psi);
+  ctx.beginPath();
+  if (psi>=0) ctx.arc(cx,cy,r,a0+0.04,a1);
+  else ctx.arc(cx,cy,r,a1,a0-0.04);
+  ctx.stroke();
+
+  // zero mark
+  const zx=Math.cos(a0), zy=Math.sin(a0);
+  ctx.strokeStyle='#e8ecf2'; ctx.lineWidth=lw*0.45; ctx.lineCap='round';
+  ctx.beginPath();
+  ctx.moveTo(cx+(r-lw*0.55)*zx, cy+(r-lw*0.55)*zy);
+  ctx.lineTo(cx+(r+lw*0.55)*zx, cy+(r+lw*0.55)*zy);
+  ctx.stroke();
+}
+
+function applyLive(j){
+  if (j.psi!=null) state.psi=j.psi;
+  if (j.peak!=null) state.peak=j.peak;
+  if (j.zone) state.zone=j.zone;
+  if (j.brightness!=null){ state.brightness=j.brightness; $('br').value=j.brightness; $('brv').textContent=j.brightness; }
+  if (j.theme_id!=null){ state.theme=j.theme_id; highlightTheme(); }
+  $('psi').textContent=(state.psi>=0?'+':'')+state.psi.toFixed(1);
+  $('peak').textContent=(state.peak>=0?'+':'')+Number(state.peak).toFixed(1);
+  $('zone').textContent=state.zone;
+  $('zone').style.color=colorFor(state.psi);
+  drawGauge();
+}
+
+async function api(path, opts){
+  const r=await fetch(path, opts);
+  if(!r.ok) throw new Error(await r.text());
+  const ct=r.headers.get('content-type')||'';
+  if(ct.includes('json')) return r.json();
+  return r.text();
+}
+
+function highlightTheme(){
+  document.querySelectorAll('.chip').forEach(el=>{
+    el.classList.toggle('active', Number(el.dataset.id)===Number(state.theme));
+  });
+}
+
+async function refreshStatus(){
+  const j=await api('/api/status');
+  state.version=j.version||'';
+  state.ssid=j.ssid||'';
+  state.theme=j.theme_id??0;
+  $('ver').textContent=state.version;
+  if(j.dim){
+    $('dimEn').checked=!!j.dim.enable;
+    const sh=String(j.dim.start_hour??21).padStart(2,'0');
+    const sm=String(j.dim.start_min??0).padStart(2,'0');
+    const eh=String(j.dim.end_hour??7).padStart(2,'0');
+    const em=String(j.dim.end_min??0).padStart(2,'0');
+    $('dimStart').value=`${sh}:${sm}`;
+    $('dimEnd').value=`${eh}:${em}`;
+  }
+  if(j.time_epoch){
+    const d=new Date(j.time_epoch*1000);
+    $('timeLbl').textContent=d.toLocaleString();
+  }
+  applyLive(j);
+  $('foot').innerHTML=`SSID <span class="status-ok">${state.ssid||'—'}</span> · heap ${j.free_heap??'—'} · uptime ${j.uptime_s??0}s`;
+}
+
+async function loadThemes(){
+  const j=await api('/api/themes');
+  const box=$('themes'); box.innerHTML='';
+  (j.themes||[]).forEach(t=>{
+    const el=document.createElement('div');
+    el.className='chip'; el.dataset.id=t.id; el.textContent=t.name;
+    el.onclick=async()=>{ await api('/api/theme',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:t.id})}); state.theme=t.id; highlightTheme(); drawGauge(); };
+    box.appendChild(el);
+  });
+  highlightTheme();
+}
+
+function openStream(){
+  const es=new EventSource('/api/stream');
+  es.onmessage=(ev)=>{ try{ applyLive(JSON.parse(ev.data)); }catch(e){} };
+  es.onerror=()=>{ es.close(); setTimeout(openStream,1500); };
+}
+
+$('br').oninput=()=>{$('brv').textContent=$('br').value};
+$('br').onchange=async()=>{ await api('/api/brightness',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({percent:Number($('br').value)})}); };
+$('brToggle').onclick=async()=>{ await api('/api/brightness',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({toggle:true})}); refreshStatus(); };
+$('peakReset').onclick=async()=>{ await api('/api/peak/reset',{method:'POST'}); };
+$('syncTime').onclick=async()=>{
+  const epoch=Math.floor(Date.now()/1000);
+  const tz=-new Date().getTimezoneOffset();
+  await api('/api/time',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({epoch,tz_offset_min:tz})});
+  refreshStatus();
+};
+$('saveDim').onclick=async()=>{
+  const [sh,sm]=$('dimStart').value.split(':').map(Number);
+  const [eh,em]=$('dimEnd').value.split(':').map(Number);
+  const cfg=await api('/api/config');
+  cfg.dim_enable=$('dimEn').checked?1:0;
+  cfg.dim_start_hour=sh; cfg.dim_start_min=sm; cfg.dim_end_hour=eh; cfg.dim_end_min=em;
+  await api('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});
+  $('otaStatus').textContent='Schedule saved';
+};
+$('otaBtn').onclick=async()=>{
+  const f=$('fw').files[0];
+  if(!f){ $('otaStatus').textContent='Choose a .bin first'; return; }
+  $('otaStatus').textContent='Uploading… device will reboot';
+  const fd=new FormData(); fd.append('firmware', f);
+  try{
+    const r=await fetch('/api/ota',{method:'POST',body:fd});
+    const t=await r.text();
+    $('otaStatus').textContent=r.ok?('OK: '+t):('Failed: '+t);
+  }catch(e){ $('otaStatus').textContent='Upload finished / device rebooting'; }
+};
+
+refreshStatus().then(loadThemes).then(openStream).catch(e=>{
+  $('foot').innerHTML=`<span class="status-bad">Offline</span> — connect to SoftAP and open http://192.168.4.1/`;
+});
+drawGauge();
+</script>
+</body>
+</html>

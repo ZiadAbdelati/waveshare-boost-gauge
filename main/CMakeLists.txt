@@ -4,6 +4,22 @@ idf_component_register(
         "boost_gauge.c"
         "boost_sim.c"
         "boost_brightness.c"
+        "boost_config.c"
+        "boost_wifi.c"
+        "boost_http.c"
+        "boost_ota.c"
     INCLUDE_DIRS
         "."
+    EMBED_FILES
+        "../www/index.html"
+    REQUIRES
+        nvs_flash
+        esp_wifi
+        esp_http_server
+        esp_netif
+        esp_event
+        json
+        app_update
+        esp_partition
+        esp_timer
 )

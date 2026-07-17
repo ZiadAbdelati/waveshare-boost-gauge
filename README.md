@@ -15,6 +15,22 @@ Right now the MAP path is **simulated** (vacuum ↔ boost sweep). Swap `boost_si
 
 This firmware **replaces** the factory app launcher.
 
+## Web control (WLED-style)
+
+Firmware hosts an open SoftAP and control UI:
+
+1. Join Wi‑Fi **`BoostGauge-XXXX`** (last 4 of MAC)
+2. Open **http://192.168.4.1/**
+
+Pages/features:
+- Live PSI mirror (SSE)
+- Brightness + peak reset
+- Theme: Night Black / Ghost Gray
+- Time sync from browser + auto-dim schedule
+- OTA: upload a new `.bin` (dual `ota_0`/`ota_1` slots)
+
+See [`docs/web-control-plan.md`](docs/web-control-plan.md).
+
 ## Layout
 
 ```
