@@ -7,7 +7,6 @@
 extern "C" {
 #endif
 
-#define BOOST_FW_VERSION_STR "0.2.0-dev"
 #define BOOST_FW_VERSION_STR "0.2.1"
 typedef enum {
     BOOST_THEME_NIGHT_BLACK = 0,
