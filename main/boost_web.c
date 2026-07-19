@@ -40,12 +40,23 @@
 
 static const char *TAG = "boost_web";
 static httpd_handle_t s_httpd;
-static int s_state_ws_fd = -1;
+#define STATE_WS_MAX_CLIENTS 3
+typedef struct {
+    int fd;
+    bool inflight;
+    void *payload;
+} state_ws_client_t;
+typedef struct {
+    int slot;
+    int fd;
+    void *payload;
+} state_ws_send_ctx_t;
+static state_ws_client_t s_state_ws_clients[STATE_WS_MAX_CLIENTS] = {
+    { .fd = -1 }, { .fd = -1 }, { .fd = -1 },
+};
 static TaskHandle_t s_state_ws_task;
 static volatile bool s_media_upload_in_progress;
 static portMUX_TYPE s_web_lock = portMUX_INITIALIZER_UNLOCKED;
-static bool s_state_ws_inflight;
-static void *s_state_ws_payload;
 
 
 /* State is protected because telemetry task and HTTPD callbacks share it. */
@@ -140,68 +151,67 @@ static esp_err_t state_get(httpd_req_t *req)
 
 static void state_ws_send_done(esp_err_t err, int socket, void *arg)
 {
+    state_ws_send_ctx_t *ctx = (state_ws_send_ctx_t *)arg;
+    if (ctx == NULL) return;
     portENTER_CRITICAL(&s_web_lock);
-    if (s_state_ws_payload == arg) {
-        s_state_ws_payload = NULL;
-        s_state_ws_inflight = false;
-    }
-    if (err != ESP_OK && s_state_ws_fd == socket) {
-        s_state_ws_fd = -1;
+    if (ctx->slot >= 0 && ctx->slot < STATE_WS_MAX_CLIENTS) {
+        state_ws_client_t *client = &s_state_ws_clients[ctx->slot];
+        if (client->fd == ctx->fd && client->payload == ctx) {
+            client->payload = NULL;
+            client->inflight = false;
+            if (err != ESP_OK) client->fd = -1;
+        }
     }
     portEXIT_CRITICAL(&s_web_lock);
-    free(arg);
+    free(ctx->payload);
+    free(ctx);
 }
 
 static void state_ws_push(void *arg)
 {
     (void)arg;
-    portENTER_CRITICAL(&s_web_lock);
-    const int fd = s_state_ws_fd;
-    const bool allowed = s_httpd != NULL && fd >= 0 && !s_state_ws_inflight;
-    if (allowed) {
-        s_state_ws_inflight = true;
-    }
-    portEXIT_CRITICAL(&s_web_lock);
-    if (!allowed) {
-        return;
-    }
-
-    char *json = malloc(512);
-    if (json == NULL) {
+    char current[512];
+    const int n = state_json(current, sizeof(current));
+    if (n <= 0 || n >= (int)sizeof(current)) return;
+    for (int slot = 0; slot < STATE_WS_MAX_CLIENTS; ++slot) {
         portENTER_CRITICAL(&s_web_lock);
-        s_state_ws_inflight = false;
+        const int fd = s_state_ws_clients[slot].fd;
+        const bool allowed = s_httpd != NULL && fd >= 0 && !s_state_ws_clients[slot].inflight;
+        if (allowed) s_state_ws_clients[slot].inflight = true;
         portEXIT_CRITICAL(&s_web_lock);
-        return;
-    }
-    const int n = state_json(json, 512);
-    if (n <= 0 || n >= 512) {
-        free(json);
-        portENTER_CRITICAL(&s_web_lock);
-        s_state_ws_inflight = false;
-        portEXIT_CRITICAL(&s_web_lock);
-        return;
-    }
-    httpd_ws_frame_t frame = {
-        .final = true,
-        .type = HTTPD_WS_TYPE_TEXT,
-        .payload = (uint8_t *)json,
-        .len = (size_t)n,
-    };
-    portENTER_CRITICAL(&s_web_lock);
-    s_state_ws_payload = json;
-    portEXIT_CRITICAL(&s_web_lock);
-    const esp_err_t err = httpd_ws_send_data_async(s_httpd, fd, &frame, state_ws_send_done, json);
-    if (err != ESP_OK) {
-        portENTER_CRITICAL(&s_web_lock);
-        if (s_state_ws_payload == json) {
-            s_state_ws_payload = NULL;
-            s_state_ws_inflight = false;
+        if (!allowed) continue;
+        state_ws_send_ctx_t *ctx = calloc(1, sizeof(*ctx));
+        char *json = malloc((size_t)n + 1U);
+        if (ctx == NULL || json == NULL) {
+            free(ctx); free(json);
+            portENTER_CRITICAL(&s_web_lock);
+            if (s_state_ws_clients[slot].fd == fd && s_state_ws_clients[slot].payload == NULL)
+                s_state_ws_clients[slot].inflight = false;
+            portEXIT_CRITICAL(&s_web_lock);
+            continue;
         }
-        if (s_state_ws_fd == fd) {
-            s_state_ws_fd = -1;
+        memcpy(json, current, (size_t)n + 1U);
+        ctx->slot = slot; ctx->fd = fd; ctx->payload = json;
+        httpd_ws_frame_t frame = { .final = true, .type = HTTPD_WS_TYPE_TEXT,
+                                   .payload = (uint8_t *)json, .len = (size_t)n };
+        portENTER_CRITICAL(&s_web_lock);
+        if (s_state_ws_clients[slot].fd != fd || !s_state_ws_clients[slot].inflight) {
+            portEXIT_CRITICAL(&s_web_lock); free(json); free(ctx); continue;
         }
+        s_state_ws_clients[slot].payload = ctx;
+        httpd_handle_t httpd = s_httpd;
         portEXIT_CRITICAL(&s_web_lock);
-        free(json);
+        const esp_err_t err = httpd_ws_send_data_async(httpd, fd, &frame, state_ws_send_done, ctx);
+        if (err != ESP_OK) {
+            portENTER_CRITICAL(&s_web_lock);
+            if (s_state_ws_clients[slot].fd == fd && s_state_ws_clients[slot].payload == ctx) {
+                s_state_ws_clients[slot].payload = NULL;
+                s_state_ws_clients[slot].inflight = false;
+                s_state_ws_clients[slot].fd = -1;
+            }
+            portEXIT_CRITICAL(&s_web_lock);
+            free(json); free(ctx);
+        }
     }
 }
 
@@ -210,40 +220,61 @@ static void state_ws_task(void *arg)
     (void)arg;
     while (true) {
         portENTER_CRITICAL(&s_web_lock);
-        const bool ready = !s_media_upload_in_progress && s_state_ws_fd >= 0 &&
-                           s_httpd != NULL && !s_state_ws_inflight;
+        const bool ready = !s_media_upload_in_progress && s_httpd != NULL;
         portEXIT_CRITICAL(&s_web_lock);
-        if (ready) {
-            state_ws_push(NULL);
-        }
+        if (ready) state_ws_push(NULL);
         vTaskDelay(pdMS_TO_TICKS(100));
     }
+}
+
+static int state_ws_find_slot_locked(int fd)
+{
+    for (int i = 0; i < STATE_WS_MAX_CLIENTS; ++i) {
+        if (s_state_ws_clients[i].fd == fd) return i;
+    }
+    return -1;
 }
 
 static esp_err_t state_ws_get(httpd_req_t *req)
 {
     const int fd = httpd_req_to_sockfd(req);
     if (req->method == HTTP_GET) {
+        int slot = -1;
         portENTER_CRITICAL(&s_web_lock);
-        const int old_fd = s_state_ws_fd;
-        s_state_ws_fd = fd;
+        slot = state_ws_find_slot_locked(fd);
+        if (slot < 0) {
+            for (int i = 0; i < STATE_WS_MAX_CLIENTS; ++i) {
+                if (s_state_ws_clients[i].fd < 0 && !s_state_ws_clients[i].inflight) {
+                    s_state_ws_clients[i].fd = fd;
+                    slot = i;
+                    break;
+                }
+            }
+        }
         portEXIT_CRITICAL(&s_web_lock);
-        if (old_fd >= 0 && old_fd != fd) {
-            (void)httpd_sess_trigger_close(s_httpd, old_fd);
+        if (slot < 0) {
+            (void)httpd_sess_trigger_close(s_httpd, fd);
+            return ESP_FAIL;
         }
         return ESP_OK;
     }
 
+    uint8_t discard[128];
     httpd_ws_frame_t frame = {0};
     esp_err_t err = httpd_ws_recv_frame(req, &frame, 0);
-    if (err != ESP_OK) {
-        return err;
+    if (err == ESP_OK) {
+        if (frame.len > sizeof(discard)) {
+            err = ESP_ERR_INVALID_SIZE;
+        } else if (frame.len > 0) {
+            frame.payload = discard;
+            err = httpd_ws_recv_frame(req, &frame, frame.len);
+        }
     }
-    if (frame.type == HTTPD_WS_TYPE_CLOSE) {
+    if (err == ESP_OK && frame.type == HTTPD_WS_TYPE_CLOSE) {
         frame.len = 0;
         frame.payload = NULL;
         err = httpd_ws_send_frame(req, &frame);
-    } else if (frame.type == HTTPD_WS_TYPE_PING) {
+    } else if (err == ESP_OK && frame.type == HTTPD_WS_TYPE_PING) {
         frame.type = HTTPD_WS_TYPE_PONG;
         frame.len = 0;
         frame.payload = NULL;
@@ -251,9 +282,8 @@ static esp_err_t state_ws_get(httpd_req_t *req)
     }
     if (frame.type == HTTPD_WS_TYPE_CLOSE || err != ESP_OK) {
         portENTER_CRITICAL(&s_web_lock);
-        if (s_state_ws_fd == fd) {
-            s_state_ws_fd = -1;
-        }
+        const int slot = state_ws_find_slot_locked(fd);
+        if (slot >= 0) s_state_ws_clients[slot].fd = -1;
         portEXIT_CRITICAL(&s_web_lock);
     }
     return err;
@@ -471,10 +501,6 @@ static esp_err_t logs_csv_get(httpd_req_t *req)
             struct tm local = {0};
             if (gmtime_r(&seconds, &local) != NULL) {
                 strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%S", &local);
-                const int offset = current.timezone_offset_minutes;
-                const int abs_offset = offset < 0 ? -offset : offset;
-                snprintf(timestamp + strlen(timestamp), sizeof(timestamp) - strlen(timestamp),
-                         "%c%02d:%02d", offset < 0 ? '-' : '+', abs_offset / 60, abs_offset % 60);
             }
         }
         snprintf(row, sizeof(row), "%s,%d,%lld,%lu,%.2f,%.2f,%s,%d\n",

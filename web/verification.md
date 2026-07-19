@@ -103,21 +103,47 @@ The raw-media migration guard is architectural, not just a speed check:
 
 ## Live telemetry and browser responsiveness
 
-The live path is WebSocket, not SSE: connect to
-`/api/v1/state/ws` and verify messages arrive at **10 Hz**. In DevTools,
-record message timestamps for at least 30 seconds and check the connection
-badge reads `Live · 10 Hz`. The browser canvas interpolates at **60 FPS**;
-the sparkline is intentionally **4 Hz** and canvas DPR is capped at **2**.
+The live path is WebSocket, not SSE: connect to `/api/v1/state/ws`. The server
+uses a fixed pool of **3 clients**, each with at most one in-flight heap-owned
+frame, and broadcasts at a bounded **10 Hz**. A new dashboard must not evict an
+existing socket. The browser sends an application heartbeat every **750 ms**;
+the server consumes it. Verify two concurrent dashboards remain WebSocket
+`OPEN` for 30 seconds with heartbeat active and no HTTP polling. The verified
+histories were client A uptime `144367→174367` and client B remaining `OPEN` at
+uptime `182063`.
 
-Close or block the WebSocket and verify the client changes to `Fallback · 4 Hz`
-and polls `GET /api/v1/state` every 250 ms. Restore the socket and verify it
-returns to the 10 Hz WebSocket path without duplicate polling timers.
+The connection badge has only **Live** and **Disconnected** states; it does not
+visibly switch rate labels. The browser applies only strictly newer `uptimeMs`
+targets, renders EMA smoothing on every `requestAnimationFrame`, and resets
+timing after a gap greater than **1 s**. The sparkline remains **4 Hz** and
+canvas DPR is capped at **2**.
+
+Close or block the WebSocket and verify the browser starts HTTP
+`GET /api/v1/state` fallback at **4 Hz** (every 250 ms). A successful fallback
+sample keeps the badge **Live**; it becomes **Disconnected** only when state
+polling also fails. Restore the socket and verify it returns to the WebSocket
+path without duplicate polling timers. The fallback is a transport failure
+mode, not a visible rate label.
 
 During a 30-second dashboard soak, exercise a control (for example, theme or
 brightness) while telemetry is active. Latest verified result: maximum
 main-thread probe was **9 ms**, with **no freezes longer than 500 ms**.
 Telemetry publication is outside the LVGL worker, so GIF playback must not
 stall the WebSocket stream.
+## Clock and CSV verification
+
+The **Sync Time** control is the only synchronization action. Its `POST
+/api/v1/time` supplies browser `Date.now()` and the configured offset; firmware
+calls `settimeofday` and saves epoch plus monotonic checkpoint/config to NVS.
+On reboot it restores that checkpoint and advances only by monotonic delta when
+applicable. There is no RTC/NTP resynchronization in this path, so opening the
+dashboard alone does not sync the device.
+
+CSV `timestamp_local` must be `%Y-%m-%dT%H:%M:%S` with no suffix;
+`utc_offset_minutes` remains separate. Hardware verification produced **1,800
+rows**, `badTimestampCount 0`, and offset `-300` minutes.
+***
+***
 
 ## Physical cadence and crash-log guards
 

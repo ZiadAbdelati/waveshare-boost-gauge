@@ -10,9 +10,9 @@ const ZERO_GAP_VAC = 3.6;
 const ZERO_GAP_BOOST = 4.0;
 const sampleHistory = [];
 const HISTORY_WINDOW_MS = 60_000;
+const GAUGE_GAP_RESET_MS = 1000;
 const GAUGE_FRAME_MS = 1000 / 60;
 const SPARKLINE_FRAME_MS = 250;
-const POLL_FRAME_MS = 250;
 const CANVAS_DPR_MAX = 2;
 
 const state = {
@@ -27,6 +27,7 @@ const state = {
   pollTimer: null,
   pollInFlight: false,
   fallbackActive: false,
+  heartbeatTimer: null,
   activeUpload: null,
   mediaDeleteInFlight: false,
   palette: null,
@@ -34,7 +35,6 @@ const state = {
   gaugePsi: 0,
   gaugeRaf: null,
   gaugeLastAt: 0,
-  gaugeDrawLastAt: 0,
   sparklineLastAt: 0,
 };
 
@@ -315,15 +315,14 @@ function renderGaugeFrame(at) {
   const target = state.gaugeTarget;
   if (!target) return;
 
-  const elapsedMs = state.gaugeLastAt ? at - state.gaugeLastAt : GAUGE_FRAME_MS;
+  const previousAt = state.gaugeLastAt;
+  const rawElapsedMs = previousAt ? at - previousAt : GAUGE_FRAME_MS;
+  const elapsedMs = rawElapsedMs > GAUGE_GAP_RESET_MS ? GAUGE_FRAME_MS : rawElapsedMs;
   state.gaugeLastAt = at;
   const alpha = 1 - Math.exp(-elapsedMs / 90);
   state.gaugePsi += (Number(target.psi ?? 0) - state.gaugePsi) * alpha;
 
-  if (at - state.gaugeDrawLastAt >= GAUGE_FRAME_MS) {
-    state.gaugeDrawLastAt = at;
-    drawGauge({ ...target, psi: state.gaugePsi });
-  }
+  drawGauge({ ...target, psi: state.gaugePsi });
 
   if (Math.abs(Number(target.psi ?? 0) - state.gaugePsi) > 0.01) {
     scheduleGaugeRender();
@@ -377,7 +376,13 @@ function drawSparkline() {
 }
 
 function pushSample(sample) {
-  const historyTimeMs = Number.isFinite(sample.uptimeMs) ? sample.uptimeMs : performance.now();
+  const uptimeMs = Number(sample?.uptimeMs);
+  const targetUptimeMs = Number(state.gaugeTarget?.uptimeMs);
+  if (Number.isFinite(uptimeMs) && Number.isFinite(targetUptimeMs) && uptimeMs <= targetUptimeMs) {
+    return false;
+  }
+
+  const historyTimeMs = Number.isFinite(uptimeMs) ? uptimeMs : performance.now();
   sample.historyTimeMs = historyTimeMs;
   sampleHistory.push(sample);
   const cutoffMs = historyTimeMs - HISTORY_WINDOW_MS;
@@ -393,14 +398,37 @@ function pushSample(sample) {
     state.sparklineLastAt = now;
     drawSparkline();
   }
+  return true;
 }
 
-
 function updateConnection(mode, text) {
+  if (state.connected === (mode === "online") && el.connectionText.textContent === text) return;
   state.connected = mode === "online";
   el.connection.classList.remove("online", "offline");
   el.connection.classList.add(mode);
   el.connectionText.textContent = text;
+}
+
+function clearHeartbeat() {
+  if (state.heartbeatTimer !== null) {
+    window.clearInterval(state.heartbeatTimer);
+    state.heartbeatTimer = null;
+  }
+}
+
+function startHeartbeat(socket) {
+  clearHeartbeat();
+  state.heartbeatTimer = window.setInterval(() => {
+    if (state.liveSocket !== socket || socket.readyState !== WebSocket.OPEN) {
+      clearHeartbeat();
+      return;
+    }
+    try {
+      socket.send("ping");
+    } catch (_) {
+      clearHeartbeat();
+    }
+  }, 750);
 }
 
 function showError(message) {
@@ -636,9 +664,9 @@ async function refreshAll() {
     renderState(statePayload);
     renderMediaStatus(media);
     renderNetwork(network);
-    updateConnection("online", network.staConnected ? `LAN ${network.staIp}` : "HTTP ready");
+    updateConnection("online", "Live");
   } catch (error) {
-    updateConnection("offline", "Offline");
+    updateConnection("offline", "Disconnected");
     showError(error.message);
   }
 }
@@ -649,10 +677,10 @@ async function pollState() {
   try {
     const sample = await api("/state");
     renderState(sample);
-    updateConnection("online", "Fallback · 4 Hz");
+    updateConnection("online", "Live");
     showError("");
   } catch (error) {
-    updateConnection("offline", "Offline");
+    updateConnection("offline", "Disconnected");
     showError(error.message);
   } finally {
     state.pollInFlight = false;
@@ -688,17 +716,17 @@ function connectEvents() {
   }
   if (typeof WebSocket !== "function") {
     startPolling();
-    updateConnection("online", "Fallback · 4 Hz");
     return;
   }
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
   const socket = new WebSocket(`${scheme}//${location.host}${API}/state/ws`);
   state.liveSocket = socket;
-  updateConnection("offline", "Connecting…");
+  updateConnection("offline", "Disconnected");
   socket.onopen = () => {
     if (state.liveSocket !== socket) return;
     stopPolling();
-    updateConnection("online", "Live · 10 Hz");
+    startHeartbeat(socket);
+    updateConnection("online", "Live");
     showError("");
   };
   socket.onmessage = (event) => {
@@ -706,7 +734,7 @@ function connectEvents() {
     try {
       const sample = JSON.parse(event.data);
       renderState(sample);
-      updateConnection("online", "Live · 10 Hz");
+      updateConnection("online", "Live");
       showError("");
     } catch (error) {
       showError(`Live telemetry error: ${error.message}`);
@@ -717,6 +745,7 @@ function connectEvents() {
   };
   socket.onclose = () => {
     if (state.liveSocket !== socket) return;
+    clearHeartbeat();
     state.liveSocket = null;
     startPolling();
     scheduleReconnect();

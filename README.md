@@ -164,13 +164,30 @@ Hold **BOOT**, tap **RESET**, start flash, release **BOOT** if download mode fai
 Details and split binaries: [`release/README.md`](release/README.md).
 
 ## Web control plane
-### Cadence separation
+### Cadence and connection contract
 
 The physical gauge samples and updates every **16 ms (~60 Hz)**. Network
-telemetry is deliberately lower-rate: WebSocket targets are **10 Hz**, and the
-browser canvas interpolates at **60 FPS**. The HTTP fallback polls at **4 Hz**.
-These are separate contracts: a smooth browser canvas does not imply 60 Hz
-network packets, and GIF playback is exclusive to the display path.
+telemetry is deliberately lower-rate and independently owned: the WebSocket
+server maintains a fixed pool of **3 clients**, rather than a single dashboard
+owner. Each client may have at most one in-flight, heap-owned frame; the server
+performs a bounded broadcast at **10 Hz**. A newly connected dashboard MUST NOT
+close or evict an existing socket, because concurrent or stale tabs otherwise
+force Live/Fallback churn and can produce out-of-order target jitter.
+
+The browser sends an application heartbeat every **750 ms**; the server consumes
+that heartbeat as part of the WebSocket protocol. If the socket is unavailable,
+the browser uses HTTP `GET /api/v1/state` fallback at **4 Hz**. The connection
+badge has only two states: **Live** and **Disconnected**; it does not visibly
+switch rate labels. The canvas renders every `requestAnimationFrame` and uses
+EMA smoothing between samples. It accepts only targets with a strictly newer
+`uptimeMs`; after a gap greater than **1 s**, its timing state resets. These
+rules keep target ordering and visual smoothing separate from packet cadence.
+
+The browser canvas interpolates at **60 FPS**, while the sparkline remains
+intentionally **4 Hz**. These are separate contracts: a smooth browser canvas
+does not imply 60 Hz network packets, and GIF playback is exclusive to the
+display path.
+***
 
 ### Network modes
 
@@ -193,7 +210,6 @@ idf.py build flash monitor   # look for BOOST_WEB_IP=192.168.x.y
 
 ### Dashboard notes
 
-- Live canvas gauge matches firmware geometry (`preview/sim/`), not old `preview/` art. WebSocket telemetry targets **10 Hz**, while the browser interpolates the canvas at **60 FPS** so motion remains smooth between samples. The HTTP fallback is intentionally **4 Hz**.
 - Mobile: `overflow-x: hidden`, no horizontal rubber-band empty space
 - Dim schedule Start/End stay side-by-side; time inputs capped for iOS Safari
 - Brightness/theme/schedule apply off the HTTP worker so the UI stays responsive
@@ -203,6 +219,21 @@ idf.py build flash monitor   # look for BOOST_WEB_IP=192.168.x.y
   limited to **4 Hz**, and the browser GIF preview is disabled. In the verified
   30 s dashboard soak, the main-thread probe peaked at **9 ms** with no freezes
   longer than **500 ms**.
+### Clock source, persistence, and CSV timestamps
+
+The dashboard's **Sync Time** control is the only time-synchronization action:
+its `POST /api/v1/time` supplies browser `Date.now()` plus the configured UTC
+offset. Firmware applies the epoch with `settimeofday` and saves the epoch plus
+the monotonic checkpoint and configuration in NVS. On reboot it restores that
+checkpoint and advances it only by the monotonic delta when applicable. This
+path performs no RTC or NTP resynchronization, so merely opening the dashboard
+does not sync the device; use **Sync Time** explicitly.
+
+CSV `timestamp_local` is formatted as `%Y-%m-%dT%H:%M:%S` with no timezone
+suffix. `utc_offset_minutes` remains a separate CSV field. Hardware CSV
+verification produced **1,800 rows**, `badTimestampCount: 0`, and offset
+`-300` minutes.
+***
 
 ### GIF upload behavior
 
