@@ -121,7 +121,7 @@ def state_payload() -> dict[str, float | int | str | bool]:
         "zone": zone_for(psi),
         "demo": True,
         "brightness": CONFIG["brightnessHigh"],
-        "firmwareVersion": "mock-v0.1.15-web",
+        "firmwareVersion": "mock-v0.3.0-web",
         "uptimeMs": int((time.time() - STARTED_AT) * 1000),
         "epochMs": TIME_ANCHOR_MS + int((time.time() - STARTED_AT) * 1000),
         "timezoneOffsetMinutes": CONFIG["timezoneOffsetMinutes"],

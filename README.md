@@ -102,7 +102,7 @@ check recorded a minimum of **61 FPS** and a median of **63 FPS** over **112
 samples**. Use it after every display-path change:
 
 ```bash
-python3 tools/check_display_cadence.py --url http://192.168.50.102 --seconds 30
+python3 tools/check_display_cadence.py --url http://<BOOST_WEB_IP> --seconds 30
 ```
 
 This guard defends the physical gauge path; it is not a network telemetry or
@@ -142,7 +142,7 @@ guard does not apply while media is active.
 
 ## Fast path: flash prebuilt (no ESP-IDF)
 
-A verified build (ESP-IDF **5.5.1**, app size ~1.35 MB) is in [`release/`](release/).
+A verified **v0.3.0** build (firmware `0.3.0-web`, ESP-IDF **5.5.1**, app size ~1.38 MB) is available in [`release/`](release/) and on the [latest GitHub release](https://github.com/ZiadAbdelati/waveshare-boost-gauge/releases/latest).
 
 ```bash
 git clone https://github.com/ZiadAbdelati/waveshare-boost-gauge.git
@@ -189,15 +189,21 @@ The browser canvas interpolates at **60 FPS**, while the sparkline remains
 intentionally **4 Hz**. These are separate contracts: a smooth browser canvas
 does not imply 60 Hz network packets, and GIF playback is exclusive to the
 display path.
+
+Background history logging is a separate **12.5 Hz** producer: the 1,800-sample
+RAM ring retains **2 minutes 24 seconds** regardless of whether the dashboard is
+receiving 20 Hz WebSocket telemetry or 4 Hz HTTP fallback.
+
 ### Fourth-client behavior
 
 The firmware owns a fixed pool of **3 WebSocket clients**. A fourth handshake is
 rejected/closed for that newcomer only; the three existing sockets stay open and
 continue receiving telemetry. The browser keeps its fallback poll at **4 Hz**
 (`POLL_FRAME_MS = 250`) and retries WebSocket connection every **1 s**. A
-successful `/api/v1/state` fallback sample keeps the badge **Live**; **Disconnected**
-means both WebSocket and HTTP state polling are unavailable. A retry attempt must
-not downgrade a healthy fallback badge.
+successful `/api/v1/state` fallback sample shows **Live · HTTP 4 Hz**;
+**Disconnected** means both WebSocket and HTTP state polling are unavailable.
+A retry attempt must not downgrade healthy fallback, and a restored socket shows
+**Live · WebSocket 20 Hz**.
 
 ### Layered GIF pipeline (decoder ownership)
 

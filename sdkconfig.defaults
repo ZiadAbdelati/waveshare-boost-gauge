@@ -26,7 +26,7 @@ CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536
 # LCD SPI: shallow queue — draw buffers are DMA-capable so no bounce allocs.
 CONFIG_BSP_LCD_TRANS_QUEUE_DEPTH=4
 
-# A four-client control page does not need throughput-oriented Wi-Fi pools.
+# Three WebSocket dashboards plus HTTP fallback do not need throughput-oriented Wi-Fi pools.
 CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
 CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=6
 CONFIG_ESP_WIFI_CACHE_TX_BUFFER_NUM=8
@@ -67,5 +67,5 @@ CONFIG_LV_USE_GIF=y
 CONFIG_ESP_WIFI_SOFTAP_SUPPORT=y
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
 CONFIG_HTTPD_MAX_URI_LEN=512
-# Push 10 Hz state targets over one persistent socket; the browser interpolates at 60 FPS.
+# Push 20 Hz state targets over a pool of three sockets; the browser interpolates at 60 FPS.
 CONFIG_HTTPD_WS_SUPPORT=y

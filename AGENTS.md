@@ -1,7 +1,7 @@
 # Agent guidance
 
 This repository is an ESP-IDF 5.5.1 firmware/dashboard for an ESP32-S3 AMOLED boost gauge. These rules are load-bearing. A fresh agent must be able to resume from this file alone; do not rely on chat history.
-Verified repair baseline is firmware `0.2.0-web`; preserve that identity in hardware/release notes when referring to these measurements.
+Verified release baseline is firmware `0.3.0-web`; preserve that identity in hardware and release notes for current measurements. Historic rows in the regression ledger retain the version-independent measurements observed when each guard was established.
 
 ## Durable coordination and delegation
 
@@ -31,6 +31,7 @@ Keep these rates distinct; never use one as a substitute for another:
 - Browser live canvas: renders on every `requestAnimationFrame`, uses a **35 ms** EMA, and accepts only strictly newer `uptimeMs` targets; timing resets after a gap greater than **1 s**.
 - HTTP fallback state polling: **4 Hz**.
 - Sparkline: **4 Hz**.
+- Background RAM logging: **12.5 Hz** (every fifth 16 ms model sample); 1,800 entries retain **2 minutes 24 seconds**.
 - Browser connection badge: **Live · WebSocket 20 Hz**, **Live · HTTP 4 Hz**, or **Disconnected**; it MUST expose the active transport.
 - Browser device-pixel ratio: cap at **2**.
 - Browser GIF preview: disabled; do not reintroduce a large client-side preview path.
@@ -42,9 +43,9 @@ Do not add display timers/dividers, throttle the 16 ms gauge readout, or judge W
 - The WebSocket pool is exactly three clients. A fourth handshake may be
   rejected/closed for the newcomer, but MUST NOT close or disturb any existing
   client. Browser fallback remains `POLL_FRAME_MS=250` (4 Hz), while WebSocket
-  retries are 1 s. A successful HTTP state sample keeps the badge `Live`; a
-  retry attempt MUST NOT mark it `Disconnected`. `Disconnected` requires both
-  WebSocket failure and HTTP state-poll failure.
+  retries are 1 s. A successful HTTP state sample MUST show `Live · HTTP 4 Hz`;
+  a retry attempt MUST NOT mark it `Disconnected`. Restored WebSocket delivery
+  MUST show `Live · WebSocket 20 Hz`. `Disconnected` requires both transports to fail.
 - GIF decompression is not project-written. `main/boost_gauge.c` supplies the
   custom locked widget/descriptor integration; `main/boost_media_store.c` owns
   raw dual-slot CRC publication and `esp_partition_mmap`; LVGL
@@ -83,8 +84,8 @@ The media store MUST remain a raw dual-slot partition; do not reintroduce SPIFFS
 - Edit `web/index.html`, `web/app.js`, and `web/styles.css`, then regenerate embedded assets with:
   `python3 tools/embed_web.py web main/generated_web_assets.c main/generated_web_assets.h`
   Review the generated diff; never hand-edit `main/generated_web_assets.c/.h`.
-- A release is not complete until the verified ESP-IDF build produces the app image and the release directory contains the bootloader, partition table, OTA data, app image, merged full-flash image, flash helper, and refreshed `SHA256SUMS`. The merged image is for resetting the complete layout; later web OTA uses the app image, not the merged image. Do not publish artifacts from an unverified build or claim hardware behavior from a host-only run.
-- Hardware release verification must cover boot, network access, the live physical cadence gate, media upload/abort/delete behavior, and serial error absence. Record measured outputs in the README and this ledger before committing.
+- A release is not complete until the verified ESP-IDF build produces the app image and the release directory contains the bootloader, partition table, OTA data, app image, merged full-flash image, flash helper, and refreshed `SHA256SUMS`. The merged image is for resetting the complete layout; later web OTA uses the app image, not the merged image. Tag the release commit, publish every file in `release/` except documentation-only metadata as GitHub release assets, mark the new release latest, and verify the published asset checksums. Do not publish artifacts from an unverified build or claim hardware behavior from a host-only run.
+- Hardware release verification must cover boot, network access, the live physical cadence gate, transport-specific badge behavior, media upload/abort/delete behavior, and serial error absence. Record measured outputs in the README and this ledger before committing.
 
 ## Commit hygiene
 

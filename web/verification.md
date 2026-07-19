@@ -1,8 +1,8 @@
 # Web Control Plane Verification
 
-This checklist is for firmware **0.2.0-web** and the current raw-media/WebSocket
-control plane. Run the live checks against a board on a trusted LAN or its
-SoftAP; the mock server only covers static assets and simple HTTP wiring.
+This checklist is for firmware **0.3.0-web** and the current raw-media/WebSocket
+control plane. Run live checks against a board on a trusted LAN or its SoftAP;
+the mock server covers only static assets and simple HTTP wiring.
 
 ## Environments
 
@@ -107,10 +107,10 @@ The live path is WebSocket, not SSE: connect to `/api/v1/state/ws`. The server
 uses a fixed pool of **3 clients**, each with at most one in-flight heap-owned
 frame, and broadcasts at a bounded **20 Hz**. A new dashboard must not evict an
 existing socket. The browser sends an application heartbeat every **750 ms**;
-the server consumes it. Verify two concurrent dashboards remain WebSocket
-`OPEN` for 30 seconds with heartbeat active and no HTTP polling. The verified
-histories were client A uptime `144367→174367` and client B remaining `OPEN` at
-uptime `182063`.
+the server consumes it. Verify three concurrent dashboards remain WebSocket
+`OPEN` for 30 seconds with heartbeat active and no HTTP polling. The latest
+hardware capacity run kept three sockets open while a fourth dashboard remained
+live through HTTP fallback; no existing dashboard was evicted.
 
 The connection badge reports **Live · WebSocket 20 Hz**, **Live · HTTP 4 Hz**,
 or **Disconnected**. The browser applies only strictly newer `uptimeMs` targets,
@@ -119,6 +119,10 @@ gap greater than **1 s**. The sparkline remains **4 Hz** and canvas DPR is cappe
 at **2**. On the demo waveform, collect ten seconds of browser samples and require
 approximately 50 ms WebSocket target spacing; compare target-to-render error with
 the prior 10 Hz / 90 ms EMA baseline rather than using physical-display FPS.
+
+Background logging is independent of transport cadence: firmware stores every
+fifth 16 ms model sample (**12.5 Hz**), so the 1,800-row ring covers **2 minutes
+24 seconds**. CSV export must preserve that full retained window.
 
 Close or block the WebSocket and verify the browser starts HTTP
 `GET /api/v1/state` fallback at **4 Hz** (every 250 ms). A successful fallback
@@ -139,10 +143,10 @@ Use four separate browser tabs or four WebSocket clients against
    churn.
 3. In the fourth tab, block/close WebSocket traffic. Confirm
    `GET /api/v1/state` runs every 250 ms (4 Hz), and that a successful sample
-   keeps the badge **Live** while WebSocket retries occur every 1 s. The badge
-   becomes **Disconnected** only after both the socket and state poll fail.
-4. Restore the socket and confirm polling stops with one timer, the badge stays
-   **Live**, and clients 1–3 were never disconnected.
+   shows **Live · HTTP 4 Hz** while WebSocket retries occur every 1 s. The badge
+   becomes **Disconnected** only after both transports fail.
+4. Restore the socket and confirm polling stops with one timer, the badge changes
+   to **Live · WebSocket 20 Hz**, and clients 1–3 were never disconnected.
 
 This check distinguishes capacity rejection of the newcomer from the forbidden
 behavior of failing the whole fourth dashboard or evicting an existing client.
