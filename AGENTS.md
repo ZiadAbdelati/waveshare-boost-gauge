@@ -37,6 +37,24 @@ Keep these rates distinct; never use one as a substitute for another:
 
 Do not add display timers/dividers, throttle the 16 ms gauge readout, or judge WebSocket/canvas cadence with the physical-display guard. GIF playback is an exclusive full-frame path and is not expected to satisfy the live-gauge FPS threshold. A new dashboard MUST NOT evict an existing WebSocket client: single-owner behavior caused concurrent/stale tabs to force Live/Fallback churn and out-of-order target jitter.
 
+### Fourth-client and GIF regression invariants
+
+- The WebSocket pool is exactly three clients. A fourth handshake may be
+  rejected/closed for the newcomer, but MUST NOT close or disturb any existing
+  client. Browser fallback remains `POLL_FRAME_MS=250` (4 Hz), while WebSocket
+  retries are 1 s. A successful HTTP state sample keeps the badge `Live`; a
+  retry attempt MUST NOT mark it `Disconnected`. `Disconnected` requires both
+  WebSocket failure and HTTP state-poll failure.
+- GIF decompression is not project-written. `main/boost_gauge.c` supplies the
+  custom locked widget/descriptor integration; `main/boost_media_store.c` owns
+  raw dual-slot CRC publication and `esp_partition_mmap`; LVGL
+  `managed_components/lvgl__lvgl/src/libs/gif/lv_gif.c` and bundled
+  `AnimatedGIF/src/gif.c` perform parsing, LZW, frame timing, and composition
+  (`GIF_openRAM`/`GIF_playFrame`). Local LVGL edits zero the full framebuffer
+  and disable turbo (`pTurboBuffer = NULL`) because turbo failed delta/disposal
+  composition. Keep mapped bytes alive through widget destruction: lock display,
+  destroy widget, then unmap. Do not describe this as a custom decoder.
+
 ## AMOLED DMA invariants and hardware gate
 
 - Start the gauge with `boost_display_start()`, never stock `bsp_display_start()`.
@@ -82,3 +100,6 @@ Keep commits narrow and reviewable: source, generated web output, documentation/
 | Current architecture | Physical, network, browser, fallback, and sparkline rates can be mistaken for one cadence. | Different producers and renderers have different budgets. | Explicit 16 ms/~60 Hz physical path; fixed 3-client WebSocket pool with one heap-owned in-flight frame per client, 750 ms application heartbeat, and 10 Hz bounded broadcast; rAF/EMA smoothing with ordered `uptimeMs` targets; 4 Hz HTTP/sparkline paths; DPR cap 2 and GIF preview disabled. | Keep rate-specific metrics and verify physical cadence separately; dashboard soak reference has max main-thread probe 9 ms and no freeze over 500 ms. |
 | Current architecture | Concurrent or stale dashboards evicted each other, causing Live/Fallback churn and out-of-order target jitter. | Single-owner WebSocket server forcibly closed the old file descriptor whenever a new dashboard connected. | Fixed pool of 3 WebSocket clients; each client has one in-flight heap-owned frame, bounded 10 Hz broadcast, and a 750 ms browser heartbeat consumed by the server. | Two concurrent dashboards remained WebSocket OPEN for 30 s with heartbeat active and no polling; client A uptime `144367→174367`, client B stayed OPEN at `182063`; browser rejects non-newer targets and resets smoothing timing after gaps over 1 s. |
 | Current architecture | Local CSV timestamps carried a misleading timezone suffix and time behavior was unclear across reboot. | Timestamp formatting conflated local text with offset metadata; dashboard open was mistaken for synchronization. | `timestamp_local` uses `%Y-%m-%dT%H:%M:%S` without suffix; `utc_offset_minutes` stays separate. Sync Time POST supplies `Date.now()` and configured offset; firmware calls `settimeofday`, saves epoch + monotonic checkpoint/config to NVS, and restores/advances by monotonic delta when applicable. | Hardware CSV: 1,800 rows, `badTimestampCount 0`, offset `-300`; no RTC/NTP resync in this path, so only the Sync Time control synchronizes. |
+| Current architecture | A fourth dashboard appeared to fail completely or churned `Disconnected` while HTTP fallback was healthy. | The three-client pool rejects only the newcomer, but browser fallback lost its 250 ms constant and reconnect attempts overwrote healthy fallback status. | Restore `POLL_FRAME_MS = 250`; keep `Live` after successful state polls; do not downgrade status merely because a retry starts. | Hold clients 1–3 open, open client 4, verify clients 1–3 remain open while client 4 polls at 4 Hz and retries every 1 s; only total transport failure may show `Disconnected`. |
+| Current architecture | GIF playback ownership was unclear and could be described as a project-written decoder. | The pipeline mixes custom storage/UI/display integration with locally patched third-party LVGL and AnimatedGIF decode layers. | Document the boundary: custom dual-slot mmap and widget lifecycle; LVGL timer/wrapper; AnimatedGIF parsing/LZW/composition; zeroed full canvas and standard non-turbo path for delta/disposal correctness. | Verify `GIF_openRAM`/`GIF_playFrame`, keep mapping alive through widget destruction, test delta/disposal GIFs, and keep the internal-DMA CO5300 flush separate from decode changes. |
+| Current architecture | Reflashing while a committed GIF existed caused a repeatable `main` task stack overflow before networking started. | Boot-time payload validation put a 4,096-byte CRC scratch buffer on the 3,584-byte ESP-IDF main-task stack. | Validate the committed payload through a temporary read-only `esp_partition_mmap` and CRC it directly, then unmap; no full sector lives on the stack. | Reboot with committed media present and require `HTTP API ready` with no stack overflow, panic, or reset loop. |

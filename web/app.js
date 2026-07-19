@@ -13,6 +13,7 @@ const HISTORY_WINDOW_MS = 60_000;
 const GAUGE_GAP_RESET_MS = 1000;
 const GAUGE_FRAME_MS = 1000 / 60;
 const SPARKLINE_FRAME_MS = 250;
+const POLL_FRAME_MS = 250;
 const CANVAS_DPR_MAX = 2;
 
 const state = {
@@ -721,7 +722,7 @@ function connectEvents() {
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
   const socket = new WebSocket(`${scheme}//${location.host}${API}/state/ws`);
   state.liveSocket = socket;
-  updateConnection("offline", "Disconnected");
+  if (!state.fallbackActive) updateConnection("offline", "Disconnected");
   socket.onopen = () => {
     if (state.liveSocket !== socket) return;
     stopPolling();

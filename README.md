@@ -187,6 +187,43 @@ The browser canvas interpolates at **60 FPS**, while the sparkline remains
 intentionally **4 Hz**. These are separate contracts: a smooth browser canvas
 does not imply 60 Hz network packets, and GIF playback is exclusive to the
 display path.
+### Fourth-client behavior
+
+The firmware owns a fixed pool of **3 WebSocket clients**. A fourth handshake is
+rejected/closed for that newcomer only; the three existing sockets stay open and
+continue receiving telemetry. The browser keeps its fallback poll at **4 Hz**
+(`POLL_FRAME_MS = 250`) and retries WebSocket connection every **1 s**. A
+successful `/api/v1/state` fallback sample keeps the badge **Live**; **Disconnected**
+means both WebSocket and HTTP state polling are unavailable. A retry attempt must
+not downgrade a healthy fallback badge.
+
+### Layered GIF pipeline (decoder ownership)
+
+This is a hybrid pipeline, **not a project-written GIF decompressor**:
+
+- **Custom upload/storage:** `web/app.js` uploads to `main/boost_web.c`; the
+  request is streamed into the raw dual-slot CRC/committed-header store in
+  `main/boost_media_store.c/.h`. The selected payload is mapped with
+  `esp_partition_mmap`.
+- **Custom gauge integration:** `main/boost_gauge.c/.h` runs under the display
+  lock, hides the gauge, creates and centers a black-backed `lv_gif` widget,
+  selects RGB565, and gives it an `lv_image_dsc_t` whose data points at the
+  mapped GIF bytes. The load path maps before creating/feeding the descriptor.
+- **Third-party decode/playback:** LVGL's `lv_gif` wrapper in
+  `managed_components/lvgl__lvgl/src/libs/gif/lv_gif.c` calls bundled
+  AnimatedGIF (`AnimatedGIF/src/gif.c`) via `GIF_openRAM` and `GIF_playFrame`.
+  LVGL's timer supplies frame timing; parsing, LZW decode, and
+  delta/disposal composition remain in those components.
+- **Intentional local LVGL changes:** `lv_gif.c` zero-initializes the full
+  framebuffer to prevent stale AMOLED strips and forces `pTurboBuffer = NULL`
+  so the standard decoder composes delta/disposal frames correctly; this does
+  not make decompression custom. The framebuffer is the full canvas.
+
+The mapped partition data must remain valid until the widget is destroyed. The
+shutdown order is display lock → destroy `lv_gif` widget → unmap partition data.
+The flush path remains the custom internal-DMA partial CO5300 path in
+`main/boost_display.c`; it is separate from GIF parsing and decoding.
+
 ***
 
 ### Network modes

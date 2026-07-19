@@ -125,6 +125,41 @@ polling also fails. Restore the socket and verify it returns to the WebSocket
 path without duplicate polling timers. The fallback is a transport failure
 mode, not a visible rate label.
 
+### Fourth-client capacity check
+
+Use four separate browser tabs or four WebSocket clients against
+`ws://<board>/api/v1/state/ws` while the board is publishing telemetry:
+
+1. Open clients 1–3 and confirm all three remain `OPEN` for at least 30 s with
+   the 750 ms application heartbeat and no HTTP polling.
+2. Open client 4. Its handshake is the only one that may be closed/rejected;
+   clients 1–3 MUST remain open and continue receiving newer `uptimeMs` values.
+   A fourth tab must not evict an existing dashboard or cause its badge to
+   churn.
+3. In the fourth tab, block/close WebSocket traffic. Confirm
+   `GET /api/v1/state` runs every 250 ms (4 Hz), and that a successful sample
+   keeps the badge **Live** while WebSocket retries occur every 1 s. The badge
+   becomes **Disconnected** only after both the socket and state poll fail.
+4. Restore the socket and confirm polling stops with one timer, the badge stays
+   **Live**, and clients 1–3 were never disconnected.
+
+This check distinguishes capacity rejection of the newcomer from the forbidden
+behavior of failing the whole fourth dashboard or evicting an existing client.
+
+### GIF ownership and lifecycle check
+
+Trace one upload through the board logs/source before changing playback. Verify
+the custom layers are web upload, raw dual-slot CRC/committed-header publication,
+`esp_partition_mmap`, and the locked `lv_image_dsc_t`/`lv_gif` gauge integration.
+Verify `lv_gif.c` delegates `GIF_openRAM`/`GIF_playFrame` to bundled
+AnimatedGIF for parsing, LZW, frame timing, and composition; this is not a
+project-written decoder. Confirm the intentional standard-decoder choice: the
+full framebuffer is zeroed and `pTurboBuffer` is null because turbo did not
+compose delta/disposal frames correctly. During delete or replacement, verify
+the order display lock → destroy widget → unmap; mapped bytes must not be freed
+or unmapped while the widget exists. The custom display flush remains the
+internal-DMA partial CO5300 path and is not GIF decompression.
+
 During a 30-second dashboard soak, exercise a control (for example, theme or
 brightness) while telemetry is active. Latest verified result: maximum
 main-thread probe was **9 ms**, with **no freezes longer than 500 ms**.

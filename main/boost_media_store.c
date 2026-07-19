@@ -77,22 +77,15 @@ static bool header_valid(const media_header_t *header)
 
 static esp_err_t payload_crc_valid(int slot, const media_header_t *header)
 {
-    uint8_t buf[4096];
-    uint32_t crc = 0;
-    size_t remaining = header->payload_size;
-    size_t offset = 0;
-    while (remaining != 0) {
-        size_t n = remaining > sizeof(buf) ? sizeof(buf) : remaining;
-        esp_err_t err = esp_partition_read(s_partition,
-                                           (size_t)slot * SLOT_SIZE + PAYLOAD_OFFSET + offset,
-                                           buf, n);
-        if (err != ESP_OK) {
-            return err;
-        }
-        crc = esp_rom_crc32_le(crc, buf, n);
-        offset += n;
-        remaining -= n;
-    }
+    const void *mapped = NULL;
+    esp_partition_mmap_handle_t handle = 0;
+    esp_err_t err = esp_partition_mmap(
+        s_partition, (size_t)slot * SLOT_SIZE + PAYLOAD_OFFSET,
+        header->payload_size, ESP_PARTITION_MMAP_DATA, &mapped, &handle);
+    if (err != ESP_OK) return err;
+
+    const uint32_t crc = esp_rom_crc32_le(0, mapped, header->payload_size);
+    esp_partition_munmap(handle);
     return crc == header->payload_crc ? ESP_OK : ESP_ERR_INVALID_CRC;
 }
 

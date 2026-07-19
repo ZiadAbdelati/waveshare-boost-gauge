@@ -50,6 +50,25 @@ The physical gauge remains a 16 ms (~60 Hz) path. WebSocket telemetry targets
 **10 Hz**, browser canvas interpolation runs at **60 FPS**, and HTTP fallback is
 **4 Hz**. These are separate cadences; network packets are not 60 Hz.
 
+
+## Operational dashboard and GIF notes
+
+The web server has a fixed pool of **3 WebSocket clients**. A fourth handshake
+is rejected/closed only for the newcomer; existing sockets remain connected.
+When a browser falls back, it polls `/api/v1/state` at **4 Hz** and retries the
+WebSocket every **1 s**. A successful fallback keeps the badge **Live**;
+**Disconnected** means both transports failed.
+
+GIF playback is hybrid, not a custom decoder: custom web upload and raw
+dual-slot CRC/committed-header storage feed `esp_partition_mmap`; custom gauge
+integration creates an RGB565 `lv_gif` over an `lv_image_dsc_t` pointing at the
+mapping. LVGL `lv_gif` plus bundled AnimatedGIF (`GIF_openRAM`, `GIF_playFrame`)
+perform parsing, LZW, timing, and composition. The repository's LVGL changes
+zero the full canvas and disable the turbo buffer so standard decoding handles
+delta/disposal frames. Keep the mapping valid until widget destruction; use
+display lock → destroy widget → unmap. The internal-DMA partial CO5300 flush is
+custom display plumbing, separate from GIF decompression.
+
 ## Flash (merged image)
 
 ```bash
