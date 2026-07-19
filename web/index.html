@@ -2,10 +2,10 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <title>Boost Gauge Control</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/styles.css?v=20260719d">
 </head>
 <body>
   <div class="boot" id="boot" aria-hidden="true">
@@ -28,16 +28,7 @@
 
       <div class="gauge-wrap">
         <div class="gauge-device" id="gaugeDevice">
-          <div class="well"></div>
-          <canvas id="gaugeCanvas" width="466" height="466"></canvas>
-          <div class="chip" id="modeChip">DEMO</div>
-          <div class="zone" id="zone">ATMO</div>
-          <div class="readout">
-            <div class="psi" id="psi">+0.0</div>
-            <div class="unit">PSI</div>
-            <div class="peak" id="peak">PEAK +0.0</div>
-          </div>
-          <div class="hint">LIVE MIRROR</div>
+          <canvas id="gaugeCanvas" width="466" height="466" aria-label="Boost gauge face"></canvas>
         </div>
       </div>
 
@@ -64,6 +55,50 @@
           <div><span>Brightness</span><strong id="brightnessNow">--</strong></div>
         </div>
         <div class="error" id="errorBox" hidden></div>
+        <div class="ok" id="okBox" hidden></div>
+      </section>
+
+      <section class="panel network-panel">
+        <div class="section-title">
+          <span>Network</span>
+          <button id="networkRefreshBtn">Refresh</button>
+        </div>
+        <div class="status-grid network-grid">
+          <div><span>Mode</span><strong id="netMode">--</strong></div>
+          <div><span>STA</span><strong id="netStaState">--</strong></div>
+          <div><span>LAN IP</span><strong id="netStaIp">--</strong></div>
+          <div><span>SoftAP</span><strong id="netApSsid">--</strong></div>
+        </div>
+        <label class="field">
+          <span>Mode</span>
+          <select id="netModeSelect">
+            <option value="apsta">AP + Station (LAN)</option>
+            <option value="ap">SoftAP only</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Wi‑Fi SSID</span>
+          <input id="netSsid" type="text" maxlength="32" autocomplete="off" spellcheck="false">
+        </label>
+        <div class="scan-row">
+          <button id="scanNetworksBtn" type="button">Scan networks</button>
+          <select id="netScanSelect" aria-label="Scanned Wi‑Fi networks">
+            <option value="">Manual SSID entry</option>
+          </select>
+        </div>
+        <label class="field">
+          <span>Password</span>
+          <input id="netPassword" type="password" maxlength="64" autocomplete="new-password" placeholder="Leave blank to keep">
+        </label>
+        <label class="check-row">
+          <input id="netKeepPassword" type="checkbox" checked>
+          <span>Keep existing password if blank</span>
+        </label>
+        <div class="button-row">
+          <button class="wide-inline" id="saveNetworkBtn">Save Wi‑Fi</button>
+          <button class="wide-inline" id="reconnectNetworkBtn">Reconnect</button>
+        </div>
+        <p class="hint-text" id="netHint">Saving STA settings may move the dashboard to a new LAN IP.</p>
       </section>
 
       <section class="panel">
@@ -123,26 +158,28 @@
           <button id="clearLogsBtn">Clear</button>
         </div>
         <div class="log-summary" id="logSummary">No log summary yet.</div>
+        <p class="hint-text">The device retains the newest 1,800 samples in RAM: 3 minutes at the current 10 Hz live telemetry rate. Export downloads the entire retained window.</p>
         <div class="button-row">
           <button id="loadLogsBtn">Load recent</button>
-          <a class="button" href="/api/v1/logs.csv" download>CSV</a>
-        </div>
+          <button id="exportLogsBtn">Export CSV</button>
       </section>
 
       <section class="service-bay">
-        <div class="section-title"><span>Media GIF</span></div>
+        <div class="section-title"><span>AMOLED media GIF</span></div>
         <div class="bay-grid">
           <label class="file-drop">
-            <input id="mediaFile" type="file" accept="image/gif">
-            <span>Choose GIF</span>
-            <small id="mediaStatus">No active GIF</small>
+            <input id="mediaFile" type="file" accept="image/gif" data-max-width="466" data-max-height="466">
+            <span>Choose GIF (≤466 px)</span>
+            <small id="mediaStatus">No GIF uploaded</small>
           </label>
           <div class="button-row">
-            <button id="uploadMediaBtn">Upload</button>
+            <button id="uploadMediaBtn">Upload &amp; play</button>
             <button id="deleteMediaBtn">Delete</button>
           </div>
         </div>
         <progress id="mediaProgress" max="100" value="0"></progress>
+        <img id="mediaPreview" class="media-preview" alt="Uploaded GIF preview" hidden>
+        <p class="hint-text">GIF playback is exclusive and replaces the live gauge until deleted. Smaller GIFs stay at native size, centered on a black AMOLED background; 466 × 466 clips use the full panel. The browser preview remains disabled.</p>
       </section>
 
       <section class="service-bay">
@@ -160,6 +197,6 @@
     </aside>
   </main>
 
-  <script src="/app.js" defer></script>
+  <script src="/app.js?v=20260719d" defer></script>
 </body>
 </html>

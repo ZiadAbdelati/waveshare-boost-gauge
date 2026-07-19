@@ -4,8 +4,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <unistd.h>
+#include <time.h>
+
 
 #include "cJSON.h"
 #include "esp_app_desc.h"
@@ -15,26 +15,40 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_ota_ops.h"
-#include "esp_spiffs.h"
+
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+
 #include "nvs_flash.h"
 
 #include "boost_model.h"
+#include "boost_gauge.h"
+#include "boost_network.h"
+#include "boost_media_store.h"
 #include "generated_web_assets.h"
 
 #define API_BASE "/api/v1"
-#define AP_PASSWORD "boost1234"
-#define HTTP_CHUNK 2048
+#define WS_STATE_PATH API_BASE "/state/ws"
+
+#define HTTP_CHUNK 16384
 #define MAX_JSON_BODY 4096
-#define MAX_GIF_BYTES (2 * 1024 * 1024)
-#define MEDIA_PATH "/spiffs/active.gif"
-#define WEB_ROOT "/spiffs"
+#define MAX_GIF_BYTES BOOST_MEDIA_STORE_MAX_BYTES
+#define MAX_GIF_DIMENSION BOOST_MEDIA_STORE_MAX_DIMENSION
+
 
 static const char *TAG = "boost_web";
 static httpd_handle_t s_httpd;
+static int s_state_ws_fd = -1;
+static TaskHandle_t s_state_ws_task;
+static volatile bool s_media_upload_in_progress;
+static portMUX_TYPE s_web_lock = portMUX_INITIALIZER_UNLOCKED;
+static bool s_state_ws_inflight;
+static void *s_state_ws_payload;
+
+
+/* State is protected because telemetry task and HTTPD callbacks share it. */
 
 static esp_err_t set_common_headers(httpd_req_t *req, const char *type)
 {
@@ -101,20 +115,151 @@ static void append_theme_json(char *buf, size_t len, const boost_theme_t *theme)
     strlcat(buf, tmp, len);
 }
 
-static esp_err_t state_get(httpd_req_t *req)
+static int state_json(char *json, size_t len)
 {
     boost_state_t st;
     boost_model_get_state(&st);
-    char json[384];
-    snprintf(json, sizeof(json),
-             "{\"psi\":%.2f,\"peakPsi\":%.2f,\"zone\":\"%s\",\"demo\":%s,"
-             "\"brightness\":%d,\"firmwareVersion\":\"%s\",\"uptimeMs\":%llu,"
-             "\"epochMs\":%lld,\"timezoneOffsetMinutes\":%d,\"activeThemeId\":\"%s\"}",
-             (double)st.psi, (double)st.peak_psi, st.zone, st.demo ? "true" : "false",
-             st.brightness, st.firmware_version, (unsigned long long)st.uptime_ms,
-             (long long)st.epoch_ms, st.timezone_offset_minutes, st.active_theme_id);
-    return send_json(req, json);
+    return snprintf(json, len,
+                    "{\"psi\":%.2f,\"peakPsi\":%.2f,\"zone\":\"%s\",\"demo\":%s,"
+                    "\"brightness\":%d,\"firmwareVersion\":\"%s\",\"uptimeMs\":%llu,"
+                    "\"epochMs\":%lld,\"timezoneOffsetMinutes\":%d,\"activeThemeId\":\"%s\","
+                    "\"display\":{\"renderFps\":%lu,\"flushesPerSecond\":%lu,\"pixelsPerSecond\":%lu}}",
+                    (double)st.psi, (double)st.peak_psi, st.zone, st.demo ? "true" : "false",
+                    st.brightness, st.firmware_version, (unsigned long long)st.uptime_ms,
+                    (long long)st.epoch_ms, st.timezone_offset_minutes, st.active_theme_id,
+                    (unsigned long)st.display.render_fps, (unsigned long)st.display.flushes_per_second,
+                    (unsigned long)st.display.pixels_per_second);
 }
+
+static esp_err_t state_get(httpd_req_t *req)
+{
+    char json[512];
+    const int n = state_json(json, sizeof(json));
+    return n > 0 && n < (int)sizeof(json) ? send_json(req, json) : ESP_FAIL;
+}
+
+static void state_ws_send_done(esp_err_t err, int socket, void *arg)
+{
+    portENTER_CRITICAL(&s_web_lock);
+    if (s_state_ws_payload == arg) {
+        s_state_ws_payload = NULL;
+        s_state_ws_inflight = false;
+    }
+    if (err != ESP_OK && s_state_ws_fd == socket) {
+        s_state_ws_fd = -1;
+    }
+    portEXIT_CRITICAL(&s_web_lock);
+    free(arg);
+}
+
+static void state_ws_push(void *arg)
+{
+    (void)arg;
+    portENTER_CRITICAL(&s_web_lock);
+    const int fd = s_state_ws_fd;
+    const bool allowed = s_httpd != NULL && fd >= 0 && !s_state_ws_inflight;
+    if (allowed) {
+        s_state_ws_inflight = true;
+    }
+    portEXIT_CRITICAL(&s_web_lock);
+    if (!allowed) {
+        return;
+    }
+
+    char *json = malloc(512);
+    if (json == NULL) {
+        portENTER_CRITICAL(&s_web_lock);
+        s_state_ws_inflight = false;
+        portEXIT_CRITICAL(&s_web_lock);
+        return;
+    }
+    const int n = state_json(json, 512);
+    if (n <= 0 || n >= 512) {
+        free(json);
+        portENTER_CRITICAL(&s_web_lock);
+        s_state_ws_inflight = false;
+        portEXIT_CRITICAL(&s_web_lock);
+        return;
+    }
+    httpd_ws_frame_t frame = {
+        .final = true,
+        .type = HTTPD_WS_TYPE_TEXT,
+        .payload = (uint8_t *)json,
+        .len = (size_t)n,
+    };
+    portENTER_CRITICAL(&s_web_lock);
+    s_state_ws_payload = json;
+    portEXIT_CRITICAL(&s_web_lock);
+    const esp_err_t err = httpd_ws_send_data_async(s_httpd, fd, &frame, state_ws_send_done, json);
+    if (err != ESP_OK) {
+        portENTER_CRITICAL(&s_web_lock);
+        if (s_state_ws_payload == json) {
+            s_state_ws_payload = NULL;
+            s_state_ws_inflight = false;
+        }
+        if (s_state_ws_fd == fd) {
+            s_state_ws_fd = -1;
+        }
+        portEXIT_CRITICAL(&s_web_lock);
+        free(json);
+    }
+}
+
+static void state_ws_task(void *arg)
+{
+    (void)arg;
+    while (true) {
+        portENTER_CRITICAL(&s_web_lock);
+        const bool ready = !s_media_upload_in_progress && s_state_ws_fd >= 0 &&
+                           s_httpd != NULL && !s_state_ws_inflight;
+        portEXIT_CRITICAL(&s_web_lock);
+        if (ready) {
+            state_ws_push(NULL);
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+
+static esp_err_t state_ws_get(httpd_req_t *req)
+{
+    const int fd = httpd_req_to_sockfd(req);
+    if (req->method == HTTP_GET) {
+        portENTER_CRITICAL(&s_web_lock);
+        const int old_fd = s_state_ws_fd;
+        s_state_ws_fd = fd;
+        portEXIT_CRITICAL(&s_web_lock);
+        if (old_fd >= 0 && old_fd != fd) {
+            (void)httpd_sess_trigger_close(s_httpd, old_fd);
+        }
+        return ESP_OK;
+    }
+
+    httpd_ws_frame_t frame = {0};
+    esp_err_t err = httpd_ws_recv_frame(req, &frame, 0);
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (frame.type == HTTPD_WS_TYPE_CLOSE) {
+        frame.len = 0;
+        frame.payload = NULL;
+        err = httpd_ws_send_frame(req, &frame);
+    } else if (frame.type == HTTPD_WS_TYPE_PING) {
+        frame.type = HTTPD_WS_TYPE_PONG;
+        frame.len = 0;
+        frame.payload = NULL;
+        err = httpd_ws_send_frame(req, &frame);
+    }
+    if (frame.type == HTTPD_WS_TYPE_CLOSE || err != ESP_OK) {
+        portENTER_CRITICAL(&s_web_lock);
+        if (s_state_ws_fd == fd) {
+            s_state_ws_fd = -1;
+        }
+        portEXIT_CRITICAL(&s_web_lock);
+    }
+    return err;
+}
+
+
 
 static void config_json(char *json, size_t len)
 {
@@ -225,7 +370,9 @@ static esp_err_t time_post(httpd_req_t *req)
     if (err != ESP_OK) {
         return send_err(req, HTTPD_400, "time_not_set");
     }
+    boost_model_refresh_status();
     return state_get(req);
+
 }
 
 static esp_err_t themes_get(httpd_req_t *req)
@@ -307,15 +454,33 @@ static esp_err_t logs_csv_get(httpd_req_t *req)
     if (logs == NULL) {
         return send_err(req, HTTPD_500, "no_mem");
     }
-    size_t n = boost_model_copy_logs(logs, BOOST_LOG_CAPACITY);
+    const size_t n = boost_model_copy_logs(logs, BOOST_LOG_CAPACITY);
+    boost_state_t current;
+    boost_model_get_state(&current);
     set_common_headers(req, "text/csv");
     httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=\"boost-gauge-log.csv\"");
-    httpd_resp_sendstr_chunk(req, "tMs,psi,peakPsi,zone,demo\n");
-    char row[96];
+    httpd_resp_sendstr_chunk(req, "timestamp_local,utc_offset_minutes,epoch_ms,uptime_ms,psi,peakPsi,zone,demo\n");
+    char row[144];
     for (size_t i = 0; i < n; ++i) {
-        snprintf(row, sizeof(row), "%lu,%.2f,%.2f,%s,%d\n",
-                 (unsigned long)logs[i].t_ms, (double)logs[i].psi,
-                 (double)logs[i].peak_psi, logs[i].zone, logs[i].demo ? 1 : 0);
+        const int64_t epoch_ms = current.epoch_ms > 0
+            ? current.epoch_ms - ((int64_t)current.uptime_ms - (int64_t)logs[i].t_ms)
+            : 0;
+        char timestamp[40] = "";
+        if (epoch_ms > 0) {
+            const time_t seconds = (time_t)(epoch_ms / 1000LL) + current.timezone_offset_minutes * 60;
+            struct tm local = {0};
+            if (gmtime_r(&seconds, &local) != NULL) {
+                strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%S", &local);
+                const int offset = current.timezone_offset_minutes;
+                const int abs_offset = offset < 0 ? -offset : offset;
+                snprintf(timestamp + strlen(timestamp), sizeof(timestamp) - strlen(timestamp),
+                         "%c%02d:%02d", offset < 0 ? '-' : '+', abs_offset / 60, abs_offset % 60);
+            }
+        }
+        snprintf(row, sizeof(row), "%s,%d,%lld,%lu,%.2f,%.2f,%s,%d\n",
+                 timestamp, current.timezone_offset_minutes, (long long)epoch_ms,
+                 (unsigned long)logs[i].t_ms, (double)logs[i].psi, (double)logs[i].peak_psi,
+                 logs[i].zone, logs[i].demo ? 1 : 0);
         httpd_resp_sendstr_chunk(req, row);
     }
     free(logs);
@@ -330,90 +495,124 @@ static esp_err_t logs_delete(httpd_req_t *req)
 
 static esp_err_t media_status_get(httpd_req_t *req)
 {
-    boost_media_status_t st;
-    boost_model_get_media_status(&st);
+    boost_media_store_status_t st = {0};
+    if (boost_media_store_status(&st) != ESP_OK) return send_err(req, HTTPD_500, "media_status");
     char json[192];
     snprintf(json, sizeof(json),
-             "{\"present\":%s,\"name\":\"%s\",\"size\":%u,\"uploadedAtMs\":%lu,"
-             "\"playbackSupported\":%s,\"playback\":\"deferred\"}",
-             st.present ? "true" : "false", st.name, (unsigned)st.size,
-             (unsigned long)st.uploaded_at_ms, st.playback_supported ? "true" : "false");
+             "{\"present\":%s,\"name\":\"active.gif\",\"size\":%u,\"uploadedAtMs\":%lu,"
+             "\"playbackSupported\":%s,\"playback\":\"%s\"}",
+             st.present ? "true" : "false", (unsigned)st.size,
+             (unsigned long)st.uploaded_at_ms, st.present ? "true" : "false",
+             st.present ? "active" : "unavailable");
     return send_json(req, json);
 }
 
 static esp_err_t media_delete(httpd_req_t *req)
 {
-    unlink(MEDIA_PATH);
-    boost_media_status_t st = {
-        .present = false,
-        .playback_supported = false,
-    };
-    boost_model_set_media_status(&st);
+    portENTER_CRITICAL(&s_web_lock);
+    const bool busy = s_media_upload_in_progress;
+    portEXIT_CRITICAL(&s_web_lock);
+    if (busy) return send_err(req, "409 Conflict", "media_upload_in_progress");
+    boost_gauge_media_delete();
+    if (boost_media_store_delete() != ESP_OK) return send_err(req, HTTPD_500, "media_delete");
     return media_status_get(req);
 }
 
 static esp_err_t media_post(httpd_req_t *req)
 {
-    if (req->content_len == 0 || req->content_len > MAX_GIF_BYTES) {
-        return send_err(req, HTTPD_400, "gif_size");
+    if (req->content_len == 0 || req->content_len > MAX_GIF_BYTES) return send_err(req, HTTPD_400, "gif_size");
+    portENTER_CRITICAL(&s_web_lock);
+    if (s_media_upload_in_progress) {
+        portEXIT_CRITICAL(&s_web_lock);
+        return send_err(req, "409 Conflict", "media_upload_in_progress");
     }
-    FILE *f = fopen(MEDIA_PATH, "wb");
-    if (f == NULL) {
-        return send_err(req, HTTPD_500, "media_open");
-    }
-    char *buf = malloc(HTTP_CHUNK);
-    if (buf == NULL) {
-        fclose(f);
-        return send_err(req, HTTPD_500, "no_mem");
-    }
+    s_media_upload_in_progress = true;
+    portEXIT_CRITICAL(&s_web_lock);
+
+    esp_err_t result = ESP_OK;
+    const char *error_status = HTTPD_500;
+    const char *error_msg = "media_begin";
+    char *buf = NULL;
+    bool begun = false;
     size_t received = 0;
-    char header[6] = {0};
+    uint8_t header[10] = {0};
     bool header_ok = false;
+
+    boost_gauge_media_delete();
+    result = boost_media_store_begin(req->content_len);
+    if (result != ESP_OK) goto cleanup;
+    begun = true;
+    buf = malloc(HTTP_CHUNK);
+    if (buf == NULL) {
+        error_msg = "no_mem";
+        goto cleanup;
+    }
     while (received < req->content_len) {
         size_t want = req->content_len - received;
-        if (want > HTTP_CHUNK) {
-            want = HTTP_CHUNK;
-        }
-        int n = httpd_req_recv(req, buf, want);
+        if (want > HTTP_CHUNK) want = HTTP_CHUNK;
+        const int n = httpd_req_recv(req, buf, want);
         if (n <= 0) {
-            free(buf);
-            fclose(f);
-            unlink(MEDIA_PATH);
-            return send_err(req, HTTPD_400, "upload_failed");
+            result = ESP_FAIL;
+            error_status = HTTPD_400;
+            error_msg = "upload_failed";
+            goto cleanup;
         }
         if (received < sizeof(header)) {
             size_t copy = sizeof(header) - received;
-            if (copy > (size_t)n) {
-                copy = (size_t)n;
-            }
+            if (copy > (size_t)n) copy = (size_t)n;
             memcpy(header + received, buf, copy);
-            if (received + copy >= sizeof(header)) {
-                header_ok = memcmp(header, "GIF87a", 6) == 0 || memcmp(header, "GIF89a", 6) == 0;
+            if (received + copy == sizeof(header)) {
+                const unsigned width = (unsigned)header[6] | ((unsigned)header[7] << 8);
+                const unsigned height = (unsigned)header[8] | ((unsigned)header[9] << 8);
+                header_ok = (memcmp(header, "GIF87a", 6) == 0 || memcmp(header, "GIF89a", 6) == 0) &&
+                            width > 0 && height > 0 && width <= MAX_GIF_DIMENSION && height <= MAX_GIF_DIMENSION;
                 if (!header_ok) {
-                    free(buf);
-                    fclose(f);
-                    unlink(MEDIA_PATH);
-                    return send_err(req, HTTPD_400, "not_gif");
+                    result = ESP_ERR_INVALID_ARG;
+                    error_status = HTTPD_400;
+                    error_msg = "gif_dimensions";
+                    goto cleanup;
                 }
             }
         }
-        fwrite(buf, 1, (size_t)n, f);
+        result = boost_media_store_write(buf, (size_t)n);
+        if (result != ESP_OK) {
+            error_msg = "media_write";
+            goto cleanup;
+        }
         received += (size_t)n;
     }
-    free(buf);
-    fclose(f);
     if (!header_ok) {
-        unlink(MEDIA_PATH);
-        return send_err(req, HTTPD_400, "not_gif");
+        result = ESP_ERR_INVALID_ARG;
+        error_status = HTTPD_400;
+        error_msg = "not_gif";
+        goto cleanup;
     }
-    boost_media_status_t st = {
-        .size = received,
-        .uploaded_at_ms = (uint32_t)(esp_timer_get_time() / 1000ULL),
-        .present = true,
-        .playback_supported = false,
-    };
-    strlcpy(st.name, "active.gif", sizeof(st.name));
-    boost_model_set_media_status(&st);
+    result = boost_media_store_commit();
+    if (result != ESP_OK) {
+        error_msg = "media_commit";
+        goto cleanup;
+    }
+    begun = false;
+    if (!boost_gauge_media_load()) {
+        result = ESP_FAIL;
+        error_msg = "media_load";
+        goto cleanup;
+    }
+
+cleanup:
+    free(buf);
+    if (begun) boost_media_store_abort();
+    if (result != ESP_OK) {
+        boost_media_store_status_t old = {0};
+        if (boost_media_store_status(&old) == ESP_OK && old.present) (void)boost_gauge_media_load();
+        portENTER_CRITICAL(&s_web_lock);
+        s_media_upload_in_progress = false;
+        portEXIT_CRITICAL(&s_web_lock);
+        return send_err(req, error_status, error_msg);
+    }
+    portENTER_CRITICAL(&s_web_lock);
+    s_media_upload_in_progress = false;
+    portEXIT_CRITICAL(&s_web_lock);
     return media_status_get(req);
 }
 
@@ -423,6 +622,8 @@ static esp_err_t ota_post(httpd_req_t *req)
     if (part == NULL || req->content_len == 0) {
         return send_err(req, HTTPD_400, "ota_unavailable");
     }
+    ESP_LOGI(TAG, "OTA receiving %u bytes", (unsigned)req->content_len);
+
     esp_ota_handle_t ota = 0;
     esp_err_t err = esp_ota_begin(part, OTA_SIZE_UNKNOWN, &ota);
     if (err != ESP_OK) {
@@ -454,94 +655,48 @@ static esp_err_t ota_post(httpd_req_t *req)
         received += (size_t)n;
     }
     free(buf);
+    ESP_LOGI(TAG, "OTA wrote %u bytes; validating image", (unsigned)received);
+
     err = esp_ota_end(ota);
     if (err != ESP_OK) {
         return send_err(req, HTTPD_400, "ota_invalid");
     }
+    ESP_LOGI(TAG, "OTA image validated");
+
     err = esp_ota_set_boot_partition(part);
     if (err != ESP_OK) {
         return send_err(req, HTTPD_500, "ota_boot");
     }
-    return send_json(req, "{\"ok\":true,\"pendingReboot\":true}");
+    ESP_LOGI(TAG, "OTA boot partition selected");
+    char response[96];
+    snprintf(response, sizeof(response),
+             "{\"ok\":true,\"pendingReboot\":false,\"bytesWritten\":%u,\"restartRequired\":true}",
+             (unsigned)received);
+    return send_json(req, response);
 }
-
 static esp_err_t events_get(httpd_req_t *req)
 {
+    /* Retained for API compatibility. HTTPD has one request worker, so a
+     * long-lived response would starve the control APIs. The dashboard uses
+     * short-interval polling instead. */
+    boost_state_t st;
+    boost_model_get_state(&st);
+    char event[448];
+    int n = snprintf(event, sizeof(event),
+             "data: {\"psi\":%.2f,\"peakPsi\":%.2f,\"zone\":\"%s\",\"demo\":%s,"
+             "\"brightness\":%d,\"firmwareVersion\":\"%s\",\"uptimeMs\":%llu,\"epochMs\":%lld,"
+             "\"timezoneOffsetMinutes\":%d,\"activeThemeId\":\"%s\"}\n\n",
+             (double)st.psi, (double)st.peak_psi, st.zone, st.demo ? "true" : "false",
+             st.brightness, st.firmware_version ? st.firmware_version : "",
+             (unsigned long long)st.uptime_ms, (long long)st.epoch_ms,
+             st.timezone_offset_minutes, st.active_theme_id);
     set_common_headers(req, "text/event-stream");
-    httpd_resp_set_hdr(req, "Connection", "keep-alive");
-    for (int i = 0; i < 600; ++i) {
-        boost_state_t st;
-        boost_model_get_state(&st);
-        char event[384];
-        snprintf(event, sizeof(event),
-                 "data: {\"psi\":%.2f,\"peakPsi\":%.2f,\"zone\":\"%s\",\"demo\":%s,"
-                 "\"brightness\":%d,\"uptimeMs\":%llu,\"epochMs\":%lld,"
-                 "\"timezoneOffsetMinutes\":%d,\"activeThemeId\":\"%s\"}\n\n",
-                 (double)st.psi, (double)st.peak_psi, st.zone, st.demo ? "true" : "false",
-                 st.brightness, (unsigned long long)st.uptime_ms, (long long)st.epoch_ms,
-                 st.timezone_offset_minutes, st.active_theme_id);
-        if (httpd_resp_sendstr_chunk(req, event) != ESP_OK) {
-            return ESP_OK;
-        }
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
-    return httpd_resp_sendstr_chunk(req, NULL);
+    httpd_resp_set_hdr(req, "retry", "1000");
+    return (n > 0 && n < (int)sizeof(event))
+        ? httpd_resp_send(req, event, n)
+        : ESP_FAIL;
 }
 
-static const char *mime_for_path(const char *path)
-{
-    const char *dot = strrchr(path, '.');
-    if (dot == NULL) {
-        return "application/octet-stream";
-    }
-    if (strcmp(dot, ".html") == 0) {
-        return "text/html";
-    }
-    if (strcmp(dot, ".css") == 0) {
-        return "text/css";
-    }
-    if (strcmp(dot, ".js") == 0) {
-        return "application/javascript";
-    }
-    if (strcmp(dot, ".png") == 0) {
-        return "image/png";
-    }
-    if (strcmp(dot, ".gif") == 0) {
-        return "image/gif";
-    }
-    if (strcmp(dot, ".svg") == 0) {
-        return "image/svg+xml";
-    }
-    return "application/octet-stream";
-}
-
-static esp_err_t stream_file(httpd_req_t *req, const char *path)
-{
-    FILE *f = fopen(path, "rb");
-    if (f == NULL) {
-        return ESP_ERR_NOT_FOUND;
-    }
-    set_common_headers(req, mime_for_path(path));
-    char *buf = malloc(HTTP_CHUNK);
-    if (buf == NULL) {
-        fclose(f);
-        return send_err(req, HTTPD_500, "no_mem");
-    }
-    while (true) {
-        size_t n = fread(buf, 1, HTTP_CHUNK, f);
-        if (n > 0 && httpd_resp_send_chunk(req, buf, n) != ESP_OK) {
-            free(buf);
-            fclose(f);
-            return ESP_FAIL;
-        }
-        if (n < HTTP_CHUNK) {
-            break;
-        }
-    }
-    free(buf);
-    fclose(f);
-    return httpd_resp_sendstr_chunk(req, NULL);
-}
 
 static esp_err_t fallback_root_get(httpd_req_t *req)
 {
@@ -570,28 +725,25 @@ static esp_err_t fallback_root_get(httpd_req_t *req)
 static esp_err_t root_get(httpd_req_t *req)
 {
     const char *uri = req->uri;
-    if (strstr(uri, "..") != NULL || strchr(uri, '?') != NULL) {
-        return send_err(req, HTTPD_400, "bad_path");
+    char path_only[160];
+    const char *q = strchr(uri, '?');
+    if (q != NULL) {
+        size_t n = (size_t)(q - uri);
+        if (n >= sizeof(path_only)) return send_err(req, HTTPD_400, "bad_path");
+        memcpy(path_only, uri, n);
+        path_only[n] = '\0';
+        uri = path_only;
     }
-
+    if (strstr(uri, "..") != NULL) return send_err(req, HTTPD_400, "bad_path");
     const boost_web_asset_t *asset = boost_web_asset_find(uri);
     if (asset != NULL) {
         httpd_resp_set_type(req, asset->content_type);
         httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
         httpd_resp_set_hdr(req, "ETag", asset->etag);
-        httpd_resp_set_hdr(req, "Cache-Control", "public, max-age=3600");
+        httpd_resp_set_hdr(req, "Cache-Control", "no-store");
         return httpd_resp_send(req, (const char *)asset->gzip_data, asset->gzip_size);
     }
-
-    char path[160];
-    const char *file_uri = strcmp(uri, "/") == 0 ? "/index.html" : uri;
-    snprintf(path, sizeof(path), WEB_ROOT "%s", file_uri);
-    if (stream_file(req, path) == ESP_OK) {
-        return ESP_OK;
-    }
-    if (strcmp(uri, "/") == 0 || strcmp(uri, "/index.html") == 0) {
-        return fallback_root_get(req);
-    }
+    if (strcmp(uri, "/") == 0 || strcmp(uri, "/index.html") == 0) return fallback_root_get(req);
     return send_err(req, HTTPD_404, "not_found");
 }
 
@@ -612,72 +764,180 @@ static void register_uri(const char *uri, httpd_method_t method, esp_err_t (*han
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_httpd, &u));
 }
 
-static esp_err_t mount_spiffs(void)
+static void register_websocket_uri(const char *uri, esp_err_t (*handler)(httpd_req_t *))
 {
-    esp_vfs_spiffs_conf_t conf = {
-        .base_path = "/spiffs",
-        .partition_label = "storage",
-        .max_files = 4,
-        .format_if_mount_failed = true,
+    httpd_uri_t u = {
+        .uri = uri,
+        .method = HTTP_GET,
+        .handler = handler,
+        .user_ctx = NULL,
+        .is_websocket = true,
     };
-    esp_err_t err = esp_vfs_spiffs_register(&conf);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "SPIFFS mount failed: %s", esp_err_to_name(err));
-        return err;
-    }
-    struct stat st;
-    if (stat(MEDIA_PATH, &st) == 0 && st.st_size > 0) {
-        boost_media_status_t ms = {
-            .size = (size_t)st.st_size,
-            .present = true,
-            .playback_supported = false,
-        };
-        strlcpy(ms.name, "active.gif", sizeof(ms.name));
-        boost_model_set_media_status(&ms);
-    }
-    return ESP_OK;
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_httpd, &u));
 }
 
-static esp_err_t start_ap(void)
-{
-    ESP_RETURN_ON_ERROR(esp_netif_init(), TAG, "netif init");
-    ESP_RETURN_ON_ERROR(esp_event_loop_create_default(), TAG, "event loop");
-    esp_netif_create_default_wifi_ap();
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_RETURN_ON_ERROR(esp_wifi_init(&cfg), TAG, "wifi init");
 
-    uint8_t mac[6];
-    ESP_ERROR_CHECK(esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP));
-    wifi_config_t ap = {0};
-    snprintf((char *)ap.ap.ssid, sizeof(ap.ap.ssid), "BoostGauge-%02X%02X", mac[4], mac[5]);
-    strlcpy((char *)ap.ap.password, AP_PASSWORD, sizeof(ap.ap.password));
-    ap.ap.ssid_len = strlen((char *)ap.ap.ssid);
-    ap.ap.channel = 6;
-    ap.ap.max_connection = 4;
-    ap.ap.authmode = WIFI_AUTH_WPA_WPA2_PSK;
-    if (strlen(AP_PASSWORD) == 0) {
-        ap.ap.authmode = WIFI_AUTH_OPEN;
+static void json_escape(const char *in, char *out, size_t out_len)
+{
+    size_t o = 0;
+    if (!in) {
+        if (out_len) out[0] = '\0';
+        return;
+    }
+    for (size_t i = 0; in[i] && o + 2 < out_len; ++i) {
+        char c = in[i];
+        if (c == '"' || c == '\\') {
+            if (o + 3 >= out_len) break;
+            out[o++] = '\\';
+            out[o++] = c;
+        } else if ((unsigned char)c < 0x20) {
+            continue;
+        } else {
+            out[o++] = c;
+        }
+    }
+    out[o] = '\0';
+}
+
+static void network_status_json(char *json, size_t len)
+{
+    boost_net_status_t st;
+    boost_network_get_status(&st);
+    char ssid_e[96];
+    char ap_e[64];
+    json_escape(st.sta_ssid, ssid_e, sizeof(ssid_e));
+    json_escape(st.ap_ssid, ap_e, sizeof(ap_e));
+    snprintf(json, len,
+             "{\"mode\":\"%s\",\"staEnabled\":%s,\"staConnected\":%s,"
+             "\"staSsid\":\"%s\",\"staIp\":\"%s\",\"apSsid\":\"%s\",\"apIp\":\"%s\","
+             "\"rssi\":%d,\"hasPassword\":%s}",
+             st.mode == BOOST_NET_MODE_APSTA ? "apsta" : "ap",
+             st.sta_enabled ? "true" : "false",
+             st.sta_connected ? "true" : "false",
+             ssid_e, st.sta_ip, ap_e, st.ap_ip, st.rssi,
+             st.has_sta_pass ? "true" : "false");
+}
+
+static esp_err_t network_scan_get(httpd_req_t *req)
+{
+    boost_wifi_scan_record_t records[BOOST_WIFI_SCAN_MAX_RECORDS] = {0};
+    uint16_t count = 0;
+    esp_err_t err = boost_network_scan(records, BOOST_WIFI_SCAN_MAX_RECORDS, &count);
+    if (err != ESP_OK) {
+        return send_err(req, HTTPD_400, "scan_failed");
     }
 
-    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_AP), TAG, "wifi mode");
-    ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_AP, &ap), TAG, "wifi config");
-    ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "wifi start");
-    ESP_LOGI(TAG, "AP %s password %s", ap.ap.ssid, AP_PASSWORD);
-    return ESP_OK;
+    char json[1536];
+    strlcpy(json, "{\"networks\":[", sizeof(json));
+    for (uint16_t i = 0; i < count; ++i) {
+        char ssid_e[96];
+        char item[160];
+        json_escape(records[i].ssid, ssid_e, sizeof(ssid_e));
+        snprintf(item, sizeof(item), "%s{\"ssid\":\"%s\",\"rssi\":%d,\"auth\":%d}",
+                 i == 0 ? "" : ",", ssid_e, records[i].rssi, records[i].authmode);
+        strlcat(json, item, sizeof(json));
+    }
+    strlcat(json, "]}", sizeof(json));
+    return send_json(req, json);
+}
+
+static esp_err_t network_get(httpd_req_t *req)
+{
+    char json[512];
+    network_status_json(json, sizeof(json));
+    return send_json(req, json);
+}
+
+static esp_err_t network_put(httpd_req_t *req)
+{
+    char *body = read_body(req, MAX_JSON_BODY);
+    if (body == NULL) {
+        return send_err(req, HTTPD_400, "invalid_body");
+    }
+    cJSON *root = cJSON_Parse(body);
+    free(body);
+    if (!cJSON_IsObject(root)) {
+        cJSON_Delete(root);
+        return send_err(req, HTTPD_400, "invalid_json");
+    }
+
+    const char *ssid = NULL;
+    const char *password = NULL;
+    bool keep_password = true;
+    bool have_mode = false;
+    boost_net_mode_t mode = BOOST_NET_MODE_AP;
+
+    cJSON *ssid_j = cJSON_GetObjectItemCaseSensitive(root, "ssid");
+    if (cJSON_IsString(ssid_j)) {
+        ssid = ssid_j->valuestring;
+    }
+    cJSON *pass_j = cJSON_GetObjectItemCaseSensitive(root, "password");
+    if (cJSON_IsString(pass_j)) {
+        password = pass_j->valuestring;
+        keep_password = false;
+    }
+    cJSON *keep_j = cJSON_GetObjectItemCaseSensitive(root, "keepPassword");
+    if (cJSON_IsBool(keep_j)) {
+        keep_password = cJSON_IsTrue(keep_j);
+        if (keep_password) {
+            password = "";
+        }
+    }
+    cJSON *mode_j = cJSON_GetObjectItemCaseSensitive(root, "mode");
+    if (cJSON_IsString(mode_j) && mode_j->valuestring) {
+        have_mode = true;
+        if (strcmp(mode_j->valuestring, "apsta") == 0) {
+            mode = BOOST_NET_MODE_APSTA;
+        } else if (strcmp(mode_j->valuestring, "ap") == 0) {
+            mode = BOOST_NET_MODE_AP;
+        } else {
+            cJSON_Delete(root);
+            return send_err(req, HTTPD_400, "invalid_mode");
+        }
+    }
+
+    esp_err_t err = boost_network_update(ssid, password, keep_password, mode, have_mode);
+    cJSON_Delete(root);
+    if (err != ESP_OK) {
+        return send_err(req, HTTPD_400, "network_update_failed");
+    }
+    /* Do not block the HTTP worker waiting for association; client polls /network. */
+    char json[512];
+    network_status_json(json, sizeof(json));
+    return send_json(req, json);
+}
+
+static esp_err_t network_reconnect_post(httpd_req_t *req)
+{
+    esp_err_t err = boost_network_reconnect();
+    if (err != ESP_OK && err != ESP_ERR_WIFI_CONN) {
+        return send_err(req, HTTPD_400, "reconnect_failed");
+    }
+    char json[512];
+    network_status_json(json, sizeof(json));
+    return send_json(req, json);
 }
 
 esp_err_t boost_web_start(void)
 {
-    mount_spiffs();
-    ESP_RETURN_ON_ERROR(start_ap(), TAG, "ap");
-
+    ESP_RETURN_ON_ERROR(boost_media_store_init(), TAG, "media");
+    boost_media_store_status_t media = {0};
+    if (boost_media_store_status(&media) == ESP_OK && media.present) {
+        (void)boost_gauge_media_load();
+    }
+    ESP_RETURN_ON_ERROR(boost_network_start(25000), TAG, "wifi");
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.stack_size = 8192;
-    cfg.max_uri_handlers = 24;
+    cfg.stack_size = 10240;
+    cfg.task_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    cfg.max_uri_handlers = 32;
+    cfg.max_open_sockets = 7;
+    cfg.lru_purge_enable = true;
+    cfg.recv_wait_timeout = 90;
+    cfg.send_wait_timeout = 5;
     cfg.uri_match_fn = httpd_uri_match_wildcard;
     ESP_RETURN_ON_ERROR(httpd_start(&s_httpd, &cfg), TAG, "httpd");
-
     register_uri(API_BASE "/state", HTTP_GET, state_get);
+    register_websocket_uri(WS_STATE_PATH, state_ws_get);
     register_uri(API_BASE "/config", HTTP_GET, config_get);
     register_uri(API_BASE "/config", HTTP_PUT, config_put);
     register_uri(API_BASE "/time", HTTP_POST, time_post);
@@ -690,9 +950,16 @@ esp_err_t boost_web_start(void)
     register_uri(API_BASE "/media", HTTP_DELETE, media_delete);
     register_uri(API_BASE "/media/status", HTTP_GET, media_status_get);
     register_uri(API_BASE "/ota", HTTP_POST, ota_post);
+    register_uri(API_BASE "/network", HTTP_GET, network_get);
+    register_uri(API_BASE "/network", HTTP_PUT, network_put);
+    register_uri(API_BASE "/network/reconnect", HTTP_POST, network_reconnect_post);
+    register_uri(API_BASE "/network/scan", HTTP_GET, network_scan_get);
     register_uri(API_BASE "/events", HTTP_GET, events_get);
     register_uri("/*", HTTP_GET, root_get);
     register_uri("/*", HTTP_OPTIONS, options_handler);
     ESP_LOGI(TAG, "HTTP API ready");
+    if (xTaskCreate(state_ws_task, "boost_ws", 3072, NULL, 3, &s_state_ws_task) != pdPASS) {
+        ESP_LOGW(TAG, "live WebSocket task not started");
+    }
     return ESP_OK;
 }

@@ -1,12 +1,15 @@
 idf_component_register(
     SRCS
         "main.c"
+        "boost_display.c"
         "boost_gauge.c"
         "boost_model.c"
         "boost_sim.c"
         "boost_brightness.c"
         "boost_theme.c"
         "boost_web.c"
+        "boost_media_store.c"
+        "boost_network.c"
         "generated_web_assets.c"
     INCLUDE_DIRS
         "."
@@ -20,5 +23,4 @@ idf_component_register(
         esp_wifi
         json
         nvs_flash
-        spiffs
 )

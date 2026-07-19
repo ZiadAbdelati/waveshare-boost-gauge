@@ -6,17 +6,22 @@
 #include <string.h>
 
 #ifdef ESP_PLATFORM
+#include "freertos/FreeRTOS.h"
 #include "esp_log.h"
+#include "boost_media_store.h"
 #else
 #define ESP_LOGI(tag, fmt, ...) printf("[I][%s] " fmt "\n", tag, ##__VA_ARGS__)
 #define ESP_LOGW(tag, fmt, ...) printf("[W][%s] " fmt "\n", tag, ##__VA_ARGS__)
 #define ESP_LOGE(tag, fmt, ...) printf("[E][%s] " fmt "\n", tag, ##__VA_ARGS__)
 #endif
-
 #include "lvgl.h"
 #include "boost_brightness.h"
 #ifdef ESP_PLATFORM
 #include "boost_model.h"
+#include "boost_display.h"
+#endif
+#if LV_USE_GIF
+#include "libs/gif/lv_gif.h"
 #endif
 
 #ifndef M_PI
@@ -62,32 +67,49 @@
 #define ARC_RANGE     270
 
 #define DISP_SIZE     466
-/* Keep the arc safely inside the CO5300's rounded physical edge. */
-#define ARC_DIAMETER  452
+/* Nominal outer arc edge stays 2 px inside the 466 px AMOLED face. */
+#define ARC_DIAMETER  462
 #define ARC_WIDTH     45
 #define ZERO_LINE_W   20
 /* Zero-side hide gap — boost tuned via sim pixels (3.8 clean; 4.0 margin). */
 #define ZERO_GAP_VAC_DEG   3.6f
 #define ZERO_GAP_BOOST_DEG 4.00f
 #define TICK_FONT     (&lv_font_montserrat_20)
-/* Tick labels sit just inside the thicker arc. */
+/* Original label placement: inside the arc's inner edge. */
 #define TICK_RADIUS   160.0f
+/* Fixed decimal anchors keep the fractional pair stationary; integer digits
+ * grow only to the left when boost reaches two figures. */
+#define VALUE_SLOT_WIDTH   26
+#define VALUE_SLOT_HEIGHT  64
+#define VALUE_SIGN_X       (-69)
+#define VALUE_TENS_X       (-43)
+#define VALUE_ONES_X       (-17)
+#define VALUE_DECIMAL_X    8
+#define VALUE_TENTHS_X     30
 #define HOLD_DIM_MS   2000
 #define WELL_SIZE     DISP_SIZE
 
 static const char *TAG = "boost_gauge";
 
 static lv_obj_t *s_arc_track;
-static lv_obj_t *s_arc_value;
+static lv_obj_t *s_arc_value_canvas;
 static lv_obj_t *s_well;
 static lv_obj_t *s_zero_notch;
-static lv_obj_t *s_value_label;
+static lv_obj_t *s_value_sign_label;
+static lv_obj_t *s_value_tens_label;
+static lv_obj_t *s_value_ones_label;
+static lv_obj_t *s_value_decimal_label;
+static lv_obj_t *s_value_tenths_label;
 static lv_obj_t *s_unit_label;
 static lv_obj_t *s_peak_label;
 static lv_obj_t *s_mode_label;
 static lv_obj_t *s_zone_label;
 static lv_obj_t *s_hint_label;
 static lv_obj_t *s_tick_labels[5];
+#if LV_USE_GIF
+static lv_obj_t *s_media_gif;
+static lv_image_dsc_t s_media_dsc;
+#endif
 
 static float s_display_psi;
 static float s_peak_psi;
@@ -135,6 +157,67 @@ static const boost_theme_t *active_theme(void)
 #endif
 }
 
+#if LV_USE_GIF
+static void set_gauge_hidden(bool hidden)
+{
+    lv_obj_t *scr = lv_screen_active();
+    for (uint32_t i = 0; i < lv_obj_get_child_count(scr); ++i) {
+        lv_obj_t *child = lv_obj_get_child(scr, i);
+        if (child != s_media_gif) lv_obj_set_flag(child, LV_OBJ_FLAG_HIDDEN, hidden);
+    }
+}
+
+static void destroy_media_gif(void)
+{
+    if (s_media_gif != NULL) {
+        lv_obj_delete(s_media_gif);
+        s_media_gif = NULL;
+    }
+    memset(&s_media_dsc, 0, sizeof(s_media_dsc));
+    set_gauge_hidden(false);
+}
+
+static bool load_media_gif_locked(void)
+{
+    const uint8_t *data = NULL;
+    size_t size = 0;
+    uint16_t width = 0;
+    uint16_t height = 0;
+    if (boost_media_store_map(&data, &size, &width, &height) != ESP_OK) return false;
+    set_gauge_hidden(true);
+    s_media_gif = lv_gif_create(lv_screen_active());
+    if (s_media_gif == NULL) {
+        boost_media_store_unmap();
+        set_gauge_hidden(false);
+        return false;
+    }
+    s_media_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+    s_media_dsc.header.cf = LV_COLOR_FORMAT_RAW;
+    s_media_dsc.header.w = width;
+    s_media_dsc.header.h = height;
+    s_media_dsc.data_size = size;
+    s_media_dsc.data = data;
+    lv_obj_set_size(s_media_gif, DISP_SIZE, DISP_SIZE);
+    lv_obj_set_style_bg_color(s_media_gif, c(COLOR_VOID), 0);
+    lv_obj_set_style_bg_opa(s_media_gif, LV_OPA_COVER, 0);
+    lv_gif_set_color_format(s_media_gif, LV_COLOR_FORMAT_RGB565);
+    lv_image_set_inner_align(s_media_gif, LV_IMAGE_ALIGN_CENTER);
+    lv_gif_set_src(s_media_gif, &s_media_dsc);
+    if (!lv_gif_is_loaded(s_media_gif)) {
+        lv_obj_delete(s_media_gif);
+        s_media_gif = NULL;
+        memset(&s_media_dsc, 0, sizeof(s_media_dsc));
+        boost_media_store_unmap();
+        set_gauge_hidden(false);
+        return false;
+    }
+    lv_obj_center(s_media_gif);
+    lv_obj_move_foreground(s_media_gif);
+    lv_obj_clear_flag(s_media_gif, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    return true;
+}
+#endif
+
 /* Map PSI onto the 270° face: LVGL 0° = east, clockwise. */
 static float psi_to_angle(float psi)
 {
@@ -142,43 +225,75 @@ static float psi_to_angle(float psi)
     const float t = (psi - PSI_MIN) / (PSI_MAX - PSI_MIN);
     return (float)ARC_START + t * (float)ARC_RANGE;
 }
-/*
- * Fill from the zero notch toward the current PSI.
- * Vacuum grows counter-clockwise from 0; boost clockwise from 0.
- *
- * LVGL only supports rounded-or-not for both arc ends, so we keep rounded
- * ends globally and hide the zero-side round under the white mark with a gap.
- */
-static void set_value_arc(float psi)
+static lv_color_t color_for_psi(const boost_theme_t *theme, float psi);
+
+static void value_arc_angles(float psi, float *start, float *end)
 {
     const float zero_a = psi_to_angle(0.0f);
-    const float val_a = psi_to_angle(psi);
+    if (psi >= 0.0f) {
+        *start = zero_a + ZERO_GAP_BOOST_DEG;
+        *end = fmaxf(psi_to_angle(psi), *start);
+    } else {
+        *start = fminf(psi_to_angle(psi), zero_a - ZERO_GAP_VAC_DEG);
+        *end = zero_a - ZERO_GAP_VAC_DEG;
+    }
+}
+
+static void draw_value_arc(lv_event_t *event)
+{
+    const float psi = *(const float *)lv_event_get_user_data(event);
     float start;
     float end;
+    value_arc_angles(psi, &start, &end);
+    lv_draw_arc_dsc_t dsc;
+    lv_draw_arc_dsc_init(&dsc);
+    dsc.color = color_for_psi(active_theme(), psi);
+    dsc.width = ARC_WIDTH;
+    dsc.start_angle = start;
+    dsc.end_angle = end;
+    dsc.center.x = DISP_SIZE / 2;
+    dsc.center.y = DISP_SIZE / 2;
+    dsc.radius = ARC_DIAMETER / 2;
+    dsc.opa = LV_OPA_COVER;
+    dsc.rounded = true;
+    lv_draw_arc(lv_event_get_layer(event), &dsc);
+}
 
-    if (psi >= 0.0f) {
-        /* Boost: larger gap — rounded start was peeking past the zero mark. */
-        start = zero_a + ZERO_GAP_BOOST_DEG;
-        end = val_a;
-        if (end < start) {
-            end = start;
-        }
+static void invalidate_value_arc(float start, float end)
+{
+    /* lv_draw_arc_get_area accepts a contiguous arc through one quarter turn.
+     * Split the 240°→405° boost span at quarter boundaries; otherwise LVGL
+     * treats it as a wrapped whole-object invalidation and leaves stale pixels. */
+    for (float segment_start = start; segment_start < end;) {
+        const float boundary = (floorf(segment_start / 90.0f) + 1.0f) * 90.0f;
+        const float segment_end = fminf(end, boundary);
+        lv_area_t area;
+        lv_draw_arc_get_area(DISP_SIZE / 2, DISP_SIZE / 2, ARC_DIAMETER / 2,
+                             segment_start, segment_end, ARC_WIDTH, true, &area);
+        lv_obj_invalidate_area(s_arc_value_canvas, &area);
+        segment_start = segment_end;
+    }
+}
+
+static void set_value_arc(float psi)
+{
+    float old_start;
+    float old_end;
+    float new_start;
+    float new_end;
+    value_arc_angles(s_display_psi, &old_start, &old_end);
+    value_arc_angles(psi, &new_start, &new_end);
+
+    if ((s_display_psi < 0.0f) != (psi < 0.0f) ||
+        !lv_color_eq(color_for_psi(active_theme(), s_display_psi), color_for_psi(active_theme(), psi))) {
+        /* Color-zone changes and zero crossings need both complete arcs repainted. */
+        invalidate_value_arc(old_start, old_end);
+        invalidate_value_arc(new_start, new_end);
+    } else if (psi >= 0.0f) {
+        invalidate_value_arc(fminf(old_end, new_end), fmaxf(old_end, new_end));
     } else {
-        /* Vacuum: smaller gap is enough on this side. */
-        start = val_a;
-        end = zero_a - ZERO_GAP_VAC_DEG;
-        if (end < start) {
-            end = start;
-        }
+        invalidate_value_arc(fminf(old_start, new_start), fmaxf(old_start, new_start));
     }
-
-    /* Collapse near zero so the indicator doesn't leave a stub. */
-    if (fabsf(end - start) < 0.4f) {
-        start = zero_a;
-        end = zero_a;
-    }
-
-    lv_arc_set_angles(s_arc_value, start, end);
 }
 
 static lv_color_t color_for_psi(const boost_theme_t *theme, float psi)
@@ -190,11 +305,10 @@ static lv_color_t color_for_psi(const boost_theme_t *theme, float psi)
         return c(theme->boost);
     }
     if (psi > -0.35f) {
-        return c(theme->text); /* ATMO: neutral, not boost-amber */
+        return c(theme->text);
     }
     return c(theme->vacuum);
 }
-
 static const char *zone_for_psi(float psi)
 {
     if (psi >= PSI_OVERBOOST) {
@@ -209,24 +323,20 @@ static const char *zone_for_psi(float psi)
     return "VAC";
 }
 
-static void format_signed_psi(char *buf, size_t n, float psi)
+static void format_value_slots(char *sign, char *tens, char *ones, char *tenths, float psi)
 {
-    /* One decimal; force leading sign so vacuum and boost share width. */
-    snprintf(buf, n, "%+.1f", (double)psi);
+    const int tenths_psi = (int)lroundf(fabsf(psi) * 10.0f);
+    const int whole = tenths_psi / 10;
+    *sign = psi < -0.05f ? '-' : ' ';
+    *tens = whole >= 10 ? (char)('0' + whole / 10) : ' ';
+    *ones = (char)('0' + whole % 10);
+    *tenths = (char)('0' + tenths_psi % 10);
 }
-
 static void reset_peak_ui(void)
 {
-    const boost_theme_t *theme = active_theme();
     boost_sim_reset_peak();
-    /* Peak is boost-oriented: never display a vacuum peak. */
-    s_peak_psi = s_display_psi > 0.0f ? s_display_psi : 0.0f;
-    if (s_peak_label) {
-        char buf[32];
-        snprintf(buf, sizeof(buf), "PEAK  %+.1f", (double)s_peak_psi);
-        lv_label_set_text(s_peak_label, buf);
-        lv_obj_set_style_text_color(s_peak_label, c(theme->boost), 0);
-    }
+    /* Peak is boost-oriented and starts from the current boost reading. */
+    s_peak_psi = fmaxf(s_display_psi, 0.0f);
     ESP_LOGI(TAG, "peak reset");
 }
 
@@ -289,7 +399,7 @@ static void add_tick_label(int idx, float psi, const char *text)
     const lv_coord_t w = lv_obj_get_width(lab);
     const lv_coord_t h = lv_obj_get_height(lab);
     float r = TICK_RADIUS;
-    /* Zero sits under the ice notch — nudge further inward. */
+    /* Zero sits under the ice notch — keep its glyph clear of the ring. */
     if (fabsf(psi) < 0.01f) {
         r = TICK_RADIUS - 18.0f;
     }
@@ -297,6 +407,20 @@ static void add_tick_label(int idx, float psi, const char *text)
     const float y = cy + r * sinf(rad) - h * 0.5f;
     lv_obj_set_pos(lab, (lv_coord_t)lroundf(x), (lv_coord_t)lroundf(y));
     s_tick_labels[idx] = lab;
+}
+
+static lv_obj_t *add_value_slot(lv_obj_t *scr, const char *text, int x)
+{
+    const boost_theme_t *theme = active_theme();
+    lv_obj_t *slot = lv_label_create(scr);
+    lv_label_set_text(slot, text);
+    lv_obj_set_size(slot, VALUE_SLOT_WIDTH, VALUE_SLOT_HEIGHT);
+    lv_obj_set_style_text_font(slot, &lv_font_montserrat_48, 0);
+    lv_obj_set_style_text_color(slot, c(theme->text), 0);
+    lv_obj_set_style_text_align(slot, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(slot, LV_ALIGN_CENTER, x, -22);
+    lv_obj_clear_flag(slot, LV_OBJ_FLAG_CLICKABLE);
+    return slot;
 }
 
 void boost_gauge_create(void)
@@ -351,23 +475,13 @@ void boost_gauge_create(void)
     lv_obj_set_style_arc_rounded(s_arc_track, true, LV_PART_MAIN);
     lv_obj_clear_flag(s_arc_track, LV_OBJ_FLAG_CLICKABLE);
 
-    /*
-     * Value arc: rounded tip at the live end; zero-side rounded end is hidden
-     * under the white zero mark via ZERO_GAP_DEG.
-     */
-    s_arc_value = lv_arc_create(scr);
-    lv_obj_set_size(s_arc_value, ARC_DIAMETER, ARC_DIAMETER);
-    lv_obj_center(s_arc_value);
-    lv_arc_set_rotation(s_arc_value, 0);
-    lv_arc_set_bg_angles(s_arc_value, ARC_START, ARC_END);
-    lv_arc_set_angles(s_arc_value, psi_to_angle(0.0f), psi_to_angle(0.0f));
-    lv_obj_remove_style(s_arc_value, NULL, LV_PART_KNOB);
-    lv_obj_set_style_arc_width(s_arc_value, ARC_WIDTH, LV_PART_MAIN);
-    lv_obj_set_style_arc_width(s_arc_value, ARC_WIDTH, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_opa(s_arc_value, LV_OPA_0, LV_PART_MAIN);
-    lv_obj_set_style_arc_color(s_arc_value, c(theme->vacuum), LV_PART_INDICATOR);
-    lv_obj_set_style_arc_rounded(s_arc_value, true, LV_PART_INDICATOR);
-    lv_obj_clear_flag(s_arc_value, LV_OBJ_FLAG_CLICKABLE);
+    /* Custom-drawn active arc invalidates only the changed angular wedge. */
+    s_arc_value_canvas = lv_obj_create(scr);
+    lv_obj_remove_style_all(s_arc_value_canvas);
+    lv_obj_set_size(s_arc_value_canvas, DISP_SIZE, DISP_SIZE);
+    lv_obj_center(s_arc_value_canvas);
+    lv_obj_clear_flag(s_arc_value_canvas, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(s_arc_value_canvas, draw_value_arc, LV_EVENT_DRAW_MAIN, &s_display_psi);
 
     /*
      * Zero mark — thicker radial ice tick that fits inside the gray ring only.
@@ -393,6 +507,7 @@ void boost_gauge_create(void)
     lv_obj_set_style_line_width(s_zero_notch, ZERO_LINE_W, 0);
     lv_obj_set_style_line_color(s_zero_notch, c(theme->zero), 0);
     lv_obj_set_style_line_rounded(s_zero_notch, true, 0);
+
     lv_obj_set_style_line_opa(s_zero_notch, LV_OPA_COVER, 0);
     lv_obj_clear_flag(s_zero_notch, LV_OBJ_FLAG_CLICKABLE);
 
@@ -402,35 +517,31 @@ void boost_gauge_create(void)
     add_tick_label(3, 18.0f, "18");
     add_tick_label(4, 25.0f, "25");
 
-    /*
-     * Center stack lives in the open face (inside the 270° arc).
-     * Keeps DEMO / zone off the top track where the arc runs.
-     */
+    /* Center stack lives in the open face inside the 270° arc. */
     s_zone_label = lv_label_create(scr);
     lv_label_set_text(s_zone_label, "ATMO");
     lv_obj_set_style_text_font(s_zone_label, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(s_zone_label, c(theme->text), 0);
-    lv_obj_set_style_text_letter_space(s_zone_label, 4, 0);
+    lv_obj_set_style_text_letter_space(s_zone_label, 0, 0);
     lv_obj_align(s_zone_label, LV_ALIGN_CENTER, 0, -88);
     lv_obj_clear_flag(s_zone_label, LV_OBJ_FLAG_CLICKABLE);
 
-    s_value_label = lv_label_create(scr);
-    lv_label_set_text(s_value_label, "+0.0");
-    lv_obj_set_style_text_font(s_value_label, &lv_font_montserrat_48, 0);
-    lv_obj_set_style_text_color(s_value_label, c(theme->text), 0);
-    lv_obj_align(s_value_label, LV_ALIGN_CENTER, 0, -22);
-    lv_obj_clear_flag(s_value_label, LV_OBJ_FLAG_CLICKABLE);
+    s_value_sign_label = add_value_slot(scr, " ", VALUE_SIGN_X);
+    s_value_tens_label = add_value_slot(scr, " ", VALUE_TENS_X);
+    s_value_ones_label = add_value_slot(scr, "0", VALUE_ONES_X);
+    s_value_decimal_label = add_value_slot(scr, ".", VALUE_DECIMAL_X);
+    s_value_tenths_label = add_value_slot(scr, "0", VALUE_TENTHS_X);
 
     s_unit_label = lv_label_create(scr);
     lv_label_set_text(s_unit_label, "PSI");
     lv_obj_set_style_text_font(s_unit_label, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(s_unit_label, c(theme->muted), 0);
-    lv_obj_set_style_text_letter_space(s_unit_label, 4, 0);
+    lv_obj_set_style_text_letter_space(s_unit_label, 0, 0);
     lv_obj_align(s_unit_label, LV_ALIGN_CENTER, 0, 26);
     lv_obj_clear_flag(s_unit_label, LV_OBJ_FLAG_CLICKABLE);
 
     s_peak_label = lv_label_create(scr);
-    lv_label_set_text(s_peak_label, "PEAK  +0.0");
+    lv_label_set_text(s_peak_label, "PEAK  0.0");
     lv_obj_set_style_text_font(s_peak_label, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_peak_label, c(theme->boost), 0);
     lv_obj_align(s_peak_label, LV_ALIGN_CENTER, 0, 54);
@@ -440,16 +551,14 @@ void boost_gauge_create(void)
     lv_label_set_text(s_mode_label, "DEMO");
     lv_obj_set_style_text_font(s_mode_label, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(s_mode_label, c(theme->muted), 0);
-    lv_obj_set_style_text_letter_space(s_mode_label, 3, 0);
+    lv_obj_set_style_text_letter_space(s_mode_label, 0, 0);
     lv_obj_align(s_mode_label, LV_ALIGN_CENTER, 0, 82);
-    lv_obj_clear_flag(s_mode_label, LV_OBJ_FLAG_CLICKABLE);
 
     /* No bottom hint: it can become a persistent strip on partial-flush panels. */
-
     s_display_psi = 0.0f;
     s_peak_psi = 0.0f;
     s_ui_ready = true;
-    ESP_LOGI(TAG, "UI ready (full-bleed arc %dpx, stroke %d)", ARC_DIAMETER, ARC_WIDTH);
+    ESP_LOGI(TAG, "UI ready (inset arc %dpx, stroke %d)", ARC_DIAMETER, ARC_WIDTH);
 }
 
 void boost_gauge_apply_theme(const boost_theme_t *theme)
@@ -463,52 +572,103 @@ void boost_gauge_apply_theme(const boost_theme_t *theme)
     if (s_well) {
         lv_obj_set_style_bg_color(s_well, c(theme->face), 0);
     }
-    lv_obj_set_style_arc_color(s_arc_track, c(theme->track), LV_PART_MAIN);
-    lv_obj_set_style_arc_color(s_arc_track, c(theme->track), LV_PART_INDICATOR);
-    lv_obj_set_style_line_color(s_zero_notch, c(theme->zero), 0);
+    if (s_arc_track) {
+        lv_obj_set_style_arc_color(s_arc_track, c(theme->track), LV_PART_MAIN);
+        lv_obj_set_style_arc_color(s_arc_track, c(theme->track), LV_PART_INDICATOR);
+    }
+    if (s_arc_value_canvas) {
+        lv_obj_invalidate(s_arc_value_canvas);
+    }
+    if (s_zero_notch) {
+        lv_obj_set_style_line_color(s_zero_notch, c(theme->zero), 0);
+    }
     for (size_t i = 0; i < sizeof(s_tick_labels) / sizeof(s_tick_labels[0]); ++i) {
         if (s_tick_labels[i]) {
             lv_obj_set_style_text_color(s_tick_labels[i], c(theme->muted), 0);
         }
     }
-    lv_obj_set_style_text_color(s_unit_label, c(theme->muted), 0);
-    lv_obj_set_style_text_color(s_mode_label, c(theme->muted), 0);
-    lv_obj_set_style_text_color(s_hint_label, c(theme->track), 0);
+    if (s_unit_label) {
+        lv_obj_set_style_text_color(s_unit_label, c(theme->muted), 0);
+    }
+    if (s_mode_label) {
+        lv_obj_set_style_text_color(s_mode_label, c(theme->muted), 0);
+    }
+    if (s_hint_label) {
+        lv_obj_set_style_text_color(s_hint_label, c(theme->track), 0);
+    }
+}
+bool boost_gauge_media_load(void)
+{
+#if LV_USE_GIF && defined(ESP_PLATFORM)
+    if (boost_display_lock(5000) != ESP_OK) return false;
+    destroy_media_gif();
+    boost_media_store_unmap();
+    const bool loaded = load_media_gif_locked();
+    boost_display_unlock();
+    return loaded;
+#else
+    return false;
+#endif
 }
 
+void boost_gauge_media_delete(void)
+{
+#if LV_USE_GIF && defined(ESP_PLATFORM)
+    if (boost_display_lock(5000) != ESP_OK) return;
+    destroy_media_gif();
+    boost_display_unlock();
+    boost_media_store_unmap();
+#endif
+}
 void boost_gauge_update(const boost_sample_t *sample)
 {
     if (!s_ui_ready || sample == NULL) {
         return;
     }
-
-    s_display_psi = sample->psi;
     const boost_theme_t *theme = active_theme();
-    if (strcmp(theme->id, s_theme_id) != 0) {
-        boost_gauge_apply_theme(theme);
-    }
-    /* Peak is boost-oriented for the readout. */
-    s_peak_psi = sample->peak_psi > 0.0f ? sample->peak_psi : 0.0f;
-
     set_value_arc(sample->psi);
+    s_display_psi = sample->psi;
+    s_peak_psi = fmaxf(s_peak_psi, fmaxf(sample->peak_psi, 0.0f));
 
     const lv_color_t col = color_for_psi(theme, sample->psi);
-    lv_obj_set_style_arc_color(s_arc_value, col, LV_PART_INDICATOR);
-    lv_obj_set_style_text_color(s_zone_label, col, 0);
-    lv_obj_set_style_text_color(s_value_label, sample->psi >= PSI_OVERBOOST ? c(theme->overboost) : c(theme->text), 0);
+    const char *zone = zone_for_psi(sample->psi);
+    if (strcmp(lv_label_get_text(s_zone_label), zone) != 0) {
+        lv_obj_set_style_text_color(s_zone_label, col, 0);
+        lv_label_set_text(s_zone_label, zone);
+    }
+    const lv_color_t value_color = sample->psi >= PSI_OVERBOOST ? c(theme->overboost) : c(theme->text);
+    lv_obj_t *value_slots[] = {
+        s_value_sign_label, s_value_tens_label, s_value_ones_label,
+        s_value_decimal_label, s_value_tenths_label,
+    };
+    for (size_t i = 0; i < sizeof(value_slots) / sizeof(value_slots[0]); ++i) {
+        if (!lv_color_eq(lv_obj_get_style_text_color(value_slots[i], 0), value_color)) {
+            lv_obj_set_style_text_color(value_slots[i], value_color, 0);
+        }
+    }
 
+    char sign[2] = {0};
+    char tens[2] = {0};
+    char ones[2] = {0};
+    char tenths[2] = {0};
+    format_value_slots(sign, tens, ones, tenths, sample->psi);
+    if (strcmp(lv_label_get_text(s_value_sign_label), sign) != 0) lv_label_set_text(s_value_sign_label, sign);
+    if (strcmp(lv_label_get_text(s_value_tens_label), tens) != 0) lv_label_set_text(s_value_tens_label, tens);
+    if (strcmp(lv_label_get_text(s_value_ones_label), ones) != 0) lv_label_set_text(s_value_ones_label, ones);
+    if (strcmp(lv_label_get_text(s_value_tenths_label), tenths) != 0) lv_label_set_text(s_value_tenths_label, tenths);
     char buf[32];
-    format_signed_psi(buf, sizeof(buf), sample->psi);
-    lv_label_set_text(s_value_label, buf);
 
-    lv_label_set_text(s_zone_label, zone_for_psi(sample->psi));
+    snprintf(buf, sizeof(buf), "PEAK  %.1f", (double)s_peak_psi);
+    if (strcmp(lv_label_get_text(s_peak_label), buf) != 0) {
+        lv_label_set_text(s_peak_label, buf);
+    }
+    const lv_color_t peak_color = s_peak_psi >= PSI_OVERBOOST ? c(theme->overboost) : c(theme->boost);
+    if (!lv_color_eq(lv_obj_get_style_text_color(s_peak_label, 0), peak_color)) {
+        lv_obj_set_style_text_color(s_peak_label, peak_color, 0);
+    }
 
-    snprintf(buf, sizeof(buf), "PEAK  %+.1f", (double)s_peak_psi);
-    lv_label_set_text(s_peak_label, buf);
-    lv_obj_set_style_text_color(
-        s_peak_label,
-        s_peak_psi >= PSI_OVERBOOST ? c(theme->overboost) : c(theme->boost),
-        0);
-
-    lv_label_set_text(s_mode_label, sample->demo ? "DEMO" : "LIVE");
+    const char *mode = sample->demo ? "DEMO" : "LIVE";
+    if (strcmp(lv_label_get_text(s_mode_label), mode) != 0) {
+        lv_label_set_text(s_mode_label, mode);
+    }
 }

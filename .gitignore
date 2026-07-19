@@ -16,3 +16,8 @@ android/.gradle/
 android/.kotlin/
 android/**/build/
 android/local.properties
+main/boost_wifi_secrets.h
+.orca/
+IMG_*-ezgif*.gif
+preview/regression-repair/
+preview/text-gif-repair/

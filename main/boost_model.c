@@ -29,7 +29,7 @@ static size_t s_log_count;
 static uint32_t s_log_divider;
 static boost_media_status_t s_media;
 static int s_last_schedule_minute = -1;
-
+static int s_pending_brightness = -1;
 static int clamp_percent(int v)
 {
     if (v < 0) {
@@ -169,7 +169,7 @@ esp_err_t boost_model_init(void)
     xSemaphoreTake(s_lock, portMAX_DELAY);
     load_config();
     memset(&s_state, 0, sizeof(s_state));
-    s_state.firmware_version = "0.1.17-web";
+    s_state.firmware_version = "0.2.0-web";
     s_state.brightness = s_config.brightness_high;
     s_state.timezone_offset_minutes = s_config.timezone_offset_minutes;
     strlcpy(s_state.active_theme_id, s_config.active_theme_id, sizeof(s_state.active_theme_id));
@@ -214,18 +214,53 @@ void boost_model_publish_sample(const boost_sample_t *sample)
     xSemaphoreGive(s_lock);
 }
 
+void boost_model_set_display_metrics(const boost_display_metrics_t *metrics)
+{
+    if (metrics == NULL || s_lock == NULL) {
+        return;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_state.display = *metrics;
+    xSemaphoreGive(s_lock);
+}
+
 void boost_model_refresh_status(void)
 {
     if (s_lock == NULL) {
         return;
     }
+    int pending = -1;
     xSemaphoreTake(s_lock, portMAX_DELAY);
+    pending = s_pending_brightness;
+    /* Keep -2 through apply_schedule so it can force re-eval, then clear. */
+    if (pending != -2) {
+        s_pending_brightness = -1;
+    }
     s_state.brightness = boost_brightness_get();
     s_state.uptime_ms = (uint64_t)(esp_timer_get_time() / 1000ULL);
     s_state.epoch_ms = epoch_ms_now();
     s_state.timezone_offset_minutes = s_config.timezone_offset_minutes;
     strlcpy(s_state.active_theme_id, s_config.active_theme_id, sizeof(s_state.active_theme_id));
     xSemaphoreGive(s_lock);
+
+    if (pending == -2) {
+        boost_model_apply_schedule();
+        xSemaphoreTake(s_lock, portMAX_DELAY);
+        if (s_pending_brightness == -2) {
+            s_pending_brightness = -1;
+        }
+        xSemaphoreGive(s_lock);
+    } else if (pending >= 0) {
+        const int before = boost_brightness_get();
+        boost_brightness_set(pending);
+        if (boost_brightness_get() != pending && before == boost_brightness_get()) {
+            xSemaphoreTake(s_lock, portMAX_DELAY);
+            if (s_pending_brightness < 0) {
+                s_pending_brightness = pending;
+            }
+            xSemaphoreGive(s_lock);
+        }
+    }
 }
 
 void boost_model_get_state(boost_state_t *out)
@@ -283,15 +318,18 @@ esp_err_t boost_model_update_config(const boost_config_t *patch, uint32_t fields
     esp_err_t err = save_config_locked();
     const bool schedule_enabled = s_config.dim_schedule.enabled;
     const int high = s_config.brightness_high;
-    xSemaphoreGive(s_lock);
     if (err == ESP_OK) {
         if (schedule_enabled) {
             s_last_schedule_minute = -1;
-            boost_model_apply_schedule();
-        } else if (fields & (BOOST_CONFIG_BRIGHTNESS_HIGH | BOOST_CONFIG_THEME)) {
-            boost_brightness_set(high);
+            /* Defer SPI brightness to control task — never block httpd. */
+            s_pending_brightness = -2; /* re-evaluate schedule */
+        } else if (fields & (BOOST_CONFIG_DIM_ENABLED | BOOST_CONFIG_BRIGHTNESS_HIGH |
+                             BOOST_CONFIG_THEME)) {
+            /* Leaving schedule (or explicit high/theme) restores daytime level. */
+            s_pending_brightness = high;
         }
     }
+    xSemaphoreGive(s_lock);
     return err;
 }
 
@@ -337,6 +375,8 @@ esp_err_t boost_model_set_time(int64_t epoch_ms, int timezone_offset_minutes)
 
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_config.timezone_offset_minutes = clamp_tz_offset(timezone_offset_minutes);
+    s_state.timezone_offset_minutes = s_config.timezone_offset_minutes;
+    s_state.epoch_ms = epoch_ms_now();
     nvs_handle_t h;
     esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
     if (err == ESP_OK) {
@@ -385,18 +425,34 @@ bool boost_model_schedule_wants_low(void)
 
 void boost_model_apply_schedule(void)
 {
-    const int64_t now_ms = epoch_ms_now();
-    int minute = now_ms > 0 ? (int)(now_ms / 60000LL) : (int)(esp_timer_get_time() / 60000000LL);
-    if (minute == s_last_schedule_minute) {
-        return;
-    }
-    s_last_schedule_minute = minute;
     boost_config_t cfg;
     boost_model_get_config(&cfg);
     if (!cfg.dim_schedule.enabled) {
         return;
     }
-    boost_brightness_set(boost_model_schedule_wants_low() ? cfg.brightness_low : cfg.brightness_high);
+
+    const int64_t now_ms = epoch_ms_now();
+    if (now_ms <= 0) {
+        /* No wall clock yet — cannot evaluate local schedule. */
+        return;
+    }
+
+    const int minutes_day = 24 * 60;
+    int local_min = (int)((now_ms / 60000LL + cfg.timezone_offset_minutes) % minutes_day);
+    if (local_min < 0) {
+        local_min += minutes_day;
+    }
+
+    /* Re-apply at most once per local minute, or when forced via pending=-2. */
+    if (local_min == s_last_schedule_minute && s_pending_brightness != -2) {
+        return;
+    }
+    s_last_schedule_minute = local_min;
+
+    const int target = boost_model_schedule_wants_low() ? cfg.brightness_low : cfg.brightness_high;
+    if (boost_brightness_get() != target) {
+        boost_brightness_set(target);
+    }
 }
 
 size_t boost_model_copy_logs(boost_log_sample_t *out, size_t max_count)

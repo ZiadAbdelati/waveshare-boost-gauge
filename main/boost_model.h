@@ -8,6 +8,7 @@
 
 #include "boost_sim.h"
 #include "boost_theme.h"
+#include "boost_display.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -41,6 +42,7 @@ typedef struct {
     int64_t epoch_ms;
     int timezone_offset_minutes;
     char active_theme_id[BOOST_THEME_ID_MAX];
+    boost_display_metrics_t display;
 } boost_state_t;
 
 typedef struct {
@@ -64,6 +66,7 @@ void boost_model_publish_sample(const boost_sample_t *sample);
 void boost_model_get_state(boost_state_t *out);
 /** Refresh web-visible clocks/brightness; call outside the LVGL worker. */
 void boost_model_refresh_status(void);
+void boost_model_set_display_metrics(const boost_display_metrics_t *metrics);
 void boost_model_get_config(boost_config_t *out);
 esp_err_t boost_model_update_config(const boost_config_t *patch, uint32_t fields);
 esp_err_t boost_model_set_active_theme(const char *id);

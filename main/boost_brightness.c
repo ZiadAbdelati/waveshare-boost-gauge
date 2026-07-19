@@ -5,6 +5,7 @@
 #ifdef ESP_PLATFORM
 #include "esp_log.h"
 #include "bsp/display.h"
+#include "boost_display.h"
 #else
 #define ESP_LOGI(tag, fmt, ...) printf("[I][%s] " fmt "\n", tag, ##__VA_ARGS__)
 #endif
@@ -32,7 +33,17 @@ void boost_brightness_set(int percent)
 {
     s_percent = clamp_percent(percent);
 #ifdef ESP_PLATFORM
+    /*
+     * Brightness is a CO5300 SPI command on the same bus as LVGL flushes.
+     * Never touch the panel without the LVGL adapter lock — concurrent access
+     * panics (LoadProhibited) under theme/schedule changes.
+     */
+    if (boost_display_lock(1000) != ESP_OK) {
+        ESP_LOGW(TAG, "brightness %d%% deferred (display busy)", s_percent);
+        return;
+    }
     esp_err_t err = bsp_display_brightness_set(s_percent);
+    boost_display_unlock();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "bsp_display_brightness_set(%d) failed: %s",
                  s_percent, esp_err_to_name(err));
@@ -40,7 +51,6 @@ void boost_brightness_set(int percent)
 #endif
     ESP_LOGI(TAG, "brightness %d%%", s_percent);
 }
-
 int boost_brightness_get(void)
 {
     return s_percent;
