@@ -41,6 +41,7 @@
 static const char *TAG = "boost_web";
 static httpd_handle_t s_httpd;
 #define STATE_WS_MAX_CLIENTS 3
+#define STATE_WS_FRAME_MS 50
 typedef struct {
     int fd;
     bool inflight;
@@ -223,7 +224,7 @@ static void state_ws_task(void *arg)
         const bool ready = !s_media_upload_in_progress && s_httpd != NULL;
         portEXIT_CRITICAL(&s_web_lock);
         if (ready) state_ws_push(NULL);
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(STATE_WS_FRAME_MS));
     }
 }
 

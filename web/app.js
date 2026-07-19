@@ -320,7 +320,7 @@ function renderGaugeFrame(at) {
   const rawElapsedMs = previousAt ? at - previousAt : GAUGE_FRAME_MS;
   const elapsedMs = rawElapsedMs > GAUGE_GAP_RESET_MS ? GAUGE_FRAME_MS : rawElapsedMs;
   state.gaugeLastAt = at;
-  const alpha = 1 - Math.exp(-elapsedMs / 90);
+  const alpha = 1 - Math.exp(-elapsedMs / 35);
   state.gaugePsi += (Number(target.psi ?? 0) - state.gaugePsi) * alpha;
 
   drawGauge({ ...target, psi: state.gaugePsi });
@@ -402,9 +402,11 @@ function pushSample(sample) {
   return true;
 }
 
-function updateConnection(mode, text) {
-  if (state.connected === (mode === "online") && el.connectionText.textContent === text) return;
-  state.connected = mode === "online";
+function updateConnection(mode, transport = null) {
+  const online = mode === "online";
+  const text = online ? (transport === "http" ? "Live · HTTP 4 Hz" : "Live · WebSocket 20 Hz") : "Disconnected";
+  if (state.connected === online && el.connectionText.textContent === text) return;
+  state.connected = online;
   el.connection.classList.remove("online", "offline");
   el.connection.classList.add(mode);
   el.connectionText.textContent = text;
@@ -665,9 +667,9 @@ async function refreshAll() {
     renderState(statePayload);
     renderMediaStatus(media);
     renderNetwork(network);
-    updateConnection("online", "Live");
+    updateConnection("online", "http");
   } catch (error) {
-    updateConnection("offline", "Disconnected");
+    updateConnection("offline");
     showError(error.message);
   }
 }
@@ -678,10 +680,10 @@ async function pollState() {
   try {
     const sample = await api("/state");
     renderState(sample);
-    updateConnection("online", "Live");
+    updateConnection("online", "http");
     showError("");
   } catch (error) {
-    updateConnection("offline", "Disconnected");
+    updateConnection("offline");
     showError(error.message);
   } finally {
     state.pollInFlight = false;
@@ -722,12 +724,12 @@ function connectEvents() {
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
   const socket = new WebSocket(`${scheme}//${location.host}${API}/state/ws`);
   state.liveSocket = socket;
-  if (!state.fallbackActive) updateConnection("offline", "Disconnected");
+  if (!state.fallbackActive) updateConnection("offline");
   socket.onopen = () => {
     if (state.liveSocket !== socket) return;
     stopPolling();
     startHeartbeat(socket);
-    updateConnection("online", "Live");
+    updateConnection("online", "websocket");
     showError("");
   };
   socket.onmessage = (event) => {
@@ -735,7 +737,7 @@ function connectEvents() {
     try {
       const sample = JSON.parse(event.data);
       renderState(sample);
-      updateConnection("online", "Live");
+      updateConnection("online", "websocket");
       showError("");
     } catch (error) {
       showError(`Live telemetry error: ${error.message}`);

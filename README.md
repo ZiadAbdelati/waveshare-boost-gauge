@@ -125,7 +125,7 @@ internal-DMA strips with Wi-Fi enabled and the full-rate physical gauge running:
 
 The 24-line test did **not** improve measured physical FPS. The browser mirror is
 independently limited by its network cadence and render loop. WebSocket telemetry
-targets **10 Hz**; the browser canvas interpolates at **60 FPS** between samples.
+targets **20 Hz**; the browser canvas interpolates at **60 FPS** between samples.
 When WebSockets are unavailable, the HTTP fallback polls at **4 Hz**. Treat
 perceived mirror responsiveness as a web telemetry or canvas-rendering issue, not
 a display-strip throughput win. Do not raise the strip height without both
@@ -170,18 +170,20 @@ The physical gauge samples and updates every **16 ms (~60 Hz)**. Network
 telemetry is deliberately lower-rate and independently owned: the WebSocket
 server maintains a fixed pool of **3 clients**, rather than a single dashboard
 owner. Each client may have at most one in-flight, heap-owned frame; the server
-performs a bounded broadcast at **10 Hz**. A newly connected dashboard MUST NOT
+performs a bounded broadcast at **20 Hz**. A newly connected dashboard MUST NOT
 close or evict an existing socket, because concurrent or stale tabs otherwise
 force Live/Fallback churn and can produce out-of-order target jitter.
 
 The browser sends an application heartbeat every **750 ms**; the server consumes
 that heartbeat as part of the WebSocket protocol. If the socket is unavailable,
 the browser uses HTTP `GET /api/v1/state` fallback at **4 Hz**. The connection
-badge has only two states: **Live** and **Disconnected**; it does not visibly
-switch rate labels. The canvas renders every `requestAnimationFrame` and uses
-EMA smoothing between samples. It accepts only targets with a strictly newer
-`uptimeMs`; after a gap greater than **1 s**, its timing state resets. These
-rules keep target ordering and visual smoothing separate from packet cadence.
+badge exposes the active path as **Live · WebSocket 20 Hz** or
+**Live · HTTP 4 Hz**; **Disconnected** means neither transport is delivering
+state. The canvas renders every `requestAnimationFrame` and uses a short **35 ms**
+EMA to suppress packet-step jitter without adding the previous 90 ms visual lag.
+It accepts only targets with a strictly newer `uptimeMs`; after a gap greater
+than **1 s**, its timing state resets. These rules keep target ordering and visual
+smoothing separate from packet cadence.
 
 The browser canvas interpolates at **60 FPS**, while the sparkline remains
 intentionally **4 Hz**. These are separate contracts: a smooth browser canvas

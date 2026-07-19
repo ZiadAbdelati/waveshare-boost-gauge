@@ -105,25 +105,26 @@ The raw-media migration guard is architectural, not just a speed check:
 
 The live path is WebSocket, not SSE: connect to `/api/v1/state/ws`. The server
 uses a fixed pool of **3 clients**, each with at most one in-flight heap-owned
-frame, and broadcasts at a bounded **10 Hz**. A new dashboard must not evict an
+frame, and broadcasts at a bounded **20 Hz**. A new dashboard must not evict an
 existing socket. The browser sends an application heartbeat every **750 ms**;
 the server consumes it. Verify two concurrent dashboards remain WebSocket
 `OPEN` for 30 seconds with heartbeat active and no HTTP polling. The verified
 histories were client A uptime `144367→174367` and client B remaining `OPEN` at
 uptime `182063`.
 
-The connection badge has only **Live** and **Disconnected** states; it does not
-visibly switch rate labels. The browser applies only strictly newer `uptimeMs`
-targets, renders EMA smoothing on every `requestAnimationFrame`, and resets
-timing after a gap greater than **1 s**. The sparkline remains **4 Hz** and
-canvas DPR is capped at **2**.
+The connection badge reports **Live · WebSocket 20 Hz**, **Live · HTTP 4 Hz**,
+or **Disconnected**. The browser applies only strictly newer `uptimeMs` targets,
+renders a 35 ms EMA on every `requestAnimationFrame`, and resets timing after a
+gap greater than **1 s**. The sparkline remains **4 Hz** and canvas DPR is capped
+at **2**. On the demo waveform, collect ten seconds of browser samples and require
+approximately 50 ms WebSocket target spacing; compare target-to-render error with
+the prior 10 Hz / 90 ms EMA baseline rather than using physical-display FPS.
 
 Close or block the WebSocket and verify the browser starts HTTP
 `GET /api/v1/state` fallback at **4 Hz** (every 250 ms). A successful fallback
-sample keeps the badge **Live**; it becomes **Disconnected** only when state
-polling also fails. Restore the socket and verify it returns to the WebSocket
-path without duplicate polling timers. The fallback is a transport failure
-mode, not a visible rate label.
+sample must change the badge to **Live · HTTP 4 Hz**; it becomes **Disconnected**
+only when state polling also fails. Restore the socket and verify the badge
+returns to **Live · WebSocket 20 Hz** without duplicate polling timers.
 
 ### Fourth-client capacity check
 

@@ -47,8 +47,8 @@ Clicking Delete during upload aborts the browser XHR, waits for settlement, then
 sends `DELETE`; overlapping delete/upload requests are rejected with **409**.
 Two repeated deletes succeeded, and the physical gauge resumed with PSI changing.
 The physical gauge remains a 16 ms (~60 Hz) path. WebSocket telemetry targets
-**10 Hz**, browser canvas interpolation runs at **60 FPS**, and HTTP fallback is
-**4 Hz**. These are separate cadences; network packets are not 60 Hz.
+**20 Hz**, browser canvas interpolation runs at **60 FPS** with a short 35 ms
+EMA, and HTTP fallback is **4 Hz**. These are separate cadences.
 
 
 ## Operational dashboard and GIF notes
@@ -56,8 +56,8 @@ The physical gauge remains a 16 ms (~60 Hz) path. WebSocket telemetry targets
 The web server has a fixed pool of **3 WebSocket clients**. A fourth handshake
 is rejected/closed only for the newcomer; existing sockets remain connected.
 When a browser falls back, it polls `/api/v1/state` at **4 Hz** and retries the
-WebSocket every **1 s**. A successful fallback keeps the badge **Live**;
-**Disconnected** means both transports failed.
+WebSocket every **1 s**. The badge identifies **Live · WebSocket 20 Hz** versus
+**Live · HTTP 4 Hz**; **Disconnected** means both transports failed.
 
 GIF playback is hybrid, not a custom decoder: custom web upload and raw
 dual-slot CRC/committed-header storage feed `esp_partition_mmap`; custom gauge
