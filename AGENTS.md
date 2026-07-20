@@ -34,7 +34,6 @@ Keep these rates distinct; never use one as a substitute for another:
 - Background RAM logging: **12.5 Hz** (every fifth 16 ms model sample); 1,800 entries retain **2 minutes 24 seconds**.
 - Browser connection badge: **Live · WebSocket 20 Hz**, **Live · HTTP 4 Hz**, or **Disconnected**; it MUST expose the active transport.
 - Browser device-pixel ratio: cap at **2**.
-- Desktop dashboard layout: at **1240 px+**, retain the sticky live cockpit bay and two-column service rail; at **721–1239 px**, retain the single-column flow so network and maintenance controls never become cramped; at **≤720 px**, preserve the mobile stack. Keep all existing dashboard IDs and control semantics intact.
 - Browser GIF preview: disabled; do not reintroduce a large client-side preview path.
 
 Do not add display timers/dividers, throttle the 16 ms gauge readout, or judge WebSocket/canvas cadence with the physical-display guard. GIF playback is an exclusive full-frame path and is not expected to satisfy the live-gauge FPS threshold. A new dashboard MUST NOT evict an existing WebSocket client: single-owner behavior caused concurrent/stale tabs to force Live/Fallback churn and out-of-order target jitter.
