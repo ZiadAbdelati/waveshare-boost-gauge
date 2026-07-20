@@ -255,6 +255,10 @@ idf.py build flash monitor   # look for BOOST_WEB_IP=192.168.x.y
 
 ### Dashboard notes
 
+- Responsive **instrument-cluster** layout: a sticky gauge + sparkline column on
+  the left and a service console on the right whose control cards reflow from one
+  column (mobile) up to three (ultrawide, capped at 2100&nbsp;px) so wide and
+  ultrawide screens fill without a dead gutter. No horizontal overflow at any width.
 - Mobile: `overflow-x: hidden`, no horizontal rubber-band empty space
 - Dim schedule Start/End stay side-by-side; time inputs capped for iOS Safari
 - Brightness/theme/schedule apply off the HTTP worker so the UI stays responsive
@@ -325,6 +329,11 @@ additional scaling work, but still need to fit the decode/render budget.
 python3 tools/mock_server.py --host 127.0.0.1 --port 18080
 python3 tools/embed_web.py web main/generated_web_assets.c main/generated_web_assets.h
 ```
+
+`mock_server.py` stubs the full dashboard API — including `/api/v1/network`,
+`/network/scan`, and `/network/reconnect` — so `refreshAll()` succeeds and the
+Network and Themes panels render host-only (it has no WebSocket, so the badge
+falls back to `Live · HTTP 4 Hz`).
 
 Do not expose SoftAP/STA HTTP or OTA beyond a trusted LAN; no per-request auth yet.
 

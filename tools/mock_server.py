@@ -85,6 +85,22 @@ MEDIA = {
     "playbackNote": "Upload/status/delete are implemented; on-device GIF playback is deferred.",
 }
 
+NETWORK = {
+    "mode": "apsta",
+    "staEnabled": True,
+    "staConnected": True,
+    "staSsid": "PitWall-5G",
+    "staIp": "192.168.1.42",
+    "rssi": -54,
+    "apSsid": "BoostGauge-7F3A",
+}
+
+SCAN_NETWORKS = [
+    {"ssid": "PitWall-5G", "rssi": -54, "auth": 3},
+    {"ssid": "Paddock-Guest", "rssi": -67, "auth": 0},
+    {"ssid": "Garage-IoT", "rssi": -72, "auth": 3},
+]
+
 LOGS: list[dict[str, float | int | str | bool]] = []
 PEAK = 0.0
 TIME_ANCHOR_MS = int(time.time() * 1000)
@@ -175,6 +191,10 @@ class Handler(BaseHTTPRequestHandler):
             writer.writerows(LOGS)
         elif path == "/api/v1/media/status":
             self.send_json(MEDIA)
+        elif path == "/api/v1/network":
+            self.send_json(NETWORK)
+        elif path == "/api/v1/network/scan":
+            self.send_json({"networks": SCAN_NETWORKS})
         elif path == "/api/v1/events":
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/event-stream")
@@ -236,6 +256,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
             CONFIG["activeThemeId"] = payload["id"]
             self.send_json({"activeThemeId": CONFIG["activeThemeId"]})
+        elif parsed.path == "/api/v1/network":
+            payload = self.read_json()
+            if payload.get("mode") in ("ap", "apsta"):
+                NETWORK["mode"] = payload["mode"]
+            if "ssid" in payload and payload["ssid"]:
+                NETWORK["staSsid"] = payload["ssid"]
+            NETWORK["staEnabled"] = NETWORK["mode"] == "apsta"
+            NETWORK["staConnected"] = NETWORK["staEnabled"]
+            self.send_json(NETWORK)
         else:
             self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -270,6 +299,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": "binary too small to be a firmware image"}, HTTPStatus.BAD_REQUEST)
                 return
             self.send_json({"status": "OTA image accepted by mock; reboot pending", "sizeBytes": len(body), "progress": 100})
+        elif parsed.path == "/api/v1/network/reconnect":
+            self.rfile.read(length)
+            NETWORK["staConnected"] = NETWORK["mode"] == "apsta"
+            self.send_json(NETWORK)
         else:
             self.send_error(HTTPStatus.NOT_FOUND)
 

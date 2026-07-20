@@ -11,6 +11,7 @@
   --line: #2b313b;
   --field: #171b22;
   --shadow: rgba(0, 0, 0, 0.55);
+  --gap: clamp(0.85rem, 1.4vw, 1.15rem);
   color-scheme: dark;
 }
 
@@ -31,8 +32,8 @@ body {
   overflow-x: hidden;
   position: relative;
   background:
-    radial-gradient(circle at 34% 24%, rgba(46, 230, 197, 0.08), transparent 30rem),
-    radial-gradient(circle at 78% 78%, rgba(255, 176, 32, 0.08), transparent 28rem),
+    radial-gradient(circle at 30% 18%, rgba(46, 230, 197, 0.08), transparent 34rem),
+    radial-gradient(circle at 82% 82%, rgba(255, 176, 32, 0.08), transparent 32rem),
     #090a0d;
   color: var(--text);
   font-family: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
@@ -42,13 +43,14 @@ img, canvas, svg, video { max-width: 100%; height: auto; }
 
 button, input, select, a.button { font: inherit; }
 
+/* ---- One button / control spec ---------------------------------------- */
 button, a.button, select {
-  min-height: 2.35rem;
+  min-height: 2.5rem;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #1b2028;
   color: var(--text);
-  padding: 0.48rem 0.75rem;
+  padding: 0.5rem 0.85rem;
   cursor: pointer;
   text-decoration: none;
   display: inline-flex;
@@ -65,6 +67,21 @@ button:hover, a.button:hover, select:hover {
 button:active, a.button:active { transform: translateY(1px); }
 button:disabled { opacity: 0.48; cursor: not-allowed; }
 
+/* Restrained primary treatment: teal hairline + faint tint. Still dark. */
+button.primary {
+  border-color: color-mix(in srgb, var(--vacuum) 55%, var(--line));
+  background: color-mix(in srgb, var(--vacuum) 10%, #1b2028);
+}
+button.primary:hover {
+  border-color: var(--vacuum);
+  background: color-mix(in srgb, var(--vacuum) 16%, #1b2028);
+}
+
+:focus-visible {
+  outline: 2px solid var(--vacuum);
+  outline-offset: 2px;
+}
+
 input[type="text"],
 input[type="password"],
 input[type="number"],
@@ -77,8 +94,8 @@ select {
   background: var(--field);
   color: var(--text);
   border-radius: 8px;
-  min-height: 2.35rem;
-  padding: 0.42rem 0.58rem;
+  min-height: 2.5rem;
+  padding: 0.5rem 0.6rem;
   width: 100%;
   max-width: 100%;
   min-width: 0;
@@ -101,32 +118,43 @@ input[type="time"]::-webkit-date-and-time-value {
 
 input[type="range"] {
   padding: 0;
+  min-height: 0;
   accent-color: var(--boost);
 }
 
 progress {
   width: 100%;
-  height: 0.6rem;
+  height: 0.5rem;
   border: 0;
   border-radius: 999px;
   overflow: hidden;
   background: var(--track);
+  display: block;
 }
 progress::-webkit-progress-bar { background: var(--track); }
 progress::-webkit-progress-value { background: linear-gradient(90deg, var(--vacuum), var(--boost)); }
 progress::-moz-progress-bar { background: linear-gradient(90deg, var(--vacuum), var(--boost)); }
 
+/* ---- Shell: instrument cluster ---------------------------------------- */
 .shell {
-  width: 100%;
-  max-width: min(1280px, 100%);
+  width: min(100%, 2100px);
   min-height: 100vh;
   margin: 0 auto;
-  padding: clamp(0.85rem, 2.5vw, 2rem);
+  padding: clamp(0.85rem, 2.2vw, 2.75rem);
   display: grid;
-  grid-template-columns: minmax(280px, 420px) minmax(0, 1fr);
-  gap: clamp(1rem, 2vw, 1.75rem);
+  grid-template-columns: minmax(0, 760px);
+  justify-content: center;
+  gap: clamp(1.25rem, 2.6vw, 2.25rem);
   align-items: start;
   overflow-x: hidden;
+}
+
+@media (min-width: 1100px) {
+  .shell {
+    grid-template-columns: [instrument] clamp(380px, 30vw, 560px) [console] minmax(0, 1fr);
+    justify-content: stretch;
+    gap: clamp(1.5rem, 3vw, 3.5rem);
+  }
 }
 
 .gauge-bay {
@@ -134,9 +162,15 @@ progress::-moz-progress-bar { background: linear-gradient(90deg, var(--vacuum), 
   max-width: 100%;
   display: grid;
   gap: 1rem;
-  position: sticky;
-  top: 1rem;
-  align-self: start;
+  align-content: start;
+}
+
+@media (min-width: 1100px) {
+  .gauge-bay {
+    position: sticky;
+    top: 1rem;
+    align-self: start;
+  }
 }
 
 .mast, .section-title, .strip-head, .button-row {
@@ -188,23 +222,29 @@ h1 {
 .connection.offline .dot { background: var(--overboost); box-shadow: 0 0 0 0.25rem rgba(255, 59, 48, 0.13); }
 
 .gauge-wrap {
-  min-height: min(70vw, 520px);
   width: 100%;
   max-width: 100%;
   display: grid;
   place-items: center;
   padding: 0.5rem 0;
-  overflow: hidden;
 }
 
+/* Recessed instrument pod: machined bezel via layered box-shadow (drawn
+   outside the overflow clip). Static, dark — the canvas carries live color. */
 .gauge-device {
-  width: min(466px, 100%);
+  width: min(100%, clamp(360px, 26vw, 520px));
   max-width: 100%;
   aspect-ratio: 1;
   border-radius: 50%;
   background: #000;
   position: relative;
   overflow: hidden;
+  box-shadow:
+    0 0 0 1px rgba(232, 236, 242, 0.06),
+    0 0 0 8px #0c0e12,
+    0 0 0 9px rgba(0, 0, 0, 0.9),
+    0 22px 48px -14px rgba(0, 0, 0, 0.85),
+    inset 0 2px 4px rgba(232, 236, 242, 0.05);
 }
 
 #gaugeCanvas {
@@ -232,7 +272,7 @@ h1 {
 #sparkline {
   width: 100%;
   max-width: 100%;
-  height: 126px;
+  height: 130px;
   display: block;
   background: rgba(32, 36, 44, 0.48);
   border: 1px solid var(--line);
@@ -247,55 +287,64 @@ h1 {
   pointer-events: none;
 }
 
+/* ---- Console (service rail) ------------------------------------------- */
 .service-rail {
   min-width: 0;
   max-width: 100%;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.85rem;
+  gap: var(--gap);
   align-content: start;
 }
-.service-rail > .status-panel {
-  grid-column: 1 / -1;
+
+/* Multi-column masonry for the small cards. Column COUNT is stepped so the
+   cards stay balanced (even card-per-column packing) instead of leaving a
+   ragged short column on ultrawide. */
+.console-cards {
+  columns: 2;
+  column-gap: var(--gap);
+  min-width: 0;
+  max-width: 100%;
 }
-.service-rail > .panel.network-panel,
-.service-rail > .panel:has(#saveNetworkBtn) {
-  grid-column: 1 / -1;
+@media (min-width: 1680px) {
+  .console-cards { columns: 3; }
 }
-.service-rail > .service-bay {
-  grid-column: span 1;
-}
-@media (min-width: 1100px) {
-  .service-rail {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
+.console-cards > .panel,
+.console-cards > .service-bay {
+  break-inside: avoid;
+  margin: 0 0 var(--gap) 0;
+  display: block;
 }
 
 .panel, .service-bay {
   border: 1px solid var(--line);
   background: rgba(17, 20, 26, 0.9);
   border-radius: 8px;
-  padding: 0.9rem;
+  padding: 1rem;
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
 }
 
 .service-bay {
-  grid-column: span 2;
   display: grid;
   gap: 0.75rem;
+  align-content: start;
 }
+/* Inside the multicol console the bay is `display:block` (safer break-inside),
+   so restore the button-row → progress gap with an explicit margin. */
+.service-bay > progress { margin-top: 0.75rem; }
 
 .section-title {
   color: var(--text);
   font-size: 0.84rem;
   font-weight: 700;
-  margin-bottom: 0.75rem;
+  margin-bottom: 0.85rem;
 }
+.section-title > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.section-title > button { flex: 0 0 auto; }
 
 .icon-btn {
-  width: 2.35rem;
+  width: 2.5rem;
   padding: 0;
   font-size: 1.1rem;
   flex: 0 0 auto;
@@ -304,7 +353,7 @@ h1 {
 .status-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.6rem;
+  gap: 0.65rem;
 }
 
 .status-grid div {
@@ -330,30 +379,49 @@ h1 {
   word-break: break-word;
 }
 
+/* Status + network span the full console width */
+.service-rail > .status-panel,
+.service-rail > .network-panel {
+  width: 100%;
+}
+
+/* On wide screens the status readout is a 4-across instrument strip */
+@media (min-width: 1100px) {
+  .status-panel .status-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  .network-panel .network-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  .network-form {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.85rem;
+    align-items: end;
+    margin-top: 0.85rem;
+  }
+  .network-form .scan-row,
+  .network-form .check-row { grid-column: 1 / -1; }
+  .network-form .field { margin-top: 0; }
+}
+
 .field {
   display: grid;
   gap: 0.35rem;
   min-width: 0;
-  margin-top: 0.55rem;
+  margin-top: 0.6rem;
 }
 
 .scan-row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   gap: 0.55rem;
-  margin-top: 0.55rem;
+  margin-top: 0.6rem;
   min-width: 0;
 }
 
 .scan-row button {
   white-space: nowrap;
-}
-
-.bay-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.65rem;
-  align-items: end;
 }
 
 .time-grid {
@@ -378,7 +446,7 @@ h1 {
   grid-template-columns: minmax(0, 1fr) 3.3rem;
   gap: 0.6rem;
   align-items: end;
-  margin-top: 0.55rem;
+  margin-top: 0.6rem;
 }
 
 output {
@@ -386,20 +454,31 @@ output {
   font-family: "Barlow Condensed", "Aptos Narrow", "Arial Narrow", system-ui, sans-serif;
   font-variant-numeric: tabular-nums;
   text-align: right;
-  padding-bottom: 0.24rem;
+  padding-bottom: 0.4rem;
 }
 
-.wide { width: 100%; margin-top: 0.75rem; }
-.wide-inline { flex: 1 1 0; min-width: 0; }
+.wide { width: 100%; margin-top: 0.85rem; }
 
 .check-row {
   display: flex !important;
   align-items: center;
   gap: 0.55rem;
-  margin-top: 0.55rem;
+  margin-top: 0.6rem;
 }
-.check-row input { width: auto; min-height: auto; }
-.hint-text { margin: 0.55rem 0 0; line-height: 1.35; }
+.check-row input { width: auto; min-height: auto; flex: 0 0 auto; }
+.hint-text { margin: 0.6rem 0 0; line-height: 1.35; }
+
+/* ---- Equal-width button rows (grid, not wrap-flex) -------------------- */
+.button-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--gap);
+  margin-top: 0.75rem;
+  align-items: stretch;
+}
+.button-row > * { width: 100%; min-width: 0; }
+/* Single-button rows are full width */
+.button-row:has(> :only-child) { grid-template-columns: minmax(0, 1fr); }
 
 .toggle {
   position: relative;
@@ -469,39 +548,43 @@ output {
   overflow-wrap: anywhere;
 }
 
+/* ---- Media preview: the `hidden` attribute MUST win ------------------- */
 .media-preview {
+  display: none;
+}
+.media-preview:not([hidden]) {
   display: block;
   width: 100%;
   max-height: 15rem;
-  margin-top: 0.65rem;
   object-fit: contain;
   background: #000;
   border: 1px solid var(--line);
   border-radius: 8px;
 }
 
-.button-row { margin-top: 0.65rem; flex-wrap: wrap; }
-.button-row > * { flex: 1 1 8rem; min-width: 0; }
-
 .file-drop {
   position: relative;
-  min-height: 5.8rem;
+  min-height: 5.2rem;
+  width: 100%;
   border: 1px dashed var(--line);
   border-radius: 8px;
-  padding: 0.75rem;
+  padding: 0.85rem;
   display: grid;
   align-content: center;
   gap: 0.25rem;
   cursor: pointer;
   background: rgba(32, 36, 44, 0.44);
   min-width: 0;
+  transition: border-color 160ms ease, background 160ms ease;
 }
+.file-drop:hover { border-color: var(--boost); }
 .file-drop input {
   position: absolute;
   opacity: 0;
   pointer-events: none;
 }
 .file-drop span { color: var(--text); font-weight: 700; }
+.file-drop small { overflow-wrap: anywhere; }
 
 .error, .ok {
   margin-top: 0.7rem;
@@ -556,20 +639,14 @@ output {
   }
 }
 
-@media (max-width: 1040px) {
+/* ---- Mobile ----------------------------------------------------------- */
+@media (max-width: 700px) {
   .shell {
     grid-template-columns: minmax(0, 1fr);
-    max-width: 720px;
+    padding: 0.85rem;
   }
-  .gauge-bay { position: static; }
-  .service-rail > .service-bay { grid-column: 1 / -1; }
-}
-
-@media (max-width: 720px) {
-  .shell { padding: 0.75rem; gap: 0.85rem; }
   .mast { align-items: flex-start; flex-direction: column; }
-  .service-rail { grid-template-columns: minmax(0, 1fr); }
-  .service-bay { grid-column: auto; }
-  .status-grid, .bay-grid { grid-template-columns: minmax(0, 1fr); }
-  .time-grid { flex-direction: row; flex-wrap: nowrap; }
+  .status-grid { grid-template-columns: minmax(0, 1fr); }
+  .button-row { grid-template-columns: minmax(0, 1fr); }
+  .console-cards { columns: auto; }
 }
