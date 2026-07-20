@@ -260,10 +260,19 @@ idf.py build flash monitor   # look for BOOST_WEB_IP=192.168.x.y
 - Brightness/theme/schedule apply off the HTTP worker so the UI stays responsive
 - Sensor/model/WebSocket publication runs outside the LVGL worker, so GIF playback cannot stall dashboard telemetry. Network telemetry is decoupled from the physical 16 ms gauge loop. Station Wi-Fi modem sleep is disabled while the gauge runs; this favors live-control latency over Wi-Fi power saving.
 - GIF playback is exclusive. A native **466×466** clip fills the AMOLED; smaller clips remain at their native dimensions, centered on a pure-black AMOLED background. Upload accepts sources up to **466 × 466 px**.
-- Browser rendering caps device pixel ratio (DPR) at **2**; the sparkline is
-  limited to **4 Hz**, and the browser GIF preview is disabled. In the verified
-  30 s dashboard soak, the main-thread probe peaked at **9 ms** with no freezes
-  longer than **500 ms**.
+- Browser rendering caps device pixel ratio (DPR) at **2**; the sparkline is limited to **4 Hz**, and the browser GIF preview is disabled. In the verified 30 s dashboard soak, the main-thread probe peaked at **9 ms** with no freezes longer than **500 ms**.
+
+### Wide-screen dashboard layout
+
+The dashboard deliberately changes shape above mobile widths. At **1240 px and
+wider**, the left side is a sticky cockpit bay—the live gauge and its session
+trace remain in view while service controls occupy a two-column operations rail.
+Status is a horizontal instrument readout; network stays full-width; the smaller
+time, schedule, themes, logs, GIF, and OTA bays pair by task. Between **721 px**
+and **1239 px**, it uses the proven single-column flow to avoid compressing form
+controls. At **720 px** and below, the original mobile single-column layout is
+preserved. The color system and physical-gauge visual language remain unchanged.
+
 ### Clock source, persistence, and CSV timestamps
 
 The dashboard's **Sync Time** control is the only time-synchronization action:
