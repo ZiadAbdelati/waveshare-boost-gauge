@@ -32,6 +32,7 @@ typedef struct {
     float psi_min;
     float psi_max;
     float psi_overboost;
+    float zero_angle;
 } boost_config_t;
 
 typedef struct {
@@ -95,6 +96,7 @@ enum {
     BOOST_CONFIG_PSI_MIN = 1u << 7,
     BOOST_CONFIG_PSI_MAX = 1u << 8,
     BOOST_CONFIG_PSI_OVERBOOST = 1u << 9,
+    BOOST_CONFIG_ZERO_ANGLE = 1u << 10,
 };
 
 #ifdef __cplusplus

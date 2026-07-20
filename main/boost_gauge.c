@@ -58,11 +58,12 @@
 /* Active face fill. Gray standby: set FACE_BG to COLOR_GHOST. */
 #define FACE_BG      COLOR_VOID
 
-/* Gauge arc sweeps 270° from 135° to 45° (classic auto face). Live PSI
- * extents come from boost_config_t via load_range_from_config(). */
+/* Gauge arc sweeps 270° from 135° to 405°/45° (classic auto face). The zero
+ * notch is user-positioned while vacuum and boost scale independently. */
 #define DEFAULT_PSI_MIN       (-15.0f)
 #define DEFAULT_PSI_MAX       (10.0f)
 #define DEFAULT_PSI_OVERBOOST (8.0f)
+#define DEFAULT_ZERO_ANGLE    236.25f
 #define ARC_START     135
 #define ARC_END       45
 #define ARC_RANGE     270
@@ -121,8 +122,10 @@ static char s_theme_id[BOOST_THEME_ID_MAX];
 static float s_psi_min = DEFAULT_PSI_MIN;
 static float s_psi_max = DEFAULT_PSI_MAX;
 static float s_psi_overboost = DEFAULT_PSI_OVERBOOST;
+static float s_zero_angle = DEFAULT_ZERO_ANGLE;
 static float s_tick_psi[5];
 
+static float psi_to_angle(float psi);
 static void load_range_from_config(void)
 {
 #ifdef ESP_PLATFORM
@@ -131,18 +134,31 @@ static void load_range_from_config(void)
     s_psi_min = cfg.psi_min;
     s_psi_max = cfg.psi_max;
     s_psi_overboost = cfg.psi_overboost;
+    s_zero_angle = cfg.zero_angle;
 #else
     s_psi_min = DEFAULT_PSI_MIN;
     s_psi_max = DEFAULT_PSI_MAX;
     s_psi_overboost = DEFAULT_PSI_OVERBOOST;
+    s_zero_angle = DEFAULT_ZERO_ANGLE;
 #endif
+}
+
+static bool midpoint_is_clear(float psi)
+{
+    const float rad = psi_to_angle(psi) * (float)M_PI / 180.0f;
+    const float overboost_rad = psi_to_angle(s_psi_overboost) * (float)M_PI / 180.0f;
+    const float dx = TICK_RADIUS * (cosf(rad) - cosf(overboost_rad));
+    const float dy = TICK_RADIUS * (sinf(rad) - sinf(overboost_rad));
+    /* A 20 px font plus 8 px breathing room prevents adjacent labels touching. */
+    return dx * dx + dy * dy >= 28.0f * 28.0f;
 }
 
 static void compute_tick_psis(void)
 {
     s_tick_psi[0] = s_psi_min;
     s_tick_psi[1] = 0.0f;
-    s_tick_psi[2] = s_psi_max * 0.5f;
+    const float midpoint = s_psi_max * 0.5f;
+    s_tick_psi[2] = midpoint_is_clear(midpoint) ? midpoint : NAN;
     s_tick_psi[3] = s_psi_overboost;
     s_tick_psi[4] = s_psi_max;
 }
@@ -261,13 +277,20 @@ static bool load_media_gif_locked(void)
 }
 #endif
 
-/* Map PSI onto the 270° face: LVGL 0° = east, clockwise. */
+/* Map PSI onto the 270° face with user-positioned zero: LVGL 0° = east,
+ * clockwise. Vacuum [psiMin, 0] → [135, zeroAngle]; boost [0, psiMax] →
+ * [zeroAngle, 405]. */
 static float psi_to_angle(float psi)
 {
     psi = clampf(psi, s_psi_min, s_psi_max);
-    const float span = s_psi_max - s_psi_min;
-    const float t = (span > 0.0f) ? (psi - s_psi_min) / span : 0.0f;
-    return (float)ARC_START + t * (float)ARC_RANGE;
+    if (psi < 0.0f) {
+        const float span = 0.0f - s_psi_min;
+        const float t = (span > 0.0f) ? (psi - s_psi_min) / span : 1.0f;
+        return (float)ARC_START + t * (s_zero_angle - (float)ARC_START);
+    }
+    const float span = s_psi_max;
+    const float t = (span > 0.0f) ? psi / span : 0.0f;
+    return s_zero_angle + t * ((float)ARC_START + (float)ARC_RANGE - s_zero_angle);
 }
 static lv_color_t color_for_psi(const boost_theme_t *theme, float psi);
 
@@ -479,9 +502,14 @@ static void refresh_tick_labels(void)
 {
     compute_tick_psis();
     for (int i = 0; i < 5; ++i) {
+        if (!isfinite(s_tick_psi[i])) {
+            if (s_tick_labels[i] != NULL) lv_obj_add_flag(s_tick_labels[i], LV_OBJ_FLAG_HIDDEN);
+            continue;
+        }
         char text[12];
         format_tick_text(text, sizeof(text), s_tick_psi[i]);
         place_tick_label(i, s_tick_psi[i], text);
+        lv_obj_remove_flag(s_tick_labels[i], LV_OBJ_FLAG_HIDDEN);
     }
 }
 

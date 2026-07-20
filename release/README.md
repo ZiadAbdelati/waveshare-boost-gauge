@@ -1,9 +1,7 @@
-# Prebuilt firmware v0.3.0 — web control plane
+# Prebuilt firmware v0.3.2 — configurable dial zero
 
 Firmware **`0.3.0-web`**, built with **ESP-IDF 5.5.1** for **ESP32-S3**, 16 MB
-flash. Includes dual OTA slots, the embedded Wi-Fi dashboard, and the DMA-safe
-AMOLED display path (`main/boost_display.c`). The same files are published on
-the [latest GitHub release](https://github.com/ZiadAbdelati/waveshare-boost-gauge/releases/latest).
+flash. Includes the embedded Wi-Fi dashboard, configurable zero-notch scale, and the DMA-safe AMOLED display path (`main/boost_display.c`). The same files are published on the [latest GitHub release](https://github.com/ZiadAbdelati/waveshare-boost-gauge/releases/latest).
 
 ## Display path (do not regress)
 

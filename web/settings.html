@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <title>Boost Gauge Settings</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/styles.css?v=20260720b">
+</head>
+<body data-page="settings">
+  <main class="shell shell-settings" id="shell">
+    <header class="mast settings-mast">
+      <div>
+        <a href="/" class="back-link" id="backToCockpit">
+          <span class="back-chevron" aria-hidden="true">‹</span>
+          <span>Cockpit</span>
+        </a>
+        <h1>Settings</h1>
+        <p class="eyebrow">Gauge range &amp; Wi‑Fi</p>
+      </div>
+      <div class="mast-actions">
+        <div class="connection" id="connection">
+          <span class="dot"></span>
+          <span id="connectionText">Connecting</span>
+        </div>
+      </div>
+    </header>
+
+    <div class="settings-stack">
+      <div class="error" id="errorBox" hidden></div>
+      <div class="ok" id="okBox" hidden></div>
+
+      <section class="panel range-panel">
+        <div class="section-title">
+          <span>Gauge range</span>
+          <button class="primary" id="saveRangeBtn">Save range</button>
+        </div>
+        <div class="range-fields">
+          <label class="field">
+            <span>Min PSI (vacuum)</span>
+            <input id="psiMin" type="number" min="-30" max="-1" step="1" inputmode="decimal">
+          </label>
+          <label class="field">
+            <span>Max PSI (boost)</span>
+            <input id="psiMax" type="number" min="5" max="40" step="1" inputmode="decimal">
+          </label>
+          <label class="field">
+            <span>Overboost threshold</span>
+            <input id="psiOverboost" type="number" min="0.1" max="39" step="0.1" inputmode="decimal">
+          </label>
+          <label class="field">
+            <span>Zero position (degrees)</span>
+            <input id="zeroAngle" type="number" min="180" max="315" step="0.25" inputmode="decimal">
+          </label>
+        </div>
+        <p class="hint-text" id="rangeHint">Defaults −15 / 10 / 8 PSI and 236.25°. Zero position controls the notch; the optional midpoint label disappears if it would overlap overboost.</p>
+      </section>
+
+      <section class="panel network-panel">
+        <div class="section-title">
+          <span>Network</span>
+          <button id="networkRefreshBtn">Refresh</button>
+        </div>
+        <div class="status-grid network-grid">
+          <div><span>Mode</span><strong id="netMode">--</strong></div>
+          <div><span>STA</span><strong id="netStaState">--</strong></div>
+          <div><span>LAN IP</span><strong id="netStaIp">--</strong></div>
+          <div><span>SoftAP</span><strong id="netApSsid">--</strong></div>
+        </div>
+        <div class="network-form">
+          <label class="field">
+            <span>Mode</span>
+            <select id="netModeSelect">
+              <option value="apsta">AP + Station (LAN)</option>
+              <option value="ap">SoftAP only</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Wi‑Fi SSID</span>
+            <input id="netSsid" type="text" maxlength="32" autocomplete="off" spellcheck="false">
+          </label>
+          <div class="scan-row">
+            <button id="scanNetworksBtn" type="button">Scan networks</button>
+            <select id="netScanSelect" aria-label="Scanned Wi‑Fi networks">
+              <option value="">Manual SSID entry</option>
+            </select>
+          </div>
+          <label class="field">
+            <span>Password</span>
+            <input id="netPassword" type="password" maxlength="64" autocomplete="new-password" placeholder="Leave blank to keep">
+          </label>
+          <label class="check-row">
+            <input id="netKeepPassword" type="checkbox" checked>
+            <span>Keep existing password if blank</span>
+          </label>
+        </div>
+        <div class="button-row">
+          <button class="primary" id="saveNetworkBtn">Save Wi‑Fi</button>
+          <button id="reconnectNetworkBtn">Reconnect</button>
+        </div>
+        <p class="hint-text" id="netHint">Saving STA settings may move the dashboard to a new LAN IP.</p>
+      </section>
+    </div>
+  </main>
+
+  <script src="/app.js?v=20260720b" defer></script>
+</body>
+</html>

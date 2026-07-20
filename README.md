@@ -142,7 +142,7 @@ guard does not apply while media is active.
 
 ## Fast path: flash prebuilt (no ESP-IDF)
 
-A verified **v0.3.0** build (firmware `0.3.0-web`, ESP-IDF **5.5.1**, app size ~1.38 MB) is available in [`release/`](release/) and on the [latest GitHub release](https://github.com/ZiadAbdelati/waveshare-boost-gauge/releases/latest).
+A verified **v0.3.2** build (firmware `0.3.0-web`, ESP-IDF **5.5.1**, app size ~1.38 MB) is available in [`release/`](release/) and on the [latest GitHub release](https://github.com/ZiadAbdelati/waveshare-boost-gauge/releases/latest).
 
 ```bash
 git clone https://github.com/ZiadAbdelati/waveshare-boost-gauge.git
@@ -241,11 +241,7 @@ The flush path remains the custom internal-DMA partial CO5300 path in
 | **APSTA** | NVS/secrets STA SSID set | SoftAP + LAN STA · serial `BOOST_WEB_IP=` |
 | **SoftAP only** | No STA SSID | Join `BoostGauge-XXXX` / `boost1234` → `http://192.168.4.1/` |
 
-**Settings page** (client-side cockpit/settings views): Wi‑Fi controls live here
-(mode, SSID, password with blank-keep, scan, reconnect) plus gauge range fields
-`psiMin` / `psiMax` / `psiOverboost` (defaults **−15 / 10 / 8**). Invalid range
-PUTs are rejected with **400**. Settings persist in NVS (`boost_wifi` for
-network; boost config blob for gauge scale).
+**Settings page** (`/settings.html`): Cockpit navigation uses the gear icon; settings is a real document rather than a show/hide panel, so browser back/forward works normally. It owns Wi-Fi controls (mode, SSID, password with blank-keep, scan, reconnect) and gauge fields `psiMin` / `psiMax` / `psiOverboost` (defaults **−15 / 10 / 8**) plus `zeroAngle` (default **236.25°**, allowed **180–315°**). Zero position moves the dial notch without changing sensor pressure; vacuum and boost rescale on their own sides. The optional boost-half midpoint label is omitted when it would overlap the overboost label. Invalid range PUTs are rejected with **400**. Settings persist in NVS (`boost_wifi` for network; boost config blob for gauge scale).
 
 **Seed credentials** (optional, gitignored): `main/boost_wifi_secrets.h` from
 `main/boost_wifi_secrets.h.example`. Used only when NVS has no Wi‑Fi blob yet.
@@ -258,11 +254,7 @@ idf.py build flash monitor   # look for BOOST_WEB_IP=192.168.x.y
 
 ### Dashboard notes
 
-- Responsive **instrument-cluster** layout: sticky gauge + sparkline on the left;
-  cockpit console cards reflow from one column (mobile) up to three (ultrawide,
-  capped at 2100&nbsp;px). A client-side **Settings** view holds Wi‑Fi and gauge
-  range; the main cockpit keeps status, time/dim, themes, logs, media, and OTA.
-  No horizontal overflow at any width.
+- Responsive **instrument-cluster** layout: sticky gauge + sparkline on the left; cockpit console cards reflow from one column (mobile) up to three (ultrawide, capped at 2100&nbsp;px). The cockpit’s gear opens the separate `/settings.html` document for Wi-Fi and gauge range; browser history returns to the unchanged live cockpit. No horizontal overflow at any width.
 - Mobile: `overflow-x: hidden`, no horizontal rubber-band empty space
 - Dim schedule Start/End stay side-by-side; time inputs capped for iOS Safari
 - Brightness/theme/schedule apply off the HTTP worker so the UI stays responsive
@@ -336,8 +328,8 @@ python3 tools/embed_web.py web main/generated_web_assets.c main/generated_web_as
 
 `mock_server.py` stubs the full dashboard API — including `/api/v1/network`,
 `/network/scan`, `/network/reconnect`, and config fields `psiMin`/`psiMax`/
-`psiOverboost` — so `refreshAll()` succeeds and cockpit + settings views render
-host-only (it has no WebSocket, so the badge falls back to `Live · HTTP 4 Hz`).
+`psiOverboost`/`zeroAngle` — so `refreshAll()` succeeds and cockpit + settings
+views render host-only (it has no WebSocket, so the badge falls back to `Live · HTTP 4 Hz`).
 
 Do not expose SoftAP/STA HTTP or OTA beyond a trusted LAN; no per-request auth yet.
 

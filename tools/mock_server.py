@@ -76,6 +76,7 @@ CONFIG = {
     "psiMin": -15.0,
     "psiMax": 10.0,
     "psiOverboost": 8.0,
+    "zeroAngle": 236.25,
 }
 
 MEDIA = {
@@ -254,15 +255,17 @@ class Handler(BaseHTTPRequestHandler):
                     CONFIG[key] = payload[key]
             if "dimSchedule" in payload:
                 CONFIG["dimSchedule"] = {**CONFIG["dimSchedule"], **payload["dimSchedule"]}
-            if any(key in payload for key in ("psiMin", "psiMax", "psiOverboost")):
+            if any(key in payload for key in ("psiMin", "psiMax", "psiOverboost", "zeroAngle")):
                 psi_min = float(payload.get("psiMin", CONFIG["psiMin"]))
                 psi_max = float(payload.get("psiMax", CONFIG["psiMax"]))
                 psi_overboost = float(payload.get("psiOverboost", CONFIG["psiOverboost"]))
+                zero_angle = float(payload.get("zeroAngle", CONFIG["zeroAngle"]))
                 valid = (
                     psi_min < 0
                     and -30.0 <= psi_min <= -1.0
                     and 5.0 <= psi_max <= 40.0
                     and 0.0 < psi_overboost < psi_max
+                    and 180.0 <= zero_angle <= 315.0
                 )
                 if not valid:
                     self.send_json(
@@ -271,6 +274,7 @@ class Handler(BaseHTTPRequestHandler):
                             "psiMin": psi_min,
                             "psiMax": psi_max,
                             "psiOverboost": psi_overboost,
+                            "zeroAngle": zero_angle,
                         },
                         HTTPStatus.BAD_REQUEST,
                     )
@@ -278,6 +282,7 @@ class Handler(BaseHTTPRequestHandler):
                 CONFIG["psiMin"] = psi_min
                 CONFIG["psiMax"] = psi_max
                 CONFIG["psiOverboost"] = psi_overboost
+                CONFIG["zeroAngle"] = zero_angle
             self.send_json(CONFIG)
         elif parsed.path == "/api/v1/themes/active":
             payload = self.read_json()

@@ -301,12 +301,13 @@ static void config_json(char *json, size_t len)
              "{\"brightnessHigh\":%d,\"brightnessLow\":%d,"
              "\"dimSchedule\":{\"enabled\":%s,\"startMinutes\":%d,\"endMinutes\":%d},"
              "\"timezoneOffsetMinutes\":%d,\"activeThemeId\":\"%s\","
-             "\"psiMin\":%.2f,\"psiMax\":%.2f,\"psiOverboost\":%.2f}",
+             "\"psiMin\":%.2f,\"psiMax\":%.2f,\"psiOverboost\":%.2f,\"zeroAngle\":%.2f}",
              cfg.brightness_high, cfg.brightness_low,
              cfg.dim_schedule.enabled ? "true" : "false",
              cfg.dim_schedule.start_minutes, cfg.dim_schedule.end_minutes,
              cfg.timezone_offset_minutes, cfg.active_theme_id,
-             (double)cfg.psi_min, (double)cfg.psi_max, (double)cfg.psi_overboost);
+             (double)cfg.psi_min, (double)cfg.psi_max, (double)cfg.psi_overboost,
+             (double)cfg.zero_angle);
 }
 
 static esp_err_t config_get(httpd_req_t *req)
@@ -398,24 +399,29 @@ static esp_err_t config_put(httpd_req_t *req)
         patch.psi_overboost = ftmp;
         fields |= BOOST_CONFIG_PSI_OVERBOOST;
     }
+    if (json_float(root, "zeroAngle", &ftmp)) {
+        patch.zero_angle = ftmp;
+        fields |= BOOST_CONFIG_ZERO_ANGLE;
+    }
     cJSON_Delete(root);
     esp_err_t err = boost_model_update_config(&patch, fields);
     if (err != ESP_OK) {
         return send_err(req, HTTPD_400, "invalid_config");
     }
     if (fields & (BOOST_CONFIG_PSI_MIN | BOOST_CONFIG_PSI_MAX | BOOST_CONFIG_PSI_OVERBOOST |
-                  BOOST_CONFIG_THEME)) {
+                  BOOST_CONFIG_ZERO_ANGLE | BOOST_CONFIG_THEME)) {
         if (boost_display_lock(1000) == ESP_OK) {
             if (fields & BOOST_CONFIG_THEME) {
                 boost_gauge_apply_theme(boost_model_active_theme());
             }
-            if (fields & (BOOST_CONFIG_PSI_MIN | BOOST_CONFIG_PSI_MAX | BOOST_CONFIG_PSI_OVERBOOST)) {
+            if (fields & (BOOST_CONFIG_PSI_MIN | BOOST_CONFIG_PSI_MAX | BOOST_CONFIG_PSI_OVERBOOST |
+                          BOOST_CONFIG_ZERO_ANGLE)) {
                 boost_gauge_apply_config();
             }
             boost_display_unlock();
         }
     }
-    char json[384];
+    char json[416];
     config_json(json, sizeof(json));
     return send_json(req, json);
 }

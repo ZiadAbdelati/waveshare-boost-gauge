@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 #include <sys/time.h>
 #include <time.h>
 
@@ -28,6 +29,18 @@ static size_t s_log_head;
 static size_t s_log_count;
 static uint32_t s_log_divider;
 static boost_media_status_t s_media;
+
+/* Pre-zero-angle NVS payload. Keep this exact layout for in-place migration. */
+typedef struct {
+    int brightness_high;
+    int brightness_low;
+    boost_dim_schedule_t dim_schedule;
+    int timezone_offset_minutes;
+    char active_theme_id[BOOST_THEME_ID_MAX];
+    float psi_min;
+    float psi_max;
+    float psi_overboost;
+} boost_config_v1_t;
 static int s_last_schedule_minute = -1;
 static int s_pending_brightness = -1;
 static int clamp_percent(int v)
@@ -96,8 +109,25 @@ static float clamp_psi_overboost(float v, float psi_max)
     return v;
 }
 
-static bool psi_range_valid(float psi_min, float psi_max, float psi_overboost)
+static float clamp_zero_angle(float v)
 {
+    if (!isfinite(v)) {
+        return 236.25f;
+    }
+    if (v < 180.0f) {
+        return 180.0f;
+    }
+    if (v > 315.0f) {
+        return 315.0f;
+    }
+    return v;
+}
+
+static bool gauge_config_valid(float psi_min, float psi_max, float psi_overboost, float zero_angle)
+{
+    if (!isfinite(psi_min) || !isfinite(psi_max) || !isfinite(psi_overboost) || !isfinite(zero_angle)) {
+        return false;
+    }
     if (psi_min < -30.0f || psi_min > -1.0f) {
         return false;
     }
@@ -110,7 +140,7 @@ static bool psi_range_valid(float psi_min, float psi_max, float psi_overboost)
     if (!(psi_overboost > 0.0f && psi_overboost < psi_max)) {
         return false;
     }
-    return true;
+    return zero_angle >= 180.0f && zero_angle <= 315.0f;
 }
 
 static const char *zone_for_psi(float psi)
@@ -151,6 +181,7 @@ static void defaults(boost_config_t *cfg)
     cfg->psi_min = -15.0f;
     cfg->psi_max = 10.0f;
     cfg->psi_overboost = 8.0f;
+    cfg->zero_angle = 236.25f;
 }
 
 static esp_err_t save_config_locked(void)
@@ -172,14 +203,33 @@ static void load_config(void)
 {
     defaults(&s_config);
     nvs_handle_t h;
-    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) {
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) {
         return;
     }
-    size_t len = sizeof(s_config);
-    boost_config_t loaded;
-    if (nvs_get_blob(h, NVS_KEY_CONFIG, &loaded, &len) == ESP_OK && len == sizeof(loaded) &&
-        boost_theme_find(loaded.active_theme_id) != NULL) {
-        s_config = loaded;
+    size_t len = 0;
+    if (nvs_get_blob(h, NVS_KEY_CONFIG, NULL, &len) == ESP_OK) {
+        if (len == sizeof(s_config)) {
+            boost_config_t loaded;
+            if (nvs_get_blob(h, NVS_KEY_CONFIG, &loaded, &len) == ESP_OK &&
+                boost_theme_find(loaded.active_theme_id) != NULL) {
+                s_config = loaded;
+            }
+        } else if (len == sizeof(boost_config_v1_t)) {
+            boost_config_v1_t legacy;
+            if (nvs_get_blob(h, NVS_KEY_CONFIG, &legacy, &len) == ESP_OK &&
+                boost_theme_find(legacy.active_theme_id) != NULL) {
+                s_config.brightness_high = legacy.brightness_high;
+                s_config.brightness_low = legacy.brightness_low;
+                s_config.dim_schedule = legacy.dim_schedule;
+                s_config.timezone_offset_minutes = legacy.timezone_offset_minutes;
+                strlcpy(s_config.active_theme_id, legacy.active_theme_id, sizeof(s_config.active_theme_id));
+                s_config.psi_min = legacy.psi_min;
+                s_config.psi_max = legacy.psi_max;
+                s_config.psi_overboost = legacy.psi_overboost;
+                /* New field keeps the historic face position after OTA. */
+                (void)save_config_locked();
+            }
+        }
         s_config.brightness_high = clamp_percent(s_config.brightness_high);
         s_config.brightness_low = clamp_percent(s_config.brightness_low);
         s_config.dim_schedule.start_minutes = normalize_minutes(s_config.dim_schedule.start_minutes);
@@ -188,6 +238,7 @@ static void load_config(void)
         s_config.psi_min = clamp_psi_min(s_config.psi_min);
         s_config.psi_max = clamp_psi_max(s_config.psi_max);
         s_config.psi_overboost = clamp_psi_overboost(s_config.psi_overboost, s_config.psi_max);
+        s_config.zero_angle = clamp_zero_angle(s_config.zero_angle);
     }
     int64_t epoch_ms = 0;
     int64_t saved_mono_ms = 0;
@@ -372,20 +423,24 @@ esp_err_t boost_model_update_config(const boost_config_t *patch, uint32_t fields
         }
         strlcpy(s_config.active_theme_id, theme->id, sizeof(s_config.active_theme_id));
     }
-    if (fields & (BOOST_CONFIG_PSI_MIN | BOOST_CONFIG_PSI_MAX | BOOST_CONFIG_PSI_OVERBOOST)) {
+    if (fields & (BOOST_CONFIG_PSI_MIN | BOOST_CONFIG_PSI_MAX | BOOST_CONFIG_PSI_OVERBOOST |
+                  BOOST_CONFIG_ZERO_ANGLE)) {
         const float psi_min =
             (fields & BOOST_CONFIG_PSI_MIN) ? patch->psi_min : s_config.psi_min;
         const float psi_max =
             (fields & BOOST_CONFIG_PSI_MAX) ? patch->psi_max : s_config.psi_max;
         const float psi_overboost =
             (fields & BOOST_CONFIG_PSI_OVERBOOST) ? patch->psi_overboost : s_config.psi_overboost;
-        if (!psi_range_valid(psi_min, psi_max, psi_overboost)) {
+        const float zero_angle =
+            (fields & BOOST_CONFIG_ZERO_ANGLE) ? patch->zero_angle : s_config.zero_angle;
+        if (!gauge_config_valid(psi_min, psi_max, psi_overboost, zero_angle)) {
             xSemaphoreGive(s_lock);
             return ESP_ERR_INVALID_ARG;
         }
         s_config.psi_min = psi_min;
         s_config.psi_max = psi_max;
         s_config.psi_overboost = psi_overboost;
+        s_config.zero_angle = zero_angle;
     }
     esp_err_t err = save_config_locked();
     const bool schedule_enabled = s_config.dim_schedule.enabled;

@@ -6,6 +6,7 @@ const DEFAULT_PSI_MAX = 10;
 const DEFAULT_PSI_OVERBOOST = 8;
 const ARC_START = 135;
 const ARC_RANGE = 270;
+const DEFAULT_ZERO_ANGLE = 236.25;
 const ZERO_GAP_VAC = 3.6;
 const ZERO_GAP_BOOST = 4.0;
 const sampleHistory = [];
@@ -14,6 +15,9 @@ const GAUGE_GAP_RESET_MS = 1000;
 const GAUGE_FRAME_MS = 1000 / 60;
 const SPARKLINE_FRAME_MS = 250;
 const POLL_FRAME_MS = 250;
+const PAGE = document.body.dataset.page || "cockpit";
+const IS_COCKPIT = PAGE === "cockpit";
+const IS_SETTINGS = PAGE === "settings";
 const CANVAS_DPR_MAX = 2;
 
 const state = {
@@ -97,16 +101,17 @@ const el = {
   psiMin: document.getElementById("psiMin"),
   psiMax: document.getElementById("psiMax"),
   psiOverboost: document.getElementById("psiOverboost"),
+  zeroAngle: document.getElementById("zeroAngle"),
   saveRangeBtn: document.getElementById("saveRangeBtn"),
   rangeHint: document.getElementById("rangeHint"),
-  viewCockpitBtn: document.getElementById("viewCockpitBtn"),
-  viewSettingsBtn: document.getElementById("viewSettingsBtn"),
-  viewPanes: Array.from(document.querySelectorAll("[data-view-pane]")),
-  viewTabs: Array.from(document.querySelectorAll("[data-view-target]")),
 };
 
-const ctx = el.canvas.getContext("2d");
-const sparkCtx = el.sparkline.getContext("2d");
+const ctx = el.canvas ? el.canvas.getContext("2d") : null;
+const sparkCtx = el.sparkline ? el.sparkline.getContext("2d") : null;
+
+function on(node, event, handler) {
+  if (node) node.addEventListener(event, handler);
+}
 
 
 function finiteOr(value, fallback) {
@@ -119,6 +124,7 @@ function psiRange() {
   let psiMin = finiteOr(cfg.psiMin, DEFAULT_PSI_MIN);
   let psiMax = finiteOr(cfg.psiMax, DEFAULT_PSI_MAX);
   let psiOverboost = finiteOr(cfg.psiOverboost, DEFAULT_PSI_OVERBOOST);
+  let zeroAngle = finiteOr(cfg.zeroAngle, DEFAULT_ZERO_ANGLE);
   if (!(psiMin < 0)) psiMin = DEFAULT_PSI_MIN;
   if (!(psiMax > 0)) psiMax = DEFAULT_PSI_MAX;
   if (!(psiMin < psiMax)) {
@@ -127,11 +133,10 @@ function psiRange() {
   }
   if (!(psiOverboost > 0 && psiOverboost < psiMax)) {
     psiOverboost = Math.min(DEFAULT_PSI_OVERBOOST, psiMax * 0.8);
-    if (!(psiOverboost > 0 && psiOverboost < psiMax)) {
-      psiOverboost = psiMax * 0.8;
-    }
+    if (!(psiOverboost > 0 && psiOverboost < psiMax)) psiOverboost = psiMax * 0.8;
   }
-  return { psiMin, psiMax, psiOverboost };
+  if (!(zeroAngle >= 180 && zeroAngle <= 315)) zeroAngle = DEFAULT_ZERO_ANGLE;
+  return { psiMin, psiMax, psiOverboost, zeroAngle };
 }
 
 function formatTickLabel(value) {
@@ -140,18 +145,13 @@ function formatTickLabel(value) {
   return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
 }
 
-function tickValues(psiMin, psiMax, psiOverboost) {
-  const mid = psiMax / 2;
-  const candidates = [psiMin, 0, mid, psiOverboost, psiMax];
-  const ticks = [];
-  for (const value of candidates) {
-    if (!Number.isFinite(value)) continue;
-    if (value < psiMin - 0.01 || value > psiMax + 0.01) continue;
-    if (ticks.some((existing) => Math.abs(existing - value) < 0.05)) continue;
-    ticks.push(value);
-  }
-  ticks.sort((a, b) => a - b);
-  return ticks;
+function tickValues(psiMin, psiMax, psiOverboost, zeroAngle) {
+  const midpoint = psiMax / 2;
+  const midpointAngle = psiToAngle(midpoint, { psiMin, psiMax, zeroAngle });
+  const overboostAngle = psiToAngle(psiOverboost, { psiMin, psiMax, zeroAngle });
+  /* At r=140, 20 px type plus 8 px gap needs 11.5° of separation. */
+  const showMidpoint = Math.abs(midpointAngle - overboostAngle) >= 12;
+  return showMidpoint ? [psiMin, 0, midpoint, psiOverboost, psiMax] : [psiMin, 0, psiOverboost, psiMax];
 }
 function updatePalette() {
   const css = getComputedStyle(document.documentElement);
@@ -180,8 +180,10 @@ function setTheme(theme) {
   root.style.setProperty("--zero", theme.colors.zero);
   state.activeThemeId = theme.id;
   updatePalette();
-  scheduleGaugeRender();
-  drawSparkline();
+  if (IS_COCKPIT) {
+    scheduleGaugeRender();
+    drawSparkline();
+  }
 }
 
 function zoneFor(psi) {
@@ -201,10 +203,16 @@ function colorFor(psi) {
   return palette.vacuum;
 }
 
-function psiToAngle(psi) {
-  const { psiMin, psiMax } = psiRange();
+function psiToAngle(psi, range = psiRange()) {
+  const { psiMin, psiMax, zeroAngle } = range;
   const clamped = Math.max(psiMin, Math.min(psiMax, psi));
-  return ARC_START + ((clamped - psiMin) / (psiMax - psiMin)) * ARC_RANGE;
+  if (clamped < 0) {
+    const span = -psiMin;
+    const t = span > 0 ? (clamped - psiMin) / span : 1;
+    return ARC_START + t * (zeroAngle - ARC_START);
+  }
+  const t = psiMax > 0 ? clamped / psiMax : 0;
+  return zeroAngle + t * (ARC_START + ARC_RANGE - zeroAngle);
 }
 
 function degToRad(deg) {
@@ -260,6 +268,7 @@ function valueArcAngles(psi) {
 }
 
 function drawGauge(sample) {
+  if (!ctx || !el.canvas) return;
   const dpr = Math.min(window.devicePixelRatio || 1, CANVAS_DPR_MAX);
   const rect = el.canvas.getBoundingClientRect();
   const cssW = Math.max(1, rect.width);
@@ -331,7 +340,7 @@ function drawGauge(sample) {
   ctx.textBaseline = "middle";
   ctx.fillStyle = state.palette.muted;
   ctx.font = `700 ${Math.max(12, 16 * scale)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
-  for (const value of tickValues(range.psiMin, range.psiMax, range.psiOverboost)) {
+  for (const value of tickValues(range.psiMin, range.psiMax, range.psiOverboost, range.zeroAngle)) {
     let r = 140 * scale;
     if (Math.abs(value) < 0.01) r = 122 * scale;
     const a = degToRad(psiToAngle(value));
@@ -366,7 +375,7 @@ function drawGauge(sample) {
 }
 
 function scheduleGaugeRender() {
-  if (state.gaugeRaf !== null) return;
+  if (!IS_COCKPIT || !el.canvas || state.gaugeRaf !== null) return;
   state.gaugeRaf = requestAnimationFrame(renderGaugeFrame);
 }
 
@@ -390,6 +399,7 @@ function renderGaugeFrame(at) {
 }
 
 function drawSparkline() {
+  if (!sparkCtx || !el.sparkline) return;
   const dpr = Math.min(window.devicePixelRatio || 1, CANVAS_DPR_MAX);
   const rect = el.sparkline.getBoundingClientRect();
   el.sparkline.width = Math.max(1, Math.round(rect.width * dpr));
@@ -438,6 +448,7 @@ function drawSparkline() {
 }
 
 function pushSample(sample) {
+  if (!IS_COCKPIT) return false;
   const uptimeMs = Number(sample?.uptimeMs);
   const targetUptimeMs = Number(state.gaugeTarget?.uptimeMs);
   if (Number.isFinite(uptimeMs) && Number.isFinite(targetUptimeMs) && uptimeMs <= targetUptimeMs) {
@@ -449,8 +460,8 @@ function pushSample(sample) {
   sampleHistory.push(sample);
   const cutoffMs = historyTimeMs - HISTORY_WINDOW_MS;
   while (sampleHistory.length && sampleHistory[0].historyTimeMs < cutoffMs) sampleHistory.shift();
-  el.sampleCount.textContent = "Last 60 seconds";
-  el.emptyState.hidden = sampleHistory.length > 0;
+  if (el.sampleCount) el.sampleCount.textContent = "Last 60 seconds";
+  if (el.emptyState) el.emptyState.hidden = sampleHistory.length > 0;
   state.gaugeTarget = sample;
   if (sampleHistory.length === 1) state.gaugePsi = Number(sample.psi ?? 0);
   scheduleGaugeRender();
@@ -464,8 +475,11 @@ function pushSample(sample) {
 }
 
 function updateConnection(mode, transport = null) {
+  if (!el.connection || !el.connectionText) return;
   const online = mode === "online";
-  const text = online ? (transport === "http" ? "Live · HTTP 4 Hz" : "Live · WebSocket 20 Hz") : "Disconnected";
+  const text = online
+    ? (transport === "http" || (!transport && state.fallbackActive) ? "Live · HTTP 4 Hz" : "Live · WebSocket 20 Hz")
+    : "Disconnected";
   if (state.connected === online && el.connectionText.textContent === text) return;
   state.connected = online;
   el.connection.classList.remove("online", "offline");
@@ -569,20 +583,18 @@ function timeToMinutes(value) {
 }
 
 function renderState(sample) {
-  if (sample.firmwareVersion) {
-    el.firmwareVersion.textContent = sample.firmwareVersion;
-  }
-  el.uptime.textContent = formatDuration(sample.uptimeMs || 0);
-  el.deviceClock.textContent = formatClock(sample.epochMs, sample.timezoneOffsetMinutes || 0);
-  if (sample.brightness != null) {
-    el.brightnessNow.textContent = `${sample.brightness}%`;
+  if (IS_COCKPIT) {
+    if (sample.firmwareVersion && el.firmwareVersion) el.firmwareVersion.textContent = sample.firmwareVersion;
+    if (el.uptime) el.uptime.textContent = formatDuration(sample.uptimeMs || 0);
+    if (el.deviceClock) el.deviceClock.textContent = formatClock(sample.epochMs, sample.timezoneOffsetMinutes || 0);
+    if (sample.brightness != null && el.brightnessNow) el.brightnessNow.textContent = `${sample.brightness}%`;
   }
   if (sample.activeThemeId && sample.activeThemeId !== state.activeThemeId) {
     state.activeThemeId = sample.activeThemeId;
     const activeTheme = state.themes.find((theme) => theme.id === state.activeThemeId);
     if (activeTheme) {
       setTheme(activeTheme);
-      renderThemes();
+      if (IS_COCKPIT) renderThemes();
     }
   }
   pushSample(sample);
@@ -590,41 +602,48 @@ function renderState(sample) {
 
 function renderConfig(config) {
   state.config = config;
-  el.tzOffset.value = config.timezoneOffsetMinutes ?? 0;
-  el.scheduleEnabled.checked = Boolean(config.dimSchedule?.enabled);
-  el.scheduleStart.value = minutesToTime(config.dimSchedule?.startMinutes ?? 1260);
-  el.scheduleEnd.value = minutesToTime(config.dimSchedule?.endMinutes ?? 420);
-  el.brightnessHigh.value = config.brightnessHigh ?? 100;
-  el.brightnessLow.value = config.brightnessLow ?? 12;
-  el.brightnessHighOut.textContent = `${el.brightnessHigh.value}%`;
-  el.brightnessLowOut.textContent = `${el.brightnessLow.value}%`;
+  if (IS_COCKPIT) {
+    if (el.tzOffset) el.tzOffset.value = config.timezoneOffsetMinutes ?? 0;
+    if (el.scheduleEnabled) el.scheduleEnabled.checked = Boolean(config.dimSchedule?.enabled);
+    if (el.scheduleStart) el.scheduleStart.value = minutesToTime(config.dimSchedule?.startMinutes ?? 1260);
+    if (el.scheduleEnd) el.scheduleEnd.value = minutesToTime(config.dimSchedule?.endMinutes ?? 420);
+    if (el.brightnessHigh) el.brightnessHigh.value = config.brightnessHigh ?? 100;
+    if (el.brightnessLow) el.brightnessLow.value = config.brightnessLow ?? 12;
+    if (el.brightnessHighOut) el.brightnessHighOut.textContent = `${el.brightnessHigh.value}%`;
+    if (el.brightnessLowOut) el.brightnessLowOut.textContent = `${el.brightnessLow.value}%`;
+  }
   const range = psiRange();
-  if (document.activeElement !== el.psiMin) el.psiMin.value = String(range.psiMin);
-  if (document.activeElement !== el.psiMax) el.psiMax.value = String(range.psiMax);
-  if (document.activeElement !== el.psiOverboost) el.psiOverboost.value = String(range.psiOverboost);
-  el.rangeHint.textContent =
-    `Scale ${formatTickLabel(range.psiMin)} → ${formatTickLabel(range.psiMax)} PSI · overboost ${formatTickLabel(range.psiOverboost)}. Min < 0; 0 < overboost < max.`;
-  scheduleGaugeRender();
-  drawSparkline();
+  if (el.psiMin && document.activeElement !== el.psiMin) el.psiMin.value = String(range.psiMin);
+  if (el.psiMax && document.activeElement !== el.psiMax) el.psiMax.value = String(range.psiMax);
+  if (el.psiOverboost && document.activeElement !== el.psiOverboost) el.psiOverboost.value = String(range.psiOverboost);
+  if (el.zeroAngle && document.activeElement !== el.zeroAngle) el.zeroAngle.value = String(range.zeroAngle);
+  if (el.rangeHint) {
+    el.rangeHint.textContent =
+      `Scale ${formatTickLabel(range.psiMin)} → ${formatTickLabel(range.psiMax)} PSI · zero ${range.zeroAngle.toFixed(2)}° · midpoint shown only when clear of overboost.`;
+  }
+  if (IS_COCKPIT) {
+    scheduleGaugeRender();
+    drawSparkline();
+  }
 }
 
 function renderNetwork(net) {
   state.network = net;
-  el.netMode.textContent = (net.mode || "--").toUpperCase();
-  el.netModeSelect.value = net.mode === "ap" ? "ap" : "apsta";
-  el.netStaState.textContent = net.staConnected
-    ? `UP ${net.rssi || ""} dBm`.trim()
-    : net.staEnabled
-      ? "Connecting…"
-      : "Off";
-  el.netStaIp.textContent = net.staIp || "—";
-  el.netApSsid.textContent = net.apSsid || "—";
-  if (document.activeElement !== el.netSsid) {
-    el.netSsid.value = net.staSsid || "";
+  if (el.netMode) el.netMode.textContent = (net.mode || "--").toUpperCase();
+  if (el.netModeSelect) el.netModeSelect.value = net.mode === "ap" ? "ap" : "apsta";
+  if (el.netStaState) {
+    el.netStaState.textContent = net.staConnected
+      ? `UP ${net.rssi || ""} dBm`.trim()
+      : net.staEnabled ? "Connecting…" : "Off";
   }
-  el.netHint.textContent = net.staConnected && net.staIp
-    ? `Live on http://${net.staIp}/ · SoftAP ${net.apSsid || ""} still online`
-    : "SoftAP stays up as fallback. Saving STA may change the LAN IP.";
+  if (el.netStaIp) el.netStaIp.textContent = net.staIp || "—";
+  if (el.netApSsid) el.netApSsid.textContent = net.apSsid || "—";
+  if (el.netSsid && document.activeElement !== el.netSsid) el.netSsid.value = net.staSsid || "";
+  if (el.netHint) {
+    el.netHint.textContent = net.staConnected && net.staIp
+      ? `Live on http://${net.staIp}/ · SoftAP ${net.apSsid || ""} still online`
+      : "SoftAP stays up as fallback. Saving STA may change the LAN IP.";
+  }
 }
 
 function authLabel(auth) {
@@ -709,36 +728,35 @@ async function refreshNetwork() {
 async function refreshAll() {
   try {
     showError("");
-    /* Keep device wall-clock aligned with the browser so dim schedules match local time. */
-    try {
-      const now = new Date();
-      const tz = -now.getTimezoneOffset();
-      await api("/time", {
-        method: "POST",
-        body: JSON.stringify({ epochMs: now.getTime(), timezoneOffsetMinutes: tz }),
-      });
-      el.tzOffset.value = tz;
-    } catch (_) {
-      /* non-fatal; schedule may wait until manual Sync */
+    if (IS_COCKPIT) {
+      /* Keep device wall-clock aligned with the browser so dim schedules match local time. */
+      try {
+        const now = new Date();
+        const tz = -now.getTimezoneOffset();
+        await api("/time", {
+          method: "POST",
+          body: JSON.stringify({ epochMs: now.getTime(), timezoneOffsetMinutes: tz }),
+        });
+        if (el.tzOffset) el.tzOffset.value = tz;
+      } catch (_) {
+        /* non-fatal; schedule may wait until manual Sync */
+      }
     }
-    const [statePayload, config, themes, media, network] = await Promise.all([
-      api("/state"),
-      api("/config"),
-      api("/themes"),
-      api("/media/status"),
-      api("/network"),
-    ]);
+    const requests = [api("/state"), api("/config"), api("/themes"), api("/network")];
+    if (IS_COCKPIT) requests.push(api("/media/status"));
+    const [statePayload, config, themes, network, media] = await Promise.all(requests);
     state.themes = themes.themes || [];
     state.activeThemeId = themes.activeThemeId || statePayload.activeThemeId || state.activeThemeId;
-    renderThemes();
+    if (IS_COCKPIT) renderThemes();
     setTheme(state.themes.find((theme) => theme.id === state.activeThemeId));
     renderConfig(config);
     renderState(statePayload);
-    renderMediaStatus(media);
+    if (IS_COCKPIT) renderMediaStatus(media);
     renderNetwork(network);
-    updateConnection("online", "http");
+    /* A successful refresh must not relabel an already-open WebSocket as HTTP. */
+    if (!state.liveSocket || state.liveSocket.readyState !== WebSocket.OPEN) updateConnection("online", "http");
   } catch (error) {
-    updateConnection("offline");
+    if (!state.liveSocket || state.liveSocket.readyState !== WebSocket.OPEN) updateConnection("offline");
     showError(error.message);
   }
 }
@@ -875,53 +893,31 @@ async function saveConfig() {
   }
 }
 
-function setView(view) {
-  const next = view === "settings" ? "settings" : "cockpit";
-  if (el.shell) el.shell.dataset.view = next;
-  for (const pane of el.viewPanes) {
-    pane.hidden = pane.dataset.viewPane !== next;
-  }
-  for (const tab of el.viewTabs) {
-    tab.classList.toggle("active", tab.dataset.viewTarget === next);
-  }
-  scheduleGaugeRender();
-  drawSparkline();
-}
-
 function readRangeForm() {
   const psiMin = Number(el.psiMin.value);
   const psiMax = Number(el.psiMax.value);
   const psiOverboost = Number(el.psiOverboost.value);
-  if (!Number.isFinite(psiMin) || !Number.isFinite(psiMax) || !Number.isFinite(psiOverboost)) {
+  const zeroAngle = Number(el.zeroAngle.value);
+  if (!Number.isFinite(psiMin) || !Number.isFinite(psiMax) || !Number.isFinite(psiOverboost) || !Number.isFinite(zeroAngle)) {
     throw new Error("Gauge range values must be numbers");
   }
-  if (!(psiMin < 0)) throw new Error("Min PSI must be negative");
-  if (!(psiMax > 0)) throw new Error("Max PSI must be positive");
   if (!(psiMin >= -30 && psiMin <= -1)) throw new Error("Min PSI must be between −30 and −1");
   if (!(psiMax >= 5 && psiMax <= 40)) throw new Error("Max PSI must be between 5 and 40");
   if (!(psiOverboost > 0 && psiOverboost < psiMax)) {
     throw new Error("Overboost must be greater than 0 and less than max PSI");
   }
-  return { psiMin, psiMax, psiOverboost };
+  if (!(zeroAngle >= 180 && zeroAngle <= 315)) {
+    throw new Error("Zero position must be between 180° and 315°");
+  }
+  return { psiMin, psiMax, psiOverboost, zeroAngle };
 }
 
 async function saveRange() {
   const range = readRangeForm();
-  const payload = {
-    ...range,
-    brightnessHigh: Number(el.brightnessHigh.value),
-    brightnessLow: Number(el.brightnessLow.value),
-    timezoneOffsetMinutes: Number(el.tzOffset.value),
-    activeThemeId: state.activeThemeId,
-    dimSchedule: {
-      enabled: el.scheduleEnabled.checked,
-      startMinutes: timeToMinutes(el.scheduleStart.value),
-      endMinutes: timeToMinutes(el.scheduleEnd.value),
-    },
-  };
+  const payload = { ...range };
   renderConfig(await api("/config", { method: "PUT", body: JSON.stringify(payload) }));
   showOk(
-    `Gauge range saved · ${formatTickLabel(range.psiMin)} / ${formatTickLabel(range.psiMax)} / overboost ${formatTickLabel(range.psiOverboost)}`,
+    `Gauge range saved · ${formatTickLabel(range.psiMin)} / ${formatTickLabel(range.psiMax)} · zero ${range.zeroAngle.toFixed(2)}°`,
   );
 }
 
@@ -1121,38 +1117,32 @@ async function uploadOta() {
 }
 
 function wireControls() {
-  el.refreshBtn.addEventListener("click", () => refreshAll().catch((e) => showError(e.message)));
-  el.syncTimeBtn.addEventListener("click", () => syncTime().catch((error) => showError(error.message)));
-  el.saveConfigBtn.addEventListener("click", () => saveConfig().catch((error) => showError(error.message)));
-  el.saveRangeBtn.addEventListener("click", () => saveRange().catch((error) => showError(error.message)));
-  el.loadLogsBtn.addEventListener("click", () => loadLogs().catch((error) => showError(error.message)));
-  el.exportLogsBtn.addEventListener("click", () => exportLogs().catch((error) => showError(error.message)));
-  el.clearLogsBtn.addEventListener("click", () => clearLogs().catch((error) => showError(error.message)));
-  el.uploadMediaBtn.addEventListener("click", () => uploadMedia().catch((error) => showError(error.message)));
-  el.deleteMediaBtn.addEventListener("click", () => deleteMedia().catch((error) => showError(error.message)));
-  el.uploadOtaBtn.addEventListener("click", () => uploadOta().catch((error) => showError(error.message)));
-  el.saveNetworkBtn.addEventListener("click", () => saveNetwork().catch((error) => showError(error.message)));
-  el.reconnectNetworkBtn.addEventListener("click", () => reconnectNetwork().catch((error) => showError(error.message)));
-  el.networkRefreshBtn.addEventListener("click", () => refreshNetwork().catch((error) => showError(error.message)));
-  el.scanNetworksBtn.addEventListener("click", () => scanNetworks());
-  el.netScanSelect.addEventListener("change", () => {
+  on(el.refreshBtn, "click", () => refreshAll().catch((e) => showError(e.message)));
+  on(el.syncTimeBtn, "click", () => syncTime().catch((error) => showError(error.message)));
+  on(el.saveConfigBtn, "click", () => saveConfig().catch((error) => showError(error.message)));
+  on(el.saveRangeBtn, "click", () => saveRange().catch((error) => showError(error.message)));
+  on(el.loadLogsBtn, "click", () => loadLogs().catch((error) => showError(error.message)));
+  on(el.exportLogsBtn, "click", () => exportLogs().catch((error) => showError(error.message)));
+  on(el.clearLogsBtn, "click", () => clearLogs().catch((error) => showError(error.message)));
+  on(el.uploadMediaBtn, "click", () => uploadMedia().catch((error) => showError(error.message)));
+  on(el.deleteMediaBtn, "click", () => deleteMedia().catch((error) => showError(error.message)));
+  on(el.uploadOtaBtn, "click", () => uploadOta().catch((error) => showError(error.message)));
+  on(el.saveNetworkBtn, "click", () => saveNetwork().catch((error) => showError(error.message)));
+  on(el.reconnectNetworkBtn, "click", () => reconnectNetwork().catch((error) => showError(error.message)));
+  on(el.networkRefreshBtn, "click", () => refreshNetwork().catch((error) => showError(error.message)));
+  on(el.scanNetworksBtn, "click", () => scanNetworks());
+  on(el.netScanSelect, "change", () => {
     if (el.netScanSelect.value) {
       el.netSsid.value = el.netScanSelect.value;
       el.netModeSelect.value = "apsta";
     }
   });
-  for (const tab of el.viewTabs) {
-    tab.addEventListener("click", () => setView(tab.dataset.viewTarget));
-  }
-  el.brightnessHigh.addEventListener("input", () => { el.brightnessHighOut.textContent = `${el.brightnessHigh.value}%`; });
-  el.brightnessLow.addEventListener("input", () => { el.brightnessLowOut.textContent = `${el.brightnessLow.value}%`; });
-  el.mediaFile.addEventListener("change", () => {
-    el.mediaStatus.textContent = el.mediaFile.files[0]?.name || "No active GIF";
-  });
-  el.otaFile.addEventListener("change", () => {
-    el.otaStatus.textContent = el.otaFile.files[0]?.name || "Idle";
-  });
+  on(el.brightnessHigh, "input", () => { if (el.brightnessHighOut) el.brightnessHighOut.textContent = `${el.brightnessHigh.value}%`; });
+  on(el.brightnessLow, "input", () => { if (el.brightnessLowOut) el.brightnessLowOut.textContent = `${el.brightnessLow.value}%`; });
+  on(el.mediaFile, "change", () => { if (el.mediaStatus) el.mediaStatus.textContent = el.mediaFile.files[0]?.name || "No active GIF"; });
+  on(el.otaFile, "change", () => { if (el.otaStatus) el.otaStatus.textContent = el.otaFile.files[0]?.name || "Idle"; });
   window.addEventListener("resize", () => {
+    if (!IS_COCKPIT) return;
     scheduleGaugeRender();
     drawSparkline();
   });
@@ -1166,7 +1156,8 @@ state.config = {
 };
 state.gaugeTarget = { psi: 0, peakPsi: 0, zone: "ATMO", demo: true };
 wireControls();
-setView("cockpit");
-scheduleGaugeRender();
-drawSparkline();
+if (IS_COCKPIT) {
+  scheduleGaugeRender();
+  drawSparkline();
+}
 refreshAll().finally(connectEvents);
