@@ -25,6 +25,7 @@
 
 #include "boost_model.h"
 #include "boost_gauge.h"
+#include "boost_display.h"
 #include "boost_network.h"
 #include "boost_media_store.h"
 #include "generated_web_assets.h"
@@ -299,16 +300,18 @@ static void config_json(char *json, size_t len)
     snprintf(json, len,
              "{\"brightnessHigh\":%d,\"brightnessLow\":%d,"
              "\"dimSchedule\":{\"enabled\":%s,\"startMinutes\":%d,\"endMinutes\":%d},"
-             "\"timezoneOffsetMinutes\":%d,\"activeThemeId\":\"%s\"}",
+             "\"timezoneOffsetMinutes\":%d,\"activeThemeId\":\"%s\","
+             "\"psiMin\":%.2f,\"psiMax\":%.2f,\"psiOverboost\":%.2f}",
              cfg.brightness_high, cfg.brightness_low,
              cfg.dim_schedule.enabled ? "true" : "false",
              cfg.dim_schedule.start_minutes, cfg.dim_schedule.end_minutes,
-             cfg.timezone_offset_minutes, cfg.active_theme_id);
+             cfg.timezone_offset_minutes, cfg.active_theme_id,
+             (double)cfg.psi_min, (double)cfg.psi_max, (double)cfg.psi_overboost);
 }
 
 static esp_err_t config_get(httpd_req_t *req)
 {
-    char json[256];
+    char json[384];
     config_json(json, sizeof(json));
     return send_json(req, json);
 }
@@ -320,6 +323,16 @@ static bool json_int(cJSON *obj, const char *name, int *out)
         return false;
     }
     *out = v->valueint;
+    return true;
+}
+
+static bool json_float(cJSON *obj, const char *name, float *out)
+{
+    cJSON *v = cJSON_GetObjectItemCaseSensitive(obj, name);
+    if (!cJSON_IsNumber(v)) {
+        return false;
+    }
+    *out = (float)v->valuedouble;
     return true;
 }
 
@@ -339,6 +352,7 @@ static esp_err_t config_put(httpd_req_t *req)
     boost_model_get_config(&patch);
     uint32_t fields = 0;
     int tmp;
+    float ftmp;
     if (json_int(root, "brightnessHigh", &tmp)) {
         patch.brightness_high = tmp;
         fields |= BOOST_CONFIG_BRIGHTNESS_HIGH;
@@ -372,12 +386,36 @@ static esp_err_t config_put(httpd_req_t *req)
             fields |= BOOST_CONFIG_DIM_END;
         }
     }
+    if (json_float(root, "psiMin", &ftmp)) {
+        patch.psi_min = ftmp;
+        fields |= BOOST_CONFIG_PSI_MIN;
+    }
+    if (json_float(root, "psiMax", &ftmp)) {
+        patch.psi_max = ftmp;
+        fields |= BOOST_CONFIG_PSI_MAX;
+    }
+    if (json_float(root, "psiOverboost", &ftmp)) {
+        patch.psi_overboost = ftmp;
+        fields |= BOOST_CONFIG_PSI_OVERBOOST;
+    }
     cJSON_Delete(root);
     esp_err_t err = boost_model_update_config(&patch, fields);
     if (err != ESP_OK) {
         return send_err(req, HTTPD_400, "invalid_config");
     }
-    char json[256];
+    if (fields & (BOOST_CONFIG_PSI_MIN | BOOST_CONFIG_PSI_MAX | BOOST_CONFIG_PSI_OVERBOOST |
+                  BOOST_CONFIG_THEME)) {
+        if (boost_display_lock(1000) == ESP_OK) {
+            if (fields & BOOST_CONFIG_THEME) {
+                boost_gauge_apply_theme(boost_model_active_theme());
+            }
+            if (fields & (BOOST_CONFIG_PSI_MIN | BOOST_CONFIG_PSI_MAX | BOOST_CONFIG_PSI_OVERBOOST)) {
+                boost_gauge_apply_config();
+            }
+            boost_display_unlock();
+        }
+    }
+    char json[384];
     config_json(json, sizeof(json));
     return send_json(req, json);
 }

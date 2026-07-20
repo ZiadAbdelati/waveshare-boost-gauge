@@ -1,9 +1,9 @@
 "use strict";
 
 const API = "/api/v1";
-const PSI_MIN = -15;
-const PSI_MAX = 25;
-const OVERBOOST = 18;
+const DEFAULT_PSI_MIN = -15;
+const DEFAULT_PSI_MAX = 10;
+const DEFAULT_PSI_OVERBOOST = 8;
 const ARC_START = 135;
 const ARC_RANGE = 270;
 const ZERO_GAP_VAC = 3.6;
@@ -40,6 +40,7 @@ const state = {
 };
 
 const el = {
+  shell: document.getElementById("shell"),
   connection: document.getElementById("connection"),
   connectionText: document.getElementById("connectionText"),
   errorBox: document.getElementById("errorBox"),
@@ -93,11 +94,65 @@ const el = {
   scanNetworksBtn: document.getElementById("scanNetworksBtn"),
   netScanSelect: document.getElementById("netScanSelect"),
   netHint: document.getElementById("netHint"),
+  psiMin: document.getElementById("psiMin"),
+  psiMax: document.getElementById("psiMax"),
+  psiOverboost: document.getElementById("psiOverboost"),
+  saveRangeBtn: document.getElementById("saveRangeBtn"),
+  rangeHint: document.getElementById("rangeHint"),
+  viewCockpitBtn: document.getElementById("viewCockpitBtn"),
+  viewSettingsBtn: document.getElementById("viewSettingsBtn"),
+  viewPanes: Array.from(document.querySelectorAll("[data-view-pane]")),
+  viewTabs: Array.from(document.querySelectorAll("[data-view-target]")),
 };
 
 const ctx = el.canvas.getContext("2d");
 const sparkCtx = el.sparkline.getContext("2d");
 
+
+function finiteOr(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function psiRange() {
+  const cfg = state.config || {};
+  let psiMin = finiteOr(cfg.psiMin, DEFAULT_PSI_MIN);
+  let psiMax = finiteOr(cfg.psiMax, DEFAULT_PSI_MAX);
+  let psiOverboost = finiteOr(cfg.psiOverboost, DEFAULT_PSI_OVERBOOST);
+  if (!(psiMin < 0)) psiMin = DEFAULT_PSI_MIN;
+  if (!(psiMax > 0)) psiMax = DEFAULT_PSI_MAX;
+  if (!(psiMin < psiMax)) {
+    psiMin = DEFAULT_PSI_MIN;
+    psiMax = DEFAULT_PSI_MAX;
+  }
+  if (!(psiOverboost > 0 && psiOverboost < psiMax)) {
+    psiOverboost = Math.min(DEFAULT_PSI_OVERBOOST, psiMax * 0.8);
+    if (!(psiOverboost > 0 && psiOverboost < psiMax)) {
+      psiOverboost = psiMax * 0.8;
+    }
+  }
+  return { psiMin, psiMax, psiOverboost };
+}
+
+function formatTickLabel(value) {
+  if (Math.abs(value) < 0.05) return "0";
+  const rounded = Math.round(value * 10) / 10;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+}
+
+function tickValues(psiMin, psiMax, psiOverboost) {
+  const mid = psiMax / 2;
+  const candidates = [psiMin, 0, mid, psiOverboost, psiMax];
+  const ticks = [];
+  for (const value of candidates) {
+    if (!Number.isFinite(value)) continue;
+    if (value < psiMin - 0.01 || value > psiMax + 0.01) continue;
+    if (ticks.some((existing) => Math.abs(existing - value) < 0.05)) continue;
+    ticks.push(value);
+  }
+  ticks.sort((a, b) => a - b);
+  return ticks;
+}
 function updatePalette() {
   const css = getComputedStyle(document.documentElement);
   state.palette = {
@@ -130,7 +185,8 @@ function setTheme(theme) {
 }
 
 function zoneFor(psi) {
-  if (psi >= OVERBOOST) return "OVER";
+  const { psiOverboost } = psiRange();
+  if (psi >= psiOverboost) return "OVER";
   if (psi >= 0.35) return "BOOST";
   if (psi > -0.35) return "ATMO";
   return "VAC";
@@ -138,15 +194,17 @@ function zoneFor(psi) {
 
 function colorFor(psi) {
   const palette = state.palette;
-  if (psi >= OVERBOOST) return palette.overboost;
+  const { psiOverboost } = psiRange();
+  if (psi >= psiOverboost) return palette.overboost;
   if (psi >= 0.35) return palette.boost;
   if (psi > -0.35) return palette.text;
   return palette.vacuum;
 }
 
 function psiToAngle(psi) {
-  const clamped = Math.max(PSI_MIN, Math.min(PSI_MAX, psi));
-  return ARC_START + ((clamped - PSI_MIN) / (PSI_MAX - PSI_MIN)) * ARC_RANGE;
+  const { psiMin, psiMax } = psiRange();
+  const clamped = Math.max(psiMin, Math.min(psiMax, psi));
+  return ARC_START + ((clamped - psiMin) / (psiMax - psiMin)) * ARC_RANGE;
 }
 
 function degToRad(deg) {
@@ -267,16 +325,17 @@ function drawGauge(sample) {
   ctx.lineTo(cx + rOuter * Math.cos(zero), cy + rOuter * Math.sin(zero));
   ctx.stroke();
 
-  /* Tick labels */
+  /* Tick labels follow live config: min / 0 / mid / overboost / max */
+  const range = psiRange();
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillStyle = state.palette.muted;
   ctx.font = `700 ${Math.max(12, 16 * scale)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
-  for (const [value, label] of [[-15, "-15"], [0, "0"], [10, "10"], [18, "18"], [25, "25"]]) {
+  for (const value of tickValues(range.psiMin, range.psiMax, range.psiOverboost)) {
     let r = 140 * scale;
     if (Math.abs(value) < 0.01) r = 122 * scale;
     const a = degToRad(psiToAngle(value));
-    ctx.fillText(label, cx + r * Math.cos(a), cy + r * Math.sin(a));
+    ctx.fillText(formatTickLabel(value), cx + r * Math.cos(a), cy + r * Math.sin(a));
   }
 
   /* Center stack — zone / PSI / unit / peak / mode (matches physical UI) */
@@ -289,7 +348,7 @@ function drawGauge(sample) {
   ctx.font = `700 ${Math.max(12, 15 * scale)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
   ctx.fillText(zone, cx, cy - 88 * scale);
 
-  ctx.fillStyle = psi >= OVERBOOST ? state.palette.overboost : state.palette.text;
+  ctx.fillStyle = psi >= range.psiOverboost ? state.palette.overboost : state.palette.text;
   ctx.font = `700 ${Math.max(40, 58 * scale)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
   drawFixedPsi(psi, cx, cy - 16 * scale, scale);
 
@@ -297,7 +356,7 @@ function drawGauge(sample) {
   ctx.font = `700 ${Math.max(12, 15 * scale)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
   ctx.fillText("PSI", cx, cy + 28 * scale);
 
-  ctx.fillStyle = peak >= OVERBOOST ? state.palette.overboost : state.palette.boost;
+  ctx.fillStyle = peak >= range.psiOverboost ? state.palette.overboost : state.palette.boost;
   ctx.font = `700 ${Math.max(12, 14 * scale)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
   ctx.fillText(`PEAK  ${peak.toFixed(1)}`, cx, cy + 56 * scale);
 
@@ -342,7 +401,9 @@ function drawSparkline() {
   sparkCtx.fillStyle = "rgba(32, 36, 44, 0.42)";
   sparkCtx.fillRect(0, 0, w, h);
 
-  const zeroY = h - ((0 - PSI_MIN) / (PSI_MAX - PSI_MIN)) * h;
+  const { psiMin, psiMax } = psiRange();
+  const span = Math.max(0.001, psiMax - psiMin);
+  const zeroY = h - ((0 - psiMin) / span) * h;
   sparkCtx.strokeStyle = state.palette.muted;
   sparkCtx.globalAlpha = 0.38;
   sparkCtx.beginPath();
@@ -361,7 +422,7 @@ function drawSparkline() {
   sparkCtx.beginPath();
   sampleHistory.forEach((sample, index) => {
     const x = Math.max(0, Math.min(w, ((sample.historyTimeMs - startMs) / HISTORY_WINDOW_MS) * w));
-    const y = h - ((sample.psi - PSI_MIN) / (PSI_MAX - PSI_MIN)) * h;
+    const y = h - ((sample.psi - psiMin) / span) * h;
     if (index === 0) sparkCtx.moveTo(x, y);
     else sparkCtx.lineTo(x, y);
   });
@@ -370,7 +431,7 @@ function drawSparkline() {
   const last = sampleHistory.at(-1);
   sparkCtx.fillStyle = colorFor(last.psi);
   const lx = Math.max(0, Math.min(w, ((last.historyTimeMs - startMs) / HISTORY_WINDOW_MS) * w));
-  const ly = h - ((last.psi - PSI_MIN) / (PSI_MAX - PSI_MIN)) * h;
+  const ly = h - ((last.psi - psiMin) / span) * h;
   sparkCtx.beginPath();
   sparkCtx.arc(lx, ly, 4 * dpr, 0, Math.PI * 2);
   sparkCtx.fill();
@@ -537,6 +598,14 @@ function renderConfig(config) {
   el.brightnessLow.value = config.brightnessLow ?? 12;
   el.brightnessHighOut.textContent = `${el.brightnessHigh.value}%`;
   el.brightnessLowOut.textContent = `${el.brightnessLow.value}%`;
+  const range = psiRange();
+  if (document.activeElement !== el.psiMin) el.psiMin.value = String(range.psiMin);
+  if (document.activeElement !== el.psiMax) el.psiMax.value = String(range.psiMax);
+  if (document.activeElement !== el.psiOverboost) el.psiOverboost.value = String(range.psiOverboost);
+  el.rangeHint.textContent =
+    `Scale ${formatTickLabel(range.psiMin)} → ${formatTickLabel(range.psiMax)} PSI · overboost ${formatTickLabel(range.psiOverboost)}. Min < 0; 0 < overboost < max.`;
+  scheduleGaugeRender();
+  drawSparkline();
 }
 
 function renderNetwork(net) {
@@ -806,6 +875,56 @@ async function saveConfig() {
   }
 }
 
+function setView(view) {
+  const next = view === "settings" ? "settings" : "cockpit";
+  if (el.shell) el.shell.dataset.view = next;
+  for (const pane of el.viewPanes) {
+    pane.hidden = pane.dataset.viewPane !== next;
+  }
+  for (const tab of el.viewTabs) {
+    tab.classList.toggle("active", tab.dataset.viewTarget === next);
+  }
+  scheduleGaugeRender();
+  drawSparkline();
+}
+
+function readRangeForm() {
+  const psiMin = Number(el.psiMin.value);
+  const psiMax = Number(el.psiMax.value);
+  const psiOverboost = Number(el.psiOverboost.value);
+  if (!Number.isFinite(psiMin) || !Number.isFinite(psiMax) || !Number.isFinite(psiOverboost)) {
+    throw new Error("Gauge range values must be numbers");
+  }
+  if (!(psiMin < 0)) throw new Error("Min PSI must be negative");
+  if (!(psiMax > 0)) throw new Error("Max PSI must be positive");
+  if (!(psiMin >= -30 && psiMin <= -1)) throw new Error("Min PSI must be between −30 and −1");
+  if (!(psiMax >= 5 && psiMax <= 40)) throw new Error("Max PSI must be between 5 and 40");
+  if (!(psiOverboost > 0 && psiOverboost < psiMax)) {
+    throw new Error("Overboost must be greater than 0 and less than max PSI");
+  }
+  return { psiMin, psiMax, psiOverboost };
+}
+
+async function saveRange() {
+  const range = readRangeForm();
+  const payload = {
+    ...range,
+    brightnessHigh: Number(el.brightnessHigh.value),
+    brightnessLow: Number(el.brightnessLow.value),
+    timezoneOffsetMinutes: Number(el.tzOffset.value),
+    activeThemeId: state.activeThemeId,
+    dimSchedule: {
+      enabled: el.scheduleEnabled.checked,
+      startMinutes: timeToMinutes(el.scheduleStart.value),
+      endMinutes: timeToMinutes(el.scheduleEnd.value),
+    },
+  };
+  renderConfig(await api("/config", { method: "PUT", body: JSON.stringify(payload) }));
+  showOk(
+    `Gauge range saved · ${formatTickLabel(range.psiMin)} / ${formatTickLabel(range.psiMax)} / overboost ${formatTickLabel(range.psiOverboost)}`,
+  );
+}
+
 async function saveNetwork() {
   const body = {
     mode: el.netModeSelect.value,
@@ -1005,6 +1124,7 @@ function wireControls() {
   el.refreshBtn.addEventListener("click", () => refreshAll().catch((e) => showError(e.message)));
   el.syncTimeBtn.addEventListener("click", () => syncTime().catch((error) => showError(error.message)));
   el.saveConfigBtn.addEventListener("click", () => saveConfig().catch((error) => showError(error.message)));
+  el.saveRangeBtn.addEventListener("click", () => saveRange().catch((error) => showError(error.message)));
   el.loadLogsBtn.addEventListener("click", () => loadLogs().catch((error) => showError(error.message)));
   el.exportLogsBtn.addEventListener("click", () => exportLogs().catch((error) => showError(error.message)));
   el.clearLogsBtn.addEventListener("click", () => clearLogs().catch((error) => showError(error.message)));
@@ -1021,6 +1141,9 @@ function wireControls() {
       el.netModeSelect.value = "apsta";
     }
   });
+  for (const tab of el.viewTabs) {
+    tab.addEventListener("click", () => setView(tab.dataset.viewTarget));
+  }
   el.brightnessHigh.addEventListener("input", () => { el.brightnessHighOut.textContent = `${el.brightnessHigh.value}%`; });
   el.brightnessLow.addEventListener("input", () => { el.brightnessLowOut.textContent = `${el.brightnessLow.value}%`; });
   el.mediaFile.addEventListener("change", () => {
@@ -1035,10 +1158,15 @@ function wireControls() {
   });
 }
 
-wireControls();
-
 updatePalette();
+state.config = {
+  psiMin: DEFAULT_PSI_MIN,
+  psiMax: DEFAULT_PSI_MAX,
+  psiOverboost: DEFAULT_PSI_OVERBOOST,
+};
 state.gaugeTarget = { psi: 0, peakPsi: 0, zone: "ATMO", demo: true };
+wireControls();
+setView("cockpit");
 scheduleGaugeRender();
 drawSparkline();
 refreshAll().finally(connectEvents);

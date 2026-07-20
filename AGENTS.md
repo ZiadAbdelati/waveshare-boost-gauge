@@ -18,8 +18,8 @@ Verified release baseline is firmware `0.3.0-web`; preserve that identity in har
 - `main/boost_media_store.c/.h`: raw `media` partition format, upload transaction, CRC, mapping, and deletion.
 - `main/boost_web.c`: HTTP/WebSocket API and upload/delete request serialization.
 - `main/boost_model.c/.h`: sensor/model state and publication.
-- `web/`: dashboard source. `main/generated_web_assets.c/.h` are generated outputs only.
-- `tools/embed_web.py`, `web.mk`: web asset regeneration. `release/`: explicitly produced release artifacts only.
+- `web/`: dashboard source (cockpit + settings views). `main/generated_web_assets.c/.h` are generated outputs only.
+- `tools/embed_web.py`, `web.mk`: web asset regeneration. `tools/mock_server.py` mirrors config/network APIs. `release/`: explicitly produced release artifacts only.
 
 ## Cadence contract
 

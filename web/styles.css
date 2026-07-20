@@ -181,6 +181,74 @@ progress::-moz-progress-bar { background: linear-gradient(90deg, var(--vacuum), 
   min-width: 0;
 }
 
+.mast-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.view-nav {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 0.28rem;
+  padding: 0.22rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(17, 20, 26, 0.92);
+}
+
+.view-tab {
+  min-height: 2rem;
+  border-radius: 999px;
+  border-color: transparent;
+  background: transparent;
+  padding: 0.35rem 0.9rem;
+  font-family: "Barlow Condensed", "Aptos Narrow", "Arial Narrow", system-ui, sans-serif;
+  font-size: 0.86rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.view-tab:hover {
+  border-color: transparent;
+  background: rgba(35, 42, 53, 0.72);
+  color: var(--text);
+}
+
+.view-tab.active {
+  border-color: color-mix(in srgb, var(--vacuum) 45%, var(--line));
+  background: color-mix(in srgb, var(--vacuum) 14%, #1b2028);
+  color: var(--text);
+}
+
+.view-pane[hidden] { display: none !important; }
+
+.view-settings {
+  display: grid;
+  gap: var(--gap);
+  align-content: start;
+  min-width: 0;
+}
+
+.range-fields {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.range-fields .field { margin-top: 0; }
+
+@media (min-width: 720px) {
+  .range-fields {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.85rem;
+  }
+}
+
 .eyebrow, .section-title, .strip-head {
   font-family: "Barlow Condensed", "Aptos Narrow", "Arial Narrow", system-ui, sans-serif;
   text-transform: uppercase;
@@ -379,9 +447,9 @@ h1 {
   word-break: break-word;
 }
 
-/* Status + network span the full console width */
+/* Status spans the full console width; settings hosts network + range */
 .service-rail > .status-panel,
-.service-rail > .network-panel {
+.service-rail > .view-settings {
   width: 100%;
 }
 
@@ -646,7 +714,12 @@ output {
     padding: 0.85rem;
   }
   .mast { align-items: flex-start; flex-direction: column; }
+  .mast-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
   .status-grid { grid-template-columns: minmax(0, 1fr); }
   .button-row { grid-template-columns: minmax(0, 1fr); }
   .console-cards { columns: auto; }
+  .range-fields { grid-template-columns: minmax(0, 1fr); }
 }

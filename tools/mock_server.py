@@ -73,6 +73,9 @@ CONFIG = {
     "dimSchedule": {"enabled": True, "startMinutes": 21 * 60, "endMinutes": 7 * 60},
     "timezoneOffsetMinutes": 0,
     "activeThemeId": "pit-lane",
+    "psiMin": -15.0,
+    "psiMax": 10.0,
+    "psiOverboost": 8.0,
 }
 
 MEDIA = {
@@ -112,13 +115,17 @@ def current_psi() -> float:
     envelope = 0.55 + 0.45 * math.sin(phase * 0.5 + 0.4)
     norm = (0.5 + 0.5 * math.sin(phase)) * envelope
     norm = norm * 0.92 + 0.08
-    psi = -14.5 + (22 - (-14.5)) * norm
-    psi += 0.18 * math.sin(elapsed * 17.3) + 0.08 * math.sin(elapsed * 31.1)
-    return round(max(-15, min(25, psi)), 1)
+    psi_min = float(CONFIG.get("psiMin", -15.0))
+    psi_max = float(CONFIG.get("psiMax", 10.0))
+    # Sweep the live face so the default 10 PSI dial is fully exercised.
+    psi = psi_min + (psi_max - psi_min) * norm
+    psi += 0.12 * math.sin(elapsed * 17.3) + 0.06 * math.sin(elapsed * 31.1)
+    return round(max(psi_min, min(psi_max, psi)), 1)
 
 
 def zone_for(psi: float) -> str:
-    if psi >= 18:
+    overboost = float(CONFIG.get("psiOverboost", 8.0))
+    if psi >= overboost:
         return "OVER"
     if psi >= 0.35:
         return "BOOST"
@@ -247,6 +254,30 @@ class Handler(BaseHTTPRequestHandler):
                     CONFIG[key] = payload[key]
             if "dimSchedule" in payload:
                 CONFIG["dimSchedule"] = {**CONFIG["dimSchedule"], **payload["dimSchedule"]}
+            if any(key in payload for key in ("psiMin", "psiMax", "psiOverboost")):
+                psi_min = float(payload.get("psiMin", CONFIG["psiMin"]))
+                psi_max = float(payload.get("psiMax", CONFIG["psiMax"]))
+                psi_overboost = float(payload.get("psiOverboost", CONFIG["psiOverboost"]))
+                valid = (
+                    psi_min < 0
+                    and -30.0 <= psi_min <= -1.0
+                    and 5.0 <= psi_max <= 40.0
+                    and 0.0 < psi_overboost < psi_max
+                )
+                if not valid:
+                    self.send_json(
+                        {
+                            "error": "invalid gauge range",
+                            "psiMin": psi_min,
+                            "psiMax": psi_max,
+                            "psiOverboost": psi_overboost,
+                        },
+                        HTTPStatus.BAD_REQUEST,
+                    )
+                    return
+                CONFIG["psiMin"] = psi_min
+                CONFIG["psiMax"] = psi_max
+                CONFIG["psiOverboost"] = psi_overboost
             self.send_json(CONFIG)
         elif parsed.path == "/api/v1/themes/active":
             payload = self.read_json()

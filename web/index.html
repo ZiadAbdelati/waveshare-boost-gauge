@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <title>Boost Gauge Control</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="/styles.css?v=20260719f">
+  <link rel="stylesheet" href="/styles.css?v=20260720a">
 </head>
 <body>
   <div class="boot" id="boot" aria-hidden="true">
@@ -13,16 +13,22 @@
     <div class="boot-text">BOOST GAUGE</div>
   </div>
 
-  <main class="shell">
+  <main class="shell" data-view="cockpit" id="shell">
     <section class="gauge-bay" aria-label="Live boost gauge">
       <div class="mast">
         <div>
           <p class="eyebrow">Waveshare 1.75 AMOLED</p>
           <h1>Boost Gauge</h1>
         </div>
-        <div class="connection" id="connection">
-          <span class="dot"></span>
-          <span id="connectionText">Connecting</span>
+        <div class="mast-actions">
+          <nav class="view-nav" aria-label="Dashboard views">
+            <button type="button" class="view-tab active" data-view-target="cockpit" id="viewCockpitBtn">Cockpit</button>
+            <button type="button" class="view-tab" data-view-target="settings" id="viewSettingsBtn">Settings</button>
+          </nav>
+          <div class="connection" id="connection">
+            <span class="dot"></span>
+            <span id="connectionText">Connecting</span>
+          </div>
         </div>
       </div>
 
@@ -58,146 +64,172 @@
         <div class="ok" id="okBox" hidden></div>
       </section>
 
-      <section class="panel network-panel">
-        <div class="section-title">
-          <span>Network</span>
-          <button id="networkRefreshBtn">Refresh</button>
-        </div>
-        <div class="status-grid network-grid">
-          <div><span>Mode</span><strong id="netMode">--</strong></div>
-          <div><span>STA</span><strong id="netStaState">--</strong></div>
-          <div><span>LAN IP</span><strong id="netStaIp">--</strong></div>
-          <div><span>SoftAP</span><strong id="netApSsid">--</strong></div>
-        </div>
-        <div class="network-form">
-          <label class="field">
-            <span>Mode</span>
-            <select id="netModeSelect">
-              <option value="apsta">AP + Station (LAN)</option>
-              <option value="ap">SoftAP only</option>
-            </select>
-          </label>
-          <label class="field">
-            <span>Wi‑Fi SSID</span>
-            <input id="netSsid" type="text" maxlength="32" autocomplete="off" spellcheck="false">
-          </label>
-          <div class="scan-row">
-            <button id="scanNetworksBtn" type="button">Scan networks</button>
-            <select id="netScanSelect" aria-label="Scanned Wi‑Fi networks">
-              <option value="">Manual SSID entry</option>
-            </select>
-          </div>
-          <label class="field">
-            <span>Password</span>
-            <input id="netPassword" type="password" maxlength="64" autocomplete="new-password" placeholder="Leave blank to keep">
-          </label>
-          <label class="check-row">
-            <input id="netKeepPassword" type="checkbox" checked>
-            <span>Keep existing password if blank</span>
-          </label>
-        </div>
-        <div class="button-row">
-          <button class="primary" id="saveNetworkBtn">Save Wi‑Fi</button>
-          <button id="reconnectNetworkBtn">Reconnect</button>
-        </div>
-        <p class="hint-text" id="netHint">Saving STA settings may move the dashboard to a new LAN IP.</p>
-      </section>
+      <div class="view-pane view-cockpit" data-view-pane="cockpit">
+        <div class="console-cards">
+          <section class="panel">
+            <div class="section-title">
+              <span>Time sync</span>
+              <button class="primary" id="syncTimeBtn">Sync</button>
+            </div>
+            <label class="field">
+              <span>UTC offset minutes</span>
+              <input id="tzOffset" type="number" step="15" inputmode="numeric">
+            </label>
+          </section>
 
-      <div class="console-cards">
-        <section class="panel">
+          <section class="panel">
+            <div class="section-title">
+              <span>Dim schedule</span>
+              <label class="toggle">
+                <input id="scheduleEnabled" type="checkbox">
+                <span></span>
+              </label>
+            </div>
+            <div class="time-grid">
+              <label class="field">
+                <span>Start</span>
+                <input id="scheduleStart" type="time">
+              </label>
+              <label class="field">
+                <span>End</span>
+                <input id="scheduleEnd" type="time">
+              </label>
+            </div>
+            <div class="range-row">
+              <label class="field">
+                <span>High</span>
+                <input id="brightnessHigh" type="range" min="20" max="100" step="1">
+              </label>
+              <output id="brightnessHighOut">--</output>
+            </div>
+            <div class="range-row">
+              <label class="field">
+                <span>Low</span>
+                <input id="brightnessLow" type="range" min="1" max="60" step="1">
+              </label>
+              <output id="brightnessLowOut">--</output>
+            </div>
+            <button class="wide primary" id="saveConfigBtn">Save schedule</button>
+          </section>
+
+          <section class="panel themes">
+            <div class="section-title"><span>Themes</span></div>
+            <div class="swatches" id="themeList"></div>
+          </section>
+
+          <section class="panel">
+            <div class="section-title">
+              <span>Logs</span>
+              <button id="clearLogsBtn">Clear</button>
+            </div>
+            <div class="log-summary" id="logSummary">No log summary yet.</div>
+            <p class="hint-text">The device retains the newest 1,800 samples in RAM: 2 minutes 24 seconds at the 12.5 Hz background logging cadence. Export downloads the entire retained window.</p>
+            <div class="button-row">
+              <button id="loadLogsBtn">Load recent</button>
+              <button id="exportLogsBtn">Export CSV</button>
+            </div>
+          </section>
+
+          <section class="service-bay">
+            <div class="section-title"><span>AMOLED media GIF</span></div>
+            <label class="file-drop">
+              <input id="mediaFile" type="file" accept="image/gif" data-max-width="466" data-max-height="466">
+              <span>Choose GIF (≤466 px)</span>
+              <small id="mediaStatus">No GIF uploaded</small>
+            </label>
+            <div class="button-row">
+              <button class="primary" id="uploadMediaBtn">Upload &amp; play</button>
+              <button id="deleteMediaBtn">Delete</button>
+            </div>
+            <progress id="mediaProgress" max="100" value="0"></progress>
+            <img id="mediaPreview" class="media-preview" alt="Uploaded GIF preview" hidden>
+            <p class="hint-text">GIF playback is exclusive and replaces the live gauge until deleted. Smaller GIFs stay at native size, centered on a black AMOLED background; 466 × 466 clips use the full panel. The browser preview remains disabled.</p>
+          </section>
+
+          <section class="service-bay">
+            <div class="section-title"><span>OTA update</span></div>
+            <label class="file-drop">
+              <input id="otaFile" type="file" accept=".bin,application/octet-stream">
+              <span>Choose app binary</span>
+              <small id="otaStatus">Idle</small>
+            </label>
+            <button class="wide primary" id="uploadOtaBtn">Upload OTA</button>
+            <progress id="otaProgress" max="100" value="0"></progress>
+          </section>
+        </div>
+      </div>
+
+      <div class="view-pane view-settings" data-view-pane="settings" hidden>
+        <section class="panel range-panel">
           <div class="section-title">
-            <span>Time sync</span>
-            <button class="primary" id="syncTimeBtn">Sync</button>
+            <span>Gauge range</span>
+            <button class="primary" id="saveRangeBtn">Save range</button>
           </div>
-          <label class="field">
-            <span>UTC offset minutes</span>
-            <input id="tzOffset" type="number" step="15" inputmode="numeric">
-          </label>
+          <div class="range-fields">
+            <label class="field">
+              <span>Min PSI (vacuum)</span>
+              <input id="psiMin" type="number" min="-30" max="-1" step="1" inputmode="decimal">
+            </label>
+            <label class="field">
+              <span>Max PSI (boost)</span>
+              <input id="psiMax" type="number" min="5" max="40" step="1" inputmode="decimal">
+            </label>
+            <label class="field">
+              <span>Overboost threshold</span>
+              <input id="psiOverboost" type="number" min="0.1" max="39" step="0.1" inputmode="decimal">
+            </label>
+          </div>
+          <p class="hint-text" id="rangeHint">Defaults −15 / 10 / 8 PSI. Min must be negative; overboost must sit between 0 and max.</p>
         </section>
 
-        <section class="panel">
+        <section class="panel network-panel">
           <div class="section-title">
-            <span>Dim schedule</span>
-            <label class="toggle">
-              <input id="scheduleEnabled" type="checkbox">
-              <span></span>
-            </label>
+            <span>Network</span>
+            <button id="networkRefreshBtn">Refresh</button>
           </div>
-          <div class="time-grid">
+          <div class="status-grid network-grid">
+            <div><span>Mode</span><strong id="netMode">--</strong></div>
+            <div><span>STA</span><strong id="netStaState">--</strong></div>
+            <div><span>LAN IP</span><strong id="netStaIp">--</strong></div>
+            <div><span>SoftAP</span><strong id="netApSsid">--</strong></div>
+          </div>
+          <div class="network-form">
             <label class="field">
-              <span>Start</span>
-              <input id="scheduleStart" type="time">
+              <span>Mode</span>
+              <select id="netModeSelect">
+                <option value="apsta">AP + Station (LAN)</option>
+                <option value="ap">SoftAP only</option>
+              </select>
             </label>
             <label class="field">
-              <span>End</span>
-              <input id="scheduleEnd" type="time">
+              <span>Wi‑Fi SSID</span>
+              <input id="netSsid" type="text" maxlength="32" autocomplete="off" spellcheck="false">
             </label>
-          </div>
-          <div class="range-row">
+            <div class="scan-row">
+              <button id="scanNetworksBtn" type="button">Scan networks</button>
+              <select id="netScanSelect" aria-label="Scanned Wi‑Fi networks">
+                <option value="">Manual SSID entry</option>
+              </select>
+            </div>
             <label class="field">
-              <span>High</span>
-              <input id="brightnessHigh" type="range" min="20" max="100" step="1">
+              <span>Password</span>
+              <input id="netPassword" type="password" maxlength="64" autocomplete="new-password" placeholder="Leave blank to keep">
             </label>
-            <output id="brightnessHighOut">--</output>
-          </div>
-          <div class="range-row">
-            <label class="field">
-              <span>Low</span>
-              <input id="brightnessLow" type="range" min="1" max="60" step="1">
+            <label class="check-row">
+              <input id="netKeepPassword" type="checkbox" checked>
+              <span>Keep existing password if blank</span>
             </label>
-            <output id="brightnessLowOut">--</output>
           </div>
-          <button class="wide primary" id="saveConfigBtn">Save schedule</button>
-        </section>
-
-        <section class="panel themes">
-          <div class="section-title"><span>Themes</span></div>
-          <div class="swatches" id="themeList"></div>
-        </section>
-
-        <section class="panel">
-          <div class="section-title">
-            <span>Logs</span>
-            <button id="clearLogsBtn">Clear</button>
-          </div>
-          <div class="log-summary" id="logSummary">No log summary yet.</div>
-          <p class="hint-text">The device retains the newest 1,800 samples in RAM: 2 minutes 24 seconds at the 12.5 Hz background logging cadence. Export downloads the entire retained window.</p>
           <div class="button-row">
-            <button id="loadLogsBtn">Load recent</button>
-            <button id="exportLogsBtn">Export CSV</button>
+            <button class="primary" id="saveNetworkBtn">Save Wi‑Fi</button>
+            <button id="reconnectNetworkBtn">Reconnect</button>
           </div>
-        </section>
-
-        <section class="service-bay">
-          <div class="section-title"><span>AMOLED media GIF</span></div>
-          <label class="file-drop">
-            <input id="mediaFile" type="file" accept="image/gif" data-max-width="466" data-max-height="466">
-            <span>Choose GIF (≤466 px)</span>
-            <small id="mediaStatus">No GIF uploaded</small>
-          </label>
-          <div class="button-row">
-            <button class="primary" id="uploadMediaBtn">Upload &amp; play</button>
-            <button id="deleteMediaBtn">Delete</button>
-          </div>
-          <progress id="mediaProgress" max="100" value="0"></progress>
-          <img id="mediaPreview" class="media-preview" alt="Uploaded GIF preview" hidden>
-          <p class="hint-text">GIF playback is exclusive and replaces the live gauge until deleted. Smaller GIFs stay at native size, centered on a black AMOLED background; 466 × 466 clips use the full panel. The browser preview remains disabled.</p>
-        </section>
-
-        <section class="service-bay">
-          <div class="section-title"><span>OTA update</span></div>
-          <label class="file-drop">
-            <input id="otaFile" type="file" accept=".bin,application/octet-stream">
-            <span>Choose app binary</span>
-            <small id="otaStatus">Idle</small>
-          </label>
-          <button class="wide primary" id="uploadOtaBtn">Upload OTA</button>
-          <progress id="otaProgress" max="100" value="0"></progress>
+          <p class="hint-text" id="netHint">Saving STA settings may move the dashboard to a new LAN IP.</p>
         </section>
       </div>
     </aside>
   </main>
 
-  <script src="/app.js?v=20260719f" defer></script>
+  <script src="/app.js?v=20260720a" defer></script>
 </body>
 </html>

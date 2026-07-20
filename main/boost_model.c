@@ -62,9 +62,60 @@ static int clamp_tz_offset(int minutes)
     return minutes;
 }
 
+static float clamp_psi_min(float v)
+{
+    if (v < -30.0f) {
+        return -30.0f;
+    }
+    if (v > -1.0f) {
+        return -1.0f;
+    }
+    return v;
+}
+
+static float clamp_psi_max(float v)
+{
+    if (v < 5.0f) {
+        return 5.0f;
+    }
+    if (v > 40.0f) {
+        return 40.0f;
+    }
+    return v;
+}
+
+static float clamp_psi_overboost(float v, float psi_max)
+{
+    const float hi = psi_max - 0.01f;
+    if (v < 0.01f) {
+        return 0.01f;
+    }
+    if (v > hi) {
+        return hi;
+    }
+    return v;
+}
+
+static bool psi_range_valid(float psi_min, float psi_max, float psi_overboost)
+{
+    if (psi_min < -30.0f || psi_min > -1.0f) {
+        return false;
+    }
+    if (psi_max < 5.0f || psi_max > 40.0f) {
+        return false;
+    }
+    if (!(psi_min < 0.0f)) {
+        return false;
+    }
+    if (!(psi_overboost > 0.0f && psi_overboost < psi_max)) {
+        return false;
+    }
+    return true;
+}
+
 static const char *zone_for_psi(float psi)
 {
-    if (psi >= 18.0f) {
+    if (psi >= s_config.psi_overboost) {
         return "OVER";
     }
     if (psi >= 0.35f) {
@@ -97,6 +148,9 @@ static void defaults(boost_config_t *cfg)
     cfg->dim_schedule.end_minutes = 7 * 60;
     cfg->timezone_offset_minutes = 0;
     strlcpy(cfg->active_theme_id, theme->id, sizeof(cfg->active_theme_id));
+    cfg->psi_min = -15.0f;
+    cfg->psi_max = 10.0f;
+    cfg->psi_overboost = 8.0f;
 }
 
 static esp_err_t save_config_locked(void)
@@ -131,6 +185,9 @@ static void load_config(void)
         s_config.dim_schedule.start_minutes = normalize_minutes(s_config.dim_schedule.start_minutes);
         s_config.dim_schedule.end_minutes = normalize_minutes(s_config.dim_schedule.end_minutes);
         s_config.timezone_offset_minutes = clamp_tz_offset(s_config.timezone_offset_minutes);
+        s_config.psi_min = clamp_psi_min(s_config.psi_min);
+        s_config.psi_max = clamp_psi_max(s_config.psi_max);
+        s_config.psi_overboost = clamp_psi_overboost(s_config.psi_overboost, s_config.psi_max);
     }
     int64_t epoch_ms = 0;
     int64_t saved_mono_ms = 0;
@@ -314,6 +371,21 @@ esp_err_t boost_model_update_config(const boost_config_t *patch, uint32_t fields
             return ESP_ERR_NOT_FOUND;
         }
         strlcpy(s_config.active_theme_id, theme->id, sizeof(s_config.active_theme_id));
+    }
+    if (fields & (BOOST_CONFIG_PSI_MIN | BOOST_CONFIG_PSI_MAX | BOOST_CONFIG_PSI_OVERBOOST)) {
+        const float psi_min =
+            (fields & BOOST_CONFIG_PSI_MIN) ? patch->psi_min : s_config.psi_min;
+        const float psi_max =
+            (fields & BOOST_CONFIG_PSI_MAX) ? patch->psi_max : s_config.psi_max;
+        const float psi_overboost =
+            (fields & BOOST_CONFIG_PSI_OVERBOOST) ? patch->psi_overboost : s_config.psi_overboost;
+        if (!psi_range_valid(psi_min, psi_max, psi_overboost)) {
+            xSemaphoreGive(s_lock);
+            return ESP_ERR_INVALID_ARG;
+        }
+        s_config.psi_min = psi_min;
+        s_config.psi_max = psi_max;
+        s_config.psi_overboost = psi_overboost;
     }
     esp_err_t err = save_config_locked();
     const bool schedule_enabled = s_config.dim_schedule.enabled;

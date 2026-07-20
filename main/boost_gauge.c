@@ -58,10 +58,11 @@
 /* Active face fill. Gray standby: set FACE_BG to COLOR_GHOST. */
 #define FACE_BG      COLOR_VOID
 
-/* Gauge range (psi). Arc sweeps 270° from 135° to 45° (classic auto face). */
-#define PSI_MIN       (-15.0f)
-#define PSI_MAX       (25.0f)
-#define PSI_OVERBOOST (18.0f)
+/* Gauge arc sweeps 270° from 135° to 45° (classic auto face). Live PSI
+ * extents come from boost_config_t via load_range_from_config(). */
+#define DEFAULT_PSI_MIN       (-15.0f)
+#define DEFAULT_PSI_MAX       (10.0f)
+#define DEFAULT_PSI_OVERBOOST (8.0f)
 #define ARC_START     135
 #define ARC_END       45
 #define ARC_RANGE     270
@@ -117,6 +118,48 @@ static bool s_ui_ready;
 static bool s_hold_dim_fired;
 static uint32_t s_press_start_ms;
 static char s_theme_id[BOOST_THEME_ID_MAX];
+static float s_psi_min = DEFAULT_PSI_MIN;
+static float s_psi_max = DEFAULT_PSI_MAX;
+static float s_psi_overboost = DEFAULT_PSI_OVERBOOST;
+static float s_tick_psi[5];
+
+static void load_range_from_config(void)
+{
+#ifdef ESP_PLATFORM
+    boost_config_t cfg;
+    boost_model_get_config(&cfg);
+    s_psi_min = cfg.psi_min;
+    s_psi_max = cfg.psi_max;
+    s_psi_overboost = cfg.psi_overboost;
+#else
+    s_psi_min = DEFAULT_PSI_MIN;
+    s_psi_max = DEFAULT_PSI_MAX;
+    s_psi_overboost = DEFAULT_PSI_OVERBOOST;
+#endif
+}
+
+static void compute_tick_psis(void)
+{
+    s_tick_psi[0] = s_psi_min;
+    s_tick_psi[1] = 0.0f;
+    s_tick_psi[2] = s_psi_max * 0.5f;
+    s_tick_psi[3] = s_psi_overboost;
+    s_tick_psi[4] = s_psi_max;
+}
+
+static void format_tick_text(char *buf, size_t len, float psi)
+{
+    if (fabsf(psi) < 0.05f) {
+        snprintf(buf, len, "0");
+        return;
+    }
+    const float rounded = roundf(psi);
+    if (fabsf(psi - rounded) < 0.05f) {
+        snprintf(buf, len, "%d", (int)rounded);
+    } else {
+        snprintf(buf, len, "%.1f", (double)psi);
+    }
+}
 
 static lv_color_t c(uint32_t rgb)
 {
@@ -221,8 +264,9 @@ static bool load_media_gif_locked(void)
 /* Map PSI onto the 270° face: LVGL 0° = east, clockwise. */
 static float psi_to_angle(float psi)
 {
-    psi = clampf(psi, PSI_MIN, PSI_MAX);
-    const float t = (psi - PSI_MIN) / (PSI_MAX - PSI_MIN);
+    psi = clampf(psi, s_psi_min, s_psi_max);
+    const float span = s_psi_max - s_psi_min;
+    const float t = (span > 0.0f) ? (psi - s_psi_min) / span : 0.0f;
     return (float)ARC_START + t * (float)ARC_RANGE;
 }
 static lv_color_t color_for_psi(const boost_theme_t *theme, float psi);
@@ -298,7 +342,7 @@ static void set_value_arc(float psi)
 
 static lv_color_t color_for_psi(const boost_theme_t *theme, float psi)
 {
-    if (psi >= PSI_OVERBOOST) {
+    if (psi >= s_psi_overboost) {
         return c(theme->overboost);
     }
     if (psi >= 0.35f) {
@@ -311,7 +355,7 @@ static lv_color_t color_for_psi(const boost_theme_t *theme, float psi)
 }
 static const char *zone_for_psi(float psi)
 {
-    if (psi >= PSI_OVERBOOST) {
+    if (psi >= s_psi_overboost) {
         return "OVER";
     }
     if (psi >= 0.35f) {
@@ -381,7 +425,7 @@ static void on_screen_event(lv_event_t *e)
     }
 }
 
-static void add_tick_label(int idx, float psi, const char *text)
+static void place_tick_label(int idx, float psi, const char *text)
 {
     const boost_theme_t *theme = active_theme();
     const float deg = psi_to_angle(psi);
@@ -389,11 +433,15 @@ static void add_tick_label(int idx, float psi, const char *text)
     const float cx = DISP_SIZE * 0.5f;
     const float cy = DISP_SIZE * 0.5f;
 
-    lv_obj_t *lab = lv_label_create(lv_screen_active());
+    lv_obj_t *lab = s_tick_labels[idx];
+    if (lab == NULL) {
+        lab = lv_label_create(lv_screen_active());
+        s_tick_labels[idx] = lab;
+        lv_obj_set_style_text_font(lab, TICK_FONT, 0);
+        lv_obj_clear_flag(lab, LV_OBJ_FLAG_CLICKABLE);
+    }
     lv_label_set_text(lab, text);
-    lv_obj_set_style_text_font(lab, TICK_FONT, 0);
     lv_obj_set_style_text_color(lab, c(theme->muted), 0);
-    lv_obj_clear_flag(lab, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_update_layout(lab);
 
     const lv_coord_t w = lv_obj_get_width(lab);
@@ -406,7 +454,35 @@ static void add_tick_label(int idx, float psi, const char *text)
     const float x = cx + r * cosf(rad) - w * 0.5f;
     const float y = cy + r * sinf(rad) - h * 0.5f;
     lv_obj_set_pos(lab, (lv_coord_t)lroundf(x), (lv_coord_t)lroundf(y));
-    s_tick_labels[idx] = lab;
+}
+
+static void refresh_zero_notch(void)
+{
+    if (s_zero_notch == NULL) {
+        return;
+    }
+    static lv_point_precise_t zero_pts[2];
+    const float deg = psi_to_angle(0.0f);
+    const float rad = deg * (float)M_PI / 180.0f;
+    const float cx = DISP_SIZE * 0.5f;
+    const float cy = DISP_SIZE * 0.5f;
+    const float r_outer = (float)ARC_DIAMETER * 0.5f - 1.0f;
+    const float r_inner = r_outer - (float)ARC_WIDTH + 1.0f;
+    zero_pts[0].x = cx + r_inner * cosf(rad);
+    zero_pts[0].y = cy + r_inner * sinf(rad);
+    zero_pts[1].x = cx + r_outer * cosf(rad);
+    zero_pts[1].y = cy + r_outer * sinf(rad);
+    lv_line_set_points(s_zero_notch, zero_pts, 2);
+}
+
+static void refresh_tick_labels(void)
+{
+    compute_tick_psis();
+    for (int i = 0; i < 5; ++i) {
+        char text[12];
+        format_tick_text(text, sizeof(text), s_tick_psi[i]);
+        place_tick_label(i, s_tick_psi[i], text);
+    }
 }
 
 static lv_obj_t *add_value_slot(lv_obj_t *scr, const char *text, int x)
@@ -425,6 +501,7 @@ static lv_obj_t *add_value_slot(lv_obj_t *scr, const char *text, int x)
 
 void boost_gauge_create(void)
 {
+    load_range_from_config();
     const boost_theme_t *theme = active_theme();
     snprintf(s_theme_id, sizeof(s_theme_id), "%s", theme->id);
     lv_obj_t *scr = lv_screen_active();
@@ -488,22 +565,7 @@ void boost_gauge_create(void)
      * Drawn after the value arc so it covers the zero-side fill end.
      */
     s_zero_notch = lv_line_create(scr);
-    {
-        static lv_point_precise_t zero_pts[2];
-        const float deg = psi_to_angle(0.0f);
-        const float rad = deg * (float)M_PI / 180.0f;
-        const float cx = DISP_SIZE * 0.5f;
-        const float cy = DISP_SIZE * 0.5f;
-        /* Arc outer/inner radii for a widget of diameter D and stroke W:
-         * outer ≈ D/2, inner ≈ D/2 - W. Keep mark fully inside the ring. */
-        const float r_outer = (float)ARC_DIAMETER * 0.5f - 1.0f;
-        const float r_inner = r_outer - (float)ARC_WIDTH + 1.0f;
-        zero_pts[0].x = cx + r_inner * cosf(rad);
-        zero_pts[0].y = cy + r_inner * sinf(rad);
-        zero_pts[1].x = cx + r_outer * cosf(rad);
-        zero_pts[1].y = cy + r_outer * sinf(rad);
-        lv_line_set_points(s_zero_notch, zero_pts, 2);
-    }
+    refresh_zero_notch();
     lv_obj_set_style_line_width(s_zero_notch, ZERO_LINE_W, 0);
     lv_obj_set_style_line_color(s_zero_notch, c(theme->zero), 0);
     lv_obj_set_style_line_rounded(s_zero_notch, true, 0);
@@ -511,11 +573,7 @@ void boost_gauge_create(void)
     lv_obj_set_style_line_opa(s_zero_notch, LV_OPA_COVER, 0);
     lv_obj_clear_flag(s_zero_notch, LV_OBJ_FLAG_CLICKABLE);
 
-    add_tick_label(0, -15.0f, "-15");
-    add_tick_label(1, 0.0f, "0");
-    add_tick_label(2, 10.0f, "10");
-    add_tick_label(3, 18.0f, "18");
-    add_tick_label(4, 25.0f, "25");
+    refresh_tick_labels();
 
     /* Center stack lives in the open face inside the 270° arc. */
     s_zone_label = lv_label_create(scr);
@@ -597,6 +655,19 @@ void boost_gauge_apply_theme(const boost_theme_t *theme)
         lv_obj_set_style_text_color(s_hint_label, c(theme->track), 0);
     }
 }
+
+void boost_gauge_apply_config(void)
+{
+    if (!s_ui_ready) {
+        return;
+    }
+    load_range_from_config();
+    refresh_zero_notch();
+    refresh_tick_labels();
+    if (s_arc_value_canvas) {
+        lv_obj_invalidate(s_arc_value_canvas);
+    }
+}
 bool boost_gauge_media_load(void)
 {
 #if LV_USE_GIF && defined(ESP_PLATFORM)
@@ -636,7 +707,7 @@ void boost_gauge_update(const boost_sample_t *sample)
         lv_obj_set_style_text_color(s_zone_label, col, 0);
         lv_label_set_text(s_zone_label, zone);
     }
-    const lv_color_t value_color = sample->psi >= PSI_OVERBOOST ? c(theme->overboost) : c(theme->text);
+    const lv_color_t value_color = sample->psi >= s_psi_overboost ? c(theme->overboost) : c(theme->text);
     lv_obj_t *value_slots[] = {
         s_value_sign_label, s_value_tens_label, s_value_ones_label,
         s_value_decimal_label, s_value_tenths_label,
@@ -662,7 +733,7 @@ void boost_gauge_update(const boost_sample_t *sample)
     if (strcmp(lv_label_get_text(s_peak_label), buf) != 0) {
         lv_label_set_text(s_peak_label, buf);
     }
-    const lv_color_t peak_color = s_peak_psi >= PSI_OVERBOOST ? c(theme->overboost) : c(theme->boost);
+    const lv_color_t peak_color = s_peak_psi >= s_psi_overboost ? c(theme->overboost) : c(theme->boost);
     if (!lv_color_eq(lv_obj_get_style_text_color(s_peak_label, 0), peak_color)) {
         lv_obj_set_style_text_color(s_peak_label, peak_color, 0);
     }

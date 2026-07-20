@@ -13,9 +13,9 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-/* Demo range roughly matches a GM 3-bar MAP on a street turbo. */
+/* Demo range stays inside the default face (-15..10) so the dial is exercised. */
 static const float PSI_MIN = -14.5f;
-static const float PSI_MAX = 22.0f;
+static const float PSI_MAX = 9.6f;
 
 static float s_peak;
 static int64_t s_t0_us;

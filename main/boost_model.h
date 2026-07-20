@@ -29,6 +29,9 @@ typedef struct {
     boost_dim_schedule_t dim_schedule;
     int timezone_offset_minutes;
     char active_theme_id[BOOST_THEME_ID_MAX];
+    float psi_min;
+    float psi_max;
+    float psi_overboost;
 } boost_config_t;
 
 typedef struct {
@@ -89,6 +92,9 @@ enum {
     BOOST_CONFIG_DIM_END = 1u << 4,
     BOOST_CONFIG_TZ_OFFSET = 1u << 5,
     BOOST_CONFIG_THEME = 1u << 6,
+    BOOST_CONFIG_PSI_MIN = 1u << 7,
+    BOOST_CONFIG_PSI_MAX = 1u << 8,
+    BOOST_CONFIG_PSI_OVERBOOST = 1u << 9,
 };
 
 #ifdef __cplusplus

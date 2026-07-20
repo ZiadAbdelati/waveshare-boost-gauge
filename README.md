@@ -7,7 +7,7 @@ Right now the MAP path is **simulated** (vacuum ↔ boost sweep). Swap `boost_si
 ## What you should see
 
 - Full-screen dark cabin gauge (“Pit Lane Night”)
-- Dual-climate arc: **teal** vacuum · **amber** boost · **flare red** overboost (≥ 18 psi)
+- Dual-climate arc: **teal** vacuum · **amber** boost · **flare red** overboost (default ≥ **8 psi**, configurable)
 - Big signed PSI, zone label (`VAC` / `ATMO` / `BOOST` / `OVER`)
 - Peak hold; **short tap** resets peak
 - **Hold ~2s** toggles max/min brightness (100% ↔ 12%)
@@ -241,8 +241,11 @@ The flush path remains the custom internal-DMA partial CO5300 path in
 | **APSTA** | NVS/secrets STA SSID set | SoftAP + LAN STA · serial `BOOST_WEB_IP=` |
 | **SoftAP only** | No STA SSID | Join `BoostGauge-XXXX` / `boost1234` → `http://192.168.4.1/` |
 
-**In-dashboard Network panel** (live firmware): mode, SSID, password (blank keeps
-existing), reconnect. Settings persist in NVS namespace `boost_wifi`.
+**Settings page** (client-side cockpit/settings views): Wi‑Fi controls live here
+(mode, SSID, password with blank-keep, scan, reconnect) plus gauge range fields
+`psiMin` / `psiMax` / `psiOverboost` (defaults **−15 / 10 / 8**). Invalid range
+PUTs are rejected with **400**. Settings persist in NVS (`boost_wifi` for
+network; boost config blob for gauge scale).
 
 **Seed credentials** (optional, gitignored): `main/boost_wifi_secrets.h` from
 `main/boost_wifi_secrets.h.example`. Used only when NVS has no Wi‑Fi blob yet.
@@ -255,10 +258,11 @@ idf.py build flash monitor   # look for BOOST_WEB_IP=192.168.x.y
 
 ### Dashboard notes
 
-- Responsive **instrument-cluster** layout: a sticky gauge + sparkline column on
-  the left and a service console on the right whose control cards reflow from one
-  column (mobile) up to three (ultrawide, capped at 2100&nbsp;px) so wide and
-  ultrawide screens fill without a dead gutter. No horizontal overflow at any width.
+- Responsive **instrument-cluster** layout: sticky gauge + sparkline on the left;
+  cockpit console cards reflow from one column (mobile) up to three (ultrawide,
+  capped at 2100&nbsp;px). A client-side **Settings** view holds Wi‑Fi and gauge
+  range; the main cockpit keeps status, time/dim, themes, logs, media, and OTA.
+  No horizontal overflow at any width.
 - Mobile: `overflow-x: hidden`, no horizontal rubber-band empty space
 - Dim schedule Start/End stay side-by-side; time inputs capped for iOS Safari
 - Brightness/theme/schedule apply off the HTTP worker so the UI stays responsive
@@ -331,9 +335,9 @@ python3 tools/embed_web.py web main/generated_web_assets.c main/generated_web_as
 ```
 
 `mock_server.py` stubs the full dashboard API — including `/api/v1/network`,
-`/network/scan`, and `/network/reconnect` — so `refreshAll()` succeeds and the
-Network and Themes panels render host-only (it has no WebSocket, so the badge
-falls back to `Live · HTTP 4 Hz`).
+`/network/scan`, `/network/reconnect`, and config fields `psiMin`/`psiMax`/
+`psiOverboost` — so `refreshAll()` succeeds and cockpit + settings views render
+host-only (it has no WebSocket, so the badge falls back to `Live · HTTP 4 Hz`).
 
 Do not expose SoftAP/STA HTTP or OTA beyond a trusted LAN; no per-request auth yet.
 
