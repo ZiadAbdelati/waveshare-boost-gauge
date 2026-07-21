@@ -21,7 +21,7 @@ const IS_SETTINGS = PAGE === "settings";
 const CANVAS_DPR_MAX = 2;
 
 const state = {
-  activeThemeId: "pit-lane",
+  activeThemeId: "dyno-cell",
   themes: [],
   config: null,
   network: null,
@@ -153,33 +153,71 @@ function tickValues(psiMin, psiMax, psiOverboost, zeroAngle) {
   const showMidpoint = Math.abs(midpointAngle - overboostAngle) >= 12;
   return showMidpoint ? [psiMin, 0, midpoint, psiOverboost, psiMax] : [psiMin, 0, psiOverboost, psiMax];
 }
+/* The dashboard chrome stays on one fixed look regardless of gauge theme; this
+ * only guarantees a sane gauge palette before the first theme loads. */
 function updatePalette() {
-  const css = getComputedStyle(document.documentElement);
-  state.palette = {
-    face: css.getPropertyValue("--face").trim() || "#000",
-    track: css.getPropertyValue("--track").trim(),
-    text: css.getPropertyValue("--text").trim(),
-    muted: css.getPropertyValue("--muted").trim(),
-    vacuum: css.getPropertyValue("--vacuum").trim(),
-    boost: css.getPropertyValue("--boost").trim(),
-    overboost: css.getPropertyValue("--overboost").trim(),
-    zero: css.getPropertyValue("--zero").trim(),
-  };
+  if (!state.palette) {
+    state.palette = {
+      face: "#090A0D", track: "#20242C", text: "#F5F7FA", muted: "#8C95A3",
+      vacuum: "#4DD2FF", boost: "#B8F35A", overboost: "#FF4F6D", zero: "#FFFFFF",
+    };
+  }
 }
 
+/* Which layout the active theme renders. Themes carry a `style` from the API;
+ * "arc" is the classic dyno-cell face and the safe default. */
+function activeThemeStyle() {
+  const t = state.themes.find((x) => x.id === state.activeThemeId);
+  return (t && t.style) || "arc";
+}
+
+function clamp(v, lo, hi) {
+  return v < lo ? lo : v > hi ? hi : v;
+}
+
+function hexToRgb(hex) {
+  let h = String(hex || "").replace("#", "").trim();
+  if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+  const n = parseInt(h || "000000", 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+/* Smoothly blend two hex colors; used by the big-digit background sweep. */
+function lerpColor(a, b, t) {
+  const A = hexToRgb(a);
+  const B = hexToRgb(b);
+  const k = clamp(t, 0, 1);
+  return `rgb(${Math.round(A[0] + (B[0] - A[0]) * k)}, ${Math.round(
+    A[1] + (B[1] - A[1]) * k
+  )}, ${Math.round(A[2] + (B[2] - A[2]) * k)})`;
+}
+
+/* Point on a circle, angle in degrees measured clockwise from 12 o'clock,
+ * in the centered 466-space the themed renderers draw in. */
+const DEG = Math.PI / 180;
+function polar(r, aDeg) {
+  const t = aDeg * DEG;
+  return [r * Math.sin(t), -r * Math.cos(t)];
+}
+function canvasAngle(aDeg) {
+  return (aDeg - 90) * DEG;
+}
+
+/* Apply a theme to the GAUGE only. The web dashboard chrome keeps its own fixed
+ * identity (the :root CSS vars) and does not re-skin with the gauge. */
 function setTheme(theme) {
   if (!theme || !theme.colors) return;
-  const root = document.documentElement;
-  root.style.setProperty("--face", theme.colors.face);
-  root.style.setProperty("--track", theme.colors.track);
-  root.style.setProperty("--text", theme.colors.text);
-  root.style.setProperty("--muted", theme.colors.muted);
-  root.style.setProperty("--vacuum", theme.colors.vacuum);
-  root.style.setProperty("--boost", theme.colors.boost);
-  root.style.setProperty("--overboost", theme.colors.overboost);
-  root.style.setProperty("--zero", theme.colors.zero);
+  state.palette = {
+    face: theme.colors.face || "#000",
+    track: theme.colors.track,
+    text: theme.colors.text,
+    muted: theme.colors.muted,
+    vacuum: theme.colors.vacuum,
+    boost: theme.colors.boost,
+    overboost: theme.colors.overboost,
+    zero: theme.colors.zero,
+  };
   state.activeThemeId = theme.id;
-  updatePalette();
   if (IS_COCKPIT) {
     scheduleGaugeRender();
     drawSparkline();
@@ -267,8 +305,9 @@ function valueArcAngles(psi) {
   return { start, end };
 }
 
-function drawGauge(sample) {
-  if (!ctx || !el.canvas) return;
+/* Shared canvas setup: size for DPR, work in CSS px, return the 466-space
+ * geometry every renderer uses. */
+function gaugeGeom() {
   const dpr = Math.min(window.devicePixelRatio || 1, CANVAS_DPR_MAX);
   const rect = el.canvas.getBoundingClientRect();
   const cssW = Math.max(1, rect.width);
@@ -279,24 +318,37 @@ function drawGauge(sample) {
     el.canvas.width = pixelW;
     el.canvas.height = pixelH;
   }
-
-  const width = el.canvas.width;
-  const height = el.canvas.height;
-  /* Work in CSS pixels so geometry matches the 466 face regardless of DPR. */
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   const size = Math.min(cssW, cssH);
-  const scale = size / 466;
-  const cx = cssW / 2;
-  const cy = cssH / 2;
+  return { cssW, cssH, size, scale: size / 466, cx: cssW / 2, cy: cssH / 2 };
+}
 
-  /* Physical panel arc: 410 px diameter, 45 px stroke, safely inset. */
+/* Dispatch the live face by the active theme's style. Each style is a distinct
+ * layout, not a recolor of one gauge. */
+function drawGauge(sample) {
+  if (!ctx || !el.canvas) return;
+  const g = gaugeGeom();
+  const psi = Number(sample.psi ?? 0);
+  ctx.clearRect(0, 0, g.cssW, g.cssH);
+  switch (activeThemeStyle()) {
+    case "vault":
+      return drawVaultGauge(sample, psi, g);
+    case "hud":
+      return drawHudGauge(sample, psi, g);
+    case "bigdigit":
+      return drawBigDigitGauge(sample, psi, g);
+    default:
+      return drawArcGauge(sample, psi, g);
+  }
+}
+
+/* ── Style: arc — the classic Dyno Cell dual-climate face ────────────────── */
+function drawArcGauge(sample, psi, g) {
+  const { cx, cy, scale, size } = g;
   const outerR = (410 / 2) * scale;
   const stroke = 45 * scale;
   const radius = outerR - stroke / 2;
-  const psi = Number(sample.psi ?? 0);
   const { start, end } = valueArcAngles(psi);
-
-  ctx.clearRect(0, 0, cssW, cssH);
 
   /* Pure black face */
   ctx.fillStyle = state.palette.face;
@@ -350,9 +402,6 @@ function drawGauge(sample) {
   /* Center stack — zone / PSI / unit / peak / mode (matches physical UI) */
   const zone = sample.zone || zoneFor(psi);
   const peak = Math.max(0, Number(sample.peakPsi || 0));
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-
   ctx.fillStyle = colorFor(psi);
   ctx.font = `700 ${Math.max(12, 15 * scale)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
   ctx.fillText(zone, cx, cy - 88 * scale);
@@ -372,6 +421,495 @@ function drawGauge(sample) {
   ctx.fillStyle = state.palette.muted;
   ctx.font = `700 ${Math.max(11, 12 * scale)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
   ctx.fillText(sample.demo ? "DEMO" : "LIVE", cx, cy + 84 * scale);
+}
+
+/* Rounded-rect path helper for the themed faces (466-space). */
+function roundRectPath(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+/* Linear psi→angle for the stylized faces (symmetric sweep, clockwise from
+ * top). The precise value lives in the center readout, so a linear dial reads
+ * fine even when 0 isn't centered. */
+function linMap(psi, range, a0, a1) {
+  const t = (clamp(psi, range.psiMin, range.psiMax) - range.psiMin) / (range.psiMax - range.psiMin);
+  return a0 + t * (a1 - a0);
+}
+
+/* Split a psi value into sign / integer / fraction parts for fixed-decimal
+ * rendering. */
+function splitNum(psi, decimals) {
+  const neg = psi < -0.05;
+  const [intPart, fracPart = ""] = Math.abs(psi).toFixed(decimals).split(".");
+  return { neg, intPart, fracPart };
+}
+
+/* Draw a number with its decimal point pinned to `decimalX` so the value never
+ * shifts left/right as digit counts change. `intStr` may include a sign glyph.
+ * Uses the current ctx font/fillStyle/baseline. */
+function drawFixedDecimal(intStr, fracStr, decimalX, y) {
+  const half = ctx.measureText(".").width * 0.5;
+  const prevAlign = ctx.textAlign;
+  ctx.textAlign = "right";
+  ctx.fillText(intStr, decimalX - half, y);
+  ctx.textAlign = "center";
+  ctx.fillText(".", decimalX, y);
+  ctx.textAlign = "left";
+  ctx.fillText(fracStr, decimalX + half, y);
+  ctx.textAlign = prevAlign;
+}
+
+/* ── Style: vault — Vault-Tec phosphor dial + needle + CRT scanlines ─────── */
+function drawVaultGauge(sample, psi, g) {
+  const range = psiRange();
+  const p = state.palette;
+  const green = p.text;
+  const warn = p.overboost;
+  const dim = p.muted;
+  /* Same 270° face + zero-angle mapping as Dyno Cell, so the settings-page
+   * zero position and vacuum/boost scaling are honored here too. */
+  const AP = (r, a) => [r * Math.cos(a * DEG), r * Math.sin(a * DEG)];
+  ctx.save();
+  ctx.translate(g.cx, g.cy);
+  ctx.scale(g.scale, g.scale);
+
+  /* face + bezel */
+  ctx.beginPath();
+  ctx.arc(0, 0, 233, 0, Math.PI * 2);
+  ctx.fillStyle = p.face;
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(0, 0, 221, 0, Math.PI * 2);
+  ctx.lineWidth = 2;
+  ctx.globalAlpha = 0.5;
+  ctx.strokeStyle = dim;
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+
+  /* ticks around the 270° sweep */
+  for (let i = 0; i <= 40; i++) {
+    const v = range.psiMin + ((range.psiMax - range.psiMin) * i) / 40;
+    const major = i % 5 === 0;
+    const a = psiToAngle(v, range);
+    const [x0, y0] = AP(major ? 176 : 188, a);
+    const [x1, y1] = AP(206, a);
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
+    ctx.strokeStyle = v >= range.psiOverboost ? warn : green;
+    ctx.globalAlpha = v >= range.psiOverboost ? 1 : 0.82;
+    ctx.lineWidth = major ? 4 : 2;
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+
+  /* numerals */
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  for (const v of tickValues(range.psiMin, range.psiMax, range.psiOverboost, range.zeroAngle)) {
+    const [x, y] = AP(152, psiToAngle(v, range));
+    ctx.fillStyle = v >= range.psiOverboost ? warn : green;
+    ctx.font = `700 24px Consolas, "SF Mono", monospace`;
+    ctx.fillText(formatTickLabel(v), x, y);
+  }
+
+  /* zero notch — thick radial phosphor tick at the configured zero angle */
+  const za = psiToAngle(0, range);
+  const [zx0, zy0] = AP(178, za);
+  const [zx1, zy1] = AP(206, za);
+  ctx.strokeStyle = green;
+  ctx.lineWidth = 9;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(zx0, zy0);
+  ctx.lineTo(zx1, zy1);
+  ctx.stroke();
+
+  /* peak tell-tale — a marker that holds at the session's max boost */
+  const peak = Math.max(0, Number(sample.peakPsi || 0));
+  if (peak >= 0.35) {
+    const pa = psiToAngle(peak, range);
+    const [mx, my] = AP(207, pa);
+    ctx.save();
+    ctx.translate(mx, my);
+    ctx.rotate((pa + 90) * DEG);
+    ctx.fillStyle = warn;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(-6, -13);
+    ctx.lineTo(6, -13);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  /* title (moved down, clear of the zero marker) */
+  ctx.fillStyle = green;
+  ctx.globalAlpha = 0.92;
+  ctx.font = `700 16px "Bahnschrift", system-ui, sans-serif`;
+  ctx.fillText("V A U L T - T E C", 0, -98);
+  ctx.globalAlpha = 0.68;
+  ctx.font = `600 12px "Bahnschrift", system-ui, sans-serif`;
+  ctx.fillText("BOOST-O-METER", 0, -78);
+  ctx.globalAlpha = 1;
+
+  /* overboost alert (replaces the mascot): blinking warning + warm readout */
+  const over = psi >= range.psiOverboost;
+  if (over && Math.floor(Date.now() / 320) % 2 === 0) {
+    ctx.fillStyle = warn;
+    ctx.font = `700 15px "Bahnschrift", system-ui, sans-serif`;
+    ctx.fillText("▲ OVER-PRESSURE ▲", 0, 72);
+  }
+
+  /* numeral window — decimal pinned to center so the value never shifts */
+  ctx.strokeStyle = over ? warn : dim;
+  ctx.lineWidth = 1.5;
+  roundRectPath(-74, 96, 148, 46, 4);
+  ctx.stroke();
+  const { neg, intPart, fracPart } = splitNum(psi, 2);
+  ctx.fillStyle = over ? warn : green;
+  ctx.font = `700 32px Consolas, "SF Mono", monospace`;
+  drawFixedDecimal(`${neg ? "−" : "+"}${intPart}`, fracPart, 0, 120);
+  ctx.fillStyle = dim;
+  ctx.font = `600 11px "Bahnschrift", system-ui, sans-serif`;
+  ctx.fillText("MANIFOLD  PSI", 0, 158);
+  ctx.fillStyle = warn;
+  ctx.globalAlpha = 0.85;
+  ctx.font = `700 13px Consolas, monospace`;
+  ctx.fillText(`PEAK  ${peak.toFixed(1)}`, 0, 178);
+  ctx.globalAlpha = 1;
+
+  /* needle at the mapped angle (0° = east; up-pointing art rotated by a+90) */
+  ctx.save();
+  ctx.rotate((psiToAngle(psi, range) + 90) * DEG);
+  ctx.beginPath();
+  ctx.moveTo(-6, 26);
+  ctx.lineTo(6, 26);
+  ctx.lineTo(2, -150);
+  ctx.lineTo(-2, -150);
+  ctx.closePath();
+  ctx.fillStyle = psi >= range.psiOverboost ? warn : green;
+  ctx.fill();
+  ctx.restore();
+  ctx.beginPath();
+  ctx.arc(0, 0, 14, 0, Math.PI * 2);
+  ctx.fillStyle = p.face;
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = green;
+  ctx.stroke();
+
+  /* CRT scanlines + vignette, clipped to the face */
+  ctx.beginPath();
+  ctx.arc(0, 0, 221, 0, Math.PI * 2);
+  ctx.clip();
+  ctx.globalAlpha = 0.16;
+  ctx.strokeStyle = "#000";
+  ctx.lineWidth = 1.4;
+  for (let y = -220; y < 220; y += 4) {
+    ctx.beginPath();
+    ctx.moveTo(-221, y);
+    ctx.lineTo(221, y);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  const vg = ctx.createRadialGradient(0, 0, 120, 0, 0, 233);
+  vg.addColorStop(0, "rgba(0,0,0,0)");
+  vg.addColorStop(1, "rgba(0,0,0,0.6)");
+  ctx.fillStyle = vg;
+  ctx.beginPath();
+  ctx.arc(0, 0, 233, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+/* ── Style: hud — Night City cyberpunk targeting HUD ─────────────────────── */
+let hudPrevPsi = 0;
+function drawHudGauge(sample, psi, g) {
+  const range = psiRange();
+  const p = state.palette;
+  const Y = p.boost;
+  const C = p.vacuum;
+  const R = p.overboost;
+  const over = psi >= range.psiOverboost;
+  const A0 = -116;
+  const A1 = 116;
+  ctx.save();
+  ctx.translate(g.cx, g.cy);
+  ctx.scale(g.scale, g.scale);
+
+  ctx.beginPath();
+  ctx.arc(0, 0, 233, 0, Math.PI * 2);
+  ctx.fillStyle = p.face;
+  ctx.fill();
+
+  /* hazard chevrons across the top */
+  ctx.globalAlpha = 0.8;
+  for (let i = -3; i <= 3; i++) {
+    const x = i * 30;
+    ctx.beginPath();
+    ctx.moveTo(x - 10, -142);
+    ctx.lineTo(x, -130);
+    ctx.lineTo(x + 10, -142);
+    ctx.lineTo(x + 6, -142);
+    ctx.lineTo(x, -135);
+    ctx.lineTo(x - 6, -142);
+    ctx.closePath();
+    ctx.fillStyle = i % 2 ? Y : "#3a3600";
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  /* Zero-referenced mapping into the HUD's top sweep: 0 psi sits at the
+   * configured zero angle's proportion, and vacuum/boost scale with the range,
+   * so the fill grows from zero just like Dyno Cell. */
+  const S = A1 - A0;
+  const zeroHud = A0 + ((range.zeroAngle - ARC_START) / ARC_RANGE) * S;
+  const hudAngle = (v) => {
+    const cl = clamp(v, range.psiMin, range.psiMax);
+    if (cl < 0) {
+      const t = range.psiMin < 0 ? (cl - range.psiMin) / (0 - range.psiMin) : 1;
+      return A0 + t * (zeroHud - A0);
+    }
+    const t = range.psiMax > 0 ? cl / range.psiMax : 0;
+    return zeroHud + t * (A1 - zeroHud);
+  };
+
+  /* angular tick frame */
+  for (let i = 0; i <= 20; i++) {
+    const v = range.psiMin + ((range.psiMax - range.psiMin) * i) / 20;
+    const a = hudAngle(v);
+    const [x0, y0] = polar(198, a);
+    const [x1, y1] = polar(214, a);
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
+    ctx.strokeStyle = v >= range.psiOverboost ? R : C;
+    ctx.lineWidth = i % 2 === 0 ? 4 : 2;
+    ctx.stroke();
+  }
+
+  /* track + fill (grows from the zero notch) */
+  ctx.beginPath();
+  ctx.arc(0, 0, 206, canvasAngle(A0), canvasAngle(A1));
+  ctx.strokeStyle = "#1a1c0a";
+  ctx.lineWidth = 10;
+  ctx.stroke();
+  const va = hudAngle(psi);
+  const loA = Math.min(zeroHud, va);
+  const hiA = Math.max(zeroHud, va);
+  if (hiA - loA > 0.5) {
+    ctx.beginPath();
+    ctx.arc(0, 0, 206, canvasAngle(loA), canvasAngle(hiA));
+    ctx.strokeStyle = over ? R : psi < 0 ? C : Y;
+    ctx.lineWidth = 10;
+    ctx.stroke();
+  }
+
+  /* zero notch */
+  const [zx0, zy0] = polar(196, zeroHud);
+  const [zx1, zy1] = polar(217, zeroHud);
+  ctx.strokeStyle = C;
+  ctx.lineWidth = 5;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(zx0, zy0);
+  ctx.lineTo(zx1, zy1);
+  ctx.stroke();
+
+  /* Readout geometry: one decimal, decimal pinned (offset from center so
+   * left-heavy negatives stay balanced) and sized once from the range so the
+   * value never shifts. */
+  ctx.font = `700 italic 88px "Bahnschrift", "DIN Alternate", system-ui, sans-serif`;
+  const nHalf = ctx.measureText(".").width * 0.5;
+  const worstNegInt = range.psiMin < 0 ? "−" + String(Math.floor(Math.abs(range.psiMin))) : "";
+  const worstPosInt = String(Math.floor(Math.abs(range.psiMax)));
+  const Lmax = nHalf + Math.max(ctx.measureText(worstNegInt).width, ctx.measureText(worstPosInt).width);
+  const Rmax = nHalf + ctx.measureText("0").width;
+  const numDecimalX = (Lmax - Rmax) / 2;
+  const bx = Math.min(152, (Lmax + Rmax) / 2 + 18);
+
+  /* Kiroshi reticle brackets sized to enclose the readout */
+  ctx.strokeStyle = C;
+  ctx.lineWidth = 2.5;
+  const arm = 24;
+  for (const [xC, yC, sx, sy] of [[-bx, -50, 1, 1], [bx, -50, -1, 1], [-bx, 48, 1, -1], [bx, 48, -1, -1]]) {
+    ctx.beginPath();
+    ctx.moveTo(xC + sx * arm, yC);
+    ctx.lineTo(xC, yC);
+    ctx.lineTo(xC, yC + sy * 24);
+    ctx.stroke();
+  }
+
+  /* header */
+  ctx.fillStyle = C;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.font = `600 13px "Bahnschrift", system-ui, sans-serif`;
+  ctx.fillText("◄  MANIFOLD PRESSURE  ►", 0, -108);
+
+  /* big italic value with a glitch shear on fast spikes */
+  const { neg, intPart, fracPart } = splitNum(psi, 1);
+  const intStr = `${neg ? "−" : ""}${intPart}`;
+  const glitch = Math.abs(psi - hudPrevPsi) > 0.12;
+  hudPrevPsi = psi;
+  ctx.font = `700 italic 88px "Bahnschrift", "DIN Alternate", system-ui, sans-serif`;
+  if (glitch) {
+    const off = (Math.random() - 0.5) * 10;
+    ctx.globalAlpha = 0.8;
+    ctx.fillStyle = R;
+    drawFixedDecimal(intStr, fracPart, numDecimalX + off - 3, 2);
+    ctx.fillStyle = C;
+    drawFixedDecimal(intStr, fracPart, numDecimalX - off + 3, 2);
+    ctx.globalAlpha = 1;
+  }
+  ctx.fillStyle = over ? R : Y;
+  drawFixedDecimal(intStr, fracPart, numDecimalX, 2);
+  ctx.fillStyle = p.muted;
+  ctx.font = `600 13px Consolas, monospace`;
+  ctx.fillText("PSI // FORCED INDUCTION", 0, 74);
+
+  /* corner telemetry — MAP (manifold absolute) and real peak hold */
+  const peak = Math.max(0, Number(sample.peakPsi || 0));
+  ctx.textAlign = "left";
+  ctx.fillStyle = C;
+  ctx.font = `600 15px Consolas, monospace`;
+  ctx.fillText(`MAP ${(101 + psi * 6.895).toFixed(0)}kPa`, -138, 128);
+  ctx.textAlign = "right";
+  ctx.fillText(`PK ${peak.toFixed(1)}`, 138, 128);
+  ctx.fillStyle = p.muted;
+  ctx.textAlign = "left";
+  ctx.font = `600 12px Consolas, monospace`;
+  ctx.fillText(sample.demo ? "SYS DEMO" : "SYS ONLINE", -138, 150);
+  ctx.textAlign = "right";
+  ctx.fillText("NC-2077", 138, 150);
+  ctx.restore();
+}
+
+/* ── Style: bigdigit — huge Alvida number on a color-sweeping ground ──────── */
+function bigDigitBackground(psi, range) {
+  const p = state.palette;
+  if (psi <= 0) return p.vacuum;
+  if (psi <= range.psiOverboost) return lerpColor(p.vacuum, p.boost, psi / range.psiOverboost);
+  const span = Math.max(0.001, range.psiMax - range.psiOverboost);
+  return lerpColor(p.boost, p.overboost, (psi - range.psiOverboost) / span);
+}
+
+function drawBigDigitGauge(sample, psi, g) {
+  const range = psiRange();
+  const { cx, cy, size } = g;
+
+  /* Solid round ground that sweeps cyan → lime → red with the reading. */
+  ctx.fillStyle = bigDigitBackground(psi, range);
+  ctx.beginPath();
+  ctx.arc(cx, cy, size / 2, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.scale(g.scale, g.scale);
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  const zone = sample.zone || zoneFor(psi);
+  const peak = Math.max(0, Number(sample.peakPsi || 0));
+
+  /* top zone chip */
+  ctx.globalAlpha = 0.82;
+  ctx.fillStyle = "#ffffff";
+  ctx.font = `700 20px "Bahnschrift", system-ui, sans-serif`;
+  ctx.fillText(zone, 0, -150);
+  ctx.globalAlpha = 1;
+
+  /* The number — TABULAR fixed slots. The decimal glyph is pinned at x = 0; the
+   * ones and tenths digits sit in constant-width cells on either side (each
+   * digit centered in its cell, so varying glyph widths never move anything);
+   * higher integer digits and the sign grow leftward like an odometer. Nothing
+   * already on screen ever shifts. */
+  const refFs = 100;
+  ctx.font = `400 ${refFs}px "Alvida Fatface", Georgia, "Times New Roman", serif`;
+  let slot100 = 0;
+  for (let d = 0; d < 10; d++) slot100 = Math.max(slot100, ctx.measureText(String(d)).width);
+  const dot100 = ctx.measureText(".").width;
+  const barW100 = refFs * 0.32;
+  const gap100 = refFs * 0.08;
+  const maxInt = String(Math.floor(Math.max(Math.abs(range.psiMin), Math.abs(range.psiMax), 1))).length;
+  /* Left half is the binding constraint (integer digits + sign). Size so the
+   * widest reading stays inside the round face. */
+  const leftExtent100 = dot100 / 2 + maxInt * slot100 + (range.psiMin < 0 ? gap100 + barW100 : 0);
+  const rightExtent100 = dot100 / 2 + slot100;
+  const fs = clamp((214 / Math.max(leftExtent100, rightExtent100)) * refFs, 96, 176);
+
+  ctx.font = `400 ${fs}px "Alvida Fatface", Georgia, "Times New Roman", serif`;
+  let slotW = 0;
+  for (let d = 0; d < 10; d++) slotW = Math.max(slotW, ctx.measureText(String(d)).width);
+  const dotW = ctx.measureText(".").width;
+  const numY = -8;
+  const onesCenter = -(dotW / 2 + slotW / 2);
+  const tenthsCenter = dotW / 2 + slotW / 2;
+
+  const absTenths = Math.round(Math.abs(psi) * 10);
+  const whole = Math.floor(absTenths / 10);
+  const tenth = absTenths % 10;
+  const isNeg = psi < -0.05;
+  const intStr = String(whole);
+
+  ctx.shadowColor = "rgba(0,0,0,0.30)";
+  ctx.shadowBlur = 22;
+  ctx.shadowOffsetY = 6;
+  ctx.fillStyle = "#ffffff";
+  ctx.textAlign = "center";
+  ctx.fillText(".", 0, numY);
+  ctx.fillText(String(tenth), tenthsCenter, numY);
+  for (let i = 0; i < intStr.length; i++) {
+    ctx.fillText(intStr[intStr.length - 1 - i], onesCenter - i * slotW, numY);
+  }
+  if (isNeg) {
+    /* Fat, gently convex dash left of the leftmost integer cell. */
+    const leftmostCenter = onesCenter - (intStr.length - 1) * slotW;
+    const barW = fs * 0.32;
+    const barH = fs * 0.135;
+    const bcx = leftmostCenter - slotW / 2 - fs * 0.08 - barW / 2;
+    const bcy = numY - fs * 0.15;
+    const rr = barH * 0.3;
+    const bulge = barH * 0.2;
+    const x0 = bcx - barW / 2;
+    const x1 = bcx + barW / 2;
+    const y0 = bcy - barH / 2;
+    const y1 = bcy + barH / 2;
+    ctx.beginPath();
+    ctx.moveTo(x0 + rr, y0);
+    ctx.quadraticCurveTo(bcx, y0 - bulge, x1 - rr, y0);
+    ctx.arcTo(x1, y0, x1, y0 + rr, rr);
+    ctx.lineTo(x1, y1 - rr);
+    ctx.arcTo(x1, y1, x1 - rr, y1, rr);
+    ctx.quadraticCurveTo(bcx, y1 + bulge, x0 + rr, y1);
+    ctx.arcTo(x0, y1, x0, y1 - rr, rr);
+    ctx.lineTo(x0, y0 + rr);
+    ctx.arcTo(x0, y0, x0 + rr, y0, rr);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.shadowColor = "transparent";
+  ctx.shadowBlur = 0;
+  ctx.shadowOffsetY = 0;
+
+  /* unit + peak */
+  ctx.globalAlpha = 0.9;
+  ctx.fillStyle = "#ffffff";
+  ctx.font = `700 30px "Bahnschrift", system-ui, sans-serif`;
+  ctx.fillText("PSI", 0, 118);
+  ctx.globalAlpha = 0.72;
+  ctx.font = `600 18px Consolas, monospace`;
+  ctx.fillText(`PEAK ${peak.toFixed(1)}   ${sample.demo ? "DEMO" : "LIVE"}`, 0, 168);
+  ctx.globalAlpha = 1;
+  ctx.restore();
 }
 
 function scheduleGaugeRender() {
@@ -414,7 +952,7 @@ function drawSparkline() {
   const { psiMin, psiMax } = psiRange();
   const span = Math.max(0.001, psiMax - psiMin);
   const zeroY = h - ((0 - psiMin) / span) * h;
-  sparkCtx.strokeStyle = state.palette.muted;
+  sparkCtx.strokeStyle = "#8c95a3";
   sparkCtx.globalAlpha = 0.38;
   sparkCtx.beginPath();
   sparkCtx.moveTo(0, zeroY);
@@ -428,7 +966,7 @@ function drawSparkline() {
   sparkCtx.lineWidth = Math.max(2, 2 * dpr);
   sparkCtx.lineJoin = "round";
   sparkCtx.lineCap = "round";
-  sparkCtx.strokeStyle = state.palette.vacuum;
+  sparkCtx.strokeStyle = "#4dd2ff";
   sparkCtx.beginPath();
   sampleHistory.forEach((sample, index) => {
     const x = Math.max(0, Math.min(w, ((sample.historyTimeMs - startMs) / HISTORY_WINDOW_MS) * w));

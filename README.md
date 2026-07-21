@@ -371,6 +371,62 @@ Signature move: one arc that **changes climate** at zero and flares past the ove
 
 ---
 
+## Theme system
+
+A theme is no longer just a palette swap — each theme carries a **`style`** that
+selects a **distinct gauge layout**. Selecting a theme changes the whole face,
+not only its colors, and the selection persists in NVS across power cycles.
+
+| Theme id | `style` | Face |
+|---|---|---|
+| `dyno-cell` | `arc` | The classic dual-climate arc (teal vacuum · lime boost · flare overboost). Default. |
+| `vault-tec` | `vault` | Fallout-style phosphor **needle dial** with CRT scanlines/vignette, a peak tell-tale marker, and an overboost alert (warm numeral + blinking `OVER-PRESSURE`). |
+| `night-city` | `hud` | Cyberpunk **targeting HUD**: hazard chevrons, Kiroshi reticle around a big italic value, glitch-shear on fast spikes, MAP/PEAK telemetry. |
+| `big-digit` | `bigdigit` | A huge **Alvida Fatface** PSI number in white on a ground that sweeps cyan → lime → red with the reading. |
+
+Shared rules across styles:
+
+- **Any filled arc references the configured zero.** Vacuum and boost scale
+  independently and the fill grows from the zero notch, honoring the
+  settings-page `zeroAngle` (Dyno Cell, Vault-Tec, and Night City all obey it).
+- **Readouts use fixed decimal positions.** The `big-digit` value is fully
+  tabular (constant-width digit cells, decimal pinned to face center); the
+  decimal, ones, and tenths never move, and higher digits/sign grow leftward.
+- **The web dashboard chrome does not re-skin with the gauge.** `setTheme()`
+  drives only the gauge palette (`state.palette`); the console keeps one fixed
+  identity.
+
+### Where it lives
+
+- **Web mirror (done, verified host-only):** `web/app.js` dispatches `drawGauge()`
+  on `activeThemeStyle()` to `drawArcGauge` / `drawVaultGauge` / `drawHudGauge` /
+  `drawBigDigitGauge`. `tools/mock_server.py` serves the four themes (each with a
+  `style` field). Regenerate embedded assets after any web edit.
+- **Font:** `main/fonts/alvidafatface-regular.otf` (OTF kept over the TTF — CFF
+  master, ~4× smaller, converts cleanly with `lv_font_conv`). The dashboard loads
+  it as an inlined base64 `@font-face` (`"Alvida Fatface"`) prepended to
+  `web/styles.css`.
+
+### Firmware port — PENDING
+
+The physical panel and the on-device `/themes` API still render/serve the legacy
+single-arc behavior. To bring the four styles to hardware:
+
+1. `main/boost_theme.c/.h`: replace the palette-only themes with the four above
+   and add a `style` field.
+2. `main/boost_web.c`: emit `style` in `append_theme_json`.
+3. `main/boost_gauge.c`: dispatch build/update/teardown per style, rebuilding the
+   scene on theme change without regressing the arc path's DMA/partial-refresh
+   invariants (see the gauge render contract above).
+4. Generate the Alvida LVGL font from the OTF (`lv_font_conv`, digits `.`-`9`
+   subset), wire it into CMake, and use it for the `bigdigit` numeral.
+
+Requires **ESP-IDF 5.5.1** to build/flash; not yet installed on the dev PC used
+for the web work (only `esptool` is present, sufficient for flashing prebuilt
+images, not for building).
+
+---
+
 ## Build from source
 
 Verified on **ESP-IDF v5.5.1** (Waveshare also documents v5.5.x / v6.0.x).
