@@ -196,6 +196,7 @@ def themes_payload() -> dict:
         "activeThemeId": CONFIG["activeThemeId"],
         "bigDigitStaticBg": bool(CONFIG.get("bigDigitStaticBg", False)),
         "pixelShift": bool(CONFIG.get("pixelShift", True)),
+        "bigDigitColorText": bool(CONFIG.get("bigDigitColorText", False)),
         "themes": out,
     }
 
@@ -342,6 +343,8 @@ class Handler(BaseHTTPRequestHandler):
                 CONFIG["bigDigitStaticBg"] = bool(payload["bigDigitStaticBg"])
             if "pixelShift" in payload:
                 CONFIG["pixelShift"] = bool(payload["pixelShift"])
+            if "bigDigitColorText" in payload:
+                CONFIG["bigDigitColorText"] = bool(payload["bigDigitColorText"])
             theme_id = payload.get("id")
             if theme_id:
                 theme = next((t for t in THEMES if t["id"] == theme_id), None)

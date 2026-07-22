@@ -1258,6 +1258,7 @@ function queueThemeConfig(body, okMsg) {
       });
       state.themes = payload.themes || state.themes;
       state.bigDigitStaticBg = !!payload.bigDigitStaticBg;
+      state.bigDigitColorText = !!payload.bigDigitColorText;
       const active = state.themes.find((t) => t.id === state.activeThemeId);
       if (active) setTheme(active);
       renderThemes();
@@ -1297,21 +1298,26 @@ function themeEditor(theme) {
   }
 
   if (theme.style === "bigdigit") {
-    const row = document.createElement("label");
-    row.className = "theme-toggle-row";
-    const box = document.createElement("input");
-    box.type = "checkbox";
-    box.checked = !!state.bigDigitStaticBg;
-    box.addEventListener("change", () => {
-      queueThemeConfig(
-        { bigDigitStaticBg: box.checked },
-        box.checked ? "Static background" : "Colour sweep",
+    const toggles = [
+      ["bigDigitStaticBg", "Static background (no colour sweep)",
+       "Static background", "Colour sweep"],
+      ["bigDigitColorText", "Colour the readout instead of the background",
+       "Readout colour", "White readout"],
+    ];
+    for (const [key, label, onMsg, offMsg] of toggles) {
+      const row = document.createElement("label");
+      row.className = "theme-toggle-row";
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = !!state[key];
+      box.addEventListener("change", () =>
+        queueThemeConfig({ [key]: box.checked }, box.checked ? onMsg : offMsg),
       );
-    });
-    const name = document.createElement("span");
-    name.textContent = "Static background (no colour sweep)";
-    row.append(box, name);
-    wrap.append(row);
+      const name = document.createElement("span");
+      name.textContent = label;
+      row.append(box, name);
+      wrap.append(row);
+    }
   }
 
   if (theme.customized) {
@@ -1399,6 +1405,7 @@ function wireDisplayToggles() {
       });
       state.pixelShift = !!payload.pixelShift;
       state.bigDigitStaticBg = !!payload.bigDigitStaticBg;
+      state.bigDigitColorText = !!payload.bigDigitColorText;
       state.themes = payload.themes || state.themes;
       syncDisplayToggles();
       showOk(label);
@@ -1450,6 +1457,7 @@ async function refreshAll() {
     const [statePayload, config, themes, network, media] = await Promise.all(requests);
     state.themes = themes.themes || [];
     state.bigDigitStaticBg = !!themes.bigDigitStaticBg;
+    state.bigDigitColorText = !!themes.bigDigitColorText;
     state.pixelShift = !!themes.pixelShift;
     syncDisplayToggles();
     state.activeThemeId = themes.activeThemeId || statePayload.activeThemeId || state.activeThemeId;

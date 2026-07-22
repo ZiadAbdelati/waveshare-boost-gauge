@@ -14,6 +14,7 @@
 #define NVS_NS          "boost"
 #define NVS_KEY_COLORS  "theme_colors"
 #define NVS_KEY_BIGFLAT "bigdigit_flat"
+#define NVS_KEY_BIGTEXT "bigdigit_text"
 #define NVS_KEY_PXSHIFT "pixel_shift"
 
 /* Palettes/styles here MUST match tools/mock_server.py and the web renderers so
@@ -87,6 +88,7 @@ static const boost_theme_t s_defaults[] = {
 static boost_theme_t s_themes[THEME_COUNT];
 static bool s_loaded;
 static bool s_bigdigit_static_bg;
+static bool s_bigdigit_color_text;
 /* Burn-in protection is on unless it was explicitly switched off, so a panel
  * that never sees the settings page is still protected. */
 static bool s_pixel_shift = true;
@@ -126,6 +128,7 @@ static void persist(void)
     }
     nvs_set_blob(h, NVS_KEY_COLORS, saved, sizeof(saved));
     nvs_set_u8(h, NVS_KEY_BIGFLAT, s_bigdigit_static_bg ? 1 : 0);
+    nvs_set_u8(h, NVS_KEY_BIGTEXT, s_bigdigit_color_text ? 1 : 0);
     nvs_set_u8(h, NVS_KEY_PXSHIFT, s_pixel_shift ? 1 : 0);
     nvs_commit(h);
     nvs_close(h);
@@ -159,6 +162,10 @@ void boost_theme_init(void)
     uint8_t flat = 0;
     if (nvs_get_u8(h, NVS_KEY_BIGFLAT, &flat) == ESP_OK) {
         s_bigdigit_static_bg = (flat != 0);
+    }
+    uint8_t ctext = 0;
+    if (nvs_get_u8(h, NVS_KEY_BIGTEXT, &ctext) == ESP_OK) {
+        s_bigdigit_color_text = (ctext != 0);
     }
 
     /* Absent key keeps the default (on): an existing panel that predates this
@@ -264,6 +271,18 @@ void boost_theme_set_bigdigit_static_bg(bool enabled)
 {
     ensure_loaded();
     s_bigdigit_static_bg = enabled;
+    persist();
+}
+
+bool boost_theme_bigdigit_color_text(void)
+{
+    return s_bigdigit_color_text;
+}
+
+void boost_theme_set_bigdigit_color_text(bool enabled)
+{
+    ensure_loaded();
+    s_bigdigit_color_text = enabled;
     persist();
 }
 

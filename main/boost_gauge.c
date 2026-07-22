@@ -155,13 +155,13 @@ static const int8_t k_pxshift[][2] = {
  * web draws both last, so they sit over the needle and digits too. */
 #define VAULT_VIGN_R0        120.0f
 #define VAULT_VIGN_R1        233.0f
-#define VAULT_VIGN_MAX       0.50f
+#define VAULT_VIGN_MAX       0.40f
 #define VAULT_FACE_R         231.0f
 #define VAULT_SCAN_STEP      4
 #define VAULT_SCAN_OPA       41 /* 0.16 * 255 */
 /* Vault-Tec mark: a ringed hub with three cog bars each side, sized to tuck
  * between the BOOST-O-METER line (y=-78) and the needle hub. */
-#define VAULT_LOGO_Y         (-54)
+#define VAULT_LOGO_Y         (-62)
 #define VAULT_LOGO_R         15
 #define VAULT_LOGO_RING_W    5
 #define VAULT_LOGO_HUB_R     6
@@ -317,6 +317,8 @@ static lv_obj_t *s_big_unit;
 static lv_obj_t *s_big_zone;
 static lv_obj_t *s_big_peak;
 static int s_big_bg_step = -1;
+static int s_big_text_step = -1;
+static uint32_t s_big_text_color;
 /* Ground recolour is spread across these bands, one per update tick. */
 #define BIG_BANDS 1
 static lv_obj_t *s_big_band[BIG_BANDS];
@@ -1035,47 +1037,92 @@ static void paint_vault_background(lv_obj_t *canvas, const boost_theme_t *theme)
      * 8-bit (green 16 -> 6). Ordered dithering trades spatial noise for tonal
      * resolution, which is the only way to get a smooth ramp out of a channel
      * this dark. The pattern is baked, so it never shimmers. */
-    static const uint8_t k_bayer8[64] = {
-         0, 32,  8, 40,  2, 34, 10, 42,
-        48, 16, 56, 24, 50, 18, 58, 26,
-        12, 44,  4, 36, 14, 46,  6, 38,
-        60, 28, 52, 20, 62, 30, 54, 22,
-         3, 35, 11, 43,  1, 33,  9, 41,
-        51, 19, 59, 27, 49, 17, 57, 25,
-        15, 47,  7, 39, 13, 45,  5, 37,
-        63, 31, 55, 23, 61, 29, 53, 21,
-    };
-
     lv_draw_buf_t *db = lv_canvas_get_draw_buf(canvas);
     if (db == NULL) return;
+
+    /*
+     * Error-diffused vignette.
+     *
+     * The face is #02100a, whose green sits at level 4 of 63 in RGB565, so the
+     * whole ramp has about three output levels to work with. Ordered (Bayer)
+     * dithering spread that better than nothing, but it quantises each pixel
+     * independently, so wide flat plateaus survive between the transitions and
+     * read as faint rings. Floyd-Steinberg carries the rounding error forward
+     * instead, so the *average* over any small neighbourhood tracks the ideal
+     * ramp continuously - which is what the eye integrates.
+     *
+     * This costs a serial pass with two error rows, which would be far too slow
+     * per frame. It runs once, at scene build, into the cached face.
+     */
     const float fcx = (float)(DISP_SIZE - 1) * 0.5f;
     const float fcy = (float)(DISP_SIZE - 1) * 0.5f;
     const float span = VAULT_VIGN_R1 - VAULT_VIGN_R0;
+
+    /* Error carried in 1/256 of an output level, per channel, for this row and
+     * the next. int16 is ample: error never exceeds +/-128. */
+    const size_t errbytes = sizeof(int16_t) * 3u * (size_t)(DISP_SIZE + 2);
+    int16_t *err_cur = BG_ALLOC(errbytes);
+    int16_t *err_nxt = BG_ALLOC(errbytes);
+    if (err_cur == NULL || err_nxt == NULL) {
+        BG_FREE(err_cur);
+        BG_FREE(err_nxt);
+        return; /* face is still correct, just undithered */
+    }
+    memset(err_cur, 0, errbytes);
+    memset(err_nxt, 0, errbytes);
+
     for (int32_t y = 0; y < DISP_SIZE; ++y) {
         lv_color16_t *row = (lv_color16_t *)(db->data + (size_t)y * db->header.stride);
         const float dy = (float)y - fcy;
         const float dy2 = dy * dy;
-        const uint8_t *bayer_row = &k_bayer8[(y & 7) << 3];
+        memset(err_nxt, 0, errbytes);
+
         for (int32_t x = 0; x < DISP_SIZE; ++x) {
             const float dx = (float)x - fcx;
             const float r = sqrtf(dx * dx + dy2);
-            if (r <= VAULT_VIGN_R0) continue;
-            /* Smoothstep, not linear. A linear ramp has a corner where it
-             * starts and where it clamps, and on a face this dark those two
-             * corners are the "rings" that survive dithering - measured as a
-             * step at r=120 in the panel's own radial profile. t*t*(3-2t) has
-             * zero slope at both ends, so the ramp fades in and out. */
-            float tr = (r - VAULT_VIGN_R0) / span;
-            if (tr > 1.0f) tr = 1.0f;
-            const float a = VAULT_VIGN_MAX * tr * tr * (3.0f - 2.0f * tr);
-            const uint32_t k = (uint32_t)((1.0f - a) * 256.0f);
-            /* Threshold spans one output level (64 steps x 4 = 256 = 1 << 8). */
-            const uint32_t t = (uint32_t)bayer_row[x & 7] * 4u;
-            row[x].red = (uint16_t)((row[x].red * k + t) >> 8);
-            row[x].green = (uint16_t)((row[x].green * k + t) >> 8);
-            row[x].blue = (uint16_t)((row[x].blue * k + t) >> 8);
+
+            float a = 0.0f;
+            if (r > VAULT_VIGN_R0) {
+                float t = (r - VAULT_VIGN_R0) / span;
+                if (t > 1.0f) t = 1.0f;
+                /* Smootherstep: zero first AND second derivative at both ends,
+                 * so neither the onset nor the clamp leaves a visible edge. */
+                a = VAULT_VIGN_MAX * t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+            }
+            const float keep = 1.0f - a;
+
+            const uint16_t src[3] = { row[x].red, row[x].green, row[x].blue };
+            const uint16_t maxv[3] = { 31u, 63u, 31u };
+            uint16_t out[3];
+
+            for (int ch = 0; ch < 3; ++ch) {
+                const int32_t ideal = (int32_t)lroundf((float)src[ch] * keep * 256.0f);
+                int32_t want = ideal + err_cur[(x + 1) * 3 + ch];
+                int32_t q = (want + 128) >> 8;
+                if (q < 0) q = 0;
+                if (q > (int32_t)maxv[ch]) q = (int32_t)maxv[ch];
+                out[ch] = (uint16_t)q;
+
+                int32_t e = want - (q << 8);
+                /* Clamp so a saturated channel cannot pump unbounded error into
+                 * its neighbours and streak. */
+                if (e > 512) e = 512;
+                if (e < -512) e = -512;
+                err_cur[(x + 2) * 3 + ch] += (int16_t)((e * 7) / 16);
+                err_nxt[(x + 0) * 3 + ch] += (int16_t)((e * 3) / 16);
+                err_nxt[(x + 1) * 3 + ch] += (int16_t)((e * 5) / 16);
+                err_nxt[(x + 2) * 3 + ch] += (int16_t)((e * 1) / 16);
+            }
+            row[x].red = out[0];
+            row[x].green = out[1];
+            row[x].blue = out[2];
         }
+        int16_t *swap = err_cur;
+        err_cur = err_nxt;
+        err_nxt = swap;
     }
+    BG_FREE(err_cur);
+    BG_FREE(err_nxt);
 }
 
 /* CRT scanlines, drawn last so they cross the needle and the digits the way
@@ -1323,14 +1370,14 @@ static void build_vault(lv_obj_t *scr)
     lv_obj_set_style_text_font(title, F_COND22, 0);
     lv_obj_set_style_text_letter_space(title, 3, 0);
     lv_obj_set_style_text_color(title, c(theme->text), 0);
-    lv_obj_align(title, LV_ALIGN_CENTER, 0, -106);
+    lv_obj_align(title, LV_ALIGN_CENTER, 0, -114);
 
     lv_obj_t *sub = lv_label_create(scr);
     lv_label_set_text(sub, "BOOST-O-METER");
     lv_obj_set_style_text_font(sub, F_COND14, 0);
     lv_obj_set_style_text_letter_space(sub, 1, 0);
     lv_obj_set_style_text_color(sub, c(theme->muted), 0);
-    lv_obj_align(sub, LV_ALIGN_CENTER, 0, -86);
+    lv_obj_align(sub, LV_ALIGN_CENTER, 0, -94);
 
     s_vault_alert = lv_label_create(scr);
     lv_label_set_text(s_vault_alert, "OVER-PRESSURE");
@@ -1982,7 +2029,10 @@ static void draw_big_minus(lv_event_t *e)
 
     lv_draw_triangle_dsc_t t;
     lv_draw_triangle_dsc_init(&t);
-    t.color = lv_color_white();
+    /* Follows the readout when the colour cue is on the text. */
+    t.color = boost_theme_bigdigit_color_text() && s_big_text_color != 0u
+                  ? c(s_big_text_color)
+                  : lv_color_white();
     t.opa = LV_OPA_COVER;
     t.p[0].x = x1 + slant; t.p[0].y = y1;
     t.p[1].x = x2;         t.p[1].y = y1;
@@ -2135,6 +2185,24 @@ static void update_bigdigit(const boost_sample_t *sample, const boost_theme_t *t
         }
     }
 
+    /* Colour on the readout instead of the ground. The glyphs cover ~31k px
+     * against the ground's 217k, so a colour step repaints about a seventh as
+     * much and never touches the full screen. */
+    if (boost_theme_bigdigit_color_text()) {
+        const int tstep = big_step_for(sample->psi);
+        if (tstep != s_big_text_step) {
+            s_big_text_step = tstep;
+            s_big_text_color = big_color_for_step(theme, tstep);
+            const lv_color_t tc = c(s_big_text_color);
+            lv_obj_t *const slots[4] = { s_big_tens, s_big_ones, s_big_dot, s_big_tenths };
+            for (int i = 0; i < 4; ++i) {
+                if (slots[i] != NULL) lv_obj_set_style_text_color(slots[i], tc, 0);
+            }
+            /* The sign is drawn, not a label, so it needs an explicit repaint. */
+            if (s_big_minus != NULL) lv_obj_invalidate(s_big_minus);
+        }
+    }
+
     const int tenths_total = (int)lroundf(fabsf(sample->psi) * 10.0f);
     const int whole = tenths_total / 10;
     const int tenth = tenths_total % 10;
@@ -2230,6 +2298,7 @@ static void destroy_scene(void)
     s_big_bg = s_big_minus = s_big_tens = s_big_ones = NULL;
     s_big_dot = s_big_tenths = s_big_unit = s_big_zone = s_big_peak = NULL;
     s_big_bg_step = -1;
+    s_big_text_step = -1;
     for (int k = 0; k < BIG_BANDS; ++k) s_big_band[k] = NULL;
     s_big_band_next = BIG_BANDS;
 }

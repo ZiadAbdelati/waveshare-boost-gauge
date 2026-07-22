@@ -79,6 +79,14 @@ bool boost_theme_bigdigit_static_bg(void);
 void boost_theme_set_bigdigit_static_bg(bool enabled);
 
 /*
+ * Sweep the READOUT through the zone colours instead of the ground. The digits
+ * occupy roughly 31k px against the ground's 217k, so a colour step repaints
+ * about a seventh as much - the cheap way to keep the colour cue.
+ */
+bool boost_theme_bigdigit_color_text(void);
+void boost_theme_set_bigdigit_color_text(bool enabled);
+
+/*
  * AMOLED burn-in countermeasure. The gauge shows one static-heavy face for
  * hours at a time at 85-92% brightness, so the tick rings, titles and readout
  * outlines sit on the same emitters long enough to age them differentially.
