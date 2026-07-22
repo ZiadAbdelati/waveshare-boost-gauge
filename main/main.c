@@ -30,6 +30,9 @@ static void sample_task(void *arg)
     while (true) {
         const boost_sample_t sample = boost_sim_tick();
         boost_model_publish_sample(&sample);
+        /* Kick the WebSocket push task straight away: the sample is the event,
+         * so remote clients no longer wait out a free-running 50 ms timer. */
+        boost_web_notify_sample();
 
         boost_display_metrics_t metrics;
         boost_display_get_metrics(&metrics);

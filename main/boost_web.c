@@ -1,5 +1,6 @@
 #include "boost_web.h"
 
+#include <errno.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,6 +22,7 @@
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "lwip/sockets.h"
 #include "lvgl.h"
 
 #include "nvs_flash.h"
@@ -44,6 +46,32 @@
 static const char *TAG = "boost_web";
 static httpd_handle_t s_httpd;
 #define STATE_WS_MAX_CLIENTS 3
+
+/* Telemetry push cadence.
+ *
+ * The push loop is driven by task notifications from the sample task (see
+ * boost_web_notify_sample(), called from sample_task in main.c) so a fresh
+ * sample is framed and queued the moment it exists. Previously this loop slept
+ * a flat STATE_WS_FRAME_MS between pushes, free-running and unsynchronised with
+ * sample production, so every sample sat 0-50 ms (mean 25 ms) before transmit.
+ *
+ * STATE_WS_PUSH_DECIMATION is how many sample notifications are consumed per
+ * outbound frame. The sample task runs at 62.5 Hz (16 ms period, main.c):
+ *   1 -> 62.5 Hz, ~0 ms added latency, ~56 kB/s and ~190 async sends/s at 3 clients
+ *   2 -> 31.25 Hz, ~16 ms added latency, half the httpd task load
+ * Decimation rather than a wall-clock rate gate is deliberate: a gate whose
+ * period is not a multiple of the 16 ms sample period aliases - a 20 ms gate
+ * yields a 32 ms beat (31.25 Hz), not the 50 Hz it looks like.
+ *
+ * COUPLED to the browser: GAUGE_EMA_TAU_MS in web/app.js is sized for this
+ * rate. Raising decimation here without raising tau there makes the needle
+ * visibly step. Watch display.renderFps / display.worstRenderUs on
+ * /api/v1/state when changing this - the physical gauge must not regress.
+ */
+#define STATE_WS_PUSH_DECIMATION 1
+
+/* Fallback cadence used only when no sample notification arrives (sample task
+ * stalled, or not started yet). Keeps clients fed rather than going silent. */
 #define STATE_WS_FRAME_MS 50
 typedef struct {
     int fd;
@@ -58,7 +86,8 @@ typedef struct {
 static state_ws_client_t s_state_ws_clients[STATE_WS_MAX_CLIENTS] = {
     { .fd = -1 }, { .fd = -1 }, { .fd = -1 },
 };
-static TaskHandle_t s_state_ws_task;
+/* Written once at startup, read from sample_task on the other core. */
+static TaskHandle_t volatile s_state_ws_task;
 static volatile bool s_media_upload_in_progress;
 static portMUX_TYPE s_web_lock = portMUX_INITIALIZER_UNLOCKED;
 
@@ -224,15 +253,34 @@ static void state_ws_push(void *arg)
     }
 }
 
+void boost_web_notify_sample(void)
+{
+    TaskHandle_t task = s_state_ws_task;
+    if (task != NULL) {
+        xTaskNotifyGive(task);
+    }
+}
+
 static void state_ws_task(void *arg)
 {
     (void)arg;
+    uint32_t pending = 0;
     while (true) {
+        /* Wake on a freshly published sample; fall back to the idle cadence so
+         * a stalled producer cannot silence the socket entirely. */
+        const uint32_t notified = ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(STATE_WS_FRAME_MS));
+        if (notified > 0U) {
+            pending += notified;
+            if (pending < (uint32_t)STATE_WS_PUSH_DECIMATION) {
+                continue;
+            }
+        }
+        pending = 0;
+
         portENTER_CRITICAL(&s_web_lock);
         const bool ready = !s_media_upload_in_progress && s_httpd != NULL;
         portEXIT_CRITICAL(&s_web_lock);
         if (ready) state_ws_push(NULL);
-        vTaskDelay(pdMS_TO_TICKS(STATE_WS_FRAME_MS));
     }
 }
 
@@ -1168,6 +1216,25 @@ static esp_err_t network_reconnect_post(httpd_req_t *req)
     return send_json(req, json);
 }
 
+/* Per-connection socket setup. esp_http_server writes a response in many small
+ * send() calls - roughly one per HTTP header token, and two per WebSocket frame
+ * (header, then payload) - so Nagle holds every fragment after the first until
+ * the peer ACKs. Measured on this device: first 70 B at 2.6 ms, remaining 459 B
+ * at 45-50 ms. TCP_NODELAY removes that stall. IDF only applies TCP_NODELAY
+ * transiently around error responses, never to normal responses or WS frames,
+ * and .open_fn is the only per-connection hook available. */
+static esp_err_t socket_open_fn(httpd_handle_t hd, int sockfd)
+{
+    (void)hd;
+    const int one = 1;
+    if (setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one)) < 0) {
+        ESP_LOGW(TAG, "TCP_NODELAY failed on fd %d (errno %d); latency will suffer",
+                 sockfd, errno);
+    }
+    /* Never fail the connection over a socket option. */
+    return ESP_OK;
+}
+
 esp_err_t boost_web_start(void)
 {
     ESP_RETURN_ON_ERROR(boost_media_store_init(), TAG, "media");
@@ -1185,6 +1252,13 @@ esp_err_t boost_web_start(void)
     cfg.recv_wait_timeout = 90;
     cfg.send_wait_timeout = 5;
     cfg.uri_match_fn = httpd_uri_match_wildcard;
+    /* Disable Nagle per connection; see socket_open_fn. */
+    cfg.open_fn = socket_open_fn;
+    /* Keep HTTP off core 0, which carries the Wi-Fi driver task, the sample
+     * task and (unpinned) the LVGL worker. Priority is deliberately left at the
+     * default 5, below the LVGL adapter's 6 - reordering those risks display
+     * stutter, whereas pinning is the safe lever. */
+    cfg.core_id = 1;
     ESP_RETURN_ON_ERROR(httpd_start(&s_httpd, &cfg), TAG, "httpd");
     register_uri(API_BASE "/state", HTTP_GET, state_get);
     register_websocket_uri(WS_STATE_PATH, state_ws_get);
@@ -1213,7 +1287,10 @@ esp_err_t boost_web_start(void)
     register_uri("/*", HTTP_GET, root_get);
     register_uri("/*", HTTP_OPTIONS, options_handler);
     ESP_LOGI(TAG, "HTTP API ready");
-    if (xTaskCreate(state_ws_task, "boost_ws", 3072, NULL, 3, &s_state_ws_task) != pdPASS) {
+    /* Co-located with the httpd task on core 1: it does the JSON render and the
+     * malloc/free per frame, and hands straight off to httpd's async work queue. */
+    if (xTaskCreatePinnedToCore(state_ws_task, "boost_ws", 3072, NULL, 3,
+                                (TaskHandle_t *)&s_state_ws_task, 1) != pdPASS) {
         ESP_LOGW(TAG, "live WebSocket task not started");
     }
     return ESP_OK;

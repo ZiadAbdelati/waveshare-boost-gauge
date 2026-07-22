@@ -13,6 +13,26 @@ const sampleHistory = [];
 const HISTORY_WINDOW_MS = 60_000;
 const GAUGE_GAP_RESET_MS = 1000;
 const GAUGE_FRAME_MS = 1000 / 60;
+/* Needle smoothing time constants, in ms. The EMA exists only to hide the step
+ * between telemetry packets, and it adds group delay roughly equal to tau - so
+ * tau must be sized to the packet interval of the active transport and never
+ * larger. Rule of thumb: tau ~= 0.7x the packet interval.
+ *
+ * WS is COUPLED to STATE_WS_PUSH_DECIMATION in main/boost_web.c. The firmware
+ * pushes on every sample (62.5 Hz, ~16 ms packets) rather than on a
+ * free-running 50 ms timer, so the WebSocket tau is 12 ms instead of the old
+ * flat 35 ms. Lowering the firmware push rate without raising GAUGE_EMA_TAU_MS.ws
+ * here will make the needle visibly step.
+ *
+ * The HTTP fallback still polls at POLL_FRAME_MS (250 ms) and keeps the old
+ * 35 ms tau - the firmware change does not affect that path. */
+const GAUGE_EMA_TAU_MS = { ws: 12, http: 35 };
+
+function gaugeEmaTauMs() {
+  const socket = state.liveSocket;
+  const onWebSocket = Boolean(socket) && socket.readyState === WebSocket.OPEN;
+  return onWebSocket ? GAUGE_EMA_TAU_MS.ws : GAUGE_EMA_TAU_MS.http;
+}
 const SPARKLINE_FRAME_MS = 250;
 const POLL_FRAME_MS = 250;
 const PAGE = document.body.dataset.page || "cockpit";
@@ -927,7 +947,7 @@ function renderGaugeFrame(at) {
   const rawElapsedMs = previousAt ? at - previousAt : GAUGE_FRAME_MS;
   const elapsedMs = rawElapsedMs > GAUGE_GAP_RESET_MS ? GAUGE_FRAME_MS : rawElapsedMs;
   state.gaugeLastAt = at;
-  const alpha = 1 - Math.exp(-elapsedMs / 35);
+  const alpha = 1 - Math.exp(-elapsedMs / gaugeEmaTauMs());
   state.gaugePsi += (Number(target.psi ?? 0) - state.gaugePsi) * alpha;
 
   drawGauge({ ...target, psi: state.gaugePsi });
@@ -1017,7 +1037,7 @@ function updateConnection(mode, transport = null) {
   if (!el.connection || !el.connectionText) return;
   const online = mode === "online";
   const text = online
-    ? (transport === "http" || (!transport && state.fallbackActive) ? "Live · HTTP 4 Hz" : "Live · WebSocket 20 Hz")
+    ? (transport === "http" || (!transport && state.fallbackActive) ? "Live · HTTP 4 Hz" : "Live · WebSocket 60 Hz")
     : "Disconnected";
   if (state.connected === online && el.connectionText.textContent === text) return;
   state.connected = online;
