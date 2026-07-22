@@ -20,9 +20,23 @@ typedef struct {
     uint32_t render_fps;
     uint32_t flushes_per_second;
     uint32_t pixels_per_second;
+    /* Longest gap between consecutive render-ready events in the window. This
+     * is the number that tracks perceived choppiness: render_fps counts how
+     * often the screen changed, which says nothing about whether one of those
+     * changes stalled the pipeline for 70 ms. */
+    uint32_t worst_render_us;
 } boost_display_metrics_t;
 
 lv_display_t *boost_display_start(void);
+
+/**
+ * Set panel brightness, 0-100.
+ *
+ * Owned here rather than delegated to bsp_display_brightness_set(): that writes
+ * through a file-static panel handle only assigned inside bsp_display_new(),
+ * which this module no longer calls. It is a single 0x51 command either way.
+ */
+esp_err_t boost_display_set_brightness(int percent);
 
 esp_err_t boost_display_lock(uint32_t timeout_ms);
 void boost_display_unlock(void);

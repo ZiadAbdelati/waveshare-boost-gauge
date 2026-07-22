@@ -24,12 +24,25 @@ if(_lvgl_sources)
     set_property(TARGET lvgl PROPERTY SOURCES ${_lvgl_sources})
 endif()
 
-find_package(SDL2 REQUIRED)
-find_package(Threads REQUIRED)
+# SDL2 is only needed for the optional --window mode; headless screenshots
+# (the mode used for verification) render into memory and need no SDL.
+find_package(SDL2 QUIET)
+find_package(Threads QUIET)
 
 add_executable(boost_gauge_sim
     main.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_gauge.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_theme.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/alvida_big.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/font_mono_16.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/font_mono_40.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/font_cond_14.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/font_cond_18.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/font_cond_22.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/font_cond_32.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/font_cond_96.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/font_wide_22.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/font_wide_32.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_sim.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_brightness.c
 )
@@ -44,16 +57,18 @@ target_include_directories(boost_gauge_sim PRIVATE
 
 target_compile_definitions(boost_gauge_sim PRIVATE
     LV_CONF_INCLUDE_SIMPLE
+    $<$<BOOL:${SDL2_FOUND}>:SIM_HAVE_SDL>
 )
 
-target_link_libraries(boost_gauge_sim PRIVATE
-    lvgl
-    ${SDL2_LIBRARIES}
-    Threads::Threads
-    m
-)
+target_link_libraries(boost_gauge_sim PRIVATE lvgl m)
+if(SDL2_FOUND)
+    target_link_libraries(boost_gauge_sim PRIVATE ${SDL2_LIBRARIES})
+endif()
+if(Threads_FOUND)
+    target_link_libraries(boost_gauge_sim PRIVATE Threads::Threads)
+endif()
 
-if(TARGET SDL2::SDL2)
+if(SDL2_FOUND AND TARGET SDL2::SDL2)
     target_link_libraries(boost_gauge_sim PRIVATE SDL2::SDL2)
 endif()
 

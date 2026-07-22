@@ -62,7 +62,9 @@
 #define LV_USE_SNAPSHOT 1
 
 /* Optional windowed mode when a display is available. */
-#define LV_USE_SDL 1
+/* Headless screenshots need no SDL. Set to 1 (and install SDL2 dev headers)
+ * only if you want the interactive --window mode. */
+#define LV_USE_SDL 0
 #if LV_USE_SDL
     #define LV_SDL_INCLUDE_PATH     <SDL2/SDL.h>
     #define LV_SDL_RENDER_MODE      LV_DISPLAY_RENDER_MODE_DIRECT

@@ -380,7 +380,14 @@ esp_err_t boost_network_scan(boost_wifi_scan_record_t *records, uint16_t max_rec
             err = ESP_ERR_NO_MEM;
         }
     }
-    if (err == ESP_OK) {
+    /* Only disturb the radio if we are not already in a mode that can scan.
+     * Re-applying the STA config on a live association forces a disconnect,
+     * which is what used to knock the gauge off Wi-Fi after a scan. */
+    wifi_mode_t current_mode = WIFI_MODE_NULL;
+    const bool mode_known = (esp_wifi_get_mode(&current_mode) == ESP_OK);
+    const bool needs_mode_change = !mode_known || current_mode != WIFI_MODE_APSTA;
+
+    if (err == ESP_OK && needs_mode_change) {
         err = esp_wifi_set_mode(WIFI_MODE_APSTA);
     }
     if (err == ESP_OK) {
@@ -414,13 +421,18 @@ esp_err_t boost_network_scan(boost_wifi_scan_record_t *records, uint16_t max_rec
         }
     }
 
-    esp_err_t restore_err = esp_wifi_set_mode(restore_mode);
-    if (restore_err == ESP_OK) {
-        apply_ap_config();
-        if (restore_mode == WIFI_MODE_APSTA) {
-            apply_sta_config();
-            if (!s_sta_got_ip) {
-                esp_wifi_connect();
+    /* If the mode was never changed, the association is still intact — leave it
+     * completely alone. Reapplying config here is what caused the dropout. */
+    esp_err_t restore_err = ESP_OK;
+    if (needs_mode_change) {
+        restore_err = esp_wifi_set_mode(restore_mode);
+        if (restore_err == ESP_OK) {
+            apply_ap_config();
+            if (restore_mode == WIFI_MODE_APSTA) {
+                apply_sta_config();
+                if (!s_sta_got_ip) {
+                    esp_wifi_connect();
+                }
             }
         }
     }

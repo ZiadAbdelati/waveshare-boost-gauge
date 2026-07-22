@@ -16,10 +16,12 @@
 #include "esp_mac.h"
 #include "esp_ota_ops.h"
 
+#include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "lvgl.h"
 
 #include "nvs_flash.h"
 
@@ -116,11 +118,12 @@ static void append_theme_json(char *buf, size_t len, const boost_theme_t *theme)
 {
     char tmp[384];
     snprintf(tmp, sizeof(tmp),
-             "{\"id\":\"%s\",\"name\":\"%s\",\"colors\":{\"face\":\"#%06lx\","
+             "{\"id\":\"%s\",\"name\":\"%s\",\"style\":\"%s\",\"colors\":{\"face\":\"#%06lx\","
              "\"track\":\"#%06lx\",\"text\":\"#%06lx\",\"muted\":\"#%06lx\","
              "\"vacuum\":\"#%06lx\",\"boost\":\"#%06lx\",\"overboost\":\"#%06lx\","
              "\"zero\":\"#%06lx\"},\"brightnessHigh\":%d,\"brightnessLow\":%d}",
-             theme->id, theme->name, (unsigned long)theme->face, (unsigned long)theme->track,
+             theme->id, theme->name, boost_style_name(theme->style),
+             (unsigned long)theme->face, (unsigned long)theme->track,
              (unsigned long)theme->text, (unsigned long)theme->muted,
              (unsigned long)theme->vacuum, (unsigned long)theme->boost,
              (unsigned long)theme->overboost, (unsigned long)theme->zero,
@@ -136,12 +139,14 @@ static int state_json(char *json, size_t len)
                     "{\"psi\":%.2f,\"peakPsi\":%.2f,\"zone\":\"%s\",\"demo\":%s,"
                     "\"brightness\":%d,\"firmwareVersion\":\"%s\",\"uptimeMs\":%llu,"
                     "\"epochMs\":%lld,\"timezoneOffsetMinutes\":%d,\"activeThemeId\":\"%s\","
-                    "\"display\":{\"renderFps\":%lu,\"flushesPerSecond\":%lu,\"pixelsPerSecond\":%lu}}",
+                    "\"display\":{\"renderFps\":%lu,\"flushesPerSecond\":%lu,\"pixelsPerSecond\":%lu,"
+                    "\"worstRenderUs\":%lu}}",
                     (double)st.psi, (double)st.peak_psi, st.zone, st.demo ? "true" : "false",
                     st.brightness, st.firmware_version, (unsigned long long)st.uptime_ms,
                     (long long)st.epoch_ms, st.timezone_offset_minutes, st.active_theme_id,
                     (unsigned long)st.display.render_fps, (unsigned long)st.display.flushes_per_second,
-                    (unsigned long)st.display.pixels_per_second);
+                    (unsigned long)st.display.pixels_per_second,
+                    (unsigned long)st.display.worst_render_us);
 }
 
 static esp_err_t state_get(httpd_req_t *req)
@@ -484,8 +489,61 @@ static esp_err_t theme_active_put(httpd_req_t *req)
     if (err != ESP_OK) {
         return send_err(req, HTTPD_404, "theme_not_found");
     }
+    /* A theme is a whole face now, so the panel must rebuild immediately —
+     * otherwise the picker only takes effect on the next boot. */
+    if (boost_display_lock(1000) == ESP_OK) {
+        boost_gauge_apply_theme(boost_model_active_theme());
+        boost_display_unlock();
+    }
     return themes_get(req);
 }
+
+#if LV_USE_SNAPSHOT
+/* Debug aid: re-render the live screen into a PSRAM buffer and stream it as
+ * raw little-endian RGB565 so the physical face can be inspected off-device.
+ * Pairs with tools/fetch_panel_snapshot.py. */
+static esp_err_t debug_snapshot_get(httpd_req_t *req)
+{
+    const uint32_t w = 466;
+    const uint32_t h = 466;
+    const uint32_t stride = w * 2;
+    const size_t bytes = (size_t)stride * h;
+
+    uint8_t *px = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (px == NULL) {
+        return send_err(req, HTTPD_500, "snapshot_alloc");
+    }
+
+    lv_draw_buf_t db;
+    if (lv_draw_buf_init(&db, w, h, LV_COLOR_FORMAT_RGB565, stride, px, bytes) != LV_RESULT_OK) {
+        heap_caps_free(px);
+        return send_err(req, HTTPD_500, "snapshot_buf");
+    }
+
+    lv_result_t res = LV_RESULT_INVALID;
+    if (boost_display_lock(3000) == ESP_OK) {
+        res = lv_snapshot_take_to_draw_buf(lv_screen_active(), LV_COLOR_FORMAT_RGB565, &db);
+        boost_display_unlock();
+    }
+    if (res != LV_RESULT_OK) {
+        heap_caps_free(px);
+        return send_err(req, HTTPD_500, "snapshot_failed");
+    }
+
+    httpd_resp_set_type(req, "application/octet-stream");
+    esp_err_t send_err_code = ESP_OK;
+    const size_t chunk = 8192;
+    for (size_t off = 0; off < bytes && send_err_code == ESP_OK; off += chunk) {
+        const size_t n = (bytes - off) < chunk ? (bytes - off) : chunk;
+        send_err_code = httpd_resp_send_chunk(req, (const char *)(px + off), n);
+    }
+    if (send_err_code == ESP_OK) {
+        send_err_code = httpd_resp_send_chunk(req, NULL, 0);
+    }
+    heap_caps_free(px);
+    return send_err_code;
+}
+#endif
 
 static esp_err_t logs_get(httpd_req_t *req)
 {
@@ -1026,6 +1084,9 @@ esp_err_t boost_web_start(void)
     register_uri(API_BASE "/network/reconnect", HTTP_POST, network_reconnect_post);
     register_uri(API_BASE "/network/scan", HTTP_GET, network_scan_get);
     register_uri(API_BASE "/events", HTTP_GET, events_get);
+#if LV_USE_SNAPSHOT
+    register_uri(API_BASE "/debug/snapshot", HTTP_GET, debug_snapshot_get);
+#endif
     register_uri("/*", HTTP_GET, root_get);
     register_uri("/*", HTTP_OPTIONS, options_handler);
     ESP_LOGI(TAG, "HTTP API ready");

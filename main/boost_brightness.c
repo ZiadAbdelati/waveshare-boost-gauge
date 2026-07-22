@@ -42,10 +42,10 @@ void boost_brightness_set(int percent)
         ESP_LOGW(TAG, "brightness %d%% deferred (display busy)", s_percent);
         return;
     }
-    esp_err_t err = bsp_display_brightness_set(s_percent);
+    esp_err_t err = boost_display_set_brightness(s_percent);
     boost_display_unlock();
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "bsp_display_brightness_set(%d) failed: %s",
+        ESP_LOGE(TAG, "boost_display_set_brightness(%d) failed: %s",
                  s_percent, esp_err_to_name(err));
     }
 #endif

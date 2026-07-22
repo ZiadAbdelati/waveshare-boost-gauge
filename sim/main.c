@@ -16,11 +16,22 @@
 #include <unistd.h>
 
 #include "lvgl.h"
+#ifdef SIM_HAVE_SDL
 #include "drivers/sdl/lv_sdl_window.h"
 #include "drivers/sdl/lv_sdl_mouse.h"
+#endif
 
 #include "boost_gauge.h"
 #include "boost_sim.h"
+#include "boost_theme.h"
+
+#ifdef _WIN32
+#include <direct.h>
+#define sim_mkdir(p) _mkdir(p)
+#else
+#include <sys/stat.h>
+#define sim_mkdir(p) mkdir((p), 0775)
+#endif
 
 #define DISP_W 466
 #define DISP_H 466
@@ -92,17 +103,21 @@ static void apply_state(const shot_state_t *st)
     pump_lvgl(80);
 }
 
-static int run_screenshots(const char *out_dir)
+static int run_screenshots(const char *out_dir, const char *theme_id)
 {
-    char cmd[512];
-    snprintf(cmd, sizeof(cmd), "mkdir -p '%s'", out_dir);
-    if (system(cmd) != 0) {
-        fprintf(stderr, "failed to create %s\n", out_dir);
-        return 1;
-    }
+    /* Portable: "mkdir -p" is not available on the Windows shell. */
+    sim_mkdir(out_dir);
 
     boost_sim_init();
     boost_gauge_create();
+    if (theme_id != NULL) {
+        const boost_theme_t *t = boost_theme_find(theme_id);
+        if (t == NULL) {
+            fprintf(stderr, "unknown theme: %s\n", theme_id);
+            return 1;
+        }
+        boost_gauge_apply_theme(t);
+    }
     pump_lvgl(50);
 
     for (size_t i = 0; i < sizeof(k_states) / sizeof(k_states[0]); i++) {
@@ -118,8 +133,7 @@ static int run_screenshots(const char *out_dir)
     /* short animated sweep as sequential raw frames */
     char anim_dir[512];
     snprintf(anim_dir, sizeof(anim_dir), "%s/frames", out_dir);
-    snprintf(cmd, sizeof(cmd), "mkdir -p '%s'", anim_dir);
-    system(cmd);
+    sim_mkdir(anim_dir);
 
     for (int i = 0; i < 24; i++) {
         float t = (float)i / 23.0f;
@@ -136,6 +150,7 @@ static int run_screenshots(const char *out_dir)
     return 0;
 }
 
+#ifdef SIM_HAVE_SDL
 static int run_window(void)
 {
     lv_display_t *disp = lv_sdl_window_create(DISP_W, DISP_H);
@@ -159,6 +174,7 @@ static int run_window(void)
     }
     return 0;
 }
+#endif /* SIM_HAVE_SDL */
 
 /**
  * Headless path: custom memory display, no SDL window.
@@ -203,10 +219,13 @@ int main(int argc, char **argv)
 {
     bool window = false;
     const char *shot_dir = "preview/sim";
+    const char *theme_id = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--window") == 0) {
             window = true;
+        } else if (strcmp(argv[i], "--theme") == 0) {
+            if (i + 1 < argc) theme_id = argv[++i];
         } else if (strcmp(argv[i], "--screenshot") == 0) {
             if (i + 1 < argc) {
                 shot_dir = argv[++i];
@@ -224,9 +243,14 @@ int main(int argc, char **argv)
     lv_init();
 
     if (window) {
+#ifdef SIM_HAVE_SDL
         return run_window();
+#else
+        fprintf(stderr, "built without SDL2: --window unavailable\n");
+        return 1;
+#endif
     }
 
     setup_headless_display();
-    return run_screenshots(shot_dir);
+    return run_screenshots(shot_dir, theme_id);
 }

@@ -69,3 +69,6 @@ CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
 CONFIG_HTTPD_MAX_URI_LEN=512
 # Push 20 Hz state targets over a pool of three sockets; the browser interpolates at 60 FPS.
 CONFIG_HTTPD_WS_SUPPORT=y
+# Debug aid: lets /api/v1/debug/snapshot re-render the live screen so the
+# physical face can be captured off-device (tools/fetch_panel_snapshot.py).
+CONFIG_LV_USE_SNAPSHOT=y

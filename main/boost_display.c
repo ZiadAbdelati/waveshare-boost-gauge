@@ -3,7 +3,9 @@
 #include "bsp/display.h"
 #include "bsp/esp-bsp.h"
 #include "bsp/touch.h"
+#include "driver/spi_master.h"
 #include "esp_check.h"
+#include "esp_lcd_co5300.h"
 #include "esp_log.h"
 #include "esp_lv_adapter.h"
 #include "esp_timer.h"
@@ -21,6 +23,22 @@
 #define BOOST_LVGL_STRIP_BYTES \
     ((size_t)BSP_LCD_H_RES * BOOST_LVGL_BUF_LINES * (BSP_LCD_BITS_PER_PIXEL / 8))
 
+/*
+ * QSPI clock for the CO5300. The driver's own macro defaults to 40 MHz, and the
+ * BSP's bsp_display_new() takes that default with no hook to override it, so
+ * the panel bring-up is vendored below purely to own this number. Do not move
+ * it back into managed_components/: an edit there is silently reverted by any
+ * dependency refresh, which is exactly how this repo ended up documenting a
+ * "60 MHz trial" that was never actually in effect.
+ *
+ * Measured on hardware, worst render cycle for a full-screen recolour:
+ *   40 MHz -> 45.1 ms      80 MHz -> 37.6 ms
+ * The gain lands only on full-frame pushes; partial-update faces are bound by
+ * CPU rasterisation and move 0-3%. If the panel ever shows sparkle or torn
+ * rows, drop this back to 40 MHz first.
+ */
+#define BOOST_LCD_PCLK_HZ (80 * 1000 * 1000)
+
 static const char *TAG = "boost_disp";
 
 static lv_display_t *s_disp;
@@ -33,6 +51,8 @@ static uint32_t s_render_count;
 static uint32_t s_flush_count;
 static uint32_t s_pixel_count;
 static int64_t s_metrics_start_us;
+static int64_t s_last_render_us;
+static uint32_t s_worst_gap_us;
 /* CO5300 requires even x1/y1 and odd x2/y2 window edges. */
 static void rounder_event_cb(lv_event_t *e)
 {
@@ -49,8 +69,17 @@ static void rounder_event_cb(lv_event_t *e)
 static void display_metrics_event_cb(lv_event_t *e)
 {
     const lv_event_code_t code = lv_event_get_code(e);
-    if (code == LV_EVENT_RENDER_READY) {
+    if (code == LV_EVENT_RENDER_START) {
+        s_last_render_us = esp_timer_get_time();
+    } else if (code == LV_EVENT_RENDER_READY) {
         ++s_render_count;
+        /* Duration of the cycle itself, not the gap between cycles: an idle
+         * screen produces long gaps but no stall, and conflating the two is
+         * what made the first cut of this metric useless. */
+        if (s_last_render_us != 0) {
+            const uint32_t dur = (uint32_t)(esp_timer_get_time() - s_last_render_us);
+            if (dur > s_worst_gap_us) s_worst_gap_us = dur;
+        }
     } else if (code == LV_EVENT_FLUSH_START) {
         const lv_area_t *area = lv_event_get_param(e);
         if (area != NULL) {
@@ -63,22 +92,88 @@ static void display_metrics_event_cb(lv_event_t *e)
         s_metrics.render_fps = s_render_count;
         s_metrics.flushes_per_second = s_flush_count;
         s_metrics.pixels_per_second = s_pixel_count;
+        s_metrics.worst_render_us = s_worst_gap_us;
         s_render_count = 0;
         s_flush_count = 0;
         s_pixel_count = 0;
+        s_worst_gap_us = 0;
         s_metrics_start_us = now_us;
     }
 }
 
+/* Vendored from the Waveshare BSP's bsp_display_new(). Identical apart from
+ * pclk_hz and the queue depth; kept here so the clock is owned by this repo. */
+static const co5300_lcd_init_cmd_t k_lcd_init_cmds[] = {
+    {0xFE, (uint8_t[]){0x20}, 1, 0},
+    {0x19, (uint8_t[]){0x10}, 1, 0},
+    {0x1C, (uint8_t[]){0xA0}, 1, 0},
+
+    {0xFE, (uint8_t[]){0x00}, 1, 0},
+    {0xC4, (uint8_t[]){0x80}, 1, 0},
+    {0x3A, (uint8_t[]){0x55}, 1, 0},
+    {0x35, (uint8_t[]){0x00}, 1, 0},
+    {0x53, (uint8_t[]){0x20}, 1, 0},
+    {0x51, (uint8_t[]){0xFF}, 1, 0},
+    {0x63, (uint8_t[]){0xFF}, 1, 0},
+    {0x2A, (uint8_t[]){0x00, 0x06, 0x01, 0xD7}, 4, 0},
+    {0x2B, (uint8_t[]){0x00, 0x00, 0x01, 0xD1}, 4, 600},
+    {0x11, NULL, 0, 600},
+    {0x29, NULL, 0, 0},
+};
+
+static esp_err_t panel_new(void)
+{
+    const spi_bus_config_t buscfg = CO5300_PANEL_BUS_QSPI_CONFIG(
+        BSP_LCD_PCLK, BSP_LCD_DATA0, BSP_LCD_DATA1, BSP_LCD_DATA2, BSP_LCD_DATA3,
+        (int)BOOST_LVGL_STRIP_BYTES);
+    ESP_RETURN_ON_ERROR(spi_bus_initialize(BSP_LCD_SPI_NUM, &buscfg, SPI_DMA_CH_AUTO),
+                        TAG, "spi_bus_initialize failed");
+
+    esp_lcd_panel_io_spi_config_t io_config = CO5300_PANEL_IO_QSPI_CONFIG(BSP_LCD_CS, NULL, NULL);
+    io_config.pclk_hz = BOOST_LCD_PCLK_HZ;
+    io_config.trans_queue_depth = CONFIG_BSP_LCD_TRANS_QUEUE_DEPTH;
+
+    co5300_vendor_config_t vendor_config = {
+        .init_cmds = k_lcd_init_cmds,
+        .init_cmds_size = sizeof(k_lcd_init_cmds) / sizeof(k_lcd_init_cmds[0]),
+        .flags = { .use_qspi_interface = 1 },
+    };
+    ESP_RETURN_ON_ERROR(
+        esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)BSP_LCD_SPI_NUM, &io_config, &s_panel_io),
+        TAG, "esp_lcd_new_panel_io_spi failed");
+
+    const esp_lcd_panel_dev_config_t panel_config = {
+        .reset_gpio_num = BSP_LCD_RST,
+        .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
+        .bits_per_pixel = BSP_LCD_BITS_PER_PIXEL,
+        .vendor_config = &vendor_config,
+    };
+    ESP_RETURN_ON_ERROR(esp_lcd_new_panel_co5300(s_panel_io, &panel_config, &s_panel),
+                        TAG, "esp_lcd_new_panel_co5300 failed");
+
+    esp_lcd_panel_set_gap(s_panel, 0x06, 0);
+    esp_lcd_panel_reset(s_panel);
+    esp_lcd_panel_init(s_panel);
+    esp_lcd_panel_disp_on_off(s_panel, true);
+    ESP_LOGI(TAG, "panel up at %d MHz QSPI", BOOST_LCD_PCLK_HZ / 1000000);
+    return ESP_OK;
+}
+
+esp_err_t boost_display_set_brightness(int percent)
+{
+    ESP_RETURN_ON_FALSE(s_panel_io != NULL, ESP_ERR_INVALID_STATE, TAG, "panel io not ready");
+    ESP_RETURN_ON_FALSE(percent >= 0 && percent <= 100, ESP_ERR_INVALID_ARG, TAG,
+                        "brightness %d out of range", percent);
+    /* CO5300 write-display-brightness, QSPI framing: cmd in bits 8..15 with the
+     * 0x02 command prefix in bits 24..31, one data byte. */
+    const uint32_t lcd_cmd = (0x02u << 24) | (0x51u << 8);
+    const uint8_t param = (uint8_t)(percent * 255 / 100);
+    return esp_lcd_panel_io_tx_param(s_panel_io, lcd_cmd, &param, 1);
+}
+
 static lv_display_t *register_display(void)
 {
-    const bsp_display_config_t disp_cfg = {
-        .max_transfer_sz = (int)BOOST_LVGL_STRIP_BYTES,
-    };
-
-    ESP_RETURN_ON_FALSE(
-        bsp_display_new(&disp_cfg, &s_panel, &s_panel_io) == ESP_OK,
-        NULL, TAG, "bsp_display_new failed");
+    ESP_RETURN_ON_FALSE(panel_new() == ESP_OK, NULL, TAG, "panel_new failed");
 
     esp_lv_adapter_display_config_t adapter_disp = {
         .panel = s_panel,
@@ -106,6 +201,7 @@ static lv_display_t *register_display(void)
 
     s_metrics_start_us = esp_timer_get_time();
     lv_display_add_event_cb(disp, rounder_event_cb, LV_EVENT_INVALIDATE_AREA, NULL);
+    lv_display_add_event_cb(disp, display_metrics_event_cb, LV_EVENT_RENDER_START, NULL);
     lv_display_add_event_cb(disp, display_metrics_event_cb, LV_EVENT_RENDER_READY, NULL);
     lv_display_add_event_cb(disp, display_metrics_event_cb, LV_EVENT_FLUSH_START, NULL);
     ESP_LOGI(TAG, "LVGL %dx%d partial, %d lines, internal DMA buffers, strip=%u B",
@@ -169,7 +265,7 @@ lv_display_t *boost_display_start(void)
     }
 
     ESP_RETURN_ON_FALSE(
-        bsp_display_brightness_init() == ESP_OK,
+        boost_display_set_brightness(100) == ESP_OK,
         NULL, TAG, "brightness init failed");
 
     ESP_RETURN_ON_FALSE(

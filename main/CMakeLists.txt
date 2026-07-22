@@ -11,11 +11,23 @@ idf_component_register(
         "boost_media_store.c"
         "boost_network.c"
         "generated_web_assets.c"
+        "fonts/alvida_big.c"
+        "fonts/font_mono_16.c"
+        "fonts/font_mono_40.c"
+        "fonts/font_cond_14.c"
+        "fonts/font_cond_18.c"
+        "fonts/font_cond_22.c"
+        "fonts/font_cond_32.c"
+        "fonts/font_cond_96.c"
+        "fonts/font_wide_22.c"
+        "fonts/font_wide_32.c"
     INCLUDE_DIRS
         "."
     REQUIRES
         app_update
         esp_event
+        espressif__esp_lcd_co5300
+        esp_driver_spi
         esp_http_server
         esp_netif
         esp_partition

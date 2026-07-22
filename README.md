@@ -59,14 +59,14 @@ clean full-frame update.
 
 | Piece | Rule |
 |------|------|
-| Bring-up | Call `boost_display_start()` from `main/main.c` — **not** `bsp_display_start()` |
+| Bring-up | Call `boost_display_start()` from `main/main.c` — **not** `bsp_display_start()`. `panel_new()` also replaces `bsp_display_new()` so the QSPI clock is ours |
 | Implementation | `main/boost_display.c` / `main/boost_display.h` |
 | LVGL buffers | `use_psram = false` (internal DRAM, DMA-capable) |
 | Strip height | `BOOST_LVGL_BUF_LINES=20` → 18,640 B per buffer / 37,280 B double-buffer total; selected for responsive web mirroring |
 | SPI max transfer | Cap to one strip (`max_transfer_sz = strip bytes`) |
 | Queue depth | `CONFIG_BSP_LCD_TRANS_QUEUE_DEPTH=4` in `sdkconfig.defaults` |
 | Mutex | `boost_display_lock` / `boost_display_unlock` (thin wrappers over the LVGL adapter) |
-| Brightness | Still uses BSP `bsp_display_brightness_*` after panel init |
+| Brightness | `boost_display_set_brightness()` — **not** `bsp_display_brightness_*`, whose static panel handle is unset once we own the panel |
 
 **Do not:**
 
@@ -131,14 +131,42 @@ perceived mirror responsiveness as a web telemetry or canvas-rendering issue, no
 a display-strip throughput win. Do not raise the strip height without both
 physical-FPS and browser-mirroring measurements.
 
-### Active 60 MHz QSPI trial
+### QSPI clock: 80 MHz, owned by this repo
 
-The current flashed firmware overrides the CO5300 QSPI clock to **60 MHz** in
-the Waveshare BSP after its 40 MHz default is applied. This is an experimental,
-reversible timing change: reflash a build without that override to return to
-40 MHz. Retain it only while the physical AMOLED remains artifact-free. GIF
-playback is an exclusive, decoder/renderer-bound path; the live-gauge cadence
-guard does not apply while media is active.
+`BOOST_LCD_PCLK_HZ` in `main/boost_display.c` sets the CO5300 QSPI clock to
+**80 MHz**, against the driver's 40 MHz default.
+
+An earlier revision of this section claimed a "60 MHz trial" was active. It was
+not, and never had been: the clock lives in `CO5300_PANEL_IO_QSPI_CONFIG` inside
+a managed component, `bsp_display_new()` takes that default with no override
+hook, and any edit to `managed_components/` is silently reverted by a dependency
+refresh. Everything measured before this change was running at 40 MHz. **Do not
+reintroduce the clock there** — that is precisely how the repo came to document
+a setting that was not in effect.
+
+The bring-up is therefore vendored: `panel_new()` in `boost_display.c` is
+`bsp_display_new()` with `pclk_hz` under our control, plus a copy of the
+14-entry vendor init table. Consequence to know about: `bsp_display_brightness_*`
+writes through a file-static panel handle that only `bsp_display_new()` assigns,
+so it returns `ESP_ERR_INVALID_STATE` once we own the panel. Brightness is now
+`boost_display_set_brightness()`, the same single 0x51 command.
+
+Measured on hardware, worst render cycle:
+
+| | 40 MHz | 80 MHz |
+|---|---:|---:|
+| Big Digit (full-screen recolour) | 45.1 ms | **37.6 ms** |
+| Dyno Cell | 43.2 ms | 41.7 ms |
+| Night City | 36.8 ms | 37.3 ms |
+
+The gain lands **only on full-frame pushes**. Partial-update faces are bound by
+CPU rasterisation with dirty regions far too small for the link to matter, and
+move 0-3%. Treat this as a fix for one operation, not a general lever. Boot must
+log `panel up at 80 MHz QSPI` with no `co5300` errors; if the panel ever shows
+sparkle or torn rows, drop back to 40 MHz first.
+
+GIF playback is an exclusive, decoder/renderer-bound path; the live-gauge
+cadence guard does not apply while media is active.
 
 ## Fast path: flash prebuilt (no ESP-IDF)
 
@@ -398,32 +426,173 @@ Shared rules across styles:
 
 ### Where it lives
 
-- **Web mirror (done, verified host-only):** `web/app.js` dispatches `drawGauge()`
-  on `activeThemeStyle()` to `drawArcGauge` / `drawVaultGauge` / `drawHudGauge` /
-  `drawBigDigitGauge`. `tools/mock_server.py` serves the four themes (each with a
-  `style` field). Regenerate embedded assets after any web edit.
+- **Web mirror:** `web/app.js` dispatches `drawGauge()` on `activeThemeStyle()`
+  to `drawArcGauge` / `drawVaultGauge` / `drawHudGauge` / `drawBigDigitGauge`.
+  `tools/mock_server.py` serves the four themes (each with a `style` field).
+  Regenerate embedded assets after any web edit. `setTheme()` drives only the
+  gauge palette, so the dashboard chrome keeps one fixed identity.
+- **Simulator:** `sim/` builds the same `boost_gauge.c` on the host and renders
+  headless PNGs, including the generated fonts, so a face can be checked without
+  flashing. SDL2 is optional (only `--window` needs it); `--theme <id>` selects
+  the style. This is the fastest verification loop — use it before burning a
+  flash cycle.
 - **Font:** `main/fonts/alvidafatface-regular.otf` (OTF kept over the TTF — CFF
   master, ~4× smaller, converts cleanly with `lv_font_conv`). The dashboard loads
   it as an inlined base64 `@font-face` (`"Alvida Fatface"`) prepended to
   `web/styles.css`.
 
-### Firmware port — PENDING
+### Firmware architecture
 
-The physical panel and the on-device `/themes` API still render/serve the legacy
-single-arc behavior. To bring the four styles to hardware:
+`main/boost_gauge.c` is a **scene dispatcher**, not a single face:
 
-1. `main/boost_theme.c/.h`: replace the palette-only themes with the four above
-   and add a `style` field.
-2. `main/boost_web.c`: emit `style` in `append_theme_json`.
-3. `main/boost_gauge.c`: dispatch build/update/teardown per style, rebuilding the
-   scene on theme change without regressing the arc path's DMA/partial-refresh
-   invariants (see the gauge render contract above).
-4. Generate the Alvida LVGL font from the OTF (`lv_font_conv`, digits `.`-`9`
-   subset), wire it into CMake, and use it for the `bigdigit` numeral.
+- `build_scene(style)` / `destroy_scene()` construct and tear down a per-style
+  LVGL object tree. `boost_gauge_update()` dispatches to the matching
+  `update_*()`. `s_built_style` records what is currently on screen.
+- **Changing theme rebuilds the scene** rather than recolouring, because each
+  style is a different object tree. `PUT /themes/active` therefore has to call
+  `boost_gauge_apply_theme()` under the display lock — without it the picker
+  only took effect after a reboot.
+- The `arc` face keeps its original geometry and wedge-invalidation logic
+  verbatim; it is the path the 60 FPS cadence guard was established against.
 
-Requires **ESP-IDF 5.5.1** to build/flash; not yet installed on the dev PC used
-for the web work (only `esptool` is present, sufficient for flashing prebuilt
-images, not for building).
+**Zero reference.** `psi_to_angle()` maps the arc face. `psi_to_sweep(psi, a0, a1)`
+projects the same zero-referenced scaling into any other sweep, so Vault-Tec and
+Night City honour the configured `zeroAngle` and scale vacuum/boost
+independently, exactly like the arc.
+
+**Draw/invalidate must agree.** Every moving element draws from a *committed*
+value that is only advanced when the element is invalidated
+(`s_vault_needle_deg` / `s_vault_needle_over`, `s_hud_fill_deg` /
+`s_hud_fill_psi`). Drawing from the live sample while invalidating on a
+threshold leaves stale pixels — that was the source of the smearing artifacts.
+The needle also repaints on an overboost **colour** flip, not only on angle
+change.
+
+**Clip guard.** `clip_reaches_radius(layer, r)` reads `layer->_clip_area` (its
+documented use during draw-task creation) and lets a face skip its outer ring
+art when only the centre is dirty — the common per-frame case, since digit
+updates cannot touch a tick ring at r >= 194. The Vault needle is deliberately
+shorter than the tick ring so its dirty rect stays inside the guard.
+
+**Cost model (measured on hardware).** Repainting the full 466x466 face is
+~217k pixels; sustained throughput is ~0.9 Mpx/s, so a full-face repaint costs
+roughly a quarter second. Anything that recolours the whole panel (the
+`bigdigit` ground) is therefore inherently a hitch and must be quantized. This
+is also why translucent full-circle overlays were removed: five vignette rings
+re-blended ~107k px on every needle frame and dropped Vault from 60 to 37 FPS.
+
+**Cached static faces.** Vault-Tec and Night City each paint their entire static
+face **once** into a 434 KB PSRAM `lv_canvas` at scene build (`paint_vault_
+background`, `paint_hud_face(..., cached=true)`); every later redraw is a blit
+rather than re-rasterising vectors. This is the single biggest lever available,
+because the bottleneck is CPU rasterisation, not the panel link. Measured: Vault
+median 37 -> 61 FPS, min 4 -> 54, while *adding* the vignette and scanlines;
+Night City 32 -> 37. Elements that move (needle, fill arc, peak tell-tale,
+digits) stay as separate objects on top; only genuinely static art belongs in
+the cache. Free the buffer in `destroy_scene()`.
+
+Corollary: effects that would be prohibitive per-frame (vignettes, texture) are
+essentially free once baked. Prefer baking over per-frame drawing.
+
+**Caching does not help a flat fill.** Big Digit's ground is a solid colour, so
+there is no vector art to pre-compute — a fill is already the cheapest primitive
+LVGL has, and 24 cached full-screen grounds would want 10 MB besides. Its cost
+is the unavoidable 217k-pixel repaint when the colour steps. The fix is to
+*spread* that repaint, not to precompute it: `BIG_BANDS` full-width bands take
+the new colour on successive ticks, so one long stall becomes several short
+ones. This is a direct trade — the shorter the stall, the more the transition
+reads as a visible wipe:
+
+| `BIG_BANDS` | Worst cycle @40 MHz | Transition |
+|---:|---:|---|
+| **1** | 45.1 ms (**39 ms** at the current 80 MHz) | **selected** — one clean jump, no wipe |
+| 2 | 33.3 ms | a single horizontal split |
+| 4 | 25.8 ms | a clearly visible top-to-bottom sweep |
+
+Banding and the clock attack the same stall independently, so `BIG_BANDS = 1` at
+80 MHz lands near what 2 bands bought at 40, with no visible transition at all.
+
+Total work is conserved, so `renderFps` barely moves between these. A/B any
+change on `worstRenderUs`.
+
+**The QSPI clock helps here and nowhere else.** Raising it 40 -> 80 MHz took the
+unbanded recolour from 45.1 to 37.6 ms (-17%), because a full 434 KB frame is
+about half that operation. The same change moves the partial-update faces 0-3%:
+their dirty regions are far too small for the link to be the constraint. See
+"QSPI clock" above.
+
+**RGB565 has too few levels for a gradient over a dark colour.** Vault's face is
+`#02100a`, whose green sits at **level 4 of 63** in RGB565. Darkening it toward
+black therefore has only four values to land on, so a mathematically exact
+vignette still resolves to four flat rings on the panel. The web mirror looks
+smooth only because canvas is 8-bit (green 16 -> 6). The fix is **ordered
+dithering** — an 8x8 Bayer threshold added before truncation in
+`paint_vault_background`, trading spatial noise for tonal resolution. Because
+the pattern is baked into the cache it never shimmers, and at native panel gamma
+it reads as phosphor grain. Any future smooth ramp over a near-black colour
+needs the same treatment; check the source channel's 565 level before assuming
+a banding report means the gradient maths is wrong.
+
+**Match the web mirror's method, not just its numbers.** Vault's CRT treatment
+is a direct port of `drawVaultGauge`: the vignette is a smooth radial ramp from
+r=120 to r=233 reaching 60% black, and the scanlines are 1 px rows every 4th
+line at 16% black, both chord-clipped to the face. Two details matter. The
+vignette is applied as a **per-pixel pass over the canvas buffer** after the
+vector art is drawn — an approximation with nine concentric arcs banded visibly.
+The scanlines are **not** baked; they are drawn last (`draw_vault_crt`, the
+topmost child) so they cross the needle and digits as they do on the web. Their
+phase comes from absolute screen y, which is what stops neighbouring dirty
+regions from disagreeing and producing the tearing an earlier per-region
+version showed. Cost of the on-top pass: ~1 FPS.
+
+**Invalidate what changed, not the widget.** Night City's ghost pass repainted a
+fixed 310x100 box on every value change; bounding it to the slots that actually
+changed (usually the tenths alone) took the style from 37 to 42 FPS median and
+22 to 31 min. `HUD_GLITCH_DX` is shared between the draw and the invalidation so
+the dirty box can never be narrower than the pixels the ghosts touch.
+
+**`render_fps` is not a smoothness metric.** It counts `LV_EVENT_RENDER_READY`,
+i.e. render cycles actually performed, and LVGL only renders when something is
+invalidated. A face whose content changes less often legitimately reports a
+lower number while using *less* throughput. Compare `pixelsPerSecond` before
+concluding a face is too slow.
+
+**`worstRenderUs` is the choppiness metric.** It is the longest single
+`LV_EVENT_RENDER_START` -> `LV_EVENT_RENDER_READY` interval in the reporting
+window: the duration of a cycle, not the gap between cycles. Measuring the gap
+instead was the first cut of this metric and it was useless, because an idle
+screen produces long gaps and no stall at all.
+
+Measured medians / worst cycle at 80 MHz: `arc` 63 / 42 ms, `vault` 60 / 18 ms,
+`hud` 43 / 37 ms, `bigdigit` 31 / 39 ms. `arc` is now the worst-stalling face and is the
+next candidate for a cached ground.
+
+### Fonts
+
+`main/fonts/` holds generated LVGL fonts plus their sources in
+`main/fonts/src/`. All are OFL so they can ship in the image (the web mirror's
+Bahnschrift/Consolas are Microsoft fonts and cannot be embedded):
+
+| Font | Source | Use |
+|---|---|---|
+| `alvida_big` | Alvida Fatface (user supplied) | big-digit numeral |
+| `font_mono_16/40` | IBM Plex Mono SemiBold | readouts, telemetry |
+| `font_cond_14/18/22/32` | Saira Condensed SemiBold | labels |
+| `font_cond_96` | IBM Plex Sans Condensed BoldItalic | Night City readout |
+| `font_wide_22/32` | Saira SemiCondensed Bold | Big Digit labels |
+
+Regenerate with `lv_font_conv`, always passing `--lv-include lvgl.h` (the
+default `lvgl/lvgl.h` does not resolve against the managed component). Glyphs
+missing from a face can be merged from a second `--font`. **Do not** try to
+embed box-drawing/arrow codepoints through shell escapes — draw such marks as
+shapes instead; escaped UTF-8 has repeatedly been mangled a layer early.
+
+### Debug snapshot endpoint
+
+`GET /api/v1/debug/snapshot` re-renders the live screen into a PSRAM buffer and
+streams it as raw little-endian RGB565 (466x466). `tools/fetch_panel_snapshot.py`
+turns that into a PNG. This is how the physical face is verified without
+photographing the panel. Requires `CONFIG_LV_USE_SNAPSHOT=y`.
 
 ---
 

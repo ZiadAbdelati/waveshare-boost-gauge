@@ -540,12 +540,16 @@ function drawVaultGauge(sample, psi, g) {
     ctx.translate(mx, my);
     ctx.rotate((pa + 90) * DEG);
     ctx.fillStyle = warn;
+    /* Knocked back so the tell-tale does not compete with the overboost ticks;
+     * matches the panel's LV_OPA_60. */
+    ctx.globalAlpha = 0.6;
     ctx.beginPath();
     ctx.moveTo(0, 0);
     ctx.lineTo(-6, -13);
     ctx.lineTo(6, -13);
     ctx.closePath();
     ctx.fill();
+    ctx.globalAlpha = 1;
     ctx.restore();
   }
 
@@ -757,18 +761,16 @@ function drawHudGauge(sample, psi, g) {
   /* big italic value with a glitch shear on fast spikes */
   const { neg, intPart, fracPart } = splitNum(psi, 1);
   const intStr = `${neg ? "−" : ""}${intPart}`;
-  const glitch = Math.abs(psi - hudPrevPsi) > 0.12;
   hudPrevPsi = psi;
   ctx.font = `700 italic 88px "Bahnschrift", "DIN Alternate", system-ui, sans-serif`;
-  if (glitch) {
-    const off = (Math.random() - 0.5) * 10;
-    ctx.globalAlpha = 0.8;
-    ctx.fillStyle = R;
-    drawFixedDecimal(intStr, fracPart, numDecimalX + off - 3, 2);
-    ctx.fillStyle = C;
-    drawFixedDecimal(intStr, fracPart, numDecimalX - off + 3, 2);
-    ctx.globalAlpha = 1;
-  }
+  /* Permanent chromatic split rather than a spike-triggered flash: the
+   * conditional version left stranded ghosts on the physical panel. */
+  ctx.globalAlpha = 0.4;
+  ctx.fillStyle = R;
+  drawFixedDecimal(intStr, fracPart, numDecimalX - 3, 2);
+  ctx.fillStyle = C;
+  drawFixedDecimal(intStr, fracPart, numDecimalX + 3, 2);
+  ctx.globalAlpha = 1;
   ctx.fillStyle = over ? R : Y;
   drawFixedDecimal(intStr, fracPart, numDecimalX, 2);
   ctx.fillStyle = p.muted;
@@ -796,9 +798,12 @@ function drawHudGauge(sample, psi, g) {
 function bigDigitBackground(psi, range) {
   const p = state.palette;
   if (psi <= 0) return p.vacuum;
-  if (psi <= range.psiOverboost) return lerpColor(p.vacuum, p.boost, psi / range.psiOverboost);
-  const span = Math.max(0.001, range.psiMax - range.psiOverboost);
-  return lerpColor(p.boost, p.overboost, (psi - range.psiOverboost) / span);
+  /* Start the red ramp before the overboost threshold: squeezing it into
+   * overboost..max made the transition snap rather than sweep. */
+  const redStart = range.psiOverboost * 0.55;
+  if (psi <= redStart) return lerpColor(p.vacuum, p.boost, psi / Math.max(0.001, redStart));
+  const span = Math.max(0.001, range.psiMax - redStart);
+  return lerpColor(p.boost, p.overboost, (psi - redStart) / span);
 }
 
 function drawBigDigitGauge(sample, psi, g) {
@@ -827,11 +832,11 @@ function drawBigDigitGauge(sample, psi, g) {
   ctx.fillText(zone, 0, -150);
   ctx.globalAlpha = 1;
 
-  /* The number — TABULAR fixed slots. The decimal glyph is pinned at x = 0; the
-   * ones and tenths digits sit in constant-width cells on either side (each
-   * digit centered in its cell, so varying glyph widths never move anything);
-   * higher integer digits and the sign grow leftward like an odometer. Nothing
-   * already on screen ever shifts. */
+  /* The number — TABULAR fixed slots. The face center (x = 0) sits halfway
+   * between the ones digit and the decimal point; the decimal and tenths sit in
+   * constant-width cells to the right, higher integer digits and the sign grow
+   * leftward like an odometer. Each digit is centered in its cell, so varying
+   * glyph widths never move anything already on screen. */
   const refFs = 100;
   ctx.font = `400 ${refFs}px "Alvida Fatface", Georgia, "Times New Roman", serif`;
   let slot100 = 0;
@@ -840,19 +845,20 @@ function drawBigDigitGauge(sample, psi, g) {
   const barW100 = refFs * 0.32;
   const gap100 = refFs * 0.08;
   const maxInt = String(Math.floor(Math.max(Math.abs(range.psiMin), Math.abs(range.psiMax), 1))).length;
-  /* Left half is the binding constraint (integer digits + sign). Size so the
-   * widest reading stays inside the round face. */
-  const leftExtent100 = dot100 / 2 + maxInt * slot100 + (range.psiMin < 0 ? gap100 + barW100 : 0);
-  const rightExtent100 = dot100 / 2 + slot100;
-  const fs = clamp((214 / Math.max(leftExtent100, rightExtent100)) * refFs, 96, 176);
+  /* Extents from the centered ones digit: integers + sign grow left, the
+   * decimal + tenths sit right. Size so the widest reading stays in the face. */
+  const leftExtent100 = (slot100 + dot100) / 4 + (maxInt - 0.5) * slot100 + (range.psiMin < 0 ? gap100 + barW100 : 0);
+  const rightExtent100 = (3 * (slot100 + dot100)) / 4 + slot100 / 2;
+  const fs = clamp((204 / Math.max(leftExtent100, rightExtent100)) * refFs, 96, 172);
 
   ctx.font = `400 ${fs}px "Alvida Fatface", Georgia, "Times New Roman", serif`;
   let slotW = 0;
   for (let d = 0; d < 10; d++) slotW = Math.max(slotW, ctx.measureText(String(d)).width);
   const dotW = ctx.measureText(".").width;
   const numY = -8;
-  const onesCenter = -(dotW / 2 + slotW / 2);
-  const tenthsCenter = dotW / 2 + slotW / 2;
+  const onesCenter = -(slotW + dotW) / 4;
+  const decimalX = (slotW + dotW) / 4;
+  const tenthsCenter = (3 * (slotW + dotW)) / 4;
 
   const absTenths = Math.round(Math.abs(psi) * 10);
   const whole = Math.floor(absTenths / 10);
@@ -865,7 +871,7 @@ function drawBigDigitGauge(sample, psi, g) {
   ctx.shadowOffsetY = 6;
   ctx.fillStyle = "#ffffff";
   ctx.textAlign = "center";
-  ctx.fillText(".", 0, numY);
+  ctx.fillText(".", decimalX, numY);
   ctx.fillText(String(tenth), tenthsCenter, numY);
   for (let i = 0; i < intStr.length; i++) {
     ctx.fillText(intStr[intStr.length - 1 - i], onesCenter - i * slotW, numY);
@@ -873,26 +879,21 @@ function drawBigDigitGauge(sample, psi, g) {
   if (isNeg) {
     /* Fat, gently convex dash left of the leftmost integer cell. */
     const leftmostCenter = onesCenter - (intStr.length - 1) * slotW;
-    const barW = fs * 0.32;
+    const barW = fs * 0.46;
     const barH = fs * 0.135;
     const bcx = leftmostCenter - slotW / 2 - fs * 0.08 - barW / 2;
     const bcy = numY - fs * 0.15;
-    const rr = barH * 0.3;
-    const bulge = barH * 0.2;
     const x0 = bcx - barW / 2;
     const x1 = bcx + barW / 2;
     const y0 = bcy - barH / 2;
     const y1 = bcy + barH / 2;
+    /* Slanted rectangle: both edges lean the same way. */
+    const slant = barH * 0.62;
     ctx.beginPath();
-    ctx.moveTo(x0 + rr, y0);
-    ctx.quadraticCurveTo(bcx, y0 - bulge, x1 - rr, y0);
-    ctx.arcTo(x1, y0, x1, y0 + rr, rr);
-    ctx.lineTo(x1, y1 - rr);
-    ctx.arcTo(x1, y1, x1 - rr, y1, rr);
-    ctx.quadraticCurveTo(bcx, y1 + bulge, x0 + rr, y1);
-    ctx.arcTo(x0, y1, x0, y1 - rr, rr);
-    ctx.lineTo(x0, y0 + rr);
-    ctx.arcTo(x0, y0, x0 + rr, y0, rr);
+    ctx.moveTo(x0 + slant, y0);
+    ctx.lineTo(x1, y0);
+    ctx.lineTo(x1 - slant, y1);
+    ctx.lineTo(x0, y1);
     ctx.closePath();
     ctx.fill();
   }
