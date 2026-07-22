@@ -78,6 +78,21 @@ bool boost_theme_is_customized(const char *id);
 bool boost_theme_bigdigit_static_bg(void);
 void boost_theme_set_bigdigit_static_bg(bool enabled);
 
+/*
+ * AMOLED burn-in countermeasure. The gauge shows one static-heavy face for
+ * hours at a time at 85-92% brightness, so the tick rings, titles and readout
+ * outlines sit on the same emitters long enough to age them differentially.
+ * With this on, the whole scene is nudged by a pixel or two every so often so
+ * those edges are smeared across several columns and rows instead.
+ *
+ * Defaults ON: the cost is one full-screen repaint every couple of minutes,
+ * taken only when the reading is steady, and the damage it prevents is
+ * permanent. Off is for anyone who would rather have the last few pixels of
+ * alignment stability, or who is bench-testing frame timing.
+ */
+bool boost_theme_pixel_shift(void);
+void boost_theme_set_pixel_shift(bool enabled);
+
 #ifdef __cplusplus
 }
 #endif

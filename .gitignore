@@ -26,3 +26,6 @@ preview/text-gif-repair/
 # debug snapshot endpoint; the committed reference set is preview/sim/).
 preview/panel/
 preview/sim_*/
+
+# Per-agent build trees
+build*/

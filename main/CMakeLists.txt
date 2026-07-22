@@ -11,6 +11,11 @@ idf_component_register(
         "boost_media_store.c"
         "boost_network.c"
         "generated_web_assets.c"
+        # Vendored GIF playback layer. The upstream copies under
+        # managed_components/lvgl__lvgl/src/libs/gif/ are excluded from the
+        # build in the top-level CMakeLists.txt; see main/gif/boost_gif.c.
+        "gif/boost_gif.c"
+        "gif/boost_gif_dec.c"
         "fonts/alvida_big.c"
         "fonts/font_mono_16.c"
         "fonts/font_mono_40.c"

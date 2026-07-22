@@ -2,13 +2,19 @@
 
 #include <string.h>
 
+/* Built for the desktop simulator too, which has no NVS. Settings there live
+ * for the lifetime of the process; everything else in this file is identical,
+ * so the sim exercises the same defaults and the same accessors. */
+#ifdef ESP_PLATFORM
 #include "esp_err.h"
 #include "nvs.h"
 #include "nvs_flash.h"
+#endif
 
 #define NVS_NS          "boost"
 #define NVS_KEY_COLORS  "theme_colors"
 #define NVS_KEY_BIGFLAT "bigdigit_flat"
+#define NVS_KEY_PXSHIFT "pixel_shift"
 
 /* Palettes/styles here MUST match tools/mock_server.py and the web renderers so
  * the physical panel and the dashboard mirror agree. */
@@ -81,6 +87,9 @@ static const boost_theme_t s_defaults[] = {
 static boost_theme_t s_themes[THEME_COUNT];
 static bool s_loaded;
 static bool s_bigdigit_static_bg;
+/* Burn-in protection is on unless it was explicitly switched off, so a panel
+ * that never sees the settings page is still protected. */
+static bool s_pixel_shift = true;
 
 /* Persisted as one blob keyed by id rather than per-theme NVS keys: ids run to
  * 24 chars and NVS keys cap at 15, and a single blob keeps the whole set
@@ -103,6 +112,7 @@ static void ensure_loaded(void)
 
 static void persist(void)
 {
+#ifdef ESP_PLATFORM
     theme_override_t saved[THEME_COUNT];
     for (size_t i = 0; i < THEME_COUNT; ++i) {
         memcpy(saved[i].id, s_themes[i].id, sizeof(saved[i].id));
@@ -116,14 +126,17 @@ static void persist(void)
     }
     nvs_set_blob(h, NVS_KEY_COLORS, saved, sizeof(saved));
     nvs_set_u8(h, NVS_KEY_BIGFLAT, s_bigdigit_static_bg ? 1 : 0);
+    nvs_set_u8(h, NVS_KEY_PXSHIFT, s_pixel_shift ? 1 : 0);
     nvs_commit(h);
     nvs_close(h);
+#endif
 }
 
 void boost_theme_init(void)
 {
     ensure_loaded();
 
+#ifdef ESP_PLATFORM
     /* Mount NVS here rather than relying on being called after
      * boost_model_init(). Getting that order wrong is silent: nvs_open() just
      * fails, the read is skipped, and overrides appear to save correctly right
@@ -146,6 +159,13 @@ void boost_theme_init(void)
     uint8_t flat = 0;
     if (nvs_get_u8(h, NVS_KEY_BIGFLAT, &flat) == ESP_OK) {
         s_bigdigit_static_bg = (flat != 0);
+    }
+
+    /* Absent key keeps the default (on): an existing panel that predates this
+     * setting gets burn-in protection on its next boot without being asked. */
+    uint8_t px = 0;
+    if (nvs_get_u8(h, NVS_KEY_PXSHIFT, &px) == ESP_OK) {
+        s_pixel_shift = (px != 0);
     }
 
     size_t len = 0;
@@ -171,6 +191,7 @@ void boost_theme_init(void)
         }
     }
     nvs_close(h);
+#endif /* ESP_PLATFORM */
 }
 
 static boost_theme_t *find_mutable(const char *id)
@@ -243,6 +264,18 @@ void boost_theme_set_bigdigit_static_bg(bool enabled)
 {
     ensure_loaded();
     s_bigdigit_static_bg = enabled;
+    persist();
+}
+
+bool boost_theme_pixel_shift(void)
+{
+    return s_pixel_shift;
+}
+
+void boost_theme_set_pixel_shift(bool enabled)
+{
+    ensure_loaded();
+    s_pixel_shift = enabled;
     persist();
 }
 

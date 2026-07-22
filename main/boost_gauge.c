@@ -81,6 +81,52 @@
 #define HOLD_DIM_MS   2000
 #define WELL_SIZE     DISP_SIZE
 
+/*
+ * AMOLED burn-in countermeasure.
+ * -----------------------------
+ * One face is shown for hours at a time at 85-92% brightness with high-contrast
+ * art pinned to fixed pixels — tick rings, "VAULT-TEC", reticle brackets, the
+ * readout outline. Blue emitters age fastest, then green, then red, so those
+ * shapes are exactly what would ghost. The whole scene therefore hangs off a
+ * single container (`s_root`) that is nudged a pixel or two every so often,
+ * which spreads each static edge over four columns and four rows.
+ *
+ * Range is [-2, +1], not a symmetric +/-3. The outermost art is drawn at an
+ * OUTER radius of 231 about (233,233) on a 466 px panel (lv_draw_arc takes
+ * `radius` as the outer edge), so it already reaches column 464 and row 464:
+ * exactly one free pixel to the right/bottom and two to the left/top. A wider
+ * excursion clips the vault bezel ring and the dyno-cell value arc against the
+ * glass, which is far more visible than the aging it would have prevented.
+ * Verified extents at full deflection: value arc 0..465, vault bezel 0..465,
+ * vault ticks 7..458, hud ring 37..440. Nothing leaves the panel.
+ *
+ * The offsets walk a ring rather than a raster so consecutive steps are never
+ * more than ~1.4 px apart, and so the sequence never dwells near one place.
+ * Every dy in {-2,-1,0,1} appears, which is also every phase of the vault's
+ * 4-row scanline overlay — without that the three rows between scanlines would
+ * carry full duty forever and burn in as stripes.
+ */
+#define PXSHIFT_MIN         (-2)
+#define PXSHIFT_MAX         (1)
+static const int8_t k_pxshift[][2] = {
+    {  0,  0 }, {  1, -1 }, {  1, -2 }, {  0, -2 },
+    { -1, -2 }, { -2, -1 }, { -2,  0 }, { -1,  1 },
+};
+#define PXSHIFT_STEPS (sizeof(k_pxshift) / sizeof(k_pxshift[0]))
+
+/* 90 s a step, so the eight-step ring closes in 12 minutes. Minutes, not
+ * seconds: a step is a full-screen repaint, and one of those per minute is a
+ * rounding error against the frame budget while still being far faster than
+ * emitter aging. */
+#define PXSHIFT_PERIOD_MS   90000u
+/* A step dirties all 217k pixels — about 45 ms, three dropped frames. Held
+ * back until the reading has been steady for a moment so the hitch lands where
+ * nothing is moving; mid-sweep it would read as a stutter in the needle. */
+#define PXSHIFT_SETTLE_MS   1500u
+#define PXSHIFT_SETTLE_PSI  0.25f
+/* ...but a signal that never settles must not starve the shift forever. */
+#define PXSHIFT_DEADLINE_MS (PXSHIFT_PERIOD_MS * 4u)
+
 /* LVGL angles: 0 = east, clockwise (y down). Top of the face is 270. */
 #define VAULT_A0   152.0f   /* 270 - 118 */
 #define VAULT_A1   388.0f   /* 270 + 118 */
@@ -144,6 +190,18 @@ static const char *TAG = "boost_gauge";
 /* ---- shared scene state -------------------------------------------------- */
 static lv_obj_t *s_well;
 static boost_gauge_style_t s_built_style = BOOST_STYLE_ARC;
+
+/* Every scene object is a child of this; moving it moves the whole face. It is
+ * styleless and exactly screen-sized, so it costs one bounds test per redraw
+ * and paints nothing. Offsets survive a theme rebuild deliberately: restarting
+ * the ring on every theme change would park the new face back at (0,0). */
+static lv_obj_t *s_root;
+static int32_t s_px_dx;
+static int32_t s_px_dy;
+static uint8_t s_px_step;
+static uint32_t s_px_step_ms;
+static uint32_t s_px_settled_ms;
+static float s_px_ref_psi;
 
 /* ---- arc style ----------------------------------------------------------- */
 static lv_obj_t *s_arc_track;
@@ -299,6 +357,32 @@ static float clampf(float v, float lo, float hi)
     if (v < lo) return lo;
     if (v > hi) return hi;
     return v;
+}
+
+/*
+ * Face centre in SCREEN coordinates, including the burn-in offset.
+ *
+ * Draw callbacks get a layer in absolute screen space, so a callback that
+ * hardcodes DISP_SIZE/2 keeps painting at the unshifted centre while the object
+ * it belongs to has moved — the moving parts detach from the static art. Every
+ * such site, and every invalidation that pairs with one, must come through
+ * these. Objects placed with lv_obj_align()/lv_obj_set_pos() are parent-
+ * relative and must NOT add the offset again.
+ *
+ * At zero offset these are bit-identical to the constants they replaced, so the
+ * default render is unchanged.
+ */
+static inline float px_cx(void) { return DISP_SIZE * 0.5f + (float)s_px_dx; }
+static inline float px_cy(void) { return DISP_SIZE * 0.5f + (float)s_px_dy; }
+static inline int32_t px_icx(void) { return DISP_SIZE / 2 + s_px_dx; }
+static inline int32_t px_icy(void) { return DISP_SIZE / 2 + s_px_dy; }
+
+static uint32_t scale_rgb(uint32_t rgb, float k)
+{
+    const uint32_t r = (uint32_t)lroundf((float)((rgb >> 16) & 0xFFu) * k);
+    const uint32_t g = (uint32_t)lroundf((float)((rgb >> 8) & 0xFFu) * k);
+    const uint32_t b = (uint32_t)lroundf((float)(rgb & 0xFFu) * k);
+    return (r << 16) | (g << 8) | b;
 }
 
 static const boost_theme_t *active_theme(void)
@@ -466,8 +550,17 @@ static bool load_media_gif_locked(void)
     uint16_t height = 0;
     if (boost_media_store_map(&data, &size, &width, &height) != ESP_OK) return false;
     set_gauge_hidden(true);
+    /* The ~24.5 KB lv_gif_t embeds the AnimatedGIF LZW tables, the decoder's
+     * hottest memory; the 434 KB framebuffer must stay in PSRAM. A 64 KB
+     * threshold splits them. This is a GLOBAL allocator switch, so any
+     * concurrent Wi-Fi/HTTP allocation under 64 KB also lands internal for the
+     * duration - keep the window as short as possible. */
+    ESP_LOGI(TAG, "gif alloc: internal free %u B",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    heap_caps_malloc_extmem_enable(64 * 1024);
     s_media_gif = lv_gif_create(lv_screen_active());
     if (s_media_gif == NULL) {
+        heap_caps_malloc_extmem_enable(0);
         boost_media_store_unmap();
         set_gauge_hidden(false);
         return false;
@@ -480,10 +573,19 @@ static bool load_media_gif_locked(void)
     s_media_dsc.data = data;
     lv_obj_set_size(s_media_gif, DISP_SIZE, DISP_SIZE);
     lv_obj_set_style_bg_color(s_media_gif, c(COLOR_VOID), 0);
-    lv_obj_set_style_bg_opa(s_media_gif, LV_OPA_COVER, 0);
+    /* A native 466x466 clip covers the object completely, so a COVER fill is
+     * 434 KB of wasted internal-SRAM writes per frame. Safe only because the
+     * GIF framebuffer is zero-initialised again (main/gif/boost_gif.c). */
+    lv_obj_set_style_bg_opa(s_media_gif,
+                            (width == DISP_SIZE && height == DISP_SIZE) ? LV_OPA_TRANSP
+                                                                        : LV_OPA_COVER,
+                            0);
     lv_gif_set_color_format(s_media_gif, LV_COLOR_FORMAT_RGB565);
     lv_image_set_inner_align(s_media_gif, LV_IMAGE_ALIGN_CENTER);
     lv_gif_set_src(s_media_gif, &s_media_dsc);
+    heap_caps_malloc_extmem_enable(0);
+    ESP_LOGI(TAG, "gif alloc done: internal free %u B",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     if (!lv_gif_is_loaded(s_media_gif)) {
         lv_obj_delete(s_media_gif);
         s_media_gif = NULL;
@@ -527,8 +629,8 @@ static void draw_value_arc(lv_event_t *event)
     dsc.width = ARC_WIDTH;
     dsc.start_angle = start;
     dsc.end_angle = end;
-    dsc.center.x = DISP_SIZE / 2;
-    dsc.center.y = DISP_SIZE / 2;
+    dsc.center.x = px_icx();
+    dsc.center.y = px_icy();
     dsc.radius = ARC_DIAMETER / 2;
     dsc.opa = LV_OPA_COVER;
     dsc.rounded = true;
@@ -541,7 +643,7 @@ static void invalidate_value_arc(float start, float end)
         const float boundary = (floorf(segment_start / 90.0f) + 1.0f) * 90.0f;
         const float segment_end = fminf(end, boundary);
         lv_area_t area;
-        lv_draw_arc_get_area(DISP_SIZE / 2, DISP_SIZE / 2, ARC_DIAMETER / 2,
+        lv_draw_arc_get_area(px_icx(), px_icy(), ARC_DIAMETER / 2,
                              segment_start, segment_end, ARC_WIDTH, true, &area);
         lv_obj_invalidate_area(s_arc_value_canvas, &area);
         segment_start = segment_end;
@@ -570,12 +672,16 @@ static void place_tick_label(int idx, float psi, const char *text)
     const boost_theme_t *theme = active_theme();
     const float deg = psi_to_angle(psi);
     const float rad = deg * (float)M_PI / 180.0f;
+    /* Plain centre, no burn-in offset: lv_obj_set_pos() below is relative to
+     * the parent, and the parent is the container that carries the offset. */
     const float cx = DISP_SIZE * 0.5f;
     const float cy = DISP_SIZE * 0.5f;
 
     lv_obj_t *lab = s_tick_labels[idx];
     if (lab == NULL) {
-        lab = lv_label_create(lv_screen_active());
+        /* s_root, not the screen: a tick label parented straight to the screen
+         * would be the one piece of the arc face that ignores the shift. */
+        lab = lv_label_create(s_root);
         s_tick_labels[idx] = lab;
         lv_obj_set_style_text_font(lab, TICK_FONT, 0);
         lv_obj_clear_flag(lab, LV_OBJ_FLAG_CLICKABLE);
@@ -599,6 +705,8 @@ static void refresh_zero_notch(void)
     static lv_point_precise_t zero_pts[2];
     const float deg = psi_to_angle(0.0f);
     const float rad = deg * (float)M_PI / 180.0f;
+    /* Line points are relative to the object, which sits at the parent origin,
+     * so this is parent space and must not carry the burn-in offset. */
     const float cx = DISP_SIZE * 0.5f;
     const float cy = DISP_SIZE * 0.5f;
     const float r_outer = (float)ARC_DIAMETER * 0.5f - 1.0f;
@@ -755,11 +863,9 @@ static void update_arc(const boost_sample_t *sample, const boost_theme_t *theme)
 /* True when the dirty region can reach `r` from the face centre. A digit
  * update dirties a rect near the middle, which cannot touch the tick ring, so
  * the static ring art can skip entirely instead of re-stroking every frame. */
-static bool clip_reaches_radius(lv_layer_t *layer, float r)
+static bool clip_reaches_radius(lv_layer_t *layer, float cx, float cy, float r)
 {
     const lv_area_t *ca = &layer->_clip_area;
-    const float cx = DISP_SIZE * 0.5f;
-    const float cy = DISP_SIZE * 0.5f;
     const float dx = fmaxf(fabsf((float)ca->x1 - cx), fabsf((float)ca->x2 - cx));
     const float dy = fmaxf(fabsf((float)ca->y1 - cy), fabsf((float)ca->y2 - cy));
     return (dx * dx + dy * dy) >= (r * r);
@@ -896,8 +1002,8 @@ static void draw_vault_crt(lv_event_t *e)
 {
     lv_layer_t *layer = lv_event_get_layer(e);
     const lv_area_t *clip = &layer->_clip_area;
-    const float cx = (float)(DISP_SIZE - 1) * 0.5f;
-    const float cy = (float)(DISP_SIZE - 1) * 0.5f;
+    const float cx = (float)(DISP_SIZE - 1) * 0.5f + (float)s_px_dx;
+    const float cy = (float)(DISP_SIZE - 1) * 0.5f + (float)s_px_dy;
 
     lv_draw_rect_dsc_t sl;
     lv_draw_rect_dsc_init(&sl);
@@ -906,7 +1012,13 @@ static void draw_vault_crt(lv_event_t *e)
 
     int32_t y0 = clip->y1 < 0 ? 0 : clip->y1;
     int32_t y1 = clip->y2 > DISP_SIZE - 1 ? DISP_SIZE - 1 : clip->y2;
-    y0 += (VAULT_SCAN_STEP - (y0 % VAULT_SCAN_STEP)) % VAULT_SCAN_STEP;
+    /* Phase follows the burn-in offset so the scanlines travel with the face
+     * rather than staying pinned to absolute rows — otherwise the three rows
+     * between scanlines would carry full duty forever. It is still a single
+     * global phase, so neighbouring dirty regions cannot disagree and reproduce
+     * the banding this had when the phase was per-region. */
+    const int32_t phase = ((s_px_dy % VAULT_SCAN_STEP) + VAULT_SCAN_STEP) % VAULT_SCAN_STEP;
+    y0 += (((phase - y0) % VAULT_SCAN_STEP) + VAULT_SCAN_STEP) % VAULT_SCAN_STEP;
 
     for (int32_t y = y0; y <= y1; y += VAULT_SCAN_STEP) {
         const float dy = (float)y - cy;
@@ -957,8 +1069,8 @@ static void draw_vault_needle(lv_event_t *e)
 {
     const boost_theme_t *theme = active_theme();
     lv_layer_t *layer = lv_event_get_layer(e);
-    const float cx = DISP_SIZE * 0.5f;
-    const float cy = DISP_SIZE * 0.5f;
+    const float cx = px_cx();
+    const float cy = px_cy();
     const float rad = s_vault_needle_deg * (float)M_PI / 180.0f;
 
     const lv_color_t needle_col =
@@ -1005,10 +1117,10 @@ static void draw_vault_needle(lv_event_t *e)
     hub.border_width = 3;
     hub.border_opa = LV_OPA_COVER;
     lv_area_t hub_area = {
-        .x1 = DISP_SIZE / 2 - VAULT_HUB_R,
-        .y1 = DISP_SIZE / 2 - VAULT_HUB_R,
-        .x2 = DISP_SIZE / 2 + VAULT_HUB_R,
-        .y2 = DISP_SIZE / 2 + VAULT_HUB_R,
+        .x1 = px_icx() - VAULT_HUB_R,
+        .y1 = px_icy() - VAULT_HUB_R,
+        .x2 = px_icx() + VAULT_HUB_R,
+        .y2 = px_icy() + VAULT_HUB_R,
     };
     lv_draw_rect(layer, &hub, &hub_area);
 }
@@ -1016,8 +1128,8 @@ static void draw_vault_needle(lv_event_t *e)
 static void invalidate_vault_needle(float old_deg, float new_deg)
 {
     if (s_vault_needle == NULL) return;
-    const float cx = DISP_SIZE * 0.5f;
-    const float cy = DISP_SIZE * 0.5f;
+    const float cx = px_cx();
+    const float cy = px_cy();
     float minx = cx, maxx = cx, miny = cy, maxy = cy;
     const float degs[2] = { old_deg, new_deg };
     for (int i = 0; i < 2; ++i) {
@@ -1045,8 +1157,8 @@ static void draw_vault_alert_marks(lv_event_t *e)
 {
     const boost_theme_t *theme = active_theme();
     lv_layer_t *layer = lv_event_get_layer(e);
-    const float cx = DISP_SIZE * 0.5f;
-    const float cy = DISP_SIZE * 0.5f + 72.0f;
+    const float cx = px_cx();
+    const float cy = px_cy() + 72.0f;
     lv_draw_triangle_dsc_t t;
     lv_draw_triangle_dsc_init(&t);
     t.color = c(theme->overboost);
@@ -1076,6 +1188,16 @@ static void build_vault(lv_obj_t *scr)
         lv_obj_center(s_vault_bg);
         lv_obj_clear_flag(s_vault_bg, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
         paint_vault_background(s_vault_bg, theme);
+        /* The cached face is exactly screen-sized, so the burn-in shift slides
+         * a margin of up to two pixels off one edge and exposes the screen's
+         * own background at the other. By the time the face reaches its rim the
+         * vignette has taken it down to (1 - VAULT_VIGN_MAX) of the face
+         * colour, so match THAT, not the raw face — otherwise the margin reads
+         * as a bright hairline tracing one side of the glass. The other three
+         * styles need no such trick: hud's cached face and bigdigit's ground
+         * are flat fills that already equal the screen background. */
+        lv_obj_set_style_bg_color(lv_screen_active(),
+                                  c(scale_rgb(theme->face, 1.0f - VAULT_VIGN_MAX)), 0);
     } else {
         ESP_LOGW(TAG, "vault background cache alloc failed (%u B)", (unsigned)bg_bytes);
     }
@@ -1275,11 +1397,18 @@ static void update_vault(const boost_sample_t *sample, const boost_theme_t *them
 
 /* Static face art. `cached` is set when painting into the background canvas at
  * build time: the clip early-out is meaningless there and everything must be
- * drawn once, in full. */
-static void paint_hud_face(lv_layer_t *layer, const boost_theme_t *theme, bool cached)
+ * drawn once, in full.
+ *
+ * The centre is a parameter because the two callers work in different spaces.
+ * Cached, it is the canvas's own centre and carries no burn-in offset — the
+ * canvas is a bitmap that gets MOVED, and re-rasterising it on every shift
+ * would throw away the whole point of caching it. Live, it is the shifted
+ * screen centre. */
+static void paint_hud_face(lv_layer_t *layer, const boost_theme_t *theme, bool cached,
+                           float cx, float cy)
 {
-    const float cx = DISP_SIZE * 0.5f;
-    const float cy = DISP_SIZE * 0.5f;
+    const int32_t icx = (int32_t)lroundf(cx);
+    const int32_t icy = (int32_t)lroundf(cy);
     lv_draw_line_dsc_t ln;
 
     /* hazard chevrons */
@@ -1353,7 +1482,7 @@ static void paint_hud_face(lv_layer_t *layer, const boost_theme_t *theme, bool c
 
     /* Outer ring art (ticks, track, notch) lives at r >= 196. A digit update
      * dirties only the centre, so skip all of it in that common case. */
-    if (!cached && !clip_reaches_radius(layer, 190.0f)) return;
+    if (!cached && !clip_reaches_radius(layer, cx, cy, 190.0f)) return;
 
     for (int i = 0; i <= 20; ++i) {
         const float v = s_psi_min + (s_psi_max - s_psi_min) * (float)i / 20.0f;
@@ -1375,8 +1504,8 @@ static void paint_hud_face(lv_layer_t *layer, const boost_theme_t *theme, bool c
     arc.width = 10;
     arc.start_angle = HUD_A0;
     arc.end_angle = HUD_A1;
-    arc.center.x = DISP_SIZE / 2;
-    arc.center.y = DISP_SIZE / 2;
+    arc.center.x = icx;
+    arc.center.y = icy;
     arc.radius = 206;
     arc.opa = LV_OPA_COVER;
     lv_draw_arc(layer, &arc);
@@ -1397,7 +1526,7 @@ static void paint_hud_face(lv_layer_t *layer, const boost_theme_t *theme, bool c
 
 static void draw_hud_face(lv_event_t *e)
 {
-    paint_hud_face(lv_event_get_layer(e), active_theme(), false);
+    paint_hud_face(lv_event_get_layer(e), active_theme(), false, px_cx(), px_cy());
 }
 
 /* Tech-noir glitch: on a fast spike, ghost the value in red/cyan either side of
@@ -1409,10 +1538,10 @@ static void draw_hud_glitch(lv_event_t *e)
     lv_layer_t *layer = lv_event_get_layer(e);
 
     lv_area_t area;
-    area.x1 = DISP_SIZE / 2 - 156;
-    area.x2 = DISP_SIZE / 2 + 105;
-    area.y1 = DISP_SIZE / 2 + HUD_VALUE_Y - 39;
-    area.y2 = DISP_SIZE / 2 + HUD_VALUE_Y + 39;
+    area.x1 = px_icx() - 156;
+    area.x2 = px_icx() + 105;
+    area.y1 = px_icy() + HUD_VALUE_Y - 39;
+    area.y2 = px_icy() + HUD_VALUE_Y + 39;
 
     lv_draw_label_dsc_t d;
     lv_draw_label_dsc_init(&d);
@@ -1453,8 +1582,8 @@ static void draw_hud_fill(lv_event_t *e)
     arc.width = 10;
     arc.start_angle = lo;
     arc.end_angle = hi;
-    arc.center.x = DISP_SIZE / 2;
-    arc.center.y = DISP_SIZE / 2;
+    arc.center.x = px_icx();
+    arc.center.y = px_icy();
     arc.radius = 206;
     arc.opa = LV_OPA_COVER;
     lv_draw_arc(layer, &arc);
@@ -1469,7 +1598,7 @@ static void invalidate_hud_fill(float a, float b)
         const float boundary = (floorf(seg / 90.0f) + 1.0f) * 90.0f;
         const float seg_end = fminf(hi, boundary);
         lv_area_t area;
-        lv_draw_arc_get_area(DISP_SIZE / 2, DISP_SIZE / 2, 206, seg, seg_end, 10, true, &area);
+        lv_draw_arc_get_area(px_icx(), px_icy(), 206, seg, seg_end, 10, true, &area);
         lv_obj_invalidate_area(s_hud_fill, &area);
         seg = seg_end;
     }
@@ -1498,7 +1627,7 @@ static void build_hud(lv_obj_t *scr)
         bg.bg_opa = LV_OPA_COVER;
         lv_area_t full = { 0, 0, DISP_SIZE - 1, DISP_SIZE - 1 };
         lv_draw_rect(&layer, &bg, &full);
-        paint_hud_face(&layer, theme, true);
+        paint_hud_face(&layer, theme, true, DISP_SIZE * 0.5f, DISP_SIZE * 0.5f);
         lv_canvas_finish_layer(s_hud_bg, &layer);
     } else {
         ESP_LOGW(TAG, "hud background cache alloc failed (%u B)", (unsigned)bg_bytes);
@@ -1673,11 +1802,11 @@ static void update_hud(const boost_sample_t *sample, const boost_theme_t *theme)
         if (sign_changed) lo = 0;
         if (hi < 0) { lo = 0; hi = HUD_SLOT_COUNT - 1; }
         lv_area_t ga;
-        ga.x1 = DISP_SIZE / 2 + k_hud_slot_x[lo] - 28 - grow;
-        ga.x2 = DISP_SIZE / 2 + k_hud_slot_x[hi] + 28 + grow;
-        ga.y1 = DISP_SIZE / 2 + HUD_VALUE_Y - 42;
-        ga.y2 = DISP_SIZE / 2 + HUD_VALUE_Y + 42;
-        if (sign_changed) ga.x1 = DISP_SIZE / 2 + HUD_SIGN_TENS_X - 24 - grow;
+        ga.x1 = px_icx() + k_hud_slot_x[lo] - 28 - grow;
+        ga.x2 = px_icx() + k_hud_slot_x[hi] + 28 + grow;
+        ga.y1 = px_icy() + HUD_VALUE_Y - 42;
+        ga.y2 = px_icy() + HUD_VALUE_Y + 42;
+        if (sign_changed) ga.x1 = px_icx() + HUD_SIGN_TENS_X - 24 - grow;
         lv_obj_invalidate_area(s_hud_glitch, &ga);
     }
 
@@ -1790,7 +1919,10 @@ static void build_bigdigit(lv_obj_t *scr)
      * legible pairing, and the sweep colours assume they are being swept. */
     const uint32_t ground =
         boost_theme_bigdigit_static_bg() ? theme->face : theme->vacuum;
-    lv_obj_set_style_bg_color(scr, c(ground), 0);
+    /* Explicitly the screen, not `scr`: `scr` is the shifting container now,
+     * and the whole point of this fill is that it does NOT shift, so it backs
+     * the margin the shift opens at the edge. */
+    lv_obj_set_style_bg_color(lv_screen_active(), c(ground), 0);
     s_big_bg_step = -1;
 
     /* Recolouring the ground in one go dirties all 217k pixels at once: a ~69 ms
@@ -1903,6 +2035,15 @@ static void update_bigdigit(const boost_sample_t *sample, const boost_theme_t *t
         if (s_big_band_next < BIG_BANDS) {
             lv_obj_set_style_bg_color(s_big_band[s_big_band_next], c(s_big_band_color), 0);
             s_big_band_next++;
+            /* The bands are exactly screen-sized and travel with the burn-in
+             * shift, so the screen fill behind them shows through a one or two
+             * pixel margin at one edge and has to follow the same colour. Done
+             * on the last band so a multi-band wipe stays banded: at
+             * BIG_BANDS == 1 this lands on the same tick and unions into the
+             * full-screen invalidation the band already caused, for free. */
+            if (s_big_band_next == BIG_BANDS) {
+                lv_obj_set_style_bg_color(lv_screen_active(), c(s_big_band_color), 0);
+            }
         }
     }
 
@@ -1965,6 +2106,7 @@ static void destroy_scene(void)
     }
 
     s_well = NULL;
+    s_root = NULL;
     s_arc_track = NULL;
     s_arc_value_canvas = NULL;
     s_zero_notch = NULL;
@@ -2015,12 +2157,25 @@ static void build_scene(boost_gauge_style_t style)
     lv_obj_set_style_bg_color(scr, c(theme->face), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
 
+    /* One styleless, screen-sized container that every style builds into, so
+     * the burn-in shift is a single lv_obj_set_pos() instead of a walk over
+     * every object — and, more importantly, so the cached PSRAM faces move as
+     * bitmaps rather than being re-rasterised. It draws nothing and adds one
+     * bounds test per redraw. Children keep addressing the same coordinates
+     * they always did, because it is exactly screen-sized and starts at the
+     * origin. */
+    s_root = lv_obj_create(scr);
+    lv_obj_remove_style_all(s_root);
+    lv_obj_set_size(s_root, DISP_SIZE, DISP_SIZE);
+    lv_obj_set_pos(s_root, s_px_dx, s_px_dy);
+    lv_obj_clear_flag(s_root, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+
     switch (style) {
-        case BOOST_STYLE_VAULT:    build_vault(scr); break;
-        case BOOST_STYLE_HUD:      build_hud(scr); break;
-        case BOOST_STYLE_BIGDIGIT: build_bigdigit(scr); break;
+        case BOOST_STYLE_VAULT:    build_vault(s_root); break;
+        case BOOST_STYLE_HUD:      build_hud(s_root); break;
+        case BOOST_STYLE_BIGDIGIT: build_bigdigit(s_root); break;
         case BOOST_STYLE_ARC:
-        default:                   build_arc(scr); break;
+        default:                   build_arc(s_root); break;
     }
 
     s_built_style = style;
@@ -2053,6 +2208,9 @@ void boost_gauge_create(void)
 
     s_display_psi = 0.0f;
     s_peak_psi = 0.0f;
+    s_px_step_ms = lv_tick_get();
+    s_px_settled_ms = s_px_step_ms;
+    s_px_ref_psi = 0.0f;
     build_scene(theme->style);
     s_ui_ready = true;
     ESP_LOGI(TAG, "UI ready (style %s)", boost_style_name(theme->style));
@@ -2111,11 +2269,78 @@ void boost_gauge_media_delete(void)
 #endif
 }
 
+/* Move the whole scene to a new burn-in offset. */
+static void set_pixel_shift(int32_t dx, int32_t dy)
+{
+    /* Clamped rather than trusted: an offset outside this range puts the vault
+     * bezel ring and the dyno-cell value arc off the edge of the glass, and the
+     * table above is exactly the kind of thing that gets widened later by
+     * someone who has not re-derived the radii. */
+    dx = (int32_t)clampf((float)dx, (float)PXSHIFT_MIN, (float)PXSHIFT_MAX);
+    dy = (int32_t)clampf((float)dy, (float)PXSHIFT_MIN, (float)PXSHIFT_MAX);
+    if (dx == s_px_dx && dy == s_px_dy) return;
+    s_px_dx = dx;
+    s_px_dy = dy;
+    if (s_root != NULL) {
+        lv_obj_set_pos(s_root, dx, dy);
+    }
+    /* A shift moves every cached bitmap AND retargets every draw callback that
+     * reads px_cx()/px_cy(), and it uncovers a margin of screen background at
+     * one edge. Nothing narrower than the whole screen is provably free of
+     * stale pixels here, and the cost is exactly the full repaint this design
+     * already budgets for once every couple of minutes. */
+    lv_obj_invalidate(lv_screen_active());
+}
+
+/*
+ * Decide whether it is time to step the shift. Called once per sample, ahead of
+ * the per-style update, so the invalidations that update issues are computed
+ * against the offset that will actually be drawn.
+ */
+static void pixel_shift_tick(float psi)
+{
+    const uint32_t now = lv_tick_get();
+
+    if (!boost_theme_pixel_shift()) {
+        /* Park at the origin so switching it off restores the exact geometry
+         * the faces were designed and screenshotted at. */
+        set_pixel_shift(0, 0);
+        s_px_step = 0;
+        s_px_step_ms = now;
+        s_px_settled_ms = now;
+        s_px_ref_psi = psi;
+        return;
+    }
+
+    /* "Settled" means the reading has not wandered more than a quarter psi for
+     * a second and a half — not merely that this one tick was quiet, which a
+     * slow sweep would also satisfy. */
+    if (fabsf(psi - s_px_ref_psi) > PXSHIFT_SETTLE_PSI) {
+        s_px_ref_psi = psi;
+        s_px_settled_ms = now;
+    }
+
+    if (lv_tick_elaps(s_px_step_ms) < PXSHIFT_PERIOD_MS) return;
+    if (lv_tick_elaps(s_px_settled_ms) < PXSHIFT_SETTLE_MS &&
+        lv_tick_elaps(s_px_step_ms) < PXSHIFT_DEADLINE_MS) {
+        return;
+    }
+
+    s_px_step_ms = now;
+    s_px_step = (uint8_t)((s_px_step + 1u) % PXSHIFT_STEPS);
+    set_pixel_shift(k_pxshift[s_px_step][0], k_pxshift[s_px_step][1]);
+}
+
 void boost_gauge_update(const boost_sample_t *sample)
 {
     if (!s_ui_ready || sample == NULL) return;
     const boost_theme_t *theme = active_theme();
     s_peak_psi = fmaxf(s_peak_psi, fmaxf(sample->peak_psi, 0.0f));
+
+    /* Before the per-style update: those compute dirty areas from px_cx()/
+     * px_cy(), and an offset that changed between the invalidation and the
+     * draw is precisely how stale pixels get stranded. */
+    pixel_shift_tick(sample->psi);
 
     switch (s_built_style) {
         case BOOST_STYLE_VAULT:    update_vault(sample, theme); break;
