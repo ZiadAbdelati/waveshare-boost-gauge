@@ -171,18 +171,22 @@ static int state_json(char *json, size_t len)
                     "\"brightness\":%d,\"firmwareVersion\":\"%s\",\"uptimeMs\":%llu,"
                     "\"epochMs\":%lld,\"timezoneOffsetMinutes\":%d,\"activeThemeId\":\"%s\","
                     "\"display\":{\"renderFps\":%lu,\"flushesPerSecond\":%lu,\"pixelsPerSecond\":%lu,"
-                    "\"worstRenderUs\":%lu}}",
+                    "\"worstRenderUs\":%lu,\"renderGapP50Us\":%lu,"
+                    "\"renderGapMaxUs\":%lu,\"framesOverBudget\":%lu}}",
                     (double)st.psi, (double)st.peak_psi, st.zone, st.demo ? "true" : "false",
                     st.brightness, st.firmware_version, (unsigned long long)st.uptime_ms,
                     (long long)st.epoch_ms, st.timezone_offset_minutes, st.active_theme_id,
                     (unsigned long)st.display.render_fps, (unsigned long)st.display.flushes_per_second,
                     (unsigned long)st.display.pixels_per_second,
-                    (unsigned long)st.display.worst_render_us);
+                    (unsigned long)st.display.worst_render_us,
+                    (unsigned long)st.display.render_gap_p50_us,
+                    (unsigned long)st.display.render_gap_max_us,
+                    (unsigned long)st.display.frames_over_budget);
 }
 
 static esp_err_t state_get(httpd_req_t *req)
 {
-    char json[512];
+    char json[640];
     const int n = state_json(json, sizeof(json));
     return n > 0 && n < (int)sizeof(json) ? send_json(req, json) : ESP_FAIL;
 }
@@ -208,7 +212,7 @@ static void state_ws_send_done(esp_err_t err, int socket, void *arg)
 static void state_ws_push(void *arg)
 {
     (void)arg;
-    char current[512];
+    char current[640];
     const int n = state_json(current, sizeof(current));
     if (n <= 0 || n >= (int)sizeof(current)) return;
     for (int slot = 0; slot < STATE_WS_MAX_CLIENTS; ++slot) {
@@ -1296,6 +1300,9 @@ esp_err_t boost_web_start(void)
     ESP_LOGI(TAG, "HTTP API ready");
     /* Co-located with the httpd task on core 1: it does the JSON render and the
      * malloc/free per frame, and hands straight off to httpd's async work queue. */
+    /* Priority 2, below LVGL's swdraw threads at 4: at equal priority these two
+     * round-robin, and since this task now wakes on every sample it would steal
+     * slices from pixel rasterisation 62 times a second. */
     if (xTaskCreatePinnedToCore(state_ws_task, "boost_ws", 3072, NULL, 3,
                                 (TaskHandle_t *)&s_state_ws_task, 1) != pdPASS) {
         ESP_LOGW(TAG, "live WebSocket task not started");

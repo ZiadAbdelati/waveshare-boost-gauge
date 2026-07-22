@@ -124,7 +124,13 @@ static const int8_t k_pxshift[][2] = {
  * back until the reading has been steady for a moment so the hitch lands where
  * nothing is moving; mid-sweep it would read as a stutter in the needle. */
 #define PXSHIFT_SETTLE_MS   1500u
-#define PXSHIFT_SETTLE_PSI  0.25f
+/* Above the signal's own noise floor. At 0.25 this never released: the demo
+ * source alone carries 0.18 sin(17.3t) + 0.08 sin(31.1t), up to 0.52 psi
+ * peak-to-peak, so the longest window inside +/-0.25 psi is 0.69 s against a
+ * 1.5 s requirement - the gate passed 0.0000% of the time and every shift fell
+ * through to the deadline, mid-sweep, which is exactly what it exists to
+ * avoid. A real MAP sensor is noisier still. */
+#define PXSHIFT_SETTLE_PSI  0.60f
 /* ...but a signal that never settles must not starve the shift forever. */
 #define PXSHIFT_DEADLINE_MS (PXSHIFT_PERIOD_MS * 4u)
 
@@ -149,10 +155,22 @@ static const int8_t k_pxshift[][2] = {
  * web draws both last, so they sit over the needle and digits too. */
 #define VAULT_VIGN_R0        120.0f
 #define VAULT_VIGN_R1        233.0f
-#define VAULT_VIGN_MAX       0.60f
+#define VAULT_VIGN_MAX       0.50f
 #define VAULT_FACE_R         231.0f
 #define VAULT_SCAN_STEP      4
 #define VAULT_SCAN_OPA       41 /* 0.16 * 255 */
+/* Vault-Tec mark: a ringed hub with three cog bars each side, sized to tuck
+ * between the BOOST-O-METER line (y=-78) and the needle hub. */
+#define VAULT_LOGO_Y         (-46)
+#define VAULT_LOGO_R         15
+#define VAULT_LOGO_RING_W    5
+#define VAULT_LOGO_HUB_R     6
+#define VAULT_LOGO_BAR_W     5
+#define VAULT_LOGO_BAR_DY    10
+#define VAULT_LOGO_BAR_IN    12
+#define VAULT_LOGO_BAR_SHORT 34
+#define VAULT_LOGO_BAR_LONG  45
+#define VAULT_LOGO_OPA       LV_OPA_50
 #define HUD_A0     154.0f   /* 270 - 116 */
 #define HUD_A1     386.0f   /* 270 + 116 */
 #define HUD_BRACKET_X 126
@@ -943,6 +961,61 @@ static void paint_vault_background(lv_obj_t *canvas, const boost_theme_t *theme)
         ln.p2.x = cx + (float)VAULT_TICK_OUT * cosf(zrad);
         ln.p2.y = cy + (float)VAULT_TICK_OUT * sinf(zrad);
         lv_draw_line(&layer, &ln);
+    }
+
+    /* Vault-Tec mark, sitting under the BOOST-O-METER line. Baked into the
+     * cached face, so its cost is paid once at scene build and never again -
+     * the needle sweeps over it as a foreground object. Drawn from primitives
+     * rather than an image asset to keep it recolourable with the theme. */
+    {
+        const float lx = cx;
+        const float ly = cy + (float)VAULT_LOGO_Y;
+        const lv_color_t ink = c(theme->text);
+
+        /* Outer ring of the vault door. */
+        lv_draw_arc_dsc_init(&arc);
+        arc.color = ink;
+        arc.opa = VAULT_LOGO_OPA;
+        arc.width = VAULT_LOGO_RING_W;
+        arc.radius = VAULT_LOGO_R;
+        arc.start_angle = 0;
+        arc.end_angle = 360;
+        arc.center.x = (int32_t)lroundf(lx);
+        arc.center.y = (int32_t)lroundf(ly);
+        lv_draw_arc(&layer, &arc);
+
+        /* Hub. */
+        lv_draw_rect_dsc_t hub;
+        lv_draw_rect_dsc_init(&hub);
+        hub.bg_color = ink;
+        hub.bg_opa = VAULT_LOGO_OPA;
+        hub.radius = LV_RADIUS_CIRCLE;
+        const int32_t hr = VAULT_LOGO_HUB_R;
+        lv_area_t ha = { (int32_t)lroundf(lx) - hr, (int32_t)lroundf(ly) - hr,
+                         (int32_t)lroundf(lx) + hr, (int32_t)lroundf(ly) + hr };
+        lv_draw_rect(&layer, &hub, &ha);
+
+        /* Three cog bars each side; the middle one reaches furthest, which is
+         * what gives the mark its silhouette. */
+        static const int8_t bar_dy[3] = { -VAULT_LOGO_BAR_DY, 0, VAULT_LOGO_BAR_DY };
+        static const int8_t bar_len[3] = { VAULT_LOGO_BAR_SHORT, VAULT_LOGO_BAR_LONG,
+                                           VAULT_LOGO_BAR_SHORT };
+        for (int side = 0; side < 2; ++side) {
+            const float dir = side ? 1.0f : -1.0f;
+            for (int i = 0; i < 3; ++i) {
+                lv_draw_line_dsc_init(&ln);
+                ln.color = ink;
+                ln.opa = VAULT_LOGO_OPA;
+                ln.width = VAULT_LOGO_BAR_W;
+                ln.round_start = true;
+                ln.round_end = true;
+                ln.p1.x = lx + dir * (float)VAULT_LOGO_BAR_IN;
+                ln.p1.y = ly + (float)bar_dy[i];
+                ln.p2.x = lx + dir * (float)bar_len[i];
+                ln.p2.y = ly + (float)bar_dy[i];
+                lv_draw_line(&layer, &ln);
+            }
+        }
     }
 
     lv_canvas_finish_layer(canvas, &layer);

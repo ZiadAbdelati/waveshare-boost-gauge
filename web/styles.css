@@ -192,7 +192,6 @@ progress::-moz-progress-bar { background: linear-gradient(90deg, var(--vacuum), 
   min-width: 0;
 }
 
-
 .range-fields {
   display: grid;
   gap: 0.65rem;
@@ -628,33 +627,6 @@ output {
   background: color-mix(in srgb, var(--vacuum) 12%, transparent);
 }
 
-.boot {
-  position: fixed;
-  inset: 0;
-  z-index: 10;
-  display: grid;
-  place-items: center;
-  background: #090a0d;
-  animation: boot-out 1200ms ease 650ms forwards;
-}
-.boot-ring {
-  width: min(14rem, 70vw);
-  aspect-ratio: 1;
-  border-radius: 50%;
-  border: 0.9rem solid var(--track);
-  border-top-color: var(--vacuum);
-  border-right-color: var(--boost);
-  animation: boot-spin 1100ms cubic-bezier(0.2, 0.8, 0.2, 1);
-}
-.boot-text {
-  position: absolute;
-  font-family: "Barlow Condensed", "Aptos Narrow", "Arial Narrow", system-ui, sans-serif;
-  letter-spacing: 0.12em;
-  font-weight: 700;
-}
-
-@keyframes boot-spin { to { transform: rotate(300deg); } }
-@keyframes boot-out { to { opacity: 0; visibility: hidden; } }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

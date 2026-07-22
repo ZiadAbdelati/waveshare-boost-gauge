@@ -53,6 +53,15 @@ static uint32_t s_pixel_count;
 static int64_t s_metrics_start_us;
 static int64_t s_last_render_us;
 static uint32_t s_worst_gap_us;
+/* START-to-START gaps for the current window. 80 slots covers a second at any
+ * rate the panel can actually achieve; beyond that we stop recording and the
+ * count still tells the story. */
+#define GAP_SLOTS 80
+static int64_t s_last_start_us;
+static uint16_t s_gaps_ms10[GAP_SLOTS];  /* tenths of a ms, plenty of range */
+static uint8_t s_gap_n;
+static uint32_t s_gap_max_us;
+static uint32_t s_over_budget;
 /* CO5300 requires even x1/y1 and odd x2/y2 window edges. */
 static void rounder_event_cb(lv_event_t *e)
 {
@@ -70,7 +79,16 @@ static void display_metrics_event_cb(lv_event_t *e)
 {
     const lv_event_code_t code = lv_event_get_code(e);
     if (code == LV_EVENT_RENDER_START) {
-        s_last_render_us = esp_timer_get_time();
+        const int64_t t = esp_timer_get_time();
+        if (s_last_start_us != 0) {
+            const uint32_t gap = (uint32_t)(t - s_last_start_us);
+            if (gap > s_gap_max_us) s_gap_max_us = gap;
+            /* 20 ms: a 16 ms budget plus a quarter frame of slack. */
+            if (gap > 20000u) ++s_over_budget;
+            if (s_gap_n < GAP_SLOTS) s_gaps_ms10[s_gap_n++] = (uint16_t)(gap / 100u);
+        }
+        s_last_start_us = t;
+        s_last_render_us = t;
     } else if (code == LV_EVENT_RENDER_READY) {
         ++s_render_count;
         /* Duration of the cycle itself, not the gap between cycles: an idle
@@ -93,6 +111,23 @@ static void display_metrics_event_cb(lv_event_t *e)
         s_metrics.flushes_per_second = s_flush_count;
         s_metrics.pixels_per_second = s_pixel_count;
         s_metrics.worst_render_us = s_worst_gap_us;
+        /* Median by insertion sort - at most 80 entries, once a second. */
+        if (s_gap_n > 0) {
+            for (uint8_t i = 1; i < s_gap_n; ++i) {
+                const uint16_t v = s_gaps_ms10[i];
+                int8_t j = (int8_t)i - 1;
+                while (j >= 0 && s_gaps_ms10[j] > v) { s_gaps_ms10[j + 1] = s_gaps_ms10[j]; --j; }
+                s_gaps_ms10[j + 1] = v;
+            }
+            s_metrics.render_gap_p50_us = (uint32_t)s_gaps_ms10[s_gap_n / 2] * 100u;
+        } else {
+            s_metrics.render_gap_p50_us = 0;
+        }
+        s_metrics.render_gap_max_us = s_gap_max_us;
+        s_metrics.frames_over_budget = s_over_budget;
+        s_gap_n = 0;
+        s_gap_max_us = 0;
+        s_over_budget = 0;
         s_render_count = 0;
         s_flush_count = 0;
         s_pixel_count = 0;

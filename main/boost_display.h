@@ -25,6 +25,12 @@ typedef struct {
      * often the screen changed, which says nothing about whether one of those
      * changes stalled the pipeline for 70 ms. */
     uint32_t worst_render_us;
+    /* Frame PACING, as distinct from render duration above. Judder is a gap
+     * problem: a face can render every cycle in 12 ms and still look uneven if
+     * the cycles land at 16/16/20/16 ms. Measured START-to-START. */
+    uint32_t render_gap_p50_us;
+    uint32_t render_gap_max_us;
+    uint32_t frames_over_budget;
 } boost_display_metrics_t;
 
 lv_display_t *boost_display_start(void);

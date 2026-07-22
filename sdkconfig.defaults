@@ -46,6 +46,12 @@ CONFIG_LV_DEF_REFR_PERIOD=16
 CONFIG_LV_OS_FREERTOS=y
 CONFIG_LV_OBJ_STYLE_CACHE=y
 CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=2
+# LVGL rasterises every pixel in two "swdraw" threads created at
+# tskIDLE_PRIORITY + LV_DRAW_THREAD_PRIO (default 3), below the sample task and
+# httpd. Raising it to the Kconfig maximum of 4 was tried and measured on
+# hardware: frames-over-budget per second did not improve (3 -> 4, i.e. noise).
+# Left at the default. The judder is renders occasionally exceeding the 16 ms
+# refresh period, not scheduler starvation - see AGENTS.md.
 CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=y
 CONFIG_LV_FONT_MONTSERRAT_12=y
 CONFIG_LV_FONT_MONTSERRAT_14=y
