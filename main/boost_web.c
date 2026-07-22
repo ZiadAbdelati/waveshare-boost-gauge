@@ -172,7 +172,8 @@ static int state_json(char *json, size_t len)
                     "\"epochMs\":%lld,\"timezoneOffsetMinutes\":%d,\"activeThemeId\":\"%s\","
                     "\"display\":{\"renderFps\":%lu,\"flushesPerSecond\":%lu,\"pixelsPerSecond\":%lu,"
                     "\"worstRenderUs\":%lu,\"renderGapP50Us\":%lu,"
-                    "\"renderGapMaxUs\":%lu,\"framesOverBudget\":%lu}}",
+                    "\"renderGapMaxUs\":%lu,\"framesOverBudget\":%lu,"
+                    "\"tePeriodUs\":%lu,\"teWaits\":%lu,\"teTimeouts\":%lu}}",
                     (double)st.psi, (double)st.peak_psi, st.zone, st.demo ? "true" : "false",
                     st.brightness, st.firmware_version, (unsigned long long)st.uptime_ms,
                     (long long)st.epoch_ms, st.timezone_offset_minutes, st.active_theme_id,
@@ -181,12 +182,15 @@ static int state_json(char *json, size_t len)
                     (unsigned long)st.display.worst_render_us,
                     (unsigned long)st.display.render_gap_p50_us,
                     (unsigned long)st.display.render_gap_max_us,
-                    (unsigned long)st.display.frames_over_budget);
+                    (unsigned long)st.display.frames_over_budget,
+                    (unsigned long)st.display.te_period_us,
+                    (unsigned long)st.display.te_waits,
+                    (unsigned long)st.display.te_timeouts);
 }
 
 static esp_err_t state_get(httpd_req_t *req)
 {
-    char json[640];
+    char json[768];
     const int n = state_json(json, sizeof(json));
     return n > 0 && n < (int)sizeof(json) ? send_json(req, json) : ESP_FAIL;
 }
@@ -212,7 +216,7 @@ static void state_ws_send_done(esp_err_t err, int socket, void *arg)
 static void state_ws_push(void *arg)
 {
     (void)arg;
-    char current[640];
+    char current[768];
     const int n = state_json(current, sizeof(current));
     if (n <= 0 || n >= (int)sizeof(current)) return;
     for (int slot = 0; slot < STATE_WS_MAX_CLIENTS; ++slot) {
@@ -516,11 +520,13 @@ static esp_err_t themes_get(httpd_req_t *req)
     boost_model_get_config(&cfg);
     snprintf(json, sizeof(json),
              "{\"activeThemeId\":\"%s\",\"bigDigitStaticBg\":%s,"
-             "\"bigDigitColorText\":%s,\"pixelShift\":%s,\"themes\":[",
+             "\"bigDigitColorText\":%s,\"pixelShift\":%s,\"pixelShiftSec\":%u,"
+             "\"themes\":[",
              cfg.active_theme_id,
              boost_theme_bigdigit_static_bg() ? "true" : "false",
              boost_theme_bigdigit_color_text() ? "true" : "false",
-             boost_theme_pixel_shift() ? "true" : "false");
+             boost_theme_pixel_shift() ? "true" : "false",
+             (unsigned)boost_theme_pixel_shift_sec());
     for (size_t i = 0; i < boost_theme_count(); ++i) {
         if (i > 0) {
             strlcat(json, ",", sizeof(json));
@@ -574,6 +580,24 @@ static esp_err_t themes_config_put(httpd_req_t *req)
     const cJSON *px = cJSON_GetObjectItemCaseSensitive(root, "pixelShift");
     if (cJSON_IsBool(px)) {
         boost_theme_set_pixel_shift(cJSON_IsTrue(px));
+    }
+
+    const cJSON *pxsec = cJSON_GetObjectItemCaseSensitive(root, "pixelShiftSec");
+    if (cJSON_IsNumber(pxsec)) {
+        /* Range-check before the cast, not after: valuedouble can be NaN or
+         * 1e300, and narrowing either of those to uint16_t is undefined —
+         * the clamp inside boost_theme_set_pixel_shift_sec() would then be
+         * clamping a number that never made it across intact. A value the
+         * device would have to invent an answer for is a client bug, so it
+         * gets a 400 rather than a silent substitution. */
+        const double v = pxsec->valuedouble;
+        if (!(v >= 1.0 && v <= 86400.0)) {
+            cJSON_Delete(root);
+            return send_err(req, HTTPD_400, "invalid_pixel_shift_sec");
+        }
+        /* Inside that sane band the theme layer clamps to the supported
+         * range; see BOOST_PXSHIFT_SEC_MIN/MAX. */
+        boost_theme_set_pixel_shift_sec((uint16_t)(v > 65535.0 ? 65535.0 : v));
     }
 
     const cJSON *ctext = cJSON_GetObjectItemCaseSensitive(root, "bigDigitColorText");

@@ -88,6 +88,11 @@ THEMES = [
     },
 ]
 
+# Keep in step with BOOST_PXSHIFT_SEC_* in main/boost_theme.h.
+PXSHIFT_SEC_MIN = 30
+PXSHIFT_SEC_MAX = 3600
+PXSHIFT_SEC_DEFAULT = 90
+
 CONFIG = {
     "brightnessHigh": 100,
     "brightnessLow": 12,
@@ -196,6 +201,7 @@ def themes_payload() -> dict:
         "activeThemeId": CONFIG["activeThemeId"],
         "bigDigitStaticBg": bool(CONFIG.get("bigDigitStaticBg", False)),
         "pixelShift": bool(CONFIG.get("pixelShift", True)),
+        "pixelShiftSec": int(CONFIG.get("pixelShiftSec", PXSHIFT_SEC_DEFAULT)),
         "bigDigitColorText": bool(CONFIG.get("bigDigitColorText", False)),
         "themes": out,
     }
@@ -343,6 +349,21 @@ class Handler(BaseHTTPRequestHandler):
                 CONFIG["bigDigitStaticBg"] = bool(payload["bigDigitStaticBg"])
             if "pixelShift" in payload:
                 CONFIG["pixelShift"] = bool(payload["pixelShift"])
+            if "pixelShiftSec" in payload:
+                # Mirrors boost_web.c: reject what cannot be a period at all,
+                # clamp what merely sits outside the supported band.
+                try:
+                    seconds = int(payload["pixelShiftSec"])
+                except (TypeError, ValueError):
+                    seconds = 0
+                if not 1 <= seconds <= 86400:
+                    self.send_json(
+                        {"error": "invalid_pixel_shift_sec"}, HTTPStatus.BAD_REQUEST
+                    )
+                    return
+                CONFIG["pixelShiftSec"] = max(
+                    PXSHIFT_SEC_MIN, min(PXSHIFT_SEC_MAX, seconds)
+                )
             if "bigDigitColorText" in payload:
                 CONFIG["bigDigitColorText"] = bool(payload["bigDigitColorText"])
             theme_id = payload.get("id")

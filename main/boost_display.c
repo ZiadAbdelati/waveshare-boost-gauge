@@ -10,6 +10,10 @@
 #include "esp_lv_adapter.h"
 #include "esp_timer.h"
 
+#include "driver/gpio.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+
 /*
  * ESP32-S3 SPI GDMA cannot stream from PSRAM. The stock Waveshare BSP sets
  * use_psram=true for LVGL draw buffers, so every flush allocates an internal
@@ -39,6 +43,89 @@
  */
 #define BOOST_LCD_PCLK_HZ (80 * 1000 * 1000)
 
+/*
+ * ---------------------------------------------------------------------------
+ * Tearing-effect (TE) synchronisation
+ * ---------------------------------------------------------------------------
+ *
+ * The panel already drives TE: k_lcd_init_cmds below sends {0x35, 0x00}
+ * (Tearing Effect Line ON, V-blank only). The line lands on GPIO13 - decoded
+ * from the board netlist (PIU1018 NLGPIO13 NLLCD0TE, next to
+ * PIU1017 NLGPIO12 NLLCD0CS, and GPIO12 is BSP_LCD_CS, which validates the
+ * decode). The Waveshare BSP does not expose it, which is why it looked
+ * unrouted. GPIO13 is used by nothing else in this firmware: the BSP pin map
+ * has no other net on it and no other module here calls gpio_config().
+ *
+ * Why this is hand-rolled instead of ESP_LV_ADAPTER_TEAR_AVOID_MODE_TE_SYNC:
+ * the adapter's display_bridge_v9_flush_gpio_te() calls te_sync_begin_frame()
+ * (which drains the semaphore) and te_sync_wait_for_vsync() on EVERY flush,
+ * and then blocks on ulTaskNotifyTake(portMAX_DELAY) for the transfer as well.
+ * LVGL runs partial mode with 20-line strips here, so one needle update is 2-3
+ * strips and a full repaint is 24. That would be 2-3 TE waits (33-50 ms) for a
+ * needle and ~400 ms for a repaint - strictly worse than the tearing, and the
+ * portMAX_DELAY would also serialise transfer with rasterisation.
+ *
+ * Instead: stay in TEAR_AVOID_MODE_NONE and gate in application code through
+ * the adapter's custom_draw_bitmap hook, which display_bridge_v9_flush_default()
+ * honours (and only honours) in that mode. Arm a gate at LV_EVENT_RENDER_START;
+ * the FIRST strip of the cycle waits for a TE edge, every later strip of the
+ * same cycle streams out unblocked. One wait per render cycle, not per flush.
+ *
+ * The effect is a quantiser: the cycle locks to a whole number of panel frames.
+ * Median render is ~12.7 ms and the frame is 14-17 ms, so a typical cycle
+ * rounds up to one frame and paces evenly instead of drifting. Cycles that
+ * overrun a frame round up to two - slower, but bimodal and steady rather than
+ * randomly juddering.
+ *
+ * FAIL-SAFE. Every wait is bounded (never portMAX_DELAY). If TE is not wired
+ * the way the schematic says, the pull-up holds the line high, no edge ever
+ * arrives, and each wait costs BOOST_LCD_TE_TIMEOUT_MS. After
+ * BOOST_LCD_TE_GIVEUP_STREAK consecutive timeouts TE gating latches off for
+ * good and the display reverts to exactly today's behaviour. A gauge that
+ * tears occasionally beats a gauge that freezes.
+ */
+#define BOOST_LCD_USE_TE 0
+
+/* TE line. Not in the BSP pin map; see the netlist decode above. */
+#define BOOST_LCD_TE_GPIO 13
+
+/*
+ * DCS TE with parameter 0x00 asserts the line at the start of vertical
+ * blanking, so the RISING edge is the moment it is safest to start writing.
+ * Flip to GPIO_INTR_NEGEDGE in one line if the panel drives it inverted; the
+ * boot log prints the idle level so this is checkable rather than guessed.
+ */
+#define BOOST_LCD_TE_EDGE GPIO_INTR_POSEDGE
+
+/*
+ * Bound on one wait. A 60 Hz frame is 16.7 ms and the adapter's own Tvdl+Tvdh
+ * defaults imply ~14 ms, so 25 ms covers a full period either way with margin.
+ * CONFIG_FREERTOS_HZ is 1000 here, so this is honoured to the millisecond.
+ */
+#define BOOST_LCD_TE_TIMEOUT_MS 25
+
+/* Consecutive timeouts before TE gating gives up permanently (~200 ms). */
+#define BOOST_LCD_TE_GIVEUP_STREAK 8
+
+/*
+ * If the last edge is younger than this, blanking has only just started and
+ * the write can go immediately - waiting would burn a whole extra frame for
+ * nothing. Rasterisation of the first strip usually lands us here.
+ */
+#define BOOST_LCD_TE_FRESH_US 2000u
+
+/*
+ * CO5300 0x44 (set_tear_scanline) moves the TE assertion off V-blank to a
+ * chosen line, so a write can be started just ahead of the scan rather than
+ * racing it. Left off by default: the useful scanline depends on where the
+ * strips actually are, and the panel's real scan rate is not confirmed. Set to
+ * a line number in 0..(BSP_LCD_V_RES-1) to try it - it is one #define.
+ */
+#define BOOST_LCD_TE_SCANLINE (-1)
+
+/* Number of TE periods to average before reporting the panel's real scan rate. */
+#define BOOST_LCD_TE_PROBE_N 120u
+
 static const char *TAG = "boost_disp";
 
 static lv_display_t *s_disp;
@@ -62,6 +149,172 @@ static uint16_t s_gaps_ms10[GAP_SLOTS];  /* tenths of a ms, plenty of range */
 static uint8_t s_gap_n;
 static uint32_t s_gap_max_us;
 static uint32_t s_over_budget;
+
+#if BOOST_LCD_USE_TE
+/*
+ * TE state. Everything the ISR writes is a single 32-bit word so the LVGL task
+ * can read it without a critical section: aligned 32-bit loads are atomic on
+ * the S3, and the microsecond timestamp is deliberately truncated to 32 bits
+ * (unsigned subtraction wraps correctly, and 71 minutes of range is far more
+ * than the ~17 ms this is compared against).
+ */
+static SemaphoreHandle_t s_te_sem;
+static volatile bool s_te_active;          /* latched off on repeated timeout */
+static volatile uint32_t s_te_last_edge_us;
+static volatile uint32_t s_te_edges;
+static volatile uint32_t s_te_probe_sum_us; /* ISR stops writing once n hits N */
+static volatile uint32_t s_te_probe_n;
+static bool s_te_period_logged;
+static bool s_te_gate_armed;               /* LVGL task only */
+static uint32_t s_te_waits;
+static uint32_t s_te_timeouts;
+static uint8_t s_te_miss_streak;
+
+/*
+ * Not installed with ESP_INTR_FLAG_IRAM - the touch driver registers a
+ * non-IRAM handler on the same shared GPIO service, so demanding IRAM here
+ * would break it. IRAM_ATTR on the handler still keeps the common path off
+ * flash; a TE edge missed during a flash write degrades to one timeout, which
+ * the streak counter absorbs.
+ */
+static void IRAM_ATTR te_gpio_isr(void *arg)
+{
+    (void)arg;
+    const uint32_t now = (uint32_t)esp_timer_get_time();
+    const uint32_t prev = s_te_last_edge_us;
+    const uint32_t edges = s_te_edges;
+
+    s_te_last_edge_us = now;
+    s_te_edges = edges + 1;
+
+    if (edges != 0) {
+        const uint32_t n = s_te_probe_n;
+        if (n < BOOST_LCD_TE_PROBE_N) {
+            /* Sum before count: the reader checks the count first. */
+            s_te_probe_sum_us += now - prev;
+            s_te_probe_n = n + 1;
+        }
+    }
+
+    BaseType_t need_yield = pdFALSE;
+    xSemaphoreGiveFromISR(s_te_sem, &need_yield);
+    if (need_yield) {
+        portYIELD_FROM_ISR();
+    }
+}
+
+static esp_err_t te_init(void)
+{
+    s_te_sem = xSemaphoreCreateBinary();
+    ESP_RETURN_ON_FALSE(s_te_sem != NULL, ESP_ERR_NO_MEM, TAG, "TE semaphore alloc failed");
+
+    const gpio_config_t te_cfg = {
+        .pin_bit_mask = 1ULL << BOOST_LCD_TE_GPIO,
+        .mode = GPIO_MODE_INPUT,
+        /* Pull-up so an unconnected pin idles high and simply never edges,
+         * which the give-up path turns into a clean "TE not seen" instead of
+         * random interrupts from a floating input. */
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = BOOST_LCD_TE_EDGE,
+    };
+    ESP_RETURN_ON_ERROR(gpio_config(&te_cfg), TAG, "TE gpio_config failed");
+
+    const int idle_level = gpio_get_level(BOOST_LCD_TE_GPIO);
+
+    esp_err_t err = gpio_install_isr_service(ESP_INTR_FLAG_LOWMED);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_RETURN_ON_ERROR(err, TAG, "TE isr service install failed");
+    }
+    ESP_RETURN_ON_ERROR(gpio_isr_handler_add(BOOST_LCD_TE_GPIO, te_gpio_isr, NULL),
+                        TAG, "TE isr handler add failed");
+
+    s_te_active = true;
+    ESP_LOGI(TAG, "TE sync active on GPIO%d, %s edge, level=%d at boot, %d ms timeout",
+             BOOST_LCD_TE_GPIO,
+             (BOOST_LCD_TE_EDGE == GPIO_INTR_NEGEDGE) ? "falling" : "rising",
+             idle_level, BOOST_LCD_TE_TIMEOUT_MS);
+    return ESP_OK;
+}
+
+/* Called on the LVGL task, once per render cycle, from the first strip's blit. */
+static void te_wait_for_vblank(void)
+{
+    if (!s_te_active) {
+        return;
+    }
+
+    ++s_te_waits;
+
+    if (s_te_edges != 0) {
+        const uint32_t age = (uint32_t)esp_timer_get_time() - s_te_last_edge_us;
+        if (age < BOOST_LCD_TE_FRESH_US) {
+            /* Blanking has only just begun - write now rather than idling a
+             * whole frame to arrive at the same place. */
+            s_te_miss_streak = 0;
+            return;
+        }
+    }
+
+    /* Drop the stale edge so the wait below returns on a fresh one. */
+    (void)xSemaphoreTake(s_te_sem, 0);
+
+    if (xSemaphoreTake(s_te_sem, pdMS_TO_TICKS(BOOST_LCD_TE_TIMEOUT_MS)) == pdTRUE) {
+        s_te_miss_streak = 0;
+        return;
+    }
+
+    ++s_te_timeouts;
+    if (s_te_miss_streak < BOOST_LCD_TE_GIVEUP_STREAK) {
+        ++s_te_miss_streak;
+    }
+    if (s_te_miss_streak >= BOOST_LCD_TE_GIVEUP_STREAK && s_te_active) {
+        s_te_active = false;
+        ESP_LOGW(TAG,
+                 "TE: no edge on GPIO%d for %d cycles (%u seen total) - gating off, "
+                 "display may tear but will not stall",
+                 BOOST_LCD_TE_GPIO, BOOST_LCD_TE_GIVEUP_STREAK, (unsigned)s_te_edges);
+    }
+}
+
+/*
+ * Replaces the adapter's own esp_lcd_panel_draw_bitmap() call. Contract from
+ * esp_lv_adapter_display.h: return ESP_OK once the blit is under way and the
+ * completion ISR will finish the handshake; return anything else and the
+ * adapter unblocks the flush itself. So this must not swallow errors.
+ */
+static esp_err_t te_draw_bitmap_cb(lv_display_t *disp, esp_lcd_panel_handle_t panel,
+                                   int x_start, int y_start, int x_end, int y_end,
+                                   const void *color_map, void *user_ctx)
+{
+    (void)disp;
+    (void)user_ctx;
+
+    if (s_te_gate_armed) {
+        s_te_gate_armed = false;
+        te_wait_for_vblank();
+    }
+    return esp_lcd_panel_draw_bitmap(panel, x_start, y_start, x_end, y_end, color_map);
+}
+
+/* Report the panel's measured frame period once, from the LVGL task. */
+static void te_log_period_once(void)
+{
+    if (s_te_period_logged || s_te_probe_n < BOOST_LCD_TE_PROBE_N) {
+        return;
+    }
+    s_te_period_logged = true;
+    const uint32_t mean_us = s_te_probe_sum_us / BOOST_LCD_TE_PROBE_N;
+    if (mean_us > 0) {
+        ESP_LOGI(TAG, "TE period %u us measured over %u edges (%u.%u Hz panel scan)",
+                 (unsigned)mean_us, (unsigned)BOOST_LCD_TE_PROBE_N,
+                 (unsigned)(1000000u / mean_us),
+                 (unsigned)((10000000u / mean_us) % 10u));
+    }
+    s_metrics.te_period_us = mean_us;
+}
+#endif /* BOOST_LCD_USE_TE */
+
 /* CO5300 requires even x1/y1 and odd x2/y2 window edges. */
 static void rounder_event_cb(lv_event_t *e)
 {
@@ -79,6 +332,12 @@ static void display_metrics_event_cb(lv_event_t *e)
 {
     const lv_event_code_t code = lv_event_get_code(e);
     if (code == LV_EVENT_RENDER_START) {
+#if BOOST_LCD_USE_TE
+        /* Arm the gate for this cycle. The first strip's blit consumes it; the
+         * rest of the cycle streams out unblocked. Same task as the flush, so
+         * a plain flag is sufficient. */
+        s_te_gate_armed = true;
+#endif
         const int64_t t = esp_timer_get_time();
         if (s_last_start_us != 0) {
             const uint32_t gap = (uint32_t)(t - s_last_start_us);
@@ -125,6 +384,13 @@ static void display_metrics_event_cb(lv_event_t *e)
         }
         s_metrics.render_gap_max_us = s_gap_max_us;
         s_metrics.frames_over_budget = s_over_budget;
+#if BOOST_LCD_USE_TE
+        te_log_period_once();
+        s_metrics.te_waits = s_te_waits;
+        s_metrics.te_timeouts = s_te_timeouts;
+        s_te_waits = 0;
+        s_te_timeouts = 0;
+#endif
         s_gap_n = 0;
         s_gap_max_us = 0;
         s_over_budget = 0;
@@ -146,7 +412,14 @@ static const co5300_lcd_init_cmd_t k_lcd_init_cmds[] = {
     {0xFE, (uint8_t[]){0x00}, 1, 0},
     {0xC4, (uint8_t[]){0x80}, 1, 0},
     {0x3A, (uint8_t[]){0x55}, 1, 0},
+    /* Tearing Effect Line ON, V-blank only. */
     {0x35, (uint8_t[]){0x00}, 1, 0},
+#if BOOST_LCD_USE_TE && (BOOST_LCD_TE_SCANLINE >= 0)
+    /* set_tear_scanline: assert TE as the scan crosses this line instead of at
+     * V-blank, so the write starts just ahead of the scan. STS is 9 bits. */
+    {0x44, (uint8_t[]){(uint8_t)((BOOST_LCD_TE_SCANLINE >> 8) & 0x01),
+                       (uint8_t)(BOOST_LCD_TE_SCANLINE & 0xFF)}, 2, 0},
+#endif
     {0x53, (uint8_t[]){0x20}, 1, 0},
     {0x51, (uint8_t[]){0xFF}, 1, 0},
     {0x63, (uint8_t[]){0xFF}, 1, 0},
@@ -242,6 +515,22 @@ static lv_display_t *register_display(void)
     ESP_LOGI(TAG, "LVGL %dx%d partial, %d lines, internal DMA buffers, strip=%u B",
              BSP_LCD_H_RES, BSP_LCD_V_RES, BOOST_LVGL_BUF_LINES,
              (unsigned)BOOST_LVGL_STRIP_BYTES);
+
+#if BOOST_LCD_USE_TE
+    if (te_init() != ESP_OK) {
+        ESP_LOGW(TAG, "TE sync unavailable; continuing without it");
+    } else {
+        const esp_lv_adapter_draw_bitmap_callbacks_t te_cbs = {
+            .custom_draw_bitmap = te_draw_bitmap_cb,
+        };
+        if (esp_lv_adapter_set_draw_bitmap_callbacks(disp, &te_cbs, NULL) != ESP_OK) {
+            s_te_active = false;
+            ESP_LOGW(TAG, "TE draw-bitmap hook rejected; TE sync inactive");
+        }
+    }
+#else
+    ESP_LOGI(TAG, "TE sync disabled at compile time (BOOST_LCD_USE_TE=0)");
+#endif
     return disp;
 }
 

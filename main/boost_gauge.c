@@ -119,7 +119,10 @@ static const int8_t k_pxshift[][2] = {
  * seconds: a step is a full-screen repaint, and one of those per minute is a
  * rounding error against the frame budget while still being far faster than
  * emitter aging. */
-#define PXSHIFT_PERIOD_MS   90000u
+/* Period is user-set (settings page -> Display -> Pixel shift); see
+ * BOOST_PXSHIFT_SEC_* in boost_theme.h for the range and the default. Read
+ * per tick rather than cached, so a change over the API takes effect on the
+ * next sample without a scene rebuild. */
 /* A step dirties all 217k pixels — about 45 ms, three dropped frames. Held
  * back until the reading has been steady for a moment so the hitch lands where
  * nothing is moving; mid-sweep it would read as a stutter in the needle. */
@@ -132,7 +135,12 @@ static const int8_t k_pxshift[][2] = {
  * avoid. A real MAP sensor is noisier still. */
 #define PXSHIFT_SETTLE_PSI  0.60f
 /* ...but a signal that never settles must not starve the shift forever. */
-#define PXSHIFT_DEADLINE_MS (PXSHIFT_PERIOD_MS * 4u)
+/* A fixed grace, not a multiple of the period: the period is the user's own
+ * choice now, and "every 90 s" that can silently mean every six minutes is
+ * not the setting they asked for. 30 s is long enough to catch an idle
+ * moment in ordinary driving and short enough that the worst case is still
+ * recognisably the interval on the label. */
+#define PXSHIFT_GRACE_MS    30000u
 
 /* LVGL angles: 0 = east, clockwise (y down). Top of the face is 270. */
 #define VAULT_A0   152.0f   /* 270 - 118 */
@@ -159,6 +167,42 @@ static const int8_t k_pxshift[][2] = {
 #define VAULT_FACE_R         231.0f
 #define VAULT_SCAN_STEP      4
 #define VAULT_SCAN_OPA       41 /* 0.16 * 255 */
+/*
+ * How many radial boxes the swept needle is invalidated in.
+ *
+ * The needle is a thin spoke, so its axis-aligned bounding box is mostly empty
+ * air: at 45 degrees a 194 px spoke 14 px wide needs a 165 x 165 box, ~27k px
+ * of which about 3k carries ink. Everything downstream is charged per box
+ * pixel, not per lit pixel:
+ *   - the cached face is re-blitted across the whole box;
+ *   - lv_draw_sw_triangle() rasterises each of the three needle triangles over
+ *     (triangle bbox AND clip area) and applies three line masks per row across
+ *     the full row width, so a fat clip costs three times the box;
+ *   - draw_vault_crt() emits one chord-clipped row per VAULT_SCAN_STEP rows
+ *     across it;
+ *   - and the panel is flushed with it.
+ * Invalidating the spoke as a chain of small boxes cuts all four at once and
+ * cannot change a pixel: the drawing code is untouched, only the dirty region
+ * it gets clipped to.
+ *
+ * Measured on a host bench over a 900-render sweep, configured like the
+ * firmware (466x466 RGB565, 20-line partial draw buffer, the CO5300 even/odd
+ * area rounder, tile_cnt 2) - flushed px per render, panel flushes per render,
+ * and host raster time:
+ *     1   29913 px   4.42 flushes   0.143 ms
+ *     2   15652 px   3.06 flushes   0.112 ms
+ *     3   14043 px   3.99 flushes   0.116 ms
+ *     4   13469 px   4.81 flushes   0.137 ms
+ * (the shipped single box was 25126 px / 3.97 / 0.142 ms before the tail and
+ * bulge coverage fixes below widened the one-box case.)
+ * Past three the boxes stop shrinking - the fixed half-width padding dominates
+ * - while the per-box object walk and an extra panel flush keep being paid.
+ * Two is the pick if panel flush setup turns out to cost more than ~0.5 ms per
+ * 1600 px composited. Set to 1 to restore the single whole-spoke box.
+ */
+#ifndef VAULT_NEEDLE_SEGS
+#define VAULT_NEEDLE_SEGS    3
+#endif
 /* Vault-Tec mark: a ringed hub with three cog bars each side, sized to tuck
  * between the BOOST-O-METER line (y=-78) and the needle hub. */
 #define VAULT_LOGO_Y         (-62)
@@ -1137,10 +1181,16 @@ static void draw_vault_crt(lv_event_t *e)
     const float cx = (float)(DISP_SIZE - 1) * 0.5f + (float)s_px_dx;
     const float cy = (float)(DISP_SIZE - 1) * 0.5f + (float)s_px_dy;
 
-    lv_draw_rect_dsc_t sl;
-    lv_draw_rect_dsc_init(&sl);
-    sl.bg_color = lv_color_black();
-    sl.bg_opa = VAULT_SCAN_OPA;
+    /* lv_draw_fill(), not lv_draw_rect(): a scanline is a flat 1 px bar with no
+     * radius, border, outline, shadow or gradient, and lv_draw_rect() would run
+     * all six of those tests and then emit exactly this fill task anyway. One
+     * task per row is already the dominant cost here (a 100 px row is ~40 ns of
+     * blending against a task allocation, a unit evaluate and a dispatch), so
+     * the cheaper entry point is worth taking. Byte-for-byte the same task. */
+    lv_draw_fill_dsc_t sl;
+    lv_draw_fill_dsc_init(&sl);
+    sl.color = lv_color_black();
+    sl.opa = VAULT_SCAN_OPA;
 
     int32_t y0 = clip->y1 < 0 ? 0 : clip->y1;
     int32_t y1 = clip->y2 > DISP_SIZE - 1 ? DISP_SIZE - 1 : clip->y2;
@@ -1163,7 +1213,7 @@ static void draw_vault_crt(lv_event_t *e)
         if (xb > clip->x2) xb = clip->x2;
         if (xb < xa) continue;
         lv_area_t a = { xa, y, xb, y };
-        lv_draw_rect(layer, &sl, &a);
+        lv_draw_fill(layer, &sl, &a);
     }
 }
 
@@ -1260,31 +1310,113 @@ static void draw_vault_needle(lv_event_t *e)
     lv_draw_rect(layer, &hub, &hub_area);
 }
 
-static void invalidate_vault_needle(float old_deg, float new_deg)
+static void vault_inv_box(float minx, float miny, float maxx, float maxy, float pad)
 {
-    if (s_vault_needle == NULL) return;
+    lv_area_t a;
+    a.x1 = (lv_coord_t)floorf(minx - pad);
+    a.y1 = (lv_coord_t)floorf(miny - pad);
+    a.x2 = (lv_coord_t)ceilf(maxx + pad);
+    a.y2 = (lv_coord_t)ceilf(maxy + pad);
+    lv_obj_invalidate_area(s_vault_needle, &a);
+}
+
+/* One box per sweep, spanning both ends of the needle at every sampled angle.
+ * Kept for the rare large jump and as the VAULT_NEEDLE_SEGS=1 fallback.
+ * `samples` > 2 walks the arc as well as its ends, which a sweep crossing an
+ * axis needs - the bbox of just the two end positions falls inside the arc. */
+static void invalidate_vault_needle_fan(float old_deg, float new_deg, int samples)
+{
     const float cx = px_cx();
     const float cy = px_cy();
     float minx = cx, maxx = cx, miny = cy, maxy = cy;
-    const float degs[2] = { old_deg, new_deg };
-    for (int i = 0; i < 2; ++i) {
-        const float rad = degs[i] * (float)M_PI / 180.0f;
-        const float x = cx + (float)VAULT_NEEDLE_LEN * cosf(rad);
-        const float y = cy + (float)VAULT_NEEDLE_LEN * sinf(rad);
-        if (x < minx) minx = x;
-        if (x > maxx) maxx = x;
-        if (y < miny) miny = y;
-        if (y > maxy) maxy = y;
+    for (int i = 0; i < samples; ++i) {
+        const float f = samples < 2 ? 0.0f : (float)i / (float)(samples - 1);
+        const float rad = (old_deg + (new_deg - old_deg) * f) * (float)M_PI / 180.0f;
+        const float ct = cosf(rad), st = sinf(rad);
+        /* Both ends: the counterweight tail reaches VAULT_NEEDLE_TAIL past the
+         * pivot, which is further than the hub-sized pad below allows for. */
+        const float rs[2] = { -(float)VAULT_NEEDLE_TAIL, (float)VAULT_NEEDLE_LEN };
+        for (int k = 0; k < 2; ++k) {
+            const float x = cx + rs[k] * ct;
+            const float y = cy + rs[k] * st;
+            if (x < minx) minx = x;
+            if (x > maxx) maxx = x;
+            if (y < miny) miny = y;
+            if (y > maxy) maxy = y;
+        }
     }
-    /* Hub is at the centre and already inside the box; the tip needs only a
-     * small AA margin. Keeping this tight is what lets the ring art skip. */
-    const float pad = (float)(VAULT_HUB_R + 5 + 3); /* hub + border + AA */
-    lv_area_t a;
-    a.x1 = (lv_coord_t)(minx - pad);
-    a.y1 = (lv_coord_t)(miny - pad);
-    a.x2 = (lv_coord_t)(maxx + pad);
-    a.y2 = (lv_coord_t)(maxy + pad);
-    lv_obj_invalidate_area(s_vault_needle, &a);
+    /* Hub is at the centre and already inside the box; the ends need only the
+     * half-width plus an AA margin. Keeping this tight is what lets the ring
+     * art skip. */
+    vault_inv_box(minx, miny, maxx, maxy, (float)(VAULT_HUB_R + 5 + 3));
+}
+
+static void invalidate_vault_needle(float old_deg, float new_deg)
+{
+    if (s_vault_needle == NULL) return;
+
+#if VAULT_NEEDLE_SEGS < 2
+    invalidate_vault_needle_fan(old_deg, new_deg, 2);
+#else
+    /* Past a point the chain would crowd LV_INV_BUF_SIZE and the boxes would
+     * overlap so heavily that one fanned box is smaller anyway. */
+    const float sweep = fabsf(new_deg - old_deg);
+    if (sweep > 45.0f) {
+        /* One sample per 12 degrees, so the arc is covered, not just its ends. */
+        int samples = (int)(sweep / 12.0f) + 2;
+        if (samples > 24) samples = 24;
+        invalidate_vault_needle_fan(old_deg, new_deg, samples);
+        return;
+    }
+
+    const float cx = px_cx();
+    const float cy = px_cy();
+
+    /* Shaft: one box per radial slice, spanning both angles. The needle is at
+     * most VAULT_NEEDLE_HALFW wide perpendicular to the spoke, and a
+     * perpendicular offset can never exceed that on either axis, so a flat pad
+     * of half-width plus an AA pixel covers the ink itself. */
+    const float c0 = cosf(old_deg * (float)M_PI / 180.0f);
+    const float s0 = sinf(old_deg * (float)M_PI / 180.0f);
+    const float c1 = cosf(new_deg * (float)M_PI / 180.0f);
+    const float s1 = sinf(new_deg * (float)M_PI / 180.0f);
+    const float r_lo = -(float)VAULT_NEEDLE_TAIL;
+    const float r_hi = (float)VAULT_NEEDLE_LEN;
+    /* A slice box is built from its four corners, so the arc swept between the
+     * two angles bulges outside it by r * (1 - cos(sweep/2)). Charge that to
+     * the padding rather than capping the sweep: at the 0.35 degree gate it is
+     * a millionth of a pixel, so the common frame pays nothing for it. */
+    const float bulge = 1.0f - cosf(sweep * 0.5f * (float)M_PI / 180.0f);
+    const float pad_base = (float)VAULT_NEEDLE_HALFW + 2.0f;
+    /* The pivot cap is a rounded rect filling exactly VAULT_HUB_R either side
+     * of the centre, plus a pixel of AA on the circle. It straddles the pivot,
+     * so it folds into the innermost slice rather than costing a box of its
+     * own - an extra box would add its full height back to the scanline and
+     * triangle row counts, which is most of what those two cost. */
+    const float hub = (float)VAULT_HUB_R + 2.0f - pad_base;
+    for (int i = 0; i < VAULT_NEEDLE_SEGS; ++i) {
+        const float ra = r_lo + (r_hi - r_lo) * ((float)i / (float)VAULT_NEEDLE_SEGS);
+        const float rb = r_lo + (r_hi - r_lo) * ((float)(i + 1) / (float)VAULT_NEEDLE_SEGS);
+        const float xs[4] = { cx + ra * c0, cx + rb * c0, cx + ra * c1, cx + rb * c1 };
+        const float ys[4] = { cy + ra * s0, cy + rb * s0, cy + ra * s1, cy + rb * s1 };
+        float minx = xs[0], maxx = xs[0], miny = ys[0], maxy = ys[0];
+        for (int k = 1; k < 4; ++k) {
+            if (xs[k] < minx) minx = xs[k];
+            if (xs[k] > maxx) maxx = xs[k];
+            if (ys[k] < miny) miny = ys[k];
+            if (ys[k] > maxy) maxy = ys[k];
+        }
+        if (i == 0) {
+            /* r_lo is negative, so slice 0 already straddles the pivot. */
+            if (cx - hub < minx) minx = cx - hub;
+            if (cx + hub > maxx) maxx = cx + hub;
+            if (cy - hub < miny) miny = cy - hub;
+            if (cy + hub > maxy) maxy = cy + hub;
+        }
+        const float rmax = (ra < 0.0f ? -ra : ra) > rb ? (ra < 0.0f ? -ra : ra) : rb;
+        vault_inv_box(minx, miny, maxx, maxy, pad_base + rmax * bulge);
+    }
+#endif
 }
 
 /* Hazard triangles flanking the over-pressure warning. */
@@ -2477,9 +2609,10 @@ static void pixel_shift_tick(float psi)
         s_px_settled_ms = now;
     }
 
-    if (lv_tick_elaps(s_px_step_ms) < PXSHIFT_PERIOD_MS) return;
+    const uint32_t period_ms = (uint32_t)boost_theme_pixel_shift_sec() * 1000u;
+    if (lv_tick_elaps(s_px_step_ms) < period_ms) return;
     if (lv_tick_elaps(s_px_settled_ms) < PXSHIFT_SETTLE_MS &&
-        lv_tick_elaps(s_px_step_ms) < PXSHIFT_DEADLINE_MS) {
+        lv_tick_elaps(s_px_step_ms) < period_ms + PXSHIFT_GRACE_MS) {
         return;
     }
 

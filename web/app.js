@@ -61,6 +61,10 @@ const state = {
   gaugeRaf: null,
   gaugeLastAt: 0,
   sparklineLastAt: 0,
+  /* Mirrors the firmware defaults so the picker shows something honest in the
+   * gap before the first /themes response lands. */
+  pixelShift: true,
+  pixelShiftSec: 90,
 };
 
 const el = {
@@ -90,8 +94,7 @@ const el = {
   brightnessLowOut: document.getElementById("brightnessLowOut"),
   saveConfigBtn: document.getElementById("saveConfigBtn"),
   themeList: document.getElementById("themeList"),
-  pixelShift: document.getElementById("pixelShift"),
-  bigDigitStaticBg: document.getElementById("bigDigitStaticBg"),
+  pixelShiftMode: document.getElementById("pixelShiftMode"),
   loadLogsBtn: document.getElementById("loadLogsBtn"),
   clearLogsBtn: document.getElementById("clearLogsBtn"),
   logSummary: document.getElementById("logSummary"),
@@ -1388,11 +1391,47 @@ function renderThemes() {
   }
 }
 
-/* Settings-page display toggles. Both live on the themes/config endpoint
+/* Pixel shift is one control, not two. The device keeps an on/off flag and an
+ * interval, but a checkbox beside a period picker can be left reading
+ * "off / every 90 s", which is a state the user has to reason about and the
+ * device cannot honour. Collapsing both into one <select> makes "Off" simply
+ * the first choice, and the interval the device remembers from last time is
+ * still there when they turn it back on. */
+function pixelShiftLabel(seconds) {
+  if (seconds % 60 === 0 && seconds >= 60) {
+    const minutes = seconds / 60;
+    return `Every ${minutes} minute${minutes === 1 ? "" : "s"}`;
+  }
+  return `Every ${seconds} seconds`;
+}
+
+/* The API accepts any interval in its range, not just the three offered here,
+ * so a value set by some other client must still be selectable rather than
+ * silently rewritten to 90 s the first time this page loads. */
+function ensurePixelShiftOption(seconds) {
+  const select = el.pixelShiftMode;
+  if (!select) return;
+  const value = String(seconds);
+  if ([...select.options].some((option) => option.value === value)) return;
+  const option = document.createElement("option");
+  option.value = value;
+  option.textContent = pixelShiftLabel(seconds);
+  option.dataset.custom = "1";
+  /* Keep the list ordered by period; "off" sorts first because it parses NaN. */
+  const after = [...select.options].find(
+    (existing) => Number(existing.value) > seconds,
+  );
+  select.insertBefore(option, after || null);
+}
+
+/* Settings-page display controls. All live on the themes/config endpoint
  * because they are panel-render behaviour, not gauge range. */
 function syncDisplayToggles() {
-  if (el.pixelShift) el.pixelShift.checked = !!state.pixelShift;
-  if (el.bigDigitStaticBg) el.bigDigitStaticBg.checked = !!state.bigDigitStaticBg;
+  if (el.pixelShiftMode) {
+    const seconds = Number(state.pixelShiftSec) || 90;
+    ensurePixelShiftOption(seconds);
+    el.pixelShiftMode.value = state.pixelShift ? String(seconds) : "off";
+  }
 }
 
 function wireDisplayToggles() {
@@ -1404,6 +1443,7 @@ function wireDisplayToggles() {
         body: JSON.stringify(body),
       });
       state.pixelShift = !!payload.pixelShift;
+      state.pixelShiftSec = Number(payload.pixelShiftSec) || state.pixelShiftSec;
       state.bigDigitStaticBg = !!payload.bigDigitStaticBg;
       state.bigDigitColorText = !!payload.bigDigitColorText;
       state.themes = payload.themes || state.themes;
@@ -1415,17 +1455,19 @@ function wireDisplayToggles() {
       showError(error.message);
     }
   };
-  if (el.pixelShift) {
-    el.pixelShift.addEventListener("change", () =>
-      send({ pixelShift: el.pixelShift.checked },
-           el.pixelShift.checked ? "Pixel shift on" : "Pixel shift off"),
-    );
-  }
-  if (el.bigDigitStaticBg) {
-    el.bigDigitStaticBg.addEventListener("change", () =>
-      send({ bigDigitStaticBg: el.bigDigitStaticBg.checked },
-           el.bigDigitStaticBg.checked ? "Static background" : "Colour sweep"),
-    );
+  if (el.pixelShiftMode) {
+    el.pixelShiftMode.addEventListener("change", () => {
+      const choice = el.pixelShiftMode.value;
+      if (choice === "off") {
+        /* Interval deliberately not sent: leaving it stored is what lets the
+         * picker come back to the user's own choice, not the default. */
+        send({ pixelShift: false }, "Pixel shift off");
+        return;
+      }
+      const seconds = Number(choice);
+      send({ pixelShift: true, pixelShiftSec: seconds },
+           `Pixel shift ${pixelShiftLabel(seconds).toLowerCase()}`);
+    });
   }
 }
 
@@ -1459,6 +1501,7 @@ async function refreshAll() {
     state.bigDigitStaticBg = !!themes.bigDigitStaticBg;
     state.bigDigitColorText = !!themes.bigDigitColorText;
     state.pixelShift = !!themes.pixelShift;
+    state.pixelShiftSec = Number(themes.pixelShiftSec) || state.pixelShiftSec;
     syncDisplayToggles();
     state.activeThemeId = themes.activeThemeId || statePayload.activeThemeId || state.activeThemeId;
     if (IS_COCKPIT) renderThemes();

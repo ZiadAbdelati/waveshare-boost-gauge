@@ -16,6 +16,8 @@
 #define NVS_KEY_BIGFLAT "bigdigit_flat"
 #define NVS_KEY_BIGTEXT "bigdigit_text"
 #define NVS_KEY_PXSHIFT "pixel_shift"
+/* 11 chars; NVS keys cap at 15. */
+#define NVS_KEY_PXSECS  "pxshift_sec"
 
 /* Palettes/styles here MUST match tools/mock_server.py and the web renderers so
  * the physical panel and the dashboard mirror agree. */
@@ -92,6 +94,7 @@ static bool s_bigdigit_color_text;
 /* Burn-in protection is on unless it was explicitly switched off, so a panel
  * that never sees the settings page is still protected. */
 static bool s_pixel_shift = true;
+static uint16_t s_pixel_shift_sec = BOOST_PXSHIFT_SEC_DEFAULT;
 
 /* Persisted as one blob keyed by id rather than per-theme NVS keys: ids run to
  * 24 chars and NVS keys cap at 15, and a single blob keeps the whole set
@@ -112,6 +115,17 @@ static void ensure_loaded(void)
     s_loaded = true;
 }
 
+static uint16_t clamp_pxshift_sec(uint16_t seconds)
+{
+    if (seconds < BOOST_PXSHIFT_SEC_MIN) {
+        return (uint16_t)BOOST_PXSHIFT_SEC_MIN;
+    }
+    if (seconds > BOOST_PXSHIFT_SEC_MAX) {
+        return (uint16_t)BOOST_PXSHIFT_SEC_MAX;
+    }
+    return seconds;
+}
+
 static void persist(void)
 {
 #ifdef ESP_PLATFORM
@@ -130,6 +144,7 @@ static void persist(void)
     nvs_set_u8(h, NVS_KEY_BIGFLAT, s_bigdigit_static_bg ? 1 : 0);
     nvs_set_u8(h, NVS_KEY_BIGTEXT, s_bigdigit_color_text ? 1 : 0);
     nvs_set_u8(h, NVS_KEY_PXSHIFT, s_pixel_shift ? 1 : 0);
+    nvs_set_u16(h, NVS_KEY_PXSECS, s_pixel_shift_sec);
     nvs_commit(h);
     nvs_close(h);
 #endif
@@ -173,6 +188,14 @@ void boost_theme_init(void)
     uint8_t px = 0;
     if (nvs_get_u8(h, NVS_KEY_PXSHIFT, &px) == ESP_OK) {
         s_pixel_shift = (px != 0);
+    }
+
+    /* Clamped on the way in as well as the way out: the range can narrow in a
+     * later firmware, and a stored value from a wider one must not survive as
+     * an out-of-range period that no code path would ever have accepted. */
+    uint16_t pxsec = 0;
+    if (nvs_get_u16(h, NVS_KEY_PXSECS, &pxsec) == ESP_OK && pxsec != 0) {
+        s_pixel_shift_sec = clamp_pxshift_sec(pxsec);
     }
 
     size_t len = 0;
@@ -295,6 +318,23 @@ void boost_theme_set_pixel_shift(bool enabled)
 {
     ensure_loaded();
     s_pixel_shift = enabled;
+    persist();
+}
+
+uint16_t boost_theme_pixel_shift_sec(void)
+{
+    return s_pixel_shift_sec;
+}
+
+void boost_theme_set_pixel_shift_sec(uint16_t seconds)
+{
+    ensure_loaded();
+    /* Clamped, not rejected: this is a comfort setting with no wrong answer
+     * inside a wide band, and the caller that asked for 5 s wants "as often as
+     * you'll allow", not an error. The on/off decision stays with
+     * boost_theme_set_pixel_shift() so there is exactly one way to disable
+     * this and no way for the two controls to disagree. */
+    s_pixel_shift_sec = clamp_pxshift_sec(seconds);
     persist();
 }
 

@@ -31,6 +31,16 @@ typedef struct {
     uint32_t render_gap_p50_us;
     uint32_t render_gap_max_us;
     uint32_t frames_over_budget;
+    /* Tearing-effect sync. te_period_us is the panel's measured frame period,
+     * averaged over the first ~120 TE edges - the only direct evidence of the
+     * real scan rate, since the init sequence sets no frame-rate register.
+     * Zero means TE is off or has not been measured yet. te_waits/te_timeouts
+     * count per second: one wait per render cycle, and a timeout means the TE
+     * edge did not arrive and the strip was flushed unsynchronised. A steady
+     * nonzero te_timeouts means TE is not wired as assumed. */
+    uint32_t te_period_us;
+    uint32_t te_waits;
+    uint32_t te_timeouts;
 } boost_display_metrics_t;
 
 lv_display_t *boost_display_start(void);

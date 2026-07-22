@@ -726,4 +726,8 @@ output {
   accent-color: var(--teal, #2ee6c5);
   cursor: pointer;
 }
-.display-panel .hint-text { margin: 0 0 0.7rem 1.65rem; }
+.display-panel .toggle-field + .hint-text { margin: 0 0 0.7rem 1.65rem; }
+/* Interval picker: a select that runs the full panel width reads as a text
+ * field and hides how few choices it has. Capped near its longest option. */
+.display-panel .field { margin-top: 0.1rem; max-width: 22rem; }
+.display-panel .field + .hint-text { margin: 0.45rem 0 0.2rem; }

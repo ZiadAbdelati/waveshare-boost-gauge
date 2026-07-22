@@ -101,6 +101,31 @@ void boost_theme_set_bigdigit_color_text(bool enabled);
 bool boost_theme_pixel_shift(void);
 void boost_theme_set_pixel_shift(bool enabled);
 
+/*
+ * How long the scene rests at one offset before stepping to the next, in
+ * seconds. The exact value barely matters for burn-in — anything far quicker
+ * than emitter aging works — so this is a comfort control: how often you are
+ * willing to spend a ~45 ms full-screen repaint. The dashboard offers 90 s /
+ * 3 min / 10 min; the range below is wider so an API client is not boxed in by
+ * the picker's choices.
+ *
+ * 30 s floor: below that the repaints stop being a rounding error against the
+ * frame budget. 1 h ceiling: the eight-step ring would take most of a day to
+ * close, which is slow enough that a long static session still ages one offset
+ * disproportionately, and there is no point pretending otherwise.
+ *
+ * Default 90 s is the value this shipped with, so a panel that predates the
+ * setting keeps exactly the cadence it was tuned and screenshotted at.
+ */
+#define BOOST_PXSHIFT_SEC_MIN     30u
+#define BOOST_PXSHIFT_SEC_MAX     3600u
+#define BOOST_PXSHIFT_SEC_DEFAULT 90u
+
+uint16_t boost_theme_pixel_shift_sec(void);
+
+/** Clamped to [BOOST_PXSHIFT_SEC_MIN, BOOST_PXSHIFT_SEC_MAX], then persisted. */
+void boost_theme_set_pixel_shift_sec(uint16_t seconds);
+
 #ifdef __cplusplus
 }
 #endif

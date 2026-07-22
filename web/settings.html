@@ -58,13 +58,20 @@
 
       <section class="panel display-panel">
         <div class="section-title"><span>Display</span></div>
-        <label class="toggle-field">
-          <input id="pixelShift" type="checkbox">
+        <label class="field">
           <span>Pixel shift (AMOLED burn-in protection)</span>
+          <select id="pixelShiftMode">
+            <option value="off">Off</option>
+            <option value="90">Every 90 seconds</option>
+            <option value="180">Every 3 minutes</option>
+            <option value="600">Every 10 minutes</option>
+          </select>
         </label>
-        <p class="hint-text">Nudges the whole gauge by a pixel or two every 90&nbsp;s so fixed
-          elements &mdash; tick rings, labels, box outlines &mdash; don&rsquo;t age into the panel.
-          Shifts wait for a steady reading, so they land where nothing is moving.</p>
+        <p class="hint-text">Nudges the whole gauge by a pixel or two so fixed elements
+          &mdash; tick rings, labels, box outlines &mdash; don&rsquo;t age into the panel. Each
+          nudge costs one full-screen repaint (~45&nbsp;ms), so it waits up to 30&nbsp;s past the
+          interval for a steady reading and lands where nothing is moving. More often is
+          gentler on the panel; less often is fewer repaints.</p>
       </section>
 
       <section class="panel network-panel">
