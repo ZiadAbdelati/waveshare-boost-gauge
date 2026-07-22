@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdbool.h>
+
 #include "esp_err.h"
 #include "lvgl.h"
 
@@ -53,6 +55,13 @@ lv_display_t *boost_display_start(void);
  * which this module no longer calls. It is a single 0x51 command either way.
  */
 esp_err_t boost_display_set_brightness(int percent);
+
+/* Enable/disable tearing-effect synchronisation at runtime. The GPIO/ISR are
+ * always set up at boot (cheap); this only gates whether render cycles wait for
+ * the panel's vertical-blank edge. boost_display_te() reports whether it is
+ * both enabled and actually receiving edges. */
+void boost_display_set_te(bool enabled);
+bool boost_display_te(void);
 
 esp_err_t boost_display_lock(uint32_t timeout_ms);
 void boost_display_unlock(void);

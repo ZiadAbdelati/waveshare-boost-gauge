@@ -18,6 +18,10 @@
 #define NVS_KEY_PXSHIFT "pixel_shift"
 /* 11 chars; NVS keys cap at 15. */
 #define NVS_KEY_PXSECS  "pxshift_sec"
+#define NVS_KEY_BIGCOL  "bigdigit_col"
+#define NVS_KEY_ARCGRAD "arc_gradient"
+#define NVS_KEY_HUDGRAD "hud_gradient"
+#define NVS_KEY_TESYNC  "te_sync"
 
 /* Palettes/styles here MUST match tools/mock_server.py and the web renderers so
  * the physical panel and the dashboard mirror agree. */
@@ -91,6 +95,12 @@ static boost_theme_t s_themes[THEME_COUNT];
 static bool s_loaded;
 static bool s_bigdigit_static_bg;
 static bool s_bigdigit_color_text;
+/* 0x1000000 sentinel = "unset", so an absent NVS key keeps the black
+ * default while a stored pure-black (0x000000) is still honoured. */
+static uint32_t s_bigdigit_static_color = 0x000000u;
+static bool s_arc_gradient;
+static bool s_hud_gradient;
+static bool s_te_sync;
 /* Burn-in protection is on unless it was explicitly switched off, so a panel
  * that never sees the settings page is still protected. */
 static bool s_pixel_shift = true;
@@ -145,6 +155,10 @@ static void persist(void)
     nvs_set_u8(h, NVS_KEY_BIGTEXT, s_bigdigit_color_text ? 1 : 0);
     nvs_set_u8(h, NVS_KEY_PXSHIFT, s_pixel_shift ? 1 : 0);
     nvs_set_u16(h, NVS_KEY_PXSECS, s_pixel_shift_sec);
+    nvs_set_u32(h, NVS_KEY_BIGCOL, s_bigdigit_static_color);
+    nvs_set_u8(h, NVS_KEY_ARCGRAD, s_arc_gradient ? 1 : 0);
+    nvs_set_u8(h, NVS_KEY_HUDGRAD, s_hud_gradient ? 1 : 0);
+    nvs_set_u8(h, NVS_KEY_TESYNC, s_te_sync ? 1 : 0);
     nvs_commit(h);
     nvs_close(h);
 #endif
@@ -196,6 +210,23 @@ void boost_theme_init(void)
     uint16_t pxsec = 0;
     if (nvs_get_u16(h, NVS_KEY_PXSECS, &pxsec) == ESP_OK && pxsec != 0) {
         s_pixel_shift_sec = clamp_pxshift_sec(pxsec);
+    }
+
+    uint32_t bigcol = 0;
+    if (nvs_get_u32(h, NVS_KEY_BIGCOL, &bigcol) == ESP_OK) {
+        s_bigdigit_static_color = bigcol & 0xFFFFFFu;
+    }
+    uint8_t ag = 0;
+    if (nvs_get_u8(h, NVS_KEY_ARCGRAD, &ag) == ESP_OK) {
+        s_arc_gradient = (ag != 0);
+    }
+    uint8_t hg = 0;
+    if (nvs_get_u8(h, NVS_KEY_HUDGRAD, &hg) == ESP_OK) {
+        s_hud_gradient = (hg != 0);
+    }
+    uint8_t te = 0;
+    if (nvs_get_u8(h, NVS_KEY_TESYNC, &te) == ESP_OK) {
+        s_te_sync = (te != 0);
     }
 
     size_t len = 0;
@@ -306,6 +337,54 @@ void boost_theme_set_bigdigit_color_text(bool enabled)
 {
     ensure_loaded();
     s_bigdigit_color_text = enabled;
+    persist();
+}
+
+uint32_t boost_theme_bigdigit_static_color(void)
+{
+    return s_bigdigit_static_color;
+}
+
+void boost_theme_set_bigdigit_static_color(uint32_t rgb)
+{
+    ensure_loaded();
+    s_bigdigit_static_color = rgb & 0xFFFFFFu;
+    persist();
+}
+
+bool boost_theme_arc_gradient(void)
+{
+    return s_arc_gradient;
+}
+
+void boost_theme_set_arc_gradient(bool enabled)
+{
+    ensure_loaded();
+    s_arc_gradient = enabled;
+    persist();
+}
+
+bool boost_theme_hud_gradient(void)
+{
+    return s_hud_gradient;
+}
+
+void boost_theme_set_hud_gradient(bool enabled)
+{
+    ensure_loaded();
+    s_hud_gradient = enabled;
+    persist();
+}
+
+bool boost_theme_te_sync(void)
+{
+    return s_te_sync;
+}
+
+void boost_theme_set_te_sync(bool enabled)
+{
+    ensure_loaded();
+    s_te_sync = enabled;
     persist();
 }
 

@@ -58,6 +58,13 @@
 
       <section class="panel display-panel">
         <div class="section-title"><span>Display</span></div>
+        <label class="toggle-field">
+          <input id="teSync" type="checkbox">
+          <span>Tear sync (reduce needle tearing)</span>
+        </label>
+        <p class="hint-text">Locks screen updates to the panel&rsquo;s refresh so partial
+          redraws don&rsquo;t land mid-scan. Steadier, but it can drop the odd frame &mdash;
+          toggle it and see which you prefer.</p>
         <label class="field">
           <span>Pixel shift (AMOLED burn-in protection)</span>
           <select id="pixelShiftMode">

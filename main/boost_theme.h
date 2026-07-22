@@ -87,6 +87,27 @@ bool boost_theme_bigdigit_color_text(void);
 void boost_theme_set_bigdigit_color_text(bool enabled);
 
 /*
+ * Ground colour for Big Digit's static-background mode. Defaults to true black
+ * (0x000000) so the AMOLED pixels are actually OFF - the theme's `face` is a
+ * dark grey, which on an emissive panel lit the whole field like a backlit LCD.
+ * Only consulted when bigdigit_static_bg is on.
+ */
+uint32_t boost_theme_bigdigit_static_color(void);
+void boost_theme_set_bigdigit_static_color(uint32_t rgb);
+
+/* Smooth (quantised-gradient) fill colour for the arc and hud faces instead of
+ * a hard vacuum/boost/overboost switch - the same ramp Big Digit sweeps. */
+bool boost_theme_arc_gradient(void);
+void boost_theme_set_arc_gradient(bool enabled);
+bool boost_theme_hud_gradient(void);
+void boost_theme_set_hud_gradient(bool enabled);
+
+/* Tearing-effect sync preference, persisted. Applied to the display at boot and
+ * whenever changed. */
+bool boost_theme_te_sync(void);
+void boost_theme_set_te_sync(bool enabled);
+
+/*
  * AMOLED burn-in countermeasure. The gauge shows one static-heavy face for
  * hours at a time at 85-92% brightness, so the tick rings, titles and readout
  * outlines sit on the same emitters long enough to age them differentially.

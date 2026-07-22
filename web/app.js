@@ -95,6 +95,7 @@ const el = {
   saveConfigBtn: document.getElementById("saveConfigBtn"),
   themeList: document.getElementById("themeList"),
   pixelShiftMode: document.getElementById("pixelShiftMode"),
+  teSync: document.getElementById("teSync"),
   loadLogsBtn: document.getElementById("loadLogsBtn"),
   clearLogsBtn: document.getElementById("clearLogsBtn"),
   logSummary: document.getElementById("logSummary"),
@@ -1300,25 +1301,48 @@ function themeEditor(theme) {
     wrap.append(row);
   }
 
+  const addToggle = (key, label, onMsg, offMsg) => {
+    const row = document.createElement("label");
+    row.className = "theme-toggle-row";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = !!state[key];
+    box.addEventListener("change", () =>
+      queueThemeConfig({ [key]: box.checked }, box.checked ? onMsg : offMsg),
+    );
+    const name = document.createElement("span");
+    name.textContent = label;
+    row.append(box, name);
+    wrap.append(row);
+  };
+
+  if (theme.style === "arc") {
+    addToggle("arcGradient", "Gradient fill (smooth colour transition)",
+              "Gradient fill", "Zone colours");
+  }
+  if (theme.style === "hud") {
+    addToggle("hudGradient", "Gradient fill (smooth colour transition)",
+              "Gradient fill", "Zone colours");
+  }
   if (theme.style === "bigdigit") {
-    const toggles = [
-      ["bigDigitStaticBg", "Static background (no colour sweep)",
-       "Static background", "Colour sweep"],
-      ["bigDigitColorText", "Colour the readout instead of the background",
-       "Readout colour", "White readout"],
-    ];
-    for (const [key, label, onMsg, offMsg] of toggles) {
+    addToggle("bigDigitStaticBg", "Static background (no colour sweep)",
+              "Static background", "Colour sweep");
+    addToggle("bigDigitColorText", "Colour the readout instead of the background",
+              "Readout colour", "White readout");
+
+    if (state.bigDigitStaticBg) {
       const row = document.createElement("label");
-      row.className = "theme-toggle-row";
-      const box = document.createElement("input");
-      box.type = "checkbox";
-      box.checked = !!state[key];
-      box.addEventListener("change", () =>
-        queueThemeConfig({ [key]: box.checked }, box.checked ? onMsg : offMsg),
-      );
+      row.className = "theme-color-row";
+      const input = document.createElement("input");
+      input.type = "color";
+      input.value = state.bigDigitStaticColor || "#000000";
+      input.addEventListener("input", () => {
+        state.bigDigitStaticColor = input.value;
+        queueThemeConfig({ bigDigitStaticColor: input.value });
+      });
       const name = document.createElement("span");
-      name.textContent = label;
-      row.append(box, name);
+      name.textContent = "Background colour (black = pixels off)";
+      row.append(input, name);
       wrap.append(row);
     }
   }
@@ -1432,6 +1456,7 @@ function syncDisplayToggles() {
     ensurePixelShiftOption(seconds);
     el.pixelShiftMode.value = state.pixelShift ? String(seconds) : "off";
   }
+  if (el.teSync) el.teSync.checked = !!state.teSync;
 }
 
 function wireDisplayToggles() {
@@ -1444,6 +1469,7 @@ function wireDisplayToggles() {
       });
       state.pixelShift = !!payload.pixelShift;
       state.pixelShiftSec = Number(payload.pixelShiftSec) || state.pixelShiftSec;
+      state.teSync = !!payload.teSync;
       state.bigDigitStaticBg = !!payload.bigDigitStaticBg;
       state.bigDigitColorText = !!payload.bigDigitColorText;
       state.themes = payload.themes || state.themes;
@@ -1455,6 +1481,12 @@ function wireDisplayToggles() {
       showError(error.message);
     }
   };
+  if (el.teSync) {
+    el.teSync.addEventListener("change", () =>
+      send({ teSync: el.teSync.checked },
+           el.teSync.checked ? "Tear sync on" : "Tear sync off"),
+    );
+  }
   if (el.pixelShiftMode) {
     el.pixelShiftMode.addEventListener("change", () => {
       const choice = el.pixelShiftMode.value;
@@ -1500,6 +1532,10 @@ async function refreshAll() {
     state.themes = themes.themes || [];
     state.bigDigitStaticBg = !!themes.bigDigitStaticBg;
     state.bigDigitColorText = !!themes.bigDigitColorText;
+    state.bigDigitStaticColor = themes.bigDigitStaticColor || "#000000";
+    state.arcGradient = !!themes.arcGradient;
+    state.hudGradient = !!themes.hudGradient;
+    state.teSync = !!themes.teSync;
     state.pixelShift = !!themes.pixelShift;
     state.pixelShiftSec = Number(themes.pixelShiftSec) || state.pixelShiftSec;
     syncDisplayToggles();

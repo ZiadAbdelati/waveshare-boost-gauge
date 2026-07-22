@@ -524,8 +524,25 @@ static float psi_to_sweep(float psi, float a0, float a1)
     return zero_at + t * (a1 - zero_at);
 }
 
+/* Colour-sweep quantisation, shared by big-digit and the arc/hud gradients. */
+#define BIG_STEPS 24
+static uint32_t big_color_for_step(const boost_theme_t *theme, int step);
+
+/* The vacuum->boost->overboost ramp Big Digit sweeps, quantised to BIG_STEPS so
+ * a fill only recolours at a step boundary rather than every frame. Shared by
+ * the arc and hud gradient-fill modes. */
+static uint32_t gradient_rgb_for_psi(const boost_theme_t *theme, float psi)
+{
+    const float lo = s_psi_min;
+    const float hi = s_psi_max;
+    const float t = (hi > lo) ? (clampf(psi, lo, hi) - lo) / (hi - lo) : 0.0f;
+    const int step = (int)lroundf(t * (float)(BIG_STEPS - 1));
+    return big_color_for_step(theme, step);
+}
+
 static lv_color_t color_for_psi(const boost_theme_t *theme, float psi)
 {
+    if (boost_theme_arc_gradient()) return c(gradient_rgb_for_psi(theme, psi));
     if (psi >= s_psi_overboost) return c(theme->overboost);
     if (psi >= 0.35f) return c(theme->boost);
     if (psi > -0.35f) return c(theme->text);
@@ -1085,25 +1102,30 @@ static void paint_vault_background(lv_obj_t *canvas, const boost_theme_t *theme)
     if (db == NULL) return;
 
     /*
-     * Error-diffused vignette.
+     * Serpentine error-diffused vignette.
      *
      * The face is #02100a, whose green sits at level 4 of 63 in RGB565, so the
      * whole ramp has about three output levels to work with. Ordered (Bayer)
-     * dithering spread that better than nothing, but it quantises each pixel
-     * independently, so wide flat plateaus survive between the transitions and
-     * read as faint rings. Floyd-Steinberg carries the rounding error forward
-     * instead, so the *average* over any small neighbourhood tracks the ideal
-     * ramp continuously - which is what the eye integrates.
+     * dithering left faint rings because it quantises each pixel independently.
+     * Error diffusion carries the rounding forward so the local average tracks
+     * the ideal ramp continuously.
      *
-     * This costs a serial pass with two error rows, which would be far too slow
-     * per frame. It runs once, at scene build, into the cached face.
+     * Plain left-to-right Floyd-Steinberg pushes its error consistently one way,
+     * which builds up diagonal "worm" trails - the pixelated texture. Scanning
+     * alternate rows in opposite directions (boustrophedon) and mirroring the
+     * kernel cancels that bias, so the residual reads as fine even grain rather
+     * than a directional pattern. On a channel this coarse some grain is the
+     * unavoidable price of not having rings; this makes it the least structured
+     * grain available.
+     *
+     * A serial pass with two error rows, far too slow per frame - it runs once,
+     * at scene build, into the cached face.
      */
     const float fcx = (float)(DISP_SIZE - 1) * 0.5f;
     const float fcy = (float)(DISP_SIZE - 1) * 0.5f;
     const float span = VAULT_VIGN_R1 - VAULT_VIGN_R0;
 
-    /* Error carried in 1/256 of an output level, per channel, for this row and
-     * the next. int16 is ample: error never exceeds +/-128. */
+    /* +1 pad each side so x-1 and x+1 index in bounds at both ends. */
     const size_t errbytes = sizeof(int16_t) * 3u * (size_t)(DISP_SIZE + 2);
     int16_t *err_cur = BG_ALLOC(errbytes);
     int16_t *err_nxt = BG_ALLOC(errbytes);
@@ -1121,7 +1143,13 @@ static void paint_vault_background(lv_obj_t *canvas, const boost_theme_t *theme)
         const float dy2 = dy * dy;
         memset(err_nxt, 0, errbytes);
 
-        for (int32_t x = 0; x < DISP_SIZE; ++x) {
+        /* Even rows L->R, odd rows R->L; the forward neighbour and the two
+         * diagonal next-row weights flip with the direction. */
+        const int dir = (y & 1) ? -1 : 1;
+        const int32_t x_start = (dir > 0) ? 0 : DISP_SIZE - 1;
+        const int32_t x_end = (dir > 0) ? DISP_SIZE : -1;
+
+        for (int32_t x = x_start; x != x_end; x += dir) {
             const float dx = (float)x - fcx;
             const float r = sqrtf(dx * dx + dy2);
 
@@ -1152,10 +1180,11 @@ static void paint_vault_background(lv_obj_t *canvas, const boost_theme_t *theme)
                  * its neighbours and streak. */
                 if (e > 512) e = 512;
                 if (e < -512) e = -512;
-                err_cur[(x + 2) * 3 + ch] += (int16_t)((e * 7) / 16);
-                err_nxt[(x + 0) * 3 + ch] += (int16_t)((e * 3) / 16);
-                err_nxt[(x + 1) * 3 + ch] += (int16_t)((e * 5) / 16);
-                err_nxt[(x + 2) * 3 + ch] += (int16_t)((e * 1) / 16);
+                /* Weights follow the scan: fwd = x+dir, diagonals mirror. */
+                err_cur[(x + 1 + dir) * 3 + ch] += (int16_t)((e * 7) / 16);
+                err_nxt[(x + 1 - dir) * 3 + ch] += (int16_t)((e * 3) / 16);
+                err_nxt[(x + 1) * 3 + ch]       += (int16_t)((e * 5) / 16);
+                err_nxt[(x + 1 + dir) * 3 + ch] += (int16_t)((e * 1) / 16);
             }
             row[x].red = out[0];
             row[x].green = out[1];
@@ -1843,7 +1872,8 @@ static void draw_hud_fill(lv_event_t *e)
     lv_draw_arc_dsc_t arc;
     lv_draw_arc_dsc_init(&arc);
     const float drawn_psi = s_hud_fill_valid ? s_hud_fill_psi : 0.0f;
-    if (drawn_psi >= s_psi_overboost) arc.color = c(theme->overboost);
+    if (boost_theme_hud_gradient()) arc.color = c(gradient_rgb_for_psi(theme, drawn_psi));
+    else if (drawn_psi >= s_psi_overboost) arc.color = c(theme->overboost);
     else if (drawn_psi < 0.0f) arc.color = c(theme->vacuum);
     else arc.color = c(theme->boost);
     arc.width = 10;
@@ -1984,7 +2014,13 @@ static void update_hud(const boost_sample_t *sample, const boost_theme_t *theme)
     const float old_a = s_hud_fill_deg;
     const float new_a = psi_to_sweep(sample->psi, HUD_A0, HUD_A1);
     const float zero_a = psi_to_sweep(0.0f, HUD_A0, HUD_A1);
-    const bool zone_flip = (s_hud_fill_psi < 0.0f) != (sample->psi < 0.0f) ||
+    /* In gradient mode the whole fill recolours whenever the quantised step
+     * changes, not only at the vacuum/boost/overboost boundaries. */
+    const bool grad_flip = boost_theme_hud_gradient() &&
+        !lv_color_eq(c(gradient_rgb_for_psi(theme, s_hud_fill_psi)),
+                     c(gradient_rgb_for_psi(theme, sample->psi)));
+    const bool zone_flip = grad_flip ||
+                           (s_hud_fill_psi < 0.0f) != (sample->psi < 0.0f) ||
                            (s_hud_fill_psi >= s_psi_overboost) != (sample->psi >= s_psi_overboost);
     if (zone_flip) {
         /* Colour of the whole fill changes: both spans must be repainted. */
@@ -2090,9 +2126,7 @@ static void update_hud(const boost_sample_t *sample, const boost_theme_t *theme)
 /*  Style: bigdigit  (Alvida numeral on a color-sweeping ground)              */
 /* ========================================================================== */
 
-/* Quantized so the full-screen ground only repaints on a colour step, never
- * every frame — a per-frame full repaint would blow the transfer budget. */
-#define BIG_STEPS 24
+/* BIG_STEPS defined near the top so the shared gradient helper can use it. */
 
 /* Slot geometry from the generated Alvida metrics: widest digit advance 81 px,
  * '.' 34 px. Centre of the face falls halfway between the ones digit and the
@@ -2188,7 +2222,8 @@ static void build_bigdigit(lv_obj_t *scr)
     /* A static ground uses the face colour: white numerals on near-black is the
      * legible pairing, and the sweep colours assume they are being swept. */
     const uint32_t ground =
-        boost_theme_bigdigit_static_bg() ? theme->face : theme->vacuum;
+        boost_theme_bigdigit_static_bg() ? boost_theme_bigdigit_static_color()
+                                         : theme->vacuum;
     /* Explicitly the screen, not `scr`: `scr` is the shifting container now,
      * and the whole point of this fill is that it does NOT shift, so it backs
      * the margin the shift opens at the edge. */

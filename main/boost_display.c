@@ -84,7 +84,7 @@
  * good and the display reverts to exactly today's behaviour. A gauge that
  * tears occasionally beats a gauge that freezes.
  */
-#define BOOST_LCD_USE_TE 0
+#define BOOST_LCD_USE_TE 1
 
 /* TE line. Not in the BSP pin map; see the netlist decode above. */
 #define BOOST_LCD_TE_GPIO 13
@@ -160,6 +160,7 @@ static uint32_t s_over_budget;
  */
 static SemaphoreHandle_t s_te_sem;
 static volatile bool s_te_active;          /* latched off on repeated timeout */
+static volatile bool s_te_enabled;         /* runtime toggle from settings */
 static volatile uint32_t s_te_last_edge_us;
 static volatile uint32_t s_te_edges;
 static volatile uint32_t s_te_probe_sum_us; /* ISR stops writing once n hits N */
@@ -240,7 +241,7 @@ static esp_err_t te_init(void)
 /* Called on the LVGL task, once per render cycle, from the first strip's blit. */
 static void te_wait_for_vblank(void)
 {
-    if (!s_te_active) {
+    if (!s_te_active || !s_te_enabled) {
         return;
     }
 
@@ -465,6 +466,25 @@ static esp_err_t panel_new(void)
     esp_lcd_panel_disp_on_off(s_panel, true);
     ESP_LOGI(TAG, "panel up at %d MHz QSPI", BOOST_LCD_PCLK_HZ / 1000000);
     return ESP_OK;
+}
+
+void boost_display_set_te(bool enabled)
+{
+#if BOOST_LCD_USE_TE
+    s_te_enabled = enabled;
+    ESP_LOGI(TAG, "TE sync %s (runtime)", enabled ? "enabled" : "disabled");
+#else
+    (void)enabled;
+#endif
+}
+
+bool boost_display_te(void)
+{
+#if BOOST_LCD_USE_TE
+    return s_te_enabled && s_te_active;
+#else
+    return false;
+#endif
 }
 
 esp_err_t boost_display_set_brightness(int percent)

@@ -520,11 +520,16 @@ static esp_err_t themes_get(httpd_req_t *req)
     boost_model_get_config(&cfg);
     snprintf(json, sizeof(json),
              "{\"activeThemeId\":\"%s\",\"bigDigitStaticBg\":%s,"
-             "\"bigDigitColorText\":%s,\"pixelShift\":%s,\"pixelShiftSec\":%u,"
-             "\"themes\":[",
+             "\"bigDigitColorText\":%s,\"bigDigitStaticColor\":\"#%06lx\","
+             "\"arcGradient\":%s,\"hudGradient\":%s,\"teSync\":%s,"
+             "\"pixelShift\":%s,\"pixelShiftSec\":%u,\"themes\":[",
              cfg.active_theme_id,
              boost_theme_bigdigit_static_bg() ? "true" : "false",
              boost_theme_bigdigit_color_text() ? "true" : "false",
+             (unsigned long)boost_theme_bigdigit_static_color(),
+             boost_theme_arc_gradient() ? "true" : "false",
+             boost_theme_hud_gradient() ? "true" : "false",
+             boost_theme_te_sync() ? "true" : "false",
              boost_theme_pixel_shift() ? "true" : "false",
              (unsigned)boost_theme_pixel_shift_sec());
     for (size_t i = 0; i < boost_theme_count(); ++i) {
@@ -603,6 +608,32 @@ static esp_err_t themes_config_put(httpd_req_t *req)
     const cJSON *ctext = cJSON_GetObjectItemCaseSensitive(root, "bigDigitColorText");
     if (cJSON_IsBool(ctext)) {
         boost_theme_set_bigdigit_color_text(cJSON_IsTrue(ctext));
+    }
+
+    const cJSON *bcol = cJSON_GetObjectItemCaseSensitive(root, "bigDigitStaticColor");
+    if (bcol != NULL) {
+        uint32_t rgb = 0;
+        if (!parse_hex_color(bcol, &rgb)) {
+            cJSON_Delete(root);
+            return send_err(req, HTTPD_400, "invalid_color");
+        }
+        boost_theme_set_bigdigit_static_color(rgb);
+    }
+
+    const cJSON *ag = cJSON_GetObjectItemCaseSensitive(root, "arcGradient");
+    if (cJSON_IsBool(ag)) {
+        boost_theme_set_arc_gradient(cJSON_IsTrue(ag));
+    }
+    const cJSON *hg = cJSON_GetObjectItemCaseSensitive(root, "hudGradient");
+    if (cJSON_IsBool(hg)) {
+        boost_theme_set_hud_gradient(cJSON_IsTrue(hg));
+    }
+
+    const cJSON *te = cJSON_GetObjectItemCaseSensitive(root, "teSync");
+    if (cJSON_IsBool(te)) {
+        const bool on = cJSON_IsTrue(te);
+        boost_theme_set_te_sync(on);
+        boost_display_set_te(on);
     }
 
     const cJSON *id = cJSON_GetObjectItemCaseSensitive(root, "id");

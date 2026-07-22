@@ -62,6 +62,10 @@ void app_main(void)
         return;
     }
 
+    /* Apply the persisted tearing-effect preference now that both the theme
+     * store and the display exist. Default is off. */
+    boost_display_set_te(boost_theme_te_sync());
+
     /* Start from persisted config; long-press still toggles max/min. */
     boost_brightness_init(cfg.brightness_high);
 

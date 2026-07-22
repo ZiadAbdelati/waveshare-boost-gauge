@@ -203,6 +203,10 @@ def themes_payload() -> dict:
         "pixelShift": bool(CONFIG.get("pixelShift", True)),
         "pixelShiftSec": int(CONFIG.get("pixelShiftSec", PXSHIFT_SEC_DEFAULT)),
         "bigDigitColorText": bool(CONFIG.get("bigDigitColorText", False)),
+        "bigDigitStaticColor": str(CONFIG.get("bigDigitStaticColor", "#000000")),
+        "arcGradient": bool(CONFIG.get("arcGradient", False)),
+        "hudGradient": bool(CONFIG.get("hudGradient", False)),
+        "teSync": bool(CONFIG.get("teSync", False)),
         "themes": out,
     }
 
@@ -366,6 +370,14 @@ class Handler(BaseHTTPRequestHandler):
                 )
             if "bigDigitColorText" in payload:
                 CONFIG["bigDigitColorText"] = bool(payload["bigDigitColorText"])
+            if "bigDigitStaticColor" in payload:
+                CONFIG["bigDigitStaticColor"] = str(payload["bigDigitStaticColor"])
+            if "arcGradient" in payload:
+                CONFIG["arcGradient"] = bool(payload["arcGradient"])
+            if "hudGradient" in payload:
+                CONFIG["hudGradient"] = bool(payload["hudGradient"])
+            if "teSync" in payload:
+                CONFIG["teSync"] = bool(payload["teSync"])
             theme_id = payload.get("id")
             if theme_id:
                 theme = next((t for t in THEMES if t["id"] == theme_id), None)
