@@ -161,7 +161,7 @@ static const int8_t k_pxshift[][2] = {
 #define VAULT_SCAN_OPA       41 /* 0.16 * 255 */
 /* Vault-Tec mark: a ringed hub with three cog bars each side, sized to tuck
  * between the BOOST-O-METER line (y=-78) and the needle hub. */
-#define VAULT_LOGO_Y         (-46)
+#define VAULT_LOGO_Y         (-54)
 #define VAULT_LOGO_R         15
 #define VAULT_LOGO_RING_W    5
 #define VAULT_LOGO_HUB_R     6
@@ -170,7 +170,6 @@ static const int8_t k_pxshift[][2] = {
 #define VAULT_LOGO_BAR_IN    12
 #define VAULT_LOGO_BAR_SHORT 34
 #define VAULT_LOGO_BAR_LONG  45
-#define VAULT_LOGO_OPA       LV_OPA_50
 #define HUD_A0     154.0f   /* 270 - 116 */
 #define HUD_A1     386.0f   /* 270 + 116 */
 #define HUD_BRACKET_X 126
@@ -370,6 +369,8 @@ static lv_color_t c(uint32_t rgb)
 {
     return lv_color_hex(rgb);
 }
+
+static uint32_t lerp_rgb(uint32_t a, uint32_t b, float t);
 
 static float clampf(float v, float lo, float hi)
 {
@@ -970,12 +971,15 @@ static void paint_vault_background(lv_obj_t *canvas, const boost_theme_t *theme)
     {
         const float lx = cx;
         const float ly = cy + (float)VAULT_LOGO_Y;
-        const lv_color_t ink = c(theme->text);
+        /* Pre-blended and drawn OPAQUE. Stroking ring, hub and bars each at
+         * 50% made every overlap composite twice and read as a darker seam;
+         * mixing the colour up front gives one flat tone whatever overlaps. */
+        const lv_color_t ink = c(lerp_rgb(theme->face, theme->text, 0.5f));
 
         /* Outer ring of the vault door. */
         lv_draw_arc_dsc_init(&arc);
         arc.color = ink;
-        arc.opa = VAULT_LOGO_OPA;
+        arc.opa = LV_OPA_COVER;
         arc.width = VAULT_LOGO_RING_W;
         arc.radius = VAULT_LOGO_R;
         arc.start_angle = 0;
@@ -988,7 +992,7 @@ static void paint_vault_background(lv_obj_t *canvas, const boost_theme_t *theme)
         lv_draw_rect_dsc_t hub;
         lv_draw_rect_dsc_init(&hub);
         hub.bg_color = ink;
-        hub.bg_opa = VAULT_LOGO_OPA;
+        hub.bg_opa = LV_OPA_COVER;
         hub.radius = LV_RADIUS_CIRCLE;
         const int32_t hr = VAULT_LOGO_HUB_R;
         lv_area_t ha = { (int32_t)lroundf(lx) - hr, (int32_t)lroundf(ly) - hr,
@@ -1005,7 +1009,7 @@ static void paint_vault_background(lv_obj_t *canvas, const boost_theme_t *theme)
             for (int i = 0; i < 3; ++i) {
                 lv_draw_line_dsc_init(&ln);
                 ln.color = ink;
-                ln.opa = VAULT_LOGO_OPA;
+                ln.opa = LV_OPA_COVER;
                 ln.width = VAULT_LOGO_BAR_W;
                 ln.round_start = true;
                 ln.round_end = true;
@@ -1056,8 +1060,14 @@ static void paint_vault_background(lv_obj_t *canvas, const boost_theme_t *theme)
             const float dx = (float)x - fcx;
             const float r = sqrtf(dx * dx + dy2);
             if (r <= VAULT_VIGN_R0) continue;
-            float a = VAULT_VIGN_MAX * (r - VAULT_VIGN_R0) / span;
-            if (a > VAULT_VIGN_MAX) a = VAULT_VIGN_MAX;
+            /* Smoothstep, not linear. A linear ramp has a corner where it
+             * starts and where it clamps, and on a face this dark those two
+             * corners are the "rings" that survive dithering - measured as a
+             * step at r=120 in the panel's own radial profile. t*t*(3-2t) has
+             * zero slope at both ends, so the ramp fades in and out. */
+            float tr = (r - VAULT_VIGN_R0) / span;
+            if (tr > 1.0f) tr = 1.0f;
+            const float a = VAULT_VIGN_MAX * tr * tr * (3.0f - 2.0f * tr);
             const uint32_t k = (uint32_t)((1.0f - a) * 256.0f);
             /* Threshold spans one output level (64 steps x 4 = 256 = 1 << 8). */
             const uint32_t t = (uint32_t)bayer_row[x & 7] * 4u;
@@ -1188,7 +1198,10 @@ static void draw_vault_needle(lv_event_t *e)
     hub.bg_color = c(theme->face);
     hub.bg_opa = LV_OPA_COVER;
     hub.radius = LV_RADIUS_CIRCLE;
-    hub.border_color = needle_col;
+    /* The pivot cap keeps the phosphor green even in overboost - only the
+     * wedge changes colour, so the hub reads as part of the dial, not the
+     * reading. */
+    hub.border_color = c(theme->text);
     hub.border_width = 3;
     hub.border_opa = LV_OPA_COVER;
     lv_area_t hub_area = {
@@ -1310,14 +1323,14 @@ static void build_vault(lv_obj_t *scr)
     lv_obj_set_style_text_font(title, F_COND22, 0);
     lv_obj_set_style_text_letter_space(title, 3, 0);
     lv_obj_set_style_text_color(title, c(theme->text), 0);
-    lv_obj_align(title, LV_ALIGN_CENTER, 0, -98);
+    lv_obj_align(title, LV_ALIGN_CENTER, 0, -106);
 
     lv_obj_t *sub = lv_label_create(scr);
     lv_label_set_text(sub, "BOOST-O-METER");
     lv_obj_set_style_text_font(sub, F_COND14, 0);
     lv_obj_set_style_text_letter_space(sub, 1, 0);
     lv_obj_set_style_text_color(sub, c(theme->muted), 0);
-    lv_obj_align(sub, LV_ALIGN_CENTER, 0, -78);
+    lv_obj_align(sub, LV_ALIGN_CENTER, 0, -86);
 
     s_vault_alert = lv_label_create(scr);
     lv_label_set_text(s_vault_alert, "OVER-PRESSURE");
