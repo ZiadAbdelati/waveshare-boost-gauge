@@ -1887,23 +1887,23 @@ static void build_bigdigit(lv_obj_t *scr)
 
 static void update_bigdigit(const boost_sample_t *sample, const boost_theme_t *theme)
 {
-    /* Static ground: the sweep is the only thing that ever repaints this face
-     * full-screen, so switching it off removes the stall entirely. */
-    if (boost_theme_bigdigit_static_bg()) {
-        return;
-    }
-
-    const int step = big_step_for(sample->psi);
-    if (step != s_big_bg_step) {
-        s_big_bg_step = step;
-        /* Retarget: a step arriving mid-wipe simply restarts it at the newest
-         * colour, so the ground can never settle on a stale one. */
-        s_big_band_color = big_color_for_step(theme, step);
-        s_big_band_next = 0;
-    }
-    if (s_big_band_next < BIG_BANDS) {
-        lv_obj_set_style_bg_color(s_big_band[s_big_band_next], c(s_big_band_color), 0);
-        s_big_band_next++;
+    /* Static ground skips only the recolour, never the readout below it. The
+     * sweep is the one thing that repaints this face full-screen, so switching
+     * it off removes the stall - but returning early here also froze the
+     * digits, which is not what "static background" means. */
+    if (!boost_theme_bigdigit_static_bg()) {
+        const int step = big_step_for(sample->psi);
+        if (step != s_big_bg_step) {
+            s_big_bg_step = step;
+            /* Retarget: a step arriving mid-wipe simply restarts it at the
+             * newest colour, so the ground can never settle on a stale one. */
+            s_big_band_color = big_color_for_step(theme, step);
+            s_big_band_next = 0;
+        }
+        if (s_big_band_next < BIG_BANDS) {
+            lv_obj_set_style_bg_color(s_big_band[s_big_band_next], c(s_big_band_color), 0);
+            s_big_band_next++;
+        }
     }
 
     const int tenths_total = (int)lroundf(fabsf(sample->psi) * 10.0f);
