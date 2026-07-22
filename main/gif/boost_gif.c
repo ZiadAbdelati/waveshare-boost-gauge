@@ -38,6 +38,9 @@
 #include "core/lv_obj_private.h"
 #include "widgets/image/lv_image_private.h"
 #include "boost_gif_dec.h"
+#ifdef ESP_PLATFORM
+#include "esp_heap_caps.h"
+#endif
 
 #ifdef ESP_PLATFORM
 #include "esp_log.h"
@@ -94,7 +97,14 @@ typedef unsigned char animatedgif_color_format_t;
 
 typedef struct {
     lv_image_t img;
-    GIFIMAGE gif;
+    /* BOOST: heap-allocated, not embedded, so it can be placed in INTERNAL RAM.
+     * LVGL allocates widgets from its own builtin pool (LV_USE_STDLIB_MALLOC
+     * falls back to LV_STDLIB_BUILTIN here - CONFIG_LV_USE_CLIB_MALLOC is NOT
+     * the symbol lv_conf_internal.h reads), so the object never goes through
+     * malloc and heap_caps_malloc_extmem_enable() cannot reach it. The ~24 KB
+     * of LZW tables in here are the decoder's hottest memory and the inner
+     * loop is a dependent pointer chase, so PSRAM latency dominates. */
+    GIFIMAGE * gif;
     const void * src;
     lv_color_format_t color_format;
     lv_timer_t * timer;
@@ -191,7 +201,7 @@ void lv_gif_restart(lv_obj_t * obj)
         return;
     }
 
-    GIF_reset(&gifobj->gif);
+    GIF_reset(gifobj->gif);
     gifobj->loop_count = -1; /* match the behavior of the old library */
     gifobj->force_full_invalidate = 1; /* BOOST: the canvas is about to jump */
     lv_timer_resume(gifobj->timer);
@@ -259,6 +269,16 @@ static void lv_gif_constructor(const lv_obj_class_t * class_p, lv_obj_t * obj)
     gifobj->color_format = LV_COLOR_FORMAT_ARGB8888;
     gifobj->is_open = 0;
     gifobj->force_full_invalidate = 1;
+    /* NOT internal RAM. Placing this ~24.5 KB here starves the Wi-Fi driver:
+     * the GIF loads at boot before SoftAP attach, leaving ~49 KB internal, and
+     * ieee80211_hostap_attach() then faults on a failed allocation - a boot
+     * loop, not a graceful degradation. The decoder's LZW tables would like to
+     * be internal, but not at the cost of the radio. Revisit only with a hard
+     * reserve measured against peak Wi-Fi usage, and only for the hottest few
+     * KB rather than the whole struct. */
+    gifobj->gif = lv_malloc(sizeof(GIFIMAGE));
+    LV_ASSERT_MALLOC(gifobj->gif);
+    if(gifobj->gif != NULL) lv_memset(gifobj->gif, 0, sizeof(GIFIMAGE));
     gifobj->timer = lv_timer_create(next_frame_task_cb, 10, obj);
     lv_timer_pause(gifobj->timer);
 }
@@ -271,16 +291,18 @@ static void lv_gif_destructor(const lv_obj_class_t * class_p, lv_obj_t * obj)
     lv_image_cache_drop(lv_image_get_src(obj));
 
     if(gifobj->is_open) {
-        void * framebuffer = gifobj->gif.pFrameBuffer;
-        GIF_close(&gifobj->gif);
+        void * framebuffer = gifobj->gif->pFrameBuffer;
+        GIF_close(gifobj->gif);
         lv_free(framebuffer);
     }
+    lv_free(gifobj->gif);
+    gifobj->gif = NULL;
     lv_timer_delete(gifobj->timer);
 }
 
 static void initialize(lv_gif_t * gifobj)
 {
-    GIFIMAGE * gif = &gifobj->gif;
+    GIFIMAGE * gif = gifobj->gif;
 
     /*Close previous gif if any*/
     if(gifobj->is_open) {
@@ -361,7 +383,7 @@ static void initialize(lv_gif_t * gifobj)
 
     lv_image_set_src((lv_obj_t *) gifobj, &gifobj->imgdsc);
 
-    gifobj->loop_count = GIF_getLoopCount(&gifobj->gif);
+    gifobj->loop_count = GIF_getLoopCount(gifobj->gif);
     gifobj->force_full_invalidate = 1;
 #if BOOST_GIF_LOG_DIRTY_RECT
     gifobj->stat_frames = 0;
@@ -398,7 +420,7 @@ static void initialize(lv_gif_t * gifobj)
 static void invalidate_frame(lv_gif_t * gifobj)
 {
     lv_obj_t * obj = (lv_obj_t *) gifobj;
-    GIFIMAGE * gif = &gifobj->gif;
+    GIFIMAGE * gif = gifobj->gif;
     bool bounded = false;
     LV_UNUSED(gif); /* only read by the bounded path and the stats below */
 #if BOOST_GIF_LOG_DIRTY_RECT
@@ -478,7 +500,7 @@ static void next_frame_task_cb(lv_timer_t * t)
     lv_gif_t * gifobj = (lv_gif_t *) obj;
 
     int ms_delay_next;
-    int has_next = GIF_playFrame(&gifobj->gif, &ms_delay_next, gifobj);
+    int has_next = GIF_playFrame(gifobj->gif, &ms_delay_next, gifobj);
     if(has_next <= 0) {
         /*It was the last repeat*/
         /* BOOST: nothing was necessarily decoded on this call (empty frame,

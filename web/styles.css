@@ -738,3 +738,20 @@ output {
   cursor: pointer;
 }
 .theme-reset:hover { color: var(--flare, #ff3b30); }
+
+/* Settings > Display toggles */
+.toggle-field {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0.2rem 0 0.1rem;
+  font-size: 0.86rem;
+  cursor: pointer;
+}
+.toggle-field input[type="checkbox"] {
+  width: 1.05rem;
+  height: 1.05rem;
+  accent-color: var(--teal, #2ee6c5);
+  cursor: pointer;
+}
+.display-panel .hint-text { margin: 0 0 0.7rem 1.65rem; }

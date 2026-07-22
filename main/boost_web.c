@@ -511,9 +511,11 @@ static esp_err_t themes_get(httpd_req_t *req)
     boost_config_t cfg;
     boost_model_get_config(&cfg);
     snprintf(json, sizeof(json),
-             "{\"activeThemeId\":\"%s\",\"bigDigitStaticBg\":%s,\"themes\":[",
+             "{\"activeThemeId\":\"%s\",\"bigDigitStaticBg\":%s,\"pixelShift\":%s,"
+             "\"themes\":[",
              cfg.active_theme_id,
-             boost_theme_bigdigit_static_bg() ? "true" : "false");
+             boost_theme_bigdigit_static_bg() ? "true" : "false",
+             boost_theme_pixel_shift() ? "true" : "false");
     for (size_t i = 0; i < boost_theme_count(); ++i) {
         if (i > 0) {
             strlcat(json, ",", sizeof(json));
@@ -562,6 +564,11 @@ static esp_err_t themes_config_put(httpd_req_t *req)
     const cJSON *flat = cJSON_GetObjectItemCaseSensitive(root, "bigDigitStaticBg");
     if (cJSON_IsBool(flat)) {
         boost_theme_set_bigdigit_static_bg(cJSON_IsTrue(flat));
+    }
+
+    const cJSON *px = cJSON_GetObjectItemCaseSensitive(root, "pixelShift");
+    if (cJSON_IsBool(px)) {
+        boost_theme_set_pixel_shift(cJSON_IsTrue(px));
     }
 
     const cJSON *id = cJSON_GetObjectItemCaseSensitive(root, "id");

@@ -11,6 +11,7 @@
 #include "esp_log.h"
 #include "boost_media_store.h"
 #include "esp_heap_caps.h"
+#include "esp_memory_utils.h"
 #else
 #define ESP_LOGI(tag, fmt, ...) printf("[I][%s] " fmt "\n", tag, ##__VA_ARGS__)
 #define ESP_LOGW(tag, fmt, ...) printf("[W][%s] " fmt "\n", tag, ##__VA_ARGS__)
@@ -550,17 +551,13 @@ static bool load_media_gif_locked(void)
     uint16_t height = 0;
     if (boost_media_store_map(&data, &size, &width, &height) != ESP_OK) return false;
     set_gauge_hidden(true);
-    /* The ~24.5 KB lv_gif_t embeds the AnimatedGIF LZW tables, the decoder's
-     * hottest memory; the 434 KB framebuffer must stay in PSRAM. A 64 KB
-     * threshold splits them. This is a GLOBAL allocator switch, so any
-     * concurrent Wi-Fi/HTTP allocation under 64 KB also lands internal for the
-     * duration - keep the window as short as possible. */
+    /* Decoder state placement is handled inside the widget (main/gif/boost_gif.c),
+     * not here: heap_caps_malloc_extmem_enable() cannot reach LVGL allocations
+     * because LVGL uses its own builtin pool rather than malloc. */
     ESP_LOGI(TAG, "gif alloc: internal free %u B",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-    heap_caps_malloc_extmem_enable(64 * 1024);
     s_media_gif = lv_gif_create(lv_screen_active());
     if (s_media_gif == NULL) {
-        heap_caps_malloc_extmem_enable(0);
         boost_media_store_unmap();
         set_gauge_hidden(false);
         return false;
@@ -583,7 +580,12 @@ static bool load_media_gif_locked(void)
     lv_gif_set_color_format(s_media_gif, LV_COLOR_FORMAT_RGB565);
     lv_image_set_inner_align(s_media_gif, LV_IMAGE_ALIGN_CENTER);
     lv_gif_set_src(s_media_gif, &s_media_dsc);
-    heap_caps_malloc_extmem_enable(0);
+    /* Where the decoder object actually landed. The extmem threshold is a
+     * request, not a guarantee, and a silent fall back to PSRAM costs the
+     * whole point of the exercise. */
+    ESP_LOGI(TAG, "gif widget object in %s RAM, framebuffer in %s RAM",
+             esp_ptr_external_ram(s_media_gif) ? "EXTERNAL" : "internal",
+             esp_ptr_external_ram(((lv_image_t *)s_media_gif)) ? "EXTERNAL" : "internal");
     ESP_LOGI(TAG, "gif alloc done: internal free %u B",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     if (!lv_gif_is_loaded(s_media_gif)) {

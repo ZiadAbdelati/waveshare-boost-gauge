@@ -90,6 +90,8 @@ const el = {
   brightnessLowOut: document.getElementById("brightnessLowOut"),
   saveConfigBtn: document.getElementById("saveConfigBtn"),
   themeList: document.getElementById("themeList"),
+  pixelShift: document.getElementById("pixelShift"),
+  bigDigitStaticBg: document.getElementById("bigDigitStaticBg"),
   loadLogsBtn: document.getElementById("loadLogsBtn"),
   clearLogsBtn: document.getElementById("clearLogsBtn"),
   logSummary: document.getElementById("logSummary"),
@@ -1380,6 +1382,46 @@ function renderThemes() {
   }
 }
 
+/* Settings-page display toggles. Both live on the themes/config endpoint
+ * because they are panel-render behaviour, not gauge range. */
+function syncDisplayToggles() {
+  if (el.pixelShift) el.pixelShift.checked = !!state.pixelShift;
+  if (el.bigDigitStaticBg) el.bigDigitStaticBg.checked = !!state.bigDigitStaticBg;
+}
+
+function wireDisplayToggles() {
+  const send = async (body, label) => {
+    try {
+      showError("");
+      const payload = await api("/themes/config", {
+        method: "PUT",
+        body: JSON.stringify(body),
+      });
+      state.pixelShift = !!payload.pixelShift;
+      state.bigDigitStaticBg = !!payload.bigDigitStaticBg;
+      state.themes = payload.themes || state.themes;
+      syncDisplayToggles();
+      showOk(label);
+    } catch (error) {
+      /* Put the control back where the device actually is. */
+      syncDisplayToggles();
+      showError(error.message);
+    }
+  };
+  if (el.pixelShift) {
+    el.pixelShift.addEventListener("change", () =>
+      send({ pixelShift: el.pixelShift.checked },
+           el.pixelShift.checked ? "Pixel shift on" : "Pixel shift off"),
+    );
+  }
+  if (el.bigDigitStaticBg) {
+    el.bigDigitStaticBg.addEventListener("change", () =>
+      send({ bigDigitStaticBg: el.bigDigitStaticBg.checked },
+           el.bigDigitStaticBg.checked ? "Static background" : "Colour sweep"),
+    );
+  }
+}
+
 async function refreshNetwork() {
   const net = await api("/network");
   renderNetwork(net);
@@ -1408,6 +1450,8 @@ async function refreshAll() {
     const [statePayload, config, themes, network, media] = await Promise.all(requests);
     state.themes = themes.themes || [];
     state.bigDigitStaticBg = !!themes.bigDigitStaticBg;
+    state.pixelShift = !!themes.pixelShift;
+    syncDisplayToggles();
     state.activeThemeId = themes.activeThemeId || statePayload.activeThemeId || state.activeThemeId;
     if (IS_COCKPIT) renderThemes();
     setTheme(state.themes.find((theme) => theme.id === state.activeThemeId));
@@ -1829,6 +1873,7 @@ state.config = {
 };
 state.gaugeTarget = { psi: 0, peakPsi: 0, zone: "ATMO", demo: true };
 wireControls();
+wireDisplayToggles();
 if (IS_COCKPIT) {
   scheduleGaugeRender();
   drawSparkline();

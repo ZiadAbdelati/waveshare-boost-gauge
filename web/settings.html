@@ -56,6 +56,24 @@
         <p class="hint-text" id="rangeHint">Defaults −15 / 10 / 8 PSI and 236.25°. Zero position controls the notch; the optional midpoint label disappears if it would overlap overboost.</p>
       </section>
 
+      <section class="panel display-panel">
+        <div class="section-title"><span>Display</span></div>
+        <label class="toggle-field">
+          <input id="pixelShift" type="checkbox">
+          <span>Pixel shift (AMOLED burn-in protection)</span>
+        </label>
+        <p class="hint-text">Nudges the whole gauge by a pixel or two every 90&nbsp;s so fixed
+          elements &mdash; tick rings, labels, box outlines &mdash; don&rsquo;t age into the panel.
+          Shifts wait for a steady reading, so they land where nothing is moving.</p>
+        <label class="toggle-field">
+          <input id="bigDigitStaticBg" type="checkbox">
+          <span>Big Digit: static background</span>
+        </label>
+        <p class="hint-text">Keeps the ground a fixed dark colour instead of sweeping it through
+          the zone colours. Removes the only full-screen repaint in any face (worst render cycle
+          46&nbsp;ms &rarr; 17&nbsp;ms) and lights far fewer emitters.</p>
+      </section>
+
       <section class="panel network-panel">
         <div class="section-title">
           <span>Network</span>

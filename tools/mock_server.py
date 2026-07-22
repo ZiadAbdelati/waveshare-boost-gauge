@@ -195,6 +195,7 @@ def themes_payload() -> dict:
     return {
         "activeThemeId": CONFIG["activeThemeId"],
         "bigDigitStaticBg": bool(CONFIG.get("bigDigitStaticBg", False)),
+        "pixelShift": bool(CONFIG.get("pixelShift", True)),
         "themes": out,
     }
 
@@ -339,6 +340,8 @@ class Handler(BaseHTTPRequestHandler):
             payload = self.read_json()
             if "bigDigitStaticBg" in payload:
                 CONFIG["bigDigitStaticBg"] = bool(payload["bigDigitStaticBg"])
+            if "pixelShift" in payload:
+                CONFIG["pixelShift"] = bool(payload["pixelShift"])
             theme_id = payload.get("id")
             if theme_id:
                 theme = next((t for t in THEMES if t["id"] == theme_id), None)
