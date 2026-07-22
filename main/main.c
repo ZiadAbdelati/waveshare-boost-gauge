@@ -8,6 +8,7 @@
 #include "boost_brightness.h"
 #include "boost_gauge.h"
 #include "boost_model.h"
+#include "boost_theme.h"
 #include "boost_sim.h"
 #include "boost_web.h"
 
@@ -44,6 +45,10 @@ void app_main(void)
 {
     ESP_LOGI(TAG, "Boost gauge starting (demo MAP path)");
 
+    /* Before boost_model_init(): the model resolves the active theme by id and
+     * must see any persisted colour overrides. Mounts NVS itself, so this does
+     * not depend on running after boost_model_init(). */
+    boost_theme_init();
     ESP_ERROR_CHECK(boost_model_init());
     boost_config_t cfg;
     boost_model_get_config(&cfg);

@@ -1140,7 +1140,9 @@ static void build_vault(lv_obj_t *scr)
 
     s_vault_window = lv_obj_create(scr);
     lv_obj_remove_style_all(s_vault_window);
-    lv_obj_set_size(s_vault_window, 190, 60);
+    /* 59, not 60: centred alignment floors the top edge, so dropping one row
+     * takes it off the top only and evens the 13/12 px ink margins. */
+    lv_obj_set_size(s_vault_window, 190, 59);
     lv_obj_align(s_vault_window, LV_ALIGN_CENTER, 0, 126);
     lv_obj_set_style_border_width(s_vault_window, 2, 0);
     lv_obj_set_style_border_color(s_vault_window, c(theme->muted), 0);
@@ -1155,7 +1157,9 @@ static void build_vault(lv_obj_t *scr)
         lv_obj_set_style_text_color(s_vault_slot[i], c(theme->text), 0);
         lv_obj_set_size(s_vault_slot[i], 26, 34);
         lv_obj_set_style_text_align(s_vault_slot[i], LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_align(s_vault_slot[i], LV_ALIGN_CENTER, k_vault_slot_x[i], 126);
+        /* Nudged below the window centre: the 40 px mono face carries more ascent
+         * than descent, so a box-centred label reads a few pixels high. */
+        lv_obj_align(s_vault_slot[i], LV_ALIGN_CENTER, k_vault_slot_x[i], 130);
         lv_obj_clear_flag(s_vault_slot[i], LV_OBJ_FLAG_CLICKABLE);
     }
 
@@ -1782,7 +1786,11 @@ static void build_bigdigit(lv_obj_t *scr)
      * which alone cost more than half the frame budget. The glass is round, so
      * a plain fill looks identical. */
     s_big_bg = NULL;
-    lv_obj_set_style_bg_color(scr, c(theme->vacuum), 0);
+    /* A static ground uses the face colour: white numerals on near-black is the
+     * legible pairing, and the sweep colours assume they are being swept. */
+    const uint32_t ground =
+        boost_theme_bigdigit_static_bg() ? theme->face : theme->vacuum;
+    lv_obj_set_style_bg_color(scr, c(ground), 0);
     s_big_bg_step = -1;
 
     /* Recolouring the ground in one go dirties all 217k pixels at once: a ~69 ms
@@ -1799,12 +1807,12 @@ static void build_bigdigit(lv_obj_t *scr)
         lv_obj_remove_style_all(s_big_band[i]);
         lv_obj_set_size(s_big_band[i], DISP_SIZE, y1 - y0);
         lv_obj_set_pos(s_big_band[i], 0, y0);
-        lv_obj_set_style_bg_color(s_big_band[i], c(theme->vacuum), 0);
+        lv_obj_set_style_bg_color(s_big_band[i], c(ground), 0);
         lv_obj_set_style_bg_opa(s_big_band[i], LV_OPA_COVER, 0);
         lv_obj_clear_flag(s_big_band[i], LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
     }
     s_big_band_next = BIG_BANDS;
-    s_big_band_color = theme->vacuum;
+    s_big_band_color = ground;
 
     s_big_zone = lv_label_create(scr);
     lv_label_set_text(s_big_zone, "ATMO");
@@ -1879,6 +1887,12 @@ static void build_bigdigit(lv_obj_t *scr)
 
 static void update_bigdigit(const boost_sample_t *sample, const boost_theme_t *theme)
 {
+    /* Static ground: the sweep is the only thing that ever repaints this face
+     * full-screen, so switching it off removes the stall entirely. */
+    if (boost_theme_bigdigit_static_bg()) {
+        return;
+    }
+
     const int step = big_step_for(sample->psi);
     if (step != s_big_bg_step) {
         s_big_bg_step = step;

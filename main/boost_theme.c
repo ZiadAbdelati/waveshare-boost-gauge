@@ -2,9 +2,17 @@
 
 #include <string.h>
 
+#include "esp_err.h"
+#include "nvs.h"
+#include "nvs_flash.h"
+
+#define NVS_NS          "boost"
+#define NVS_KEY_COLORS  "theme_colors"
+#define NVS_KEY_BIGFLAT "bigdigit_flat"
+
 /* Palettes/styles here MUST match tools/mock_server.py and the web renderers so
  * the physical panel and the dashboard mirror agree. */
-static const boost_theme_t s_themes[] = {
+static const boost_theme_t s_defaults[] = {
     {
         .id = "dyno-cell",
         .name = "Dyno Cell",
@@ -67,6 +75,177 @@ static const boost_theme_t s_themes[] = {
     },
 };
 
+#define THEME_COUNT (sizeof(s_defaults) / sizeof(s_defaults[0]))
+
+/* Working copy: identical to s_defaults until overrides are loaded or set. */
+static boost_theme_t s_themes[THEME_COUNT];
+static bool s_loaded;
+static bool s_bigdigit_static_bg;
+
+/* Persisted as one blob keyed by id rather than per-theme NVS keys: ids run to
+ * 24 chars and NVS keys cap at 15, and a single blob keeps the whole set
+ * consistent across a power loss. */
+typedef struct {
+    char id[BOOST_THEME_ID_MAX];
+    uint32_t vacuum;
+    uint32_t boost;
+    uint32_t overboost;
+} theme_override_t;
+
+static void ensure_loaded(void)
+{
+    if (s_loaded) {
+        return;
+    }
+    memcpy(s_themes, s_defaults, sizeof(s_themes));
+    s_loaded = true;
+}
+
+static void persist(void)
+{
+    theme_override_t saved[THEME_COUNT];
+    for (size_t i = 0; i < THEME_COUNT; ++i) {
+        memcpy(saved[i].id, s_themes[i].id, sizeof(saved[i].id));
+        saved[i].vacuum = s_themes[i].vacuum;
+        saved[i].boost = s_themes[i].boost;
+        saved[i].overboost = s_themes[i].overboost;
+    }
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) {
+        return;
+    }
+    nvs_set_blob(h, NVS_KEY_COLORS, saved, sizeof(saved));
+    nvs_set_u8(h, NVS_KEY_BIGFLAT, s_bigdigit_static_bg ? 1 : 0);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+void boost_theme_init(void)
+{
+    ensure_loaded();
+
+    /* Mount NVS here rather than relying on being called after
+     * boost_model_init(). Getting that order wrong is silent: nvs_open() just
+     * fails, the read is skipped, and overrides appear to save correctly right
+     * up until the next reboot drops them. nvs_flash_init() is idempotent. */
+    esp_err_t nerr = nvs_flash_init();
+    if (nerr == ESP_ERR_NVS_NO_FREE_PAGES || nerr == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        if (nvs_flash_erase() == ESP_OK) {
+            nerr = nvs_flash_init();
+        }
+    }
+    if (nerr != ESP_OK) {
+        return;
+    }
+
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) {
+        return;
+    }
+
+    uint8_t flat = 0;
+    if (nvs_get_u8(h, NVS_KEY_BIGFLAT, &flat) == ESP_OK) {
+        s_bigdigit_static_bg = (flat != 0);
+    }
+
+    size_t len = 0;
+    if (nvs_get_blob(h, NVS_KEY_COLORS, NULL, &len) == ESP_OK && len > 0 &&
+        (len % sizeof(theme_override_t)) == 0) {
+        const size_t n = len / sizeof(theme_override_t);
+        theme_override_t saved[THEME_COUNT];
+        if (n <= THEME_COUNT && nvs_get_blob(h, NVS_KEY_COLORS, saved, &len) == ESP_OK) {
+            /* Matched by id, not index: the theme table may gain or lose
+             * entries between firmware versions and a positional restore
+             * would silently paint one theme with another's colours. */
+            for (size_t i = 0; i < n; ++i) {
+                saved[i].id[BOOST_THEME_ID_MAX - 1] = '\0';
+                for (size_t j = 0; j < THEME_COUNT; ++j) {
+                    if (strcmp(s_themes[j].id, saved[i].id) == 0) {
+                        s_themes[j].vacuum = saved[i].vacuum;
+                        s_themes[j].boost = saved[i].boost;
+                        s_themes[j].overboost = saved[i].overboost;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    nvs_close(h);
+}
+
+static boost_theme_t *find_mutable(const char *id)
+{
+    ensure_loaded();
+    if (id == NULL) {
+        return NULL;
+    }
+    for (size_t i = 0; i < THEME_COUNT; ++i) {
+        if (strcmp(s_themes[i].id, id) == 0) {
+            return &s_themes[i];
+        }
+    }
+    return NULL;
+}
+
+bool boost_theme_set_colors(const char *id, const boost_theme_colors_t *colors)
+{
+    boost_theme_t *t = find_mutable(id);
+    if (t == NULL || colors == NULL) {
+        return false;
+    }
+    t->vacuum = colors->vacuum & 0xFFFFFFu;
+    t->boost = colors->boost & 0xFFFFFFu;
+    t->overboost = colors->overboost & 0xFFFFFFu;
+    persist();
+    return true;
+}
+
+bool boost_theme_reset_colors(const char *id)
+{
+    boost_theme_t *t = find_mutable(id);
+    if (t == NULL) {
+        return false;
+    }
+    for (size_t i = 0; i < THEME_COUNT; ++i) {
+        if (strcmp(s_defaults[i].id, id) == 0) {
+            t->vacuum = s_defaults[i].vacuum;
+            t->boost = s_defaults[i].boost;
+            t->overboost = s_defaults[i].overboost;
+            persist();
+            return true;
+        }
+    }
+    return false;
+}
+
+bool boost_theme_is_customized(const char *id)
+{
+    const boost_theme_t *t = find_mutable(id);
+    if (t == NULL) {
+        return false;
+    }
+    for (size_t i = 0; i < THEME_COUNT; ++i) {
+        if (strcmp(s_defaults[i].id, id) == 0) {
+            return t->vacuum != s_defaults[i].vacuum ||
+                   t->boost != s_defaults[i].boost ||
+                   t->overboost != s_defaults[i].overboost;
+        }
+    }
+    return false;
+}
+
+bool boost_theme_bigdigit_static_bg(void)
+{
+    return s_bigdigit_static_bg;
+}
+
+void boost_theme_set_bigdigit_static_bg(bool enabled)
+{
+    ensure_loaded();
+    s_bigdigit_static_bg = enabled;
+    persist();
+}
+
 const char *boost_style_name(boost_gauge_style_t style)
 {
     switch (style) {
@@ -84,6 +263,7 @@ const char *boost_style_name(boost_gauge_style_t style)
 
 const boost_theme_t *boost_theme_default(void)
 {
+    ensure_loaded();
     return &s_themes[0];
 }
 
@@ -102,6 +282,7 @@ const boost_theme_t *boost_theme_find(const char *id)
 
 const boost_theme_t *boost_theme_at(size_t index)
 {
+    ensure_loaded();
     if (index >= boost_theme_count()) {
         return NULL;
     }
@@ -110,5 +291,5 @@ const boost_theme_t *boost_theme_at(size_t index)
 
 size_t boost_theme_count(void)
 {
-    return sizeof(s_themes) / sizeof(s_themes[0]);
+    return THEME_COUNT;
 }

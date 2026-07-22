@@ -681,3 +681,60 @@ output {
   .console-cards { columns: auto; }
   .range-fields { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* alvida-font marker above; theme colour editor below */
+.theme-row {
+  display: flex;
+  align-items: stretch;
+  gap: 0.4rem;
+}
+.theme-row .theme-option { flex: 1 1 auto; }
+.theme-edit {
+  flex: 0 0 auto;
+  padding: 0 0.7rem;
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--steel, #6b7280);
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.theme-edit:hover { color: var(--ice, #e8ecf2); }
+.theme-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0.15rem 0 0.6rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid rgba(128, 138, 156, 0.28);
+  border-radius: 8px;
+}
+.theme-color-row,
+.theme-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.8rem;
+}
+.theme-color-row input[type="color"] {
+  width: 2.4rem;
+  height: 1.5rem;
+  padding: 0;
+  border: 1px solid rgba(128, 138, 156, 0.4);
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+.theme-reset {
+  align-self: flex-start;
+  padding: 0.3rem 0.6rem;
+  font-size: 0.72rem;
+  color: var(--steel, #6b7280);
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.theme-reset:hover { color: var(--flare, #ff3b30); }

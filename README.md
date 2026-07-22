@@ -587,6 +587,35 @@ missing from a face can be merged from a second `--font`. **Do not** try to
 embed box-drawing/arrow codepoints through shell escapes — draw such marks as
 shapes instead; escaped UTF-8 has repeatedly been mangled a layer early.
 
+### Theme colours and the Big Digit ground
+
+`PUT /api/v1/themes/config` edits the three zone colours (`vacuum`, `boost`,
+`overboost`) of any theme and persists them in NVS, matched by theme id rather
+than table index so a firmware update that adds or removes a theme cannot paint
+one theme with another's colours. Face, track, text, muted and zero stay fixed:
+a theme whose face and text are both user-settable is a theme that can be made
+unreadable. `{"id":"...","reset":true}` restores the built-in palette, and each
+theme reports `customized` in `GET /themes`.
+
+The same endpoint carries `bigDigitStaticBg`. Big Digit normally sweeps its
+whole ground through the zone colours, which is the only full-screen repaint in
+any face. Turning it off gives white numerals on the theme's face colour and
+removes that repaint entirely: **worst render cycle 39 ms -> 7 ms**, taking Big
+Digit from the worst-stalling face to the best.
+
+### Finishing an OTA
+
+`POST /api/v1/ota` streams the image, validates it and selects the boot
+partition, but the new firmware does not run until the device reboots.
+`POST /api/v1/restart` does that (400 ms deferred, so the response is delivered
+first); the dashboard calls it automatically after a successful upload. A
+1.6 MB image uploads in ~9 s (~190 KB/s).
+
+To confirm an OTA actually took effect, check the boot log for the partition
+offset: `Loaded app from partition at offset 0x420000` is ota_1, i.e. the
+uploaded image. Still booting `0x20000` means the serial-flashed image is
+running and the OTA proved nothing.
+
 ### Debug snapshot endpoint
 
 `GET /api/v1/debug/snapshot` re-renders the live screen into a PSRAM buffer and

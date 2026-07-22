@@ -1220,9 +1220,97 @@ async function scanNetworks() {
   }
 }
 
+let openThemeEditor = null;
+let colorPutTimer = null;
+
+/* Colour inputs fire continuously while dragging. Debounce so one drag is a
+ * single PUT rather than fifty, each of which rebuilds the panel scene. */
+function queueThemeConfig(body, okMsg) {
+  clearTimeout(colorPutTimer);
+  colorPutTimer = setTimeout(async () => {
+    try {
+      showError("");
+      const payload = await api("/themes/config", {
+        method: "PUT",
+        body: JSON.stringify(body),
+      });
+      state.themes = payload.themes || state.themes;
+      state.bigDigitStaticBg = !!payload.bigDigitStaticBg;
+      const active = state.themes.find((t) => t.id === state.activeThemeId);
+      if (active) setTheme(active);
+      renderThemes();
+      if (okMsg) showOk(okMsg);
+    } catch (error) {
+      showError(error.message);
+    }
+  }, 250);
+}
+
+function themeEditor(theme) {
+  const wrap = document.createElement("div");
+  wrap.className = "theme-editor";
+
+  const fields = [
+    ["vacuum", "Vacuum"],
+    ["boost", "Boost"],
+    ["overboost", "Overboost"],
+  ];
+  for (const [key, label] of fields) {
+    const row = document.createElement("label");
+    row.className = "theme-color-row";
+    const input = document.createElement("input");
+    input.type = "color";
+    input.value = theme.colors[key];
+    input.addEventListener("input", () => {
+      /* Repaint the local canvas immediately; the device catches up on the
+       * debounced PUT. Waiting for the round trip makes the picker feel dead. */
+      theme.colors[key] = input.value;
+      if (theme.id === state.activeThemeId) setTheme(theme);
+      queueThemeConfig({ id: theme.id, colors: { [key]: input.value } });
+    });
+    const name = document.createElement("span");
+    name.textContent = label;
+    row.append(input, name);
+    wrap.append(row);
+  }
+
+  if (theme.style === "bigdigit") {
+    const row = document.createElement("label");
+    row.className = "theme-toggle-row";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = !!state.bigDigitStaticBg;
+    box.addEventListener("change", () => {
+      queueThemeConfig(
+        { bigDigitStaticBg: box.checked },
+        box.checked ? "Static background" : "Colour sweep",
+      );
+    });
+    const name = document.createElement("span");
+    name.textContent = "Static background (no colour sweep)";
+    row.append(box, name);
+    wrap.append(row);
+  }
+
+  if (theme.customized) {
+    const reset = document.createElement("button");
+    reset.type = "button";
+    reset.className = "theme-reset";
+    reset.textContent = "Reset to default colours";
+    reset.addEventListener("click", () =>
+      queueThemeConfig({ id: theme.id, reset: true }, `${theme.name} reset`),
+    );
+    wrap.append(reset);
+  }
+  return wrap;
+}
+
 function renderThemes() {
   el.themeList.replaceChildren();
   for (const theme of state.themes) {
+    const row = document.createElement("div");
+    row.className = "theme-row";
+
     const button = document.createElement("button");
     button.className = `theme-option${theme.id === state.activeThemeId ? " active" : ""}`;
     button.type = "button";
@@ -1232,7 +1320,7 @@ function renderThemes() {
         <i style="background:${theme.colors.boost}"></i>
         <i style="background:${theme.colors.overboost}"></i>
       </span>
-      <span>${theme.name}</span>
+      <span>${theme.name}${theme.customized ? " *" : ""}</span>
       <span>${theme.id === state.activeThemeId ? "ACTIVE" : ""}</span>
     `;
     button.addEventListener("click", async () => {
@@ -1243,6 +1331,7 @@ function renderThemes() {
           body: JSON.stringify({ id: theme.id }),
         });
         state.activeThemeId = payload.activeThemeId || theme.id;
+        state.themes = payload.themes || state.themes;
         setTheme(theme);
         state.config = { ...state.config, activeThemeId: state.activeThemeId };
         renderThemes();
@@ -1254,7 +1343,20 @@ function renderThemes() {
         showError(error.message);
       }
     });
-    el.themeList.append(button);
+
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "theme-edit";
+    edit.title = `Edit ${theme.name} colours`;
+    edit.textContent = openThemeEditor === theme.id ? "Close" : "Colours";
+    edit.addEventListener("click", () => {
+      openThemeEditor = openThemeEditor === theme.id ? null : theme.id;
+      renderThemes();
+    });
+
+    row.append(button, edit);
+    el.themeList.append(row);
+    if (openThemeEditor === theme.id) el.themeList.append(themeEditor(theme));
   }
 }
 
@@ -1285,6 +1387,7 @@ async function refreshAll() {
     if (IS_COCKPIT) requests.push(api("/media/status"));
     const [statePayload, config, themes, network, media] = await Promise.all(requests);
     state.themes = themes.themes || [];
+    state.bigDigitStaticBg = !!themes.bigDigitStaticBg;
     state.activeThemeId = themes.activeThemeId || statePayload.activeThemeId || state.activeThemeId;
     if (IS_COCKPIT) renderThemes();
     setTheme(state.themes.find((theme) => theme.id === state.activeThemeId));
@@ -1651,7 +1754,18 @@ async function uploadOta() {
   const file = el.otaFile.files[0];
   if (!file) throw new Error("Choose an ESP-IDF app binary first.");
   const payload = await uploadWithProgress("/ota", file, el.otaProgress, el.otaStatus, "application/octet-stream");
-  el.otaStatus.textContent = payload.restartRequired ? "Verified · restart the gauge to activate" : (payload.status || "OTA accepted");
+  if (payload.restartRequired) {
+    el.otaStatus.textContent = "Verified · restarting to activate…";
+    try {
+      await api("/restart", { method: "POST" });
+      el.otaStatus.textContent = "Restarting · reconnecting…";
+    } catch (error) {
+      /* The device may drop the connection as it reboots; that is success. */
+      el.otaStatus.textContent = "Restarting · reconnecting…";
+    }
+  } else {
+    el.otaStatus.textContent = payload.status || "OTA accepted";
+  }
   showOk(el.otaStatus.textContent);
 }
 

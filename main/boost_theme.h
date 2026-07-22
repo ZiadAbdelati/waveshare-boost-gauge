@@ -1,7 +1,8 @@
 #pragma once
 
-#include <stdint.h>
+#include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -38,10 +39,44 @@ typedef struct {
 /* Stable lowercase token for the JSON API / web dispatch, e.g. "arc". */
 const char *boost_style_name(boost_gauge_style_t style);
 
+/**
+ * Load persisted colour overrides. Call once at start-up, before the first
+ * boost_theme_find(); until then the built-in palettes are served.
+ */
+void boost_theme_init(void);
+
 const boost_theme_t *boost_theme_default(void);
 const boost_theme_t *boost_theme_find(const char *id);
 const boost_theme_t *boost_theme_at(size_t index);
 size_t boost_theme_count(void);
+
+/*
+ * The three zone colours are user-editable; face/track/text/muted/zero are
+ * structural and stay fixed, because a theme whose face and text can be set
+ * independently is a theme that can be made unreadable.
+ */
+typedef struct {
+    uint32_t vacuum;
+    uint32_t boost;
+    uint32_t overboost;
+} boost_theme_colors_t;
+
+/** Overwrite a theme's zone colours and persist. Returns false on unknown id. */
+bool boost_theme_set_colors(const char *id, const boost_theme_colors_t *colors);
+
+/** Restore a theme's built-in palette and persist. False on unknown id. */
+bool boost_theme_reset_colors(const char *id);
+
+/** True when a theme currently differs from its built-in palette. */
+bool boost_theme_is_customized(const char *id);
+
+/*
+ * Big Digit normally sweeps its whole ground through the zone colours. With a
+ * static ground it never repaints full-screen at all, which removes this face's
+ * only stall — see the BIG_BANDS discussion in README.md.
+ */
+bool boost_theme_bigdigit_static_bg(void);
+void boost_theme_set_bigdigit_static_bg(bool enabled);
 
 #ifdef __cplusplus
 }

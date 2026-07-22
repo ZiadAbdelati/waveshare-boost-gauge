@@ -121,13 +121,15 @@ static void append_theme_json(char *buf, size_t len, const boost_theme_t *theme)
              "{\"id\":\"%s\",\"name\":\"%s\",\"style\":\"%s\",\"colors\":{\"face\":\"#%06lx\","
              "\"track\":\"#%06lx\",\"text\":\"#%06lx\",\"muted\":\"#%06lx\","
              "\"vacuum\":\"#%06lx\",\"boost\":\"#%06lx\",\"overboost\":\"#%06lx\","
-             "\"zero\":\"#%06lx\"},\"brightnessHigh\":%d,\"brightnessLow\":%d}",
+             "\"zero\":\"#%06lx\"},\"brightnessHigh\":%d,\"brightnessLow\":%d,"
+             "\"customized\":%s}",
              theme->id, theme->name, boost_style_name(theme->style),
              (unsigned long)theme->face, (unsigned long)theme->track,
              (unsigned long)theme->text, (unsigned long)theme->muted,
              (unsigned long)theme->vacuum, (unsigned long)theme->boost,
              (unsigned long)theme->overboost, (unsigned long)theme->zero,
-             theme->brightness_high, theme->brightness_low);
+             theme->brightness_high, theme->brightness_low,
+             boost_theme_is_customized(theme->id) ? "true" : "false");
     strlcat(buf, tmp, len);
 }
 
@@ -460,7 +462,10 @@ static esp_err_t themes_get(httpd_req_t *req)
     char json[2048] = {0};
     boost_config_t cfg;
     boost_model_get_config(&cfg);
-    snprintf(json, sizeof(json), "{\"activeThemeId\":\"%s\",\"themes\":[", cfg.active_theme_id);
+    snprintf(json, sizeof(json),
+             "{\"activeThemeId\":\"%s\",\"bigDigitStaticBg\":%s,\"themes\":[",
+             cfg.active_theme_id,
+             boost_theme_bigdigit_static_bg() ? "true" : "false");
     for (size_t i = 0; i < boost_theme_count(); ++i) {
         if (i > 0) {
             strlcat(json, ",", sizeof(json));
@@ -469,6 +474,93 @@ static esp_err_t themes_get(httpd_req_t *req)
     }
     strlcat(json, "]}", sizeof(json));
     return send_json(req, json);
+}
+
+/* Parse "#rrggbb" / "rrggbb". Returns false rather than guessing, so a typo in
+ * the dashboard cannot silently paint the gauge black. */
+static bool parse_hex_color(const cJSON *item, uint32_t *out)
+{
+    if (!cJSON_IsString(item) || item->valuestring == NULL) {
+        return false;
+    }
+    const char *p = item->valuestring;
+    if (*p == '#') {
+        ++p;
+    }
+    if (strlen(p) != 6) {
+        return false;
+    }
+    char *end = NULL;
+    const unsigned long v = strtoul(p, &end, 16);
+    if (end == NULL || *end != '\0') {
+        return false;
+    }
+    *out = (uint32_t)v & 0xFFFFFFu;
+    return true;
+}
+
+static esp_err_t themes_config_put(httpd_req_t *req)
+{
+    char *body = read_body(req, MAX_JSON_BODY);
+    if (body == NULL) {
+        return send_err(req, HTTPD_400, "invalid_body");
+    }
+    cJSON *root = cJSON_Parse(body);
+    free(body);
+    if (root == NULL) {
+        return send_err(req, HTTPD_400, "invalid_body");
+    }
+
+    const cJSON *flat = cJSON_GetObjectItemCaseSensitive(root, "bigDigitStaticBg");
+    if (cJSON_IsBool(flat)) {
+        boost_theme_set_bigdigit_static_bg(cJSON_IsTrue(flat));
+    }
+
+    const cJSON *id = cJSON_GetObjectItemCaseSensitive(root, "id");
+    if (cJSON_IsString(id)) {
+        if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(root, "reset"))) {
+            if (!boost_theme_reset_colors(id->valuestring)) {
+                cJSON_Delete(root);
+                return send_err(req, HTTPD_404, "theme_not_found");
+            }
+        } else {
+            const boost_theme_t *cur = boost_theme_find(id->valuestring);
+            if (cur == NULL) {
+                cJSON_Delete(root);
+                return send_err(req, HTTPD_404, "theme_not_found");
+            }
+            /* Seed from current so a partial body edits only what it names. */
+            boost_theme_colors_t colors = {
+                .vacuum = cur->vacuum,
+                .boost = cur->boost,
+                .overboost = cur->overboost,
+            };
+            const cJSON *c = cJSON_GetObjectItemCaseSensitive(root, "colors");
+            if (cJSON_IsObject(c)) {
+                const struct { const char *key; uint32_t *dst; } fields[] = {
+                    { "vacuum", &colors.vacuum },
+                    { "boost", &colors.boost },
+                    { "overboost", &colors.overboost },
+                };
+                for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); ++i) {
+                    const cJSON *item = cJSON_GetObjectItemCaseSensitive(c, fields[i].key);
+                    if (item != NULL && !parse_hex_color(item, fields[i].dst)) {
+                        cJSON_Delete(root);
+                        return send_err(req, HTTPD_400, "invalid_color");
+                    }
+                }
+            }
+            boost_theme_set_colors(id->valuestring, &colors);
+        }
+    }
+    cJSON_Delete(root);
+
+    /* Rebuild only if the change can be seen right now. */
+    if (boost_display_lock(1000) == ESP_OK) {
+        boost_gauge_apply_theme(boost_model_active_theme());
+        boost_display_unlock();
+    }
+    return themes_get(req);
 }
 
 static esp_err_t theme_active_put(httpd_req_t *req)
@@ -803,6 +895,35 @@ static esp_err_t ota_post(httpd_req_t *req)
              (unsigned)received);
     return send_json(req, response);
 }
+/* OTA sets the boot partition but cannot take effect until the device reboots,
+ * and without this the only way to finish a remote update was to power-cycle
+ * the panel by hand. Deferred so the response is actually delivered first. */
+static void restart_timer_cb(void *arg)
+{
+    (void)arg;
+    ESP_LOGW(TAG, "restarting on API request");
+    esp_restart();
+}
+
+static esp_err_t restart_post(httpd_req_t *req)
+{
+    static esp_timer_handle_t timer;
+    if (timer == NULL) {
+        const esp_timer_create_args_t args = {
+            .callback = restart_timer_cb,
+            .name = "api_restart",
+        };
+        if (esp_timer_create(&args, &timer) != ESP_OK) {
+            return send_err(req, HTTPD_500, "restart_failed");
+        }
+    }
+    const esp_err_t err = esp_timer_start_once(timer, 400 * 1000);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        return send_err(req, HTTPD_500, "restart_failed");
+    }
+    return send_json(req, "{\"ok\":true,\"restartingInMs\":400}");
+}
+
 static esp_err_t events_get(httpd_req_t *req)
 {
     /* Retained for API compatibility. HTTPD has one request worker, so a
@@ -1072,6 +1193,7 @@ esp_err_t boost_web_start(void)
     register_uri(API_BASE "/time", HTTP_POST, time_post);
     register_uri(API_BASE "/themes", HTTP_GET, themes_get);
     register_uri(API_BASE "/themes/active", HTTP_PUT, theme_active_put);
+    register_uri(API_BASE "/themes/config", HTTP_PUT, themes_config_put);
     register_uri(API_BASE "/logs", HTTP_GET, logs_get);
     register_uri(API_BASE "/logs", HTTP_DELETE, logs_delete);
     register_uri(API_BASE "/logs.csv", HTTP_GET, logs_csv_get);
@@ -1079,6 +1201,7 @@ esp_err_t boost_web_start(void)
     register_uri(API_BASE "/media", HTTP_DELETE, media_delete);
     register_uri(API_BASE "/media/status", HTTP_GET, media_status_get);
     register_uri(API_BASE "/ota", HTTP_POST, ota_post);
+    register_uri(API_BASE "/restart", HTTP_POST, restart_post);
     register_uri(API_BASE "/network", HTTP_GET, network_get);
     register_uri(API_BASE "/network", HTTP_PUT, network_put);
     register_uri(API_BASE "/network/reconnect", HTTP_POST, network_reconnect_post);

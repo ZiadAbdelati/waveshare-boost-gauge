@@ -177,6 +177,28 @@ def state_payload() -> dict[str, float | int | str | bool]:
     return payload
 
 
+THEME_DEFAULTS = {
+    t["id"]: dict(t["colors"]) for t in THEMES
+}
+
+
+def themes_payload() -> dict:
+    """Mirror the firmware's /themes shape, including per-theme `customized`."""
+    out = []
+    for t in THEMES:
+        item = dict(t)
+        item["customized"] = any(
+            t["colors"][k] != THEME_DEFAULTS[t["id"]][k]
+            for k in ("vacuum", "boost", "overboost")
+        )
+        out.append(item)
+    return {
+        "activeThemeId": CONFIG["activeThemeId"],
+        "bigDigitStaticBg": bool(CONFIG.get("bigDigitStaticBg", False)),
+        "themes": out,
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "BoostGaugeMock/1.0"
 
@@ -206,7 +228,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/v1/config":
             self.send_json(CONFIG)
         elif path == "/api/v1/themes":
-            self.send_json({"activeThemeId": CONFIG["activeThemeId"], "themes": THEMES})
+            self.send_json(themes_payload())
         elif path == "/api/v1/logs":
             limit = int(parse_qs(parsed.query).get("limit", ["120"])[0])
             self.send_json({"sessionStartedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(STARTED_AT)), "samples": LOGS[-limit:]})
@@ -312,7 +334,25 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": "unknown theme"}, HTTPStatus.BAD_REQUEST)
                 return
             CONFIG["activeThemeId"] = payload["id"]
-            self.send_json({"activeThemeId": CONFIG["activeThemeId"]})
+            self.send_json(themes_payload())
+        elif parsed.path == "/api/v1/themes/config":
+            payload = self.read_json()
+            if "bigDigitStaticBg" in payload:
+                CONFIG["bigDigitStaticBg"] = bool(payload["bigDigitStaticBg"])
+            theme_id = payload.get("id")
+            if theme_id:
+                theme = next((t for t in THEMES if t["id"] == theme_id), None)
+                if theme is None:
+                    self.send_json({"error": "theme_not_found"}, HTTPStatus.NOT_FOUND)
+                    return
+                if payload.get("reset"):
+                    for key in ("vacuum", "boost", "overboost"):
+                        theme["colors"][key] = THEME_DEFAULTS[theme_id][key]
+                else:
+                    for key, value in (payload.get("colors") or {}).items():
+                        if key in ("vacuum", "boost", "overboost"):
+                            theme["colors"][key] = value
+            self.send_json(themes_payload())
         elif parsed.path == "/api/v1/network":
             payload = self.read_json()
             if payload.get("mode") in ("ap", "apsta"):
