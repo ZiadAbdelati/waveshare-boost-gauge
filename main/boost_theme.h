@@ -95,6 +95,11 @@ void boost_theme_set_bigdigit_color_text(bool enabled);
 uint32_t boost_theme_bigdigit_static_color(void);
 void boost_theme_set_bigdigit_static_color(uint32_t rgb);
 
+/* Readout text colour for Big Digit, default white. Overridden while
+ * bigdigit_color_text is on (the readout sweeps the zone colours then). */
+uint32_t boost_theme_bigdigit_text_color(void);
+void boost_theme_set_bigdigit_text_color(uint32_t rgb);
+
 /* Smooth (quantised-gradient) fill colour for the arc and hud faces instead of
  * a hard vacuum/boost/overboost switch - the same ramp Big Digit sweeps. */
 bool boost_theme_arc_gradient(void);

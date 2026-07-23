@@ -2198,7 +2198,7 @@ static void draw_big_minus(lv_event_t *e)
     /* Follows the readout when the colour cue is on the text. */
     t.color = boost_theme_bigdigit_color_text() && s_big_text_color != 0u
                   ? c(s_big_text_color)
-                  : lv_color_white();
+                  : c(boost_theme_bigdigit_text_color());
     t.opa = LV_OPA_COVER;
     t.p[0].x = x1 + slant; t.p[0].y = y1;
     t.p[1].x = x2;         t.p[1].y = y1;
@@ -2255,7 +2255,7 @@ static void build_bigdigit(lv_obj_t *scr)
     lv_label_set_text(s_big_zone, "ATMO");
     lv_obj_set_style_text_font(s_big_zone, F_WIDE22, 0);
     lv_obj_set_style_text_letter_space(s_big_zone, 3, 0);
-    lv_obj_set_style_text_color(s_big_zone, lv_color_white(), 0);
+    lv_obj_set_style_text_color(s_big_zone, c(boost_theme_bigdigit_text_color()), 0);
     lv_obj_align(s_big_zone, LV_ALIGN_CENTER, 0, -150);
 
     /* Tabular slots sized from the real Alvida metrics (widest digit '0'
@@ -2269,7 +2269,7 @@ static void build_bigdigit(lv_obj_t *scr)
     s_big_tens = lv_label_create(scr);
     lv_label_set_text(s_big_tens, "");
     lv_obj_set_style_text_font(s_big_tens, BIGDIGIT_FONT, 0);
-    lv_obj_set_style_text_color(s_big_tens, lv_color_white(), 0);
+    lv_obj_set_style_text_color(s_big_tens, c(boost_theme_bigdigit_text_color()), 0);
     lv_obj_set_size(s_big_tens, BIG_SLOT + 6, 96);
     lv_obj_set_style_text_align(s_big_tens, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(s_big_tens, LV_ALIGN_CENTER, tens_x, -8);
@@ -2277,7 +2277,7 @@ static void build_bigdigit(lv_obj_t *scr)
     s_big_ones = lv_label_create(scr);
     lv_label_set_text(s_big_ones, "0");
     lv_obj_set_style_text_font(s_big_ones, BIGDIGIT_FONT, 0);
-    lv_obj_set_style_text_color(s_big_ones, lv_color_white(), 0);
+    lv_obj_set_style_text_color(s_big_ones, c(boost_theme_bigdigit_text_color()), 0);
     lv_obj_set_size(s_big_ones, BIG_SLOT + 6, 96);
     lv_obj_set_style_text_align(s_big_ones, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(s_big_ones, LV_ALIGN_CENTER, ones_x, -8);
@@ -2285,7 +2285,7 @@ static void build_bigdigit(lv_obj_t *scr)
     s_big_dot = lv_label_create(scr);
     lv_label_set_text(s_big_dot, ".");
     lv_obj_set_style_text_font(s_big_dot, BIGDIGIT_FONT, 0);
-    lv_obj_set_style_text_color(s_big_dot, lv_color_white(), 0);
+    lv_obj_set_style_text_color(s_big_dot, c(boost_theme_bigdigit_text_color()), 0);
     lv_obj_set_size(s_big_dot, BIG_DOTW + 6, 96);
     lv_obj_set_style_text_align(s_big_dot, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(s_big_dot, LV_ALIGN_CENTER, dot_x, -8);
@@ -2293,7 +2293,7 @@ static void build_bigdigit(lv_obj_t *scr)
     s_big_tenths = lv_label_create(scr);
     lv_label_set_text(s_big_tenths, "0");
     lv_obj_set_style_text_font(s_big_tenths, BIGDIGIT_FONT, 0);
-    lv_obj_set_style_text_color(s_big_tenths, lv_color_white(), 0);
+    lv_obj_set_style_text_color(s_big_tenths, c(boost_theme_bigdigit_text_color()), 0);
     lv_obj_set_size(s_big_tenths, BIG_SLOT + 6, 96);
     lv_obj_set_style_text_align(s_big_tenths, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(s_big_tenths, LV_ALIGN_CENTER, tenths_x, -8);
@@ -2312,13 +2312,13 @@ static void build_bigdigit(lv_obj_t *scr)
     lv_label_set_text(s_big_unit, "PSI");
     lv_obj_set_style_text_font(s_big_unit, F_WIDE32, 0);
     lv_obj_set_style_text_letter_space(s_big_unit, 4, 0);
-    lv_obj_set_style_text_color(s_big_unit, lv_color_white(), 0);
+    lv_obj_set_style_text_color(s_big_unit, c(boost_theme_bigdigit_text_color()), 0);
     lv_obj_align(s_big_unit, LV_ALIGN_CENTER, 0, 118);
 
     s_big_peak = lv_label_create(scr);
     lv_label_set_text(s_big_peak, "PEAK 0.0");
     lv_obj_set_style_text_font(s_big_peak, F_MONO16, 0);
-    lv_obj_set_style_text_color(s_big_peak, lv_color_white(), 0);
+    lv_obj_set_style_text_color(s_big_peak, c(boost_theme_bigdigit_text_color()), 0);
     lv_obj_align(s_big_peak, LV_ALIGN_CENTER, 0, 168);
 }
 

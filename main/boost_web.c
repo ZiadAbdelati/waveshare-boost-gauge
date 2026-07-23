@@ -521,12 +521,14 @@ static esp_err_t themes_get(httpd_req_t *req)
     snprintf(json, sizeof(json),
              "{\"activeThemeId\":\"%s\",\"bigDigitStaticBg\":%s,"
              "\"bigDigitColorText\":%s,\"bigDigitStaticColor\":\"#%06lx\","
+             "\"bigDigitTextColor\":\"#%06lx\","
              "\"arcGradient\":%s,\"hudGradient\":%s,\"teSync\":%s,"
              "\"pixelShift\":%s,\"pixelShiftSec\":%u,\"themes\":[",
              cfg.active_theme_id,
              boost_theme_bigdigit_static_bg() ? "true" : "false",
              boost_theme_bigdigit_color_text() ? "true" : "false",
              (unsigned long)boost_theme_bigdigit_static_color(),
+             (unsigned long)boost_theme_bigdigit_text_color(),
              boost_theme_arc_gradient() ? "true" : "false",
              boost_theme_hud_gradient() ? "true" : "false",
              boost_theme_te_sync() ? "true" : "false",
@@ -618,6 +620,16 @@ static esp_err_t themes_config_put(httpd_req_t *req)
             return send_err(req, HTTPD_400, "invalid_color");
         }
         boost_theme_set_bigdigit_static_color(rgb);
+    }
+
+    const cJSON *btxc = cJSON_GetObjectItemCaseSensitive(root, "bigDigitTextColor");
+    if (btxc != NULL) {
+        uint32_t rgb = 0;
+        if (!parse_hex_color(btxc, &rgb)) {
+            cJSON_Delete(root);
+            return send_err(req, HTTPD_400, "invalid_color");
+        }
+        boost_theme_set_bigdigit_text_color(rgb);
     }
 
     const cJSON *ag = cJSON_GetObjectItemCaseSensitive(root, "arcGradient");

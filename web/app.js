@@ -1263,6 +1263,11 @@ function queueThemeConfig(body, okMsg) {
       state.themes = payload.themes || state.themes;
       state.bigDigitStaticBg = !!payload.bigDigitStaticBg;
       state.bigDigitColorText = !!payload.bigDigitColorText;
+      state.bigDigitStaticColor = payload.bigDigitStaticColor || state.bigDigitStaticColor;
+      state.bigDigitTextColor = payload.bigDigitTextColor || state.bigDigitTextColor;
+      state.arcGradient = !!payload.arcGradient;
+      state.hudGradient = !!payload.hudGradient;
+      state.teSync = !!payload.teSync;
       const active = state.themes.find((t) => t.id === state.activeThemeId);
       if (active) setTheme(active);
       renderThemes();
@@ -1329,6 +1334,22 @@ function themeEditor(theme) {
               "Static background", "Colour sweep");
     addToggle("bigDigitColorText", "Colour the readout instead of the background",
               "Readout colour", "White readout");
+
+    if (!state.bigDigitColorText) {
+      const row = document.createElement("label");
+      row.className = "theme-color-row";
+      const input = document.createElement("input");
+      input.type = "color";
+      input.value = state.bigDigitTextColor || "#ffffff";
+      input.addEventListener("input", () => {
+        state.bigDigitTextColor = input.value;
+        queueThemeConfig({ bigDigitTextColor: input.value });
+      });
+      const name = document.createElement("span");
+      name.textContent = "Readout text colour";
+      row.append(input, name);
+      wrap.append(row);
+    }
 
     if (state.bigDigitStaticBg) {
       const row = document.createElement("label");
@@ -1533,6 +1554,7 @@ async function refreshAll() {
     state.bigDigitStaticBg = !!themes.bigDigitStaticBg;
     state.bigDigitColorText = !!themes.bigDigitColorText;
     state.bigDigitStaticColor = themes.bigDigitStaticColor || "#000000";
+    state.bigDigitTextColor = themes.bigDigitTextColor || "#ffffff";
     state.arcGradient = !!themes.arcGradient;
     state.hudGradient = !!themes.hudGradient;
     state.teSync = !!themes.teSync;

@@ -204,6 +204,7 @@ def themes_payload() -> dict:
         "pixelShiftSec": int(CONFIG.get("pixelShiftSec", PXSHIFT_SEC_DEFAULT)),
         "bigDigitColorText": bool(CONFIG.get("bigDigitColorText", False)),
         "bigDigitStaticColor": str(CONFIG.get("bigDigitStaticColor", "#000000")),
+        "bigDigitTextColor": str(CONFIG.get("bigDigitTextColor", "#ffffff")),
         "arcGradient": bool(CONFIG.get("arcGradient", False)),
         "hudGradient": bool(CONFIG.get("hudGradient", False)),
         "teSync": bool(CONFIG.get("teSync", False)),
@@ -372,6 +373,8 @@ class Handler(BaseHTTPRequestHandler):
                 CONFIG["bigDigitColorText"] = bool(payload["bigDigitColorText"])
             if "bigDigitStaticColor" in payload:
                 CONFIG["bigDigitStaticColor"] = str(payload["bigDigitStaticColor"])
+            if "bigDigitTextColor" in payload:
+                CONFIG["bigDigitTextColor"] = str(payload["bigDigitTextColor"])
             if "arcGradient" in payload:
                 CONFIG["arcGradient"] = bool(payload["arcGradient"])
             if "hudGradient" in payload:
