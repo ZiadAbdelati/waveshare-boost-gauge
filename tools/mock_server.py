@@ -43,7 +43,7 @@ THEMES = [
         "name": "Vault-Tec",
         "style": "vault",
         "colors": {
-            "face": "#02100A",
+            "face": "#05281A",
             "track": "#0C3D24",
             "text": "#38F08A",
             "muted": "#1F7A4D",
@@ -208,6 +208,8 @@ def themes_payload() -> dict:
         "arcGradient": bool(CONFIG.get("arcGradient", False)),
         "hudGradient": bool(CONFIG.get("hudGradient", False)),
         "teSync": bool(CONFIG.get("teSync", False)),
+        "vaultFace": str(CONFIG.get("vaultFace", "#05281a")),
+        "vaultVignette": int(CONFIG.get("vaultVignette", 60)),
         "themes": out,
     }
 
@@ -381,6 +383,10 @@ class Handler(BaseHTTPRequestHandler):
                 CONFIG["hudGradient"] = bool(payload["hudGradient"])
             if "teSync" in payload:
                 CONFIG["teSync"] = bool(payload["teSync"])
+            if "vaultFace" in payload:
+                CONFIG["vaultFace"] = str(payload["vaultFace"])
+            if "vaultVignette" in payload:
+                CONFIG["vaultVignette"] = int(payload["vaultVignette"])
             theme_id = payload.get("id")
             if theme_id:
                 theme = next((t for t in THEMES if t["id"] == theme_id), None)

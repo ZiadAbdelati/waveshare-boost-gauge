@@ -495,6 +495,9 @@ function drawFixedDecimal(intStr, fracStr, decimalX, y) {
 function drawVaultGauge(sample, psi, g) {
   const range = psiRange();
   const p = state.palette;
+  /* Dial glow colour + vignette depth mirror the device settings. */
+  const face = state.vaultFace || p.face;
+  const vignAlpha = (state.vaultVignette ?? 60) / 100;
   const green = p.text;
   const warn = p.overboost;
   const dim = p.muted;
@@ -508,7 +511,7 @@ function drawVaultGauge(sample, psi, g) {
   /* face + bezel */
   ctx.beginPath();
   ctx.arc(0, 0, 233, 0, Math.PI * 2);
-  ctx.fillStyle = p.face;
+  ctx.fillStyle = face;
   ctx.fill();
   ctx.beginPath();
   ctx.arc(0, 0, 221, 0, Math.PI * 2);
@@ -629,7 +632,7 @@ function drawVaultGauge(sample, psi, g) {
   ctx.restore();
   ctx.beginPath();
   ctx.arc(0, 0, 14, 0, Math.PI * 2);
-  ctx.fillStyle = p.face;
+  ctx.fillStyle = face;
   ctx.fill();
   ctx.lineWidth = 2;
   ctx.strokeStyle = green;
@@ -649,9 +652,9 @@ function drawVaultGauge(sample, psi, g) {
     ctx.stroke();
   }
   ctx.globalAlpha = 1;
-  const vg = ctx.createRadialGradient(0, 0, 120, 0, 0, 233);
+  const vg = ctx.createRadialGradient(0, 0, 50, 0, 0, 233);
   vg.addColorStop(0, "rgba(0,0,0,0)");
-  vg.addColorStop(1, "rgba(0,0,0,0.6)");
+  vg.addColorStop(1, `rgba(0,0,0,${vignAlpha})`);
   ctx.fillStyle = vg;
   ctx.beginPath();
   ctx.arc(0, 0, 233, 0, Math.PI * 2);
@@ -1268,6 +1271,8 @@ function queueThemeConfig(body, okMsg) {
       state.arcGradient = !!payload.arcGradient;
       state.hudGradient = !!payload.hudGradient;
       state.teSync = !!payload.teSync;
+      state.vaultFace = payload.vaultFace || state.vaultFace;
+      if (payload.vaultVignette !== undefined) state.vaultVignette = payload.vaultVignette;
       const active = state.themes.find((t) => t.id === state.activeThemeId);
       if (active) setTheme(active);
       renderThemes();
@@ -1320,6 +1325,41 @@ function themeEditor(theme) {
     row.append(box, name);
     wrap.append(row);
   };
+
+  if (theme.style === "vault") {
+    /* Dial glow colour. Brighter greens read as a stronger illuminated dial. */
+    const crow = document.createElement("label");
+    crow.className = "theme-color-row";
+    const cin = document.createElement("input");
+    cin.type = "color";
+    cin.value = state.vaultFace || "#05281a";
+    cin.addEventListener("input", () => {
+      state.vaultFace = cin.value;
+      queueThemeConfig({ vaultFace: cin.value });
+    });
+    const cname = document.createElement("span");
+    cname.textContent = "Dial glow colour";
+    crow.append(cin, cname);
+    wrap.append(crow);
+
+    /* Vignette depth: how dark the edges fall relative to the centre. */
+    const vrow = document.createElement("div");
+    vrow.className = "theme-range-row";
+    const vin = document.createElement("input");
+    vin.type = "range";
+    vin.min = "0"; vin.max = "90"; vin.step = "5";
+    vin.value = String(state.vaultVignette ?? 60);
+    const vname = document.createElement("span");
+    const setLabel = () => { vname.textContent = `Edge darkening ${vin.value}%`; };
+    setLabel();
+    vin.addEventListener("input", () => {
+      setLabel();
+      state.vaultVignette = Number(vin.value);
+      queueThemeConfig({ vaultVignette: Number(vin.value) });
+    });
+    vrow.append(vname, vin);
+    wrap.append(vrow);
+  }
 
   if (theme.style === "arc") {
     addToggle("arcGradient", "Gradient fill (smooth colour transition)",
@@ -1558,6 +1598,8 @@ async function refreshAll() {
     state.arcGradient = !!themes.arcGradient;
     state.hudGradient = !!themes.hudGradient;
     state.teSync = !!themes.teSync;
+    state.vaultFace = themes.vaultFace || "#05281a";
+    state.vaultVignette = themes.vaultVignette ?? 60;
     state.pixelShift = !!themes.pixelShift;
     state.pixelShiftSec = Number(themes.pixelShiftSec) || state.pixelShiftSec;
     syncDisplayToggles();

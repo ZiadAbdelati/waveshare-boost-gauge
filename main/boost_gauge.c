@@ -161,9 +161,9 @@ static const int8_t k_pxshift[][2] = {
 /* CRT overlay, mirroring the web canvas: a smooth radial darkening that starts
  * just past half radius, plus scanlines every 4th row clipped to the face. The
  * web draws both last, so they sit over the needle and digits too. */
-#define VAULT_VIGN_R0        120.0f
+#define VAULT_VIGN_R0        50.0f
 #define VAULT_VIGN_R1        233.0f
-#define VAULT_VIGN_MAX       0.40f
+#define VAULT_VIGN_MAX       0.60f
 #define VAULT_FACE_R         231.0f
 #define VAULT_SCAN_STEP      4
 #define VAULT_SCAN_OPA       41 /* 0.16 * 255 */
@@ -974,7 +974,7 @@ static void paint_vault_background(lv_obj_t *canvas, const boost_theme_t *theme)
     /* face */
     lv_draw_rect_dsc_t bg;
     lv_draw_rect_dsc_init(&bg);
-    bg.bg_color = c(theme->face);
+    bg.bg_color = c(boost_theme_vault_face());
     bg.bg_opa = LV_OPA_COVER;
     lv_area_t full = { 0, 0, DISP_SIZE - 1, DISP_SIZE - 1 };
     lv_draw_rect(&layer, &bg, &full);
@@ -1037,7 +1037,7 @@ static void paint_vault_background(lv_obj_t *canvas, const boost_theme_t *theme)
         /* Pre-blended and drawn OPAQUE. Stroking ring, hub and bars each at
          * 50% made every overlap composite twice and read as a darker seam;
          * mixing the colour up front gives one flat tone whatever overlaps. */
-        const lv_color_t ink = c(lerp_rgb(theme->face, theme->text, 0.5f));
+        const lv_color_t ink = c(lerp_rgb(boost_theme_vault_face(), theme->text, 0.5f));
 
         /* Outer ring of the vault door. */
         lv_draw_arc_dsc_init(&arc);
@@ -1124,6 +1124,7 @@ static void paint_vault_background(lv_obj_t *canvas, const boost_theme_t *theme)
     const float fcx = (float)(DISP_SIZE - 1) * 0.5f;
     const float fcy = (float)(DISP_SIZE - 1) * 0.5f;
     const float span = VAULT_VIGN_R1 - VAULT_VIGN_R0;
+    const float vign_max = (float)boost_theme_vault_vignette_pct() / 100.0f;
 
     /* +1 pad each side so x-1 and x+1 index in bounds at both ends. */
     const size_t errbytes = sizeof(int16_t) * 3u * (size_t)(DISP_SIZE + 2);
@@ -1159,7 +1160,7 @@ static void paint_vault_background(lv_obj_t *canvas, const boost_theme_t *theme)
                 if (t > 1.0f) t = 1.0f;
                 /* Smootherstep: zero first AND second derivative at both ends,
                  * so neither the onset nor the clamp leaves a visible edge. */
-                a = VAULT_VIGN_MAX * t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+                a = vign_max * t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
             }
             const float keep = 1.0f - a;
 
@@ -1321,7 +1322,7 @@ static void draw_vault_needle(lv_event_t *e)
     /* Hub: dark centre with a ring, so the pivot reads as a cap. */
     lv_draw_rect_dsc_t hub;
     lv_draw_rect_dsc_init(&hub);
-    hub.bg_color = c(theme->face);
+    hub.bg_color = c(boost_theme_vault_face());
     hub.bg_opa = LV_OPA_COVER;
     hub.radius = LV_RADIUS_CIRCLE;
     /* The pivot cap keeps the phosphor green even in overboost - only the
@@ -1493,7 +1494,8 @@ static void build_vault(lv_obj_t *scr)
          * styles need no such trick: hud's cached face and bigdigit's ground
          * are flat fills that already equal the screen background. */
         lv_obj_set_style_bg_color(lv_screen_active(),
-                                  c(scale_rgb(theme->face, 1.0f - VAULT_VIGN_MAX)), 0);
+                                  c(scale_rgb(boost_theme_vault_face(),
+                                              1.0f - (float)boost_theme_vault_vignette_pct() / 100.0f)), 0);
     } else {
         ESP_LOGW(TAG, "vault background cache alloc failed (%u B)", (unsigned)bg_bytes);
     }

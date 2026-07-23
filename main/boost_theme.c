@@ -23,6 +23,8 @@
 #define NVS_KEY_ARCGRAD "arc_gradient"
 #define NVS_KEY_HUDGRAD "hud_gradient"
 #define NVS_KEY_TESYNC  "te_sync"
+#define NVS_KEY_VFACE   "vault_face"
+#define NVS_KEY_VVIG    "vault_vig"
 
 /* Palettes/styles here MUST match tools/mock_server.py and the web renderers so
  * the physical panel and the dashboard mirror agree. */
@@ -46,7 +48,7 @@ static const boost_theme_t s_defaults[] = {
         .id = "vault-tec",
         .name = "Vault-Tec",
         .style = BOOST_STYLE_VAULT,
-        .face = 0x02100A,
+        .face = 0x05281A,
         .track = 0x0C3D24,
         .text = 0x38F08A,
         .muted = 0x1F7A4D,
@@ -103,6 +105,10 @@ static uint32_t s_bigdigit_text_color = 0xFFFFFFu;
 static bool s_arc_gradient;
 static bool s_hud_gradient;
 static bool s_te_sync;
+/* Vault dial glow. 0x1000000 sentinel = "unset" so an absent key keeps the
+ * default while a stored value (including a dark one) is honoured. */
+static uint32_t s_vault_face = 0x05281Au;
+static uint8_t s_vault_vig_pct = 60u;
 /* Burn-in protection is on unless it was explicitly switched off, so a panel
  * that never sees the settings page is still protected. */
 static bool s_pixel_shift = true;
@@ -162,6 +168,8 @@ static void persist(void)
     nvs_set_u8(h, NVS_KEY_ARCGRAD, s_arc_gradient ? 1 : 0);
     nvs_set_u8(h, NVS_KEY_HUDGRAD, s_hud_gradient ? 1 : 0);
     nvs_set_u8(h, NVS_KEY_TESYNC, s_te_sync ? 1 : 0);
+    nvs_set_u32(h, NVS_KEY_VFACE, s_vault_face);
+    nvs_set_u8(h, NVS_KEY_VVIG, s_vault_vig_pct);
     nvs_commit(h);
     nvs_close(h);
 #endif
@@ -234,6 +242,15 @@ void boost_theme_init(void)
     uint8_t te = 0;
     if (nvs_get_u8(h, NVS_KEY_TESYNC, &te) == ESP_OK) {
         s_te_sync = (te != 0);
+    }
+
+    uint32_t vf = 0;
+    if (nvs_get_u32(h, NVS_KEY_VFACE, &vf) == ESP_OK) {
+        s_vault_face = vf & 0xFFFFFFu;
+    }
+    uint8_t vv = 0;
+    if (nvs_get_u8(h, NVS_KEY_VVIG, &vv) == ESP_OK) {
+        s_vault_vig_pct = vv > 90u ? 90u : vv;
     }
 
     size_t len = 0;
@@ -404,6 +421,30 @@ void boost_theme_set_te_sync(bool enabled)
 {
     ensure_loaded();
     s_te_sync = enabled;
+    persist();
+}
+
+uint32_t boost_theme_vault_face(void)
+{
+    return s_vault_face;
+}
+
+void boost_theme_set_vault_face(uint32_t rgb)
+{
+    ensure_loaded();
+    s_vault_face = rgb & 0xFFFFFFu;
+    persist();
+}
+
+uint8_t boost_theme_vault_vignette_pct(void)
+{
+    return s_vault_vig_pct;
+}
+
+void boost_theme_set_vault_vignette_pct(uint8_t pct)
+{
+    ensure_loaded();
+    s_vault_vig_pct = pct > 90u ? 90u : pct;
     persist();
 }
 

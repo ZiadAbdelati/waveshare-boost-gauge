@@ -523,6 +523,7 @@ static esp_err_t themes_get(httpd_req_t *req)
              "\"bigDigitColorText\":%s,\"bigDigitStaticColor\":\"#%06lx\","
              "\"bigDigitTextColor\":\"#%06lx\","
              "\"arcGradient\":%s,\"hudGradient\":%s,\"teSync\":%s,"
+             "\"vaultFace\":\"#%06lx\",\"vaultVignette\":%u,"
              "\"pixelShift\":%s,\"pixelShiftSec\":%u,\"themes\":[",
              cfg.active_theme_id,
              boost_theme_bigdigit_static_bg() ? "true" : "false",
@@ -532,6 +533,8 @@ static esp_err_t themes_get(httpd_req_t *req)
              boost_theme_arc_gradient() ? "true" : "false",
              boost_theme_hud_gradient() ? "true" : "false",
              boost_theme_te_sync() ? "true" : "false",
+             (unsigned long)boost_theme_vault_face(),
+             (unsigned)boost_theme_vault_vignette_pct(),
              boost_theme_pixel_shift() ? "true" : "false",
              (unsigned)boost_theme_pixel_shift_sec());
     for (size_t i = 0; i < boost_theme_count(); ++i) {
@@ -646,6 +649,25 @@ static esp_err_t themes_config_put(httpd_req_t *req)
         const bool on = cJSON_IsTrue(te);
         boost_theme_set_te_sync(on);
         boost_display_set_te(on);
+    }
+
+    const cJSON *vface = cJSON_GetObjectItemCaseSensitive(root, "vaultFace");
+    if (vface != NULL) {
+        uint32_t rgb = 0;
+        if (!parse_hex_color(vface, &rgb)) {
+            cJSON_Delete(root);
+            return send_err(req, HTTPD_400, "invalid_color");
+        }
+        boost_theme_set_vault_face(rgb);
+    }
+    const cJSON *vvig = cJSON_GetObjectItemCaseSensitive(root, "vaultVignette");
+    if (cJSON_IsNumber(vvig)) {
+        const double v = vvig->valuedouble;
+        if (!(v >= 0.0 && v <= 90.0)) {
+            cJSON_Delete(root);
+            return send_err(req, HTTPD_400, "invalid_vignette");
+        }
+        boost_theme_set_vault_vignette_pct((uint8_t)v);
     }
 
     const cJSON *id = cJSON_GetObjectItemCaseSensitive(root, "id");

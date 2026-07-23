@@ -731,3 +731,14 @@ output {
  * field and hides how few choices it has. Capped near its longest option. */
 .display-panel .field { margin-top: 0.1rem; max-width: 22rem; }
 .display-panel .field + .hint-text { margin: 0.45rem 0 0.2rem; }
+
+/* Vault glow: range control in the theme editor */
+.theme-range-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0.15rem 0;
+  font-size: 0.8rem;
+}
+.theme-range-row input[type="range"] { flex: 1 1 auto; accent-color: var(--teal, #2ee6c5); }
+.theme-range-row span { flex: 0 0 auto; min-width: 8.5rem; }
