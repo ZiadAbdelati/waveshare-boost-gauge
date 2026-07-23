@@ -214,8 +214,10 @@ static esp_err_t sensors_scan_get(httpd_req_t *req)
     uint8_t found[32];
     const int count = boost_sensors_i2c_scan(found, (int)sizeof(found));
     char json[256];
-    int off = snprintf(json, sizeof(json), "{\"busUp\":%s,\"found\":[",
-                       count < 0 ? "false" : "true");
+    int off = snprintf(json, sizeof(json),
+                       "{\"busUp\":%s,\"recoveries\":%lu,\"found\":[",
+                       count < 0 ? "false" : "true",
+                       (unsigned long)boost_sensors_recoveries());
     for (int i = 0; i < count && off < (int)sizeof(json) - 8; ++i) {
         off += snprintf(json + off, sizeof(json) - off, "%s\"0x%02X\"",
                         i ? "," : "", found[i]);

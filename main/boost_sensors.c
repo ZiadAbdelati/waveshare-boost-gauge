@@ -8,7 +8,9 @@
 #include "freertos/semphr.h"
 
 #include "driver/i2c_master.h"
+#include "driver/gpio.h"
 #include "esp_log.h"
+#include "esp_rom_sys.h"
 #include "esp_timer.h"
 
 static const char *TAG = "boost_sensors";
@@ -116,6 +118,11 @@ static bool s_bmp_present;
 static SemaphoreHandle_t s_lock;
 static boost_sample_t s_latest;   /* guarded by s_lock */
 static float s_peak;              /* guarded by s_lock */
+static uint32_t s_recoveries;     /* count of bus recoveries (reader task only) */
+
+/* Sustained read failures before we assume the bus is wedged and try to clock
+ * it free. 50 loops x 20 ms = 1 s; also acts as the backoff between attempts. */
+#define SENS_RECOVER_AFTER 50
 
 /* ------------------------------------------------------------------ helpers */
 
@@ -232,6 +239,113 @@ static bool bmp_read_kpa(float *kpa)
     return true;
 }
 
+/* ------------------------------------------------------------- bus recovery */
+
+/* The two device configs live here so init and recovery add them identically. */
+static esp_err_t add_ads(void)
+{
+    const i2c_device_config_t cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = ADS1115_ADDR,
+        .scl_speed_hz = SENS_I2C_HZ,
+    };
+    return i2c_master_bus_add_device(s_bus, &cfg, &s_ads);
+}
+
+static esp_err_t add_bmp(void)
+{
+    const i2c_device_config_t cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = BMP280_ADDR,
+        .scl_speed_hz = SENS_I2C_HZ,
+    };
+    return i2c_master_bus_add_device(s_bus, &cfg, &s_bmp);
+}
+
+static esp_err_t make_bus(void)
+{
+    const i2c_master_bus_config_t bus_cfg = {
+        .i2c_port = SENS_I2C_PORT,
+        .sda_io_num = SENS_SDA_GPIO,
+        .scl_io_num = SENS_SCL_GPIO,
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .glitch_ignore_cnt = 7,
+        .flags = { .enable_internal_pullup = true },
+    };
+    return i2c_new_master_bus(&bus_cfg, &s_bus);
+}
+
+/*
+ * Recover a wedged bus. A slave that saw a transaction interrupted (a glitch on
+ * automotive power, a marginal connection) can sit holding SDA low forever,
+ * waiting for the clocks to finish its byte. The master then just times out
+ * every read. The fix is the standard one: tear the peripheral off the pins,
+ * bit-bang up to 9 SCL pulses to walk the slave through its stuck byte + ACK
+ * until it releases SDA, issue a STOP, then rebuild the bus and re-arm the
+ * sensors. If the line is dead for a physical reason (unplugged/shorted) this
+ * is harmless and simply retries.
+ */
+/* Bit-bang SCL to release a slave stuck holding SDA low. Assumes the I2C
+ * peripheral has been detached from the pins (bus deleted) so we can drive them
+ * directly; leaves them idle-high afterwards for the bus to reclaim. */
+static void bitbang_clock_out(void)
+{
+    const gpio_config_t scl_cfg = {
+        .pin_bit_mask = 1ULL << SENS_SCL_GPIO,
+        .mode = GPIO_MODE_OUTPUT_OD,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+    };
+    const gpio_config_t sda_cfg = {
+        .pin_bit_mask = 1ULL << SENS_SDA_GPIO,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+    };
+    gpio_config(&scl_cfg);
+    gpio_config(&sda_cfg);
+    gpio_set_level(SENS_SCL_GPIO, 1);
+    esp_rom_delay_us(10);
+    for (int i = 0; i < 9 && gpio_get_level(SENS_SDA_GPIO) == 0; ++i) {
+        gpio_set_level(SENS_SCL_GPIO, 0);
+        esp_rom_delay_us(5);
+        gpio_set_level(SENS_SCL_GPIO, 1);
+        esp_rom_delay_us(5);
+    }
+    /* STOP condition: SDA low->high while SCL is high. */
+    gpio_set_direction(SENS_SDA_GPIO, GPIO_MODE_OUTPUT_OD);
+    gpio_set_level(SENS_SDA_GPIO, 0);
+    esp_rom_delay_us(5);
+    gpio_set_level(SENS_SCL_GPIO, 1);
+    esp_rom_delay_us(5);
+    gpio_set_level(SENS_SDA_GPIO, 1);
+    esp_rom_delay_us(5);
+}
+
+/* Runtime recovery: tear the wedged bus down, clock it free, rebuild it, and
+ * re-arm whatever was present at boot. */
+static void bus_recover(void)
+{
+    if (s_ads) { i2c_master_bus_rm_device(s_ads); s_ads = NULL; }
+    if (s_bmp) { i2c_master_bus_rm_device(s_bmp); s_bmp = NULL; }
+    if (s_bus) { i2c_del_master_bus(s_bus); s_bus = NULL; }
+
+    bitbang_clock_out();
+
+    if (make_bus() != ESP_OK) {
+        s_bus = NULL;
+        return;
+    }
+    if (s_ads_present && add_ads() == ESP_OK) {
+        ads_configure();
+    }
+    if (s_bmp_present && add_bmp() == ESP_OK) {
+        /* calib stays valid across recovery; just re-arm the mode registers. */
+        reg_write8(s_bmp, BMP280_REG_CTRL_MEAS, BMP280_CTRL_MEAS);
+        reg_write8(s_bmp, BMP280_REG_CONFIG, BMP280_CONFIG);
+    }
+    ++s_recoveries;
+    ESP_LOGW(TAG, "I2C bus recovery attempt #%u", (unsigned)s_recoveries);
+}
+
 /* ---------------------------------------------------------------- reader task */
 
 static void publish(const boost_sample_t *s, float peak)
@@ -255,27 +369,38 @@ static void sensors_task(void *arg)
     bool have_map = false;
     bool have_ambient = s_bmp_present ? false : true;
     uint32_t loop = 0;
+    int consecutive_fail = 0;
 
     TickType_t next = xTaskGetTickCount();
     while (true) {
         bool fault = false;
 
         /* MAP: fast path, every loop. */
-        if (s_ads_present) {
+        if (s_ads_present && s_ads != NULL) {
             float v;
             if (ads_read_volts(&v)) {
                 last_volts = v;
                 last_map_kpa = (v - MAP_VOLT_OFFSET) / MAP_VOLTS_PER_KPA;
                 have_map = true;
+                consecutive_fail = 0;
             } else {
                 fault = true;   /* hold last good */
+                ++consecutive_fail;
             }
         } else {
             fault = true;       /* no MAP source at all */
         }
 
+        /* A run of failures means the bus is likely wedged (a slave stuck
+         * holding SDA low); try to clock it free rather than fault forever.
+         * Only worth it if something was ever detected to recover to. */
+        if (consecutive_fail >= SENS_RECOVER_AFTER && (s_ads_present || s_bmp_present)) {
+            bus_recover();
+            consecutive_fail = 0;   /* backoff: another full second before retry */
+        }
+
         /* Ambient: slow path, every BMP_EVERY_N loops. */
-        if (s_bmp_present && (loop % BMP_EVERY_N) == 0) {
+        if (s_bmp_present && s_bmp != NULL && (loop % BMP_EVERY_N) == 0) {
             float k;
             if (bmp_read_kpa(&k)) {
                 ambient_kpa = k;
@@ -324,6 +449,47 @@ static void sensors_task(void *arg)
 
 /* ---------------------------------------------------------------------- init */
 
+/* Probe, add, and configure both sensors on the current bus, setting the
+ * present flags. Factored out so the boot path can call it a second time after
+ * a clock-out recovery. */
+static void detect_sensors(void)
+{
+    if (i2c_master_probe(s_bus, ADS1115_ADDR, SENS_IO_TIMEOUT_MS) == ESP_OK &&
+        add_ads() == ESP_OK && ads_configure()) {
+        s_ads_present = true;
+        ESP_LOGI(TAG, "ADS1115 detected at 0x%02X (MAP on A0, +/-%.3f V FSR, continuous)",
+                 ADS1115_ADDR, (double)ADS_FSR_VOLTS);
+    } else {
+        if (s_ads) { i2c_master_bus_rm_device(s_ads); s_ads = NULL; }
+        s_ads_present = false;
+        ESP_LOGW(TAG, "ADS1115 NOT detected at 0x%02X - MAP unavailable, gauge will fault",
+                 ADS1115_ADDR);
+    }
+
+    if (i2c_master_probe(s_bus, BMP280_ADDR, SENS_IO_TIMEOUT_MS) == ESP_OK &&
+        add_bmp() == ESP_OK) {
+        uint8_t id = 0;
+        const bool id_ok = reg_read(s_bmp, BMP280_REG_ID, &id, 1) == ESP_OK;
+        if (id_ok && id == BMP280_CHIP_ID && bmp_load_calibration() &&
+            reg_write8(s_bmp, BMP280_REG_CTRL_MEAS, BMP280_CTRL_MEAS) == ESP_OK &&
+            reg_write8(s_bmp, BMP280_REG_CONFIG, BMP280_CONFIG) == ESP_OK) {
+            s_bmp_present = true;
+            ESP_LOGI(TAG, "BMP280 detected at 0x%02X (chip id 0x%02X, normal mode, calib loaded)",
+                     BMP280_ADDR, id);
+        } else {
+            if (s_bmp) { i2c_master_bus_rm_device(s_bmp); s_bmp = NULL; }
+            s_bmp_present = false;
+            ESP_LOGW(TAG, "BMP280 at 0x%02X did not init (id 0x%02X) - using %.1f kPa ambient",
+                     BMP280_ADDR, id, (double)STANDARD_ATM_KPA);
+        }
+    } else {
+        if (s_bmp) { i2c_master_bus_rm_device(s_bmp); s_bmp = NULL; }
+        s_bmp_present = false;
+        ESP_LOGW(TAG, "BMP280 NOT detected at 0x%02X - using %.1f kPa standard atmosphere",
+                 BMP280_ADDR, (double)STANDARD_ATM_KPA);
+    }
+}
+
 bool boost_sensors_init(void)
 {
     s_lock = xSemaphoreCreateMutex();
@@ -350,49 +516,21 @@ bool boost_sensors_init(void)
     ESP_LOGI(TAG, "sensor I2C up: port %d, SCL=GPIO%d, SDA=GPIO%d, %d kHz",
              SENS_I2C_PORT, SENS_SCL_GPIO, SENS_SDA_GPIO, SENS_I2C_HZ / 1000);
 
-    /* --- ADS1115 --- */
-    const i2c_device_config_t ads_cfg = {
-        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = ADS1115_ADDR,
-        .scl_speed_hz = SENS_I2C_HZ,
-    };
-    if (i2c_master_probe(s_bus, ADS1115_ADDR, SENS_IO_TIMEOUT_MS) == ESP_OK &&
-        i2c_master_bus_add_device(s_bus, &ads_cfg, &s_ads) == ESP_OK &&
-        ads_configure()) {
-        s_ads_present = true;
-        ESP_LOGI(TAG, "ADS1115 detected at 0x%02X (MAP on A0, +/-%.3f V FSR, continuous)",
-                 ADS1115_ADDR, (double)ADS_FSR_VOLTS);
-    } else {
-        s_ads_present = false;
-        ESP_LOGW(TAG, "ADS1115 NOT detected at 0x%02X - MAP unavailable, gauge will fault",
-                 ADS1115_ADDR);
-    }
+    detect_sensors();
 
-    /* --- BMP280 --- */
-    const i2c_device_config_t bmp_cfg = {
-        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = BMP280_ADDR,
-        .scl_speed_hz = SENS_I2C_HZ,
-    };
-    if (i2c_master_probe(s_bus, BMP280_ADDR, SENS_IO_TIMEOUT_MS) == ESP_OK &&
-        i2c_master_bus_add_device(s_bus, &bmp_cfg, &s_bmp) == ESP_OK) {
-        uint8_t id = 0;
-        const bool id_ok = reg_read(s_bmp, BMP280_REG_ID, &id, 1) == ESP_OK;
-        if (id_ok && id == BMP280_CHIP_ID && bmp_load_calibration() &&
-            reg_write8(s_bmp, BMP280_REG_CTRL_MEAS, BMP280_CTRL_MEAS) == ESP_OK &&
-            reg_write8(s_bmp, BMP280_REG_CONFIG, BMP280_CONFIG) == ESP_OK) {
-            s_bmp_present = true;
-            ESP_LOGI(TAG, "BMP280 detected at 0x%02X (chip id 0x%02X, normal mode, calib loaded)",
-                     BMP280_ADDR, id);
-        } else {
-            s_bmp_present = false;
-            ESP_LOGW(TAG, "BMP280 at 0x%02X did not init (id 0x%02X) - using %.1f kPa ambient",
-                     BMP280_ADDR, id, (double)STANDARD_ATM_KPA);
+    /* A soft reboot does not power-cycle the sensors, so a slave left holding
+     * SDA low (a glitch or a marginal contact before the reset) keeps the bus
+     * wedged and both probes fail. When nothing answers, clock the bus free and
+     * try once more before giving up - this is what lets a lockup self-heal on
+     * boot without pulling power. A genuinely dead line (unplugged/shorted) just
+     * fails the retry too, harmlessly. */
+    if (!s_ads_present && !s_bmp_present) {
+        ESP_LOGW(TAG, "no sensors answered; clocking the bus free and retrying");
+        if (s_bus) { i2c_del_master_bus(s_bus); s_bus = NULL; }
+        bitbang_clock_out();
+        if (make_bus() == ESP_OK) {
+            detect_sensors();
         }
-    } else {
-        s_bmp_present = false;
-        ESP_LOGW(TAG, "BMP280 NOT detected at 0x%02X - using %.1f kPa standard atmosphere",
-                 BMP280_ADDR, (double)STANDARD_ATM_KPA);
     }
 
     const BaseType_t ok = xTaskCreatePinnedToCore(
@@ -421,6 +559,11 @@ boost_sample_t boost_sensors_get_sample(void)
         out = s_latest;   /* aligned struct read; worst case one frame stale */
     }
     return out;
+}
+
+uint32_t boost_sensors_recoveries(void)
+{
+    return s_recoveries;
 }
 
 int boost_sensors_i2c_scan(uint8_t *out, int max)

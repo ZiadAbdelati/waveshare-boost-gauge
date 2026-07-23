@@ -52,6 +52,8 @@ void boost_sensors_reset_peak(void);
  * an empty result points at wiring/power/pull-ups, expected 0x48+0x76 confirms
  * both are present, and other addresses reveal a misconfigured device.
  */
+uint32_t boost_sensors_recoveries(void);
+
 int boost_sensors_i2c_scan(uint8_t *out, int max);
 
 #ifdef __cplusplus
