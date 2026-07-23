@@ -173,7 +173,12 @@ static int state_json(char *json, size_t len)
                     "\"display\":{\"renderFps\":%lu,\"flushesPerSecond\":%lu,\"pixelsPerSecond\":%lu,"
                     "\"worstRenderUs\":%lu,\"renderGapP50Us\":%lu,"
                     "\"renderGapMaxUs\":%lu,\"framesOverBudget\":%lu,"
-                    "\"tePeriodUs\":%lu,\"teWaits\":%lu,\"teTimeouts\":%lu}}",
+                    "\"tePeriodUs\":%lu,\"teWaits\":%lu,\"teTimeouts\":%lu},"
+                    /* Raw sensor readings so a bench check against a known value
+                     * (atmospheric ~101.3 kPa, gauge ~0 psi engine-off) is
+                     * possible without the display. */
+                    "\"sensors\":{\"adsPresent\":%s,\"bmpPresent\":%s,\"fault\":%s,"
+                    "\"mapVolts\":%.4f,\"mapAbsKpa\":%.2f,\"ambientKpa\":%.2f}}",
                     (double)st.psi, (double)st.peak_psi, st.zone, st.demo ? "true" : "false",
                     st.brightness, st.firmware_version, (unsigned long long)st.uptime_ms,
                     (long long)st.epoch_ms, st.timezone_offset_minutes, st.active_theme_id,
@@ -185,12 +190,16 @@ static int state_json(char *json, size_t len)
                     (unsigned long)st.display.frames_over_budget,
                     (unsigned long)st.display.te_period_us,
                     (unsigned long)st.display.te_waits,
-                    (unsigned long)st.display.te_timeouts);
+                    (unsigned long)st.display.te_timeouts,
+                    st.ads_present ? "true" : "false",
+                    st.bmp_present ? "true" : "false",
+                    st.sensor_fault ? "true" : "false",
+                    (double)st.map_volts, (double)st.map_abs_kpa, (double)st.ambient_kpa);
 }
 
 static esp_err_t state_get(httpd_req_t *req)
 {
-    char json[768];
+    char json[896];
     const int n = state_json(json, sizeof(json));
     return n > 0 && n < (int)sizeof(json) ? send_json(req, json) : ESP_FAIL;
 }
@@ -524,6 +533,7 @@ static esp_err_t themes_get(httpd_req_t *req)
              "\"bigDigitTextColor\":\"#%06lx\","
              "\"arcGradient\":%s,\"hudGradient\":%s,\"teSync\":%s,"
              "\"vaultFace\":\"#%06lx\",\"vaultVignette\":%u,"
+             "\"demoMode\":%s,"
              "\"pixelShift\":%s,\"pixelShiftSec\":%u,\"themes\":[",
              cfg.active_theme_id,
              boost_theme_bigdigit_static_bg() ? "true" : "false",
@@ -535,6 +545,7 @@ static esp_err_t themes_get(httpd_req_t *req)
              boost_theme_te_sync() ? "true" : "false",
              (unsigned long)boost_theme_vault_face(),
              (unsigned)boost_theme_vault_vignette_pct(),
+             boost_theme_demo_mode() ? "true" : "false",
              boost_theme_pixel_shift() ? "true" : "false",
              (unsigned)boost_theme_pixel_shift_sec());
     for (size_t i = 0; i < boost_theme_count(); ++i) {
@@ -649,6 +660,14 @@ static esp_err_t themes_config_put(httpd_req_t *req)
         const bool on = cJSON_IsTrue(te);
         boost_theme_set_te_sync(on);
         boost_display_set_te(on);
+    }
+
+    /* Flips both the data source and the on-face DEMO text: the gauge/sample
+     * paths read boost_theme_demo_mode() every tick, so there is nothing else
+     * to poke here. */
+    const cJSON *demo = cJSON_GetObjectItemCaseSensitive(root, "demoMode");
+    if (cJSON_IsBool(demo)) {
+        boost_theme_set_demo_mode(cJSON_IsTrue(demo));
     }
 
     const cJSON *vface = cJSON_GetObjectItemCaseSensitive(root, "vaultFace");

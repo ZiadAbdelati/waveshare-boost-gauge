@@ -22,6 +22,7 @@
 #ifdef ESP_PLATFORM
 #include "boost_model.h"
 #include "boost_display.h"
+#include "boost_sensors.h"
 #endif
 #if LV_USE_GIF
 #include "libs/gif/lv_gif.h"
@@ -569,7 +570,11 @@ static void format_value_slots(char *sign, char *tens, char *ones, char *tenths,
 
 static void reset_peak_ui(void)
 {
+    /* Reset both source peaks so the tap works whichever source is live. */
     boost_sim_reset_peak();
+#ifdef ESP_PLATFORM
+    boost_sensors_reset_peak();
+#endif
     s_peak_psi = fmaxf(s_display_psi, 0.0f);
     ESP_LOGI(TAG, "peak reset");
 }
@@ -940,7 +945,8 @@ static void update_arc(const boost_sample_t *sample, const boost_theme_t *theme)
         lv_obj_set_style_text_color(s_peak_label, peak_color, 0);
     }
 
-    const char *mode = sample->demo ? "DEMO" : "LIVE";
+    /* Real-sensor mode carries no DEMO indicator; the sweep shows it as before. */
+    const char *mode = sample->demo ? "DEMO" : "";
     if (strcmp(lv_label_get_text(s_mode_label), mode) != 0) lv_label_set_text(s_mode_label, mode);
 }
 
@@ -2120,7 +2126,8 @@ static void update_hud(const boost_sample_t *sample, const boost_theme_t *theme)
     if (strcmp(lv_label_get_text(s_hud_map), buf) != 0) lv_label_set_text(s_hud_map, buf);
     snprintf(buf, sizeof(buf), "PK %.1f", (double)s_peak_psi);
     if (strcmp(lv_label_get_text(s_hud_pk), buf) != 0) lv_label_set_text(s_hud_pk, buf);
-    const char *sys = sample->demo ? "SYS DEMO" : "SYS ONLINE";
+    /* Real-sensor mode carries no DEMO indicator; the sweep shows it as before. */
+    const char *sys = sample->demo ? "SYS DEMO" : "";
     if (strcmp(lv_label_get_text(s_hud_sys), sys) != 0) lv_label_set_text(s_hud_sys, sys);
 }
 
@@ -2406,7 +2413,12 @@ static void update_bigdigit(const boost_sample_t *sample, const boost_theme_t *t
     if (strcmp(lv_label_get_text(s_big_zone), zone) != 0) lv_label_set_text(s_big_zone, zone);
 
     char buf[32];
-    snprintf(buf, sizeof(buf), "PEAK %.1f  %s", (double)s_peak_psi, sample->demo ? "DEMO" : "LIVE");
+    /* Real-sensor mode drops the DEMO suffix and shows just the peak. */
+    if (sample->demo) {
+        snprintf(buf, sizeof(buf), "PEAK %.1f  DEMO", (double)s_peak_psi);
+    } else {
+        snprintf(buf, sizeof(buf), "PEAK %.1f", (double)s_peak_psi);
+    }
     if (strcmp(lv_label_get_text(s_big_peak), buf) != 0) lv_label_set_text(s_big_peak, buf);
 }
 

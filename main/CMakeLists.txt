@@ -5,6 +5,7 @@ idf_component_register(
         "boost_gauge.c"
         "boost_model.c"
         "boost_sim.c"
+        "boost_sensors.c"
         "boost_brightness.c"
         "boost_theme.c"
         "boost_web.c"
@@ -33,6 +34,7 @@ idf_component_register(
         esp_event
         espressif__esp_lcd_co5300
         esp_driver_spi
+        esp_driver_i2c
         esp_http_server
         esp_netif
         esp_partition

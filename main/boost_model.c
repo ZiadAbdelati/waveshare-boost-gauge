@@ -300,6 +300,12 @@ void boost_model_publish_sample(const boost_sample_t *sample)
     s_state.peak_psi = sample->peak_psi > 0.0f ? sample->peak_psi : 0.0f;
     strlcpy(s_state.zone, zone_for_psi(sample->psi), sizeof(s_state.zone));
     s_state.demo = sample->demo;
+    s_state.map_volts = sample->map_volts;
+    s_state.map_abs_kpa = sample->map_abs_kpa;
+    s_state.ambient_kpa = sample->ambient_kpa;
+    s_state.ads_present = sample->ads_present;
+    s_state.bmp_present = sample->bmp_present;
+    s_state.sensor_fault = sample->sensor_fault;
     s_state.brightness = boost_brightness_get();
     s_state.uptime_ms = (uint64_t)(esp_timer_get_time() / 1000ULL);
     s_state.epoch_ms = epoch_ms_now();

@@ -65,6 +65,7 @@ const state = {
    * gap before the first /themes response lands. */
   pixelShift: true,
   pixelShiftSec: 90,
+  demoMode: false,
 };
 
 const el = {
@@ -96,6 +97,7 @@ const el = {
   themeList: document.getElementById("themeList"),
   pixelShiftMode: document.getElementById("pixelShiftMode"),
   teSync: document.getElementById("teSync"),
+  demoMode: document.getElementById("demoMode"),
   loadLogsBtn: document.getElementById("loadLogsBtn"),
   clearLogsBtn: document.getElementById("clearLogsBtn"),
   logSummary: document.getElementById("logSummary"),
@@ -1518,6 +1520,7 @@ function syncDisplayToggles() {
     el.pixelShiftMode.value = state.pixelShift ? String(seconds) : "off";
   }
   if (el.teSync) el.teSync.checked = !!state.teSync;
+  if (el.demoMode) el.demoMode.checked = !!state.demoMode;
 }
 
 function wireDisplayToggles() {
@@ -1531,6 +1534,7 @@ function wireDisplayToggles() {
       state.pixelShift = !!payload.pixelShift;
       state.pixelShiftSec = Number(payload.pixelShiftSec) || state.pixelShiftSec;
       state.teSync = !!payload.teSync;
+      state.demoMode = !!payload.demoMode;
       state.bigDigitStaticBg = !!payload.bigDigitStaticBg;
       state.bigDigitColorText = !!payload.bigDigitColorText;
       state.themes = payload.themes || state.themes;
@@ -1546,6 +1550,12 @@ function wireDisplayToggles() {
     el.teSync.addEventListener("change", () =>
       send({ teSync: el.teSync.checked },
            el.teSync.checked ? "Tear sync on" : "Tear sync off"),
+    );
+  }
+  if (el.demoMode) {
+    el.demoMode.addEventListener("change", () =>
+      send({ demoMode: el.demoMode.checked },
+           el.demoMode.checked ? "Demo mode on" : "Demo mode off (live sensors)"),
     );
   }
   if (el.pixelShiftMode) {
@@ -1598,6 +1608,7 @@ async function refreshAll() {
     state.arcGradient = !!themes.arcGradient;
     state.hudGradient = !!themes.hudGradient;
     state.teSync = !!themes.teSync;
+    state.demoMode = !!themes.demoMode;
     state.vaultFace = themes.vaultFace || "#05281a";
     state.vaultVignette = themes.vaultVignette ?? 60;
     state.pixelShift = !!themes.pixelShift;

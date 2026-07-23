@@ -112,6 +112,15 @@ void boost_theme_set_hud_gradient(bool enabled);
 bool boost_theme_te_sync(void);
 void boost_theme_set_te_sync(bool enabled);
 
+/*
+ * Demo mode. OFF (the default) reads the real ADS1115/BMP280 sensors and shows
+ * no DEMO indicator; ON runs the synthetic sweep and shows DEMO on every face.
+ * Persisted so a panel keeps whichever source it was left on across reboots.
+ * Default is deliberately OFF so a normal boot goes straight to the sensors.
+ */
+bool boost_theme_demo_mode(void);
+void boost_theme_set_demo_mode(bool enabled);
+
 /* Vault-Tec dial glow: the face colour the dial fills with and the vignette
  * darkens from, plus the vignette depth as a percentage (0 = flat, higher =
  * darker edges). Both re-bake the cached face on change. Defaults are the

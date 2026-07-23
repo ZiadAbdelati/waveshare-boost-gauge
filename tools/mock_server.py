@@ -165,19 +165,34 @@ def state_payload() -> dict[str, float | int | str | bool]:
     global PEAK
     psi = current_psi()
     PEAK = max(PEAK, psi)
+    demo = bool(CONFIG.get("demoMode", False))
+    # Mirror the firmware: in real mode the reading derives from a MAP sensor
+    # against a BMP280 ambient. The mock fakes plausible raw values so the
+    # dashboard's sensors panel has something to show.
+    ambient_kpa = 101.3
+    map_abs_kpa = ambient_kpa + psi / 0.145037738
+    map_volts = round(map_abs_kpa * 0.0059 + 0.6, 4)
     payload = {
         "psi": psi,
         "peakPsi": round(PEAK, 1),
         "zone": zone_for(psi),
-        "demo": True,
+        "demo": demo,
         "brightness": CONFIG["brightnessHigh"],
         "firmwareVersion": "mock-v0.3.0-web",
         "uptimeMs": int((time.time() - STARTED_AT) * 1000),
         "epochMs": TIME_ANCHOR_MS + int((time.time() - STARTED_AT) * 1000),
         "timezoneOffsetMinutes": CONFIG["timezoneOffsetMinutes"],
         "activeThemeId": CONFIG["activeThemeId"],
+        "sensors": {
+            "adsPresent": not demo,
+            "bmpPresent": not demo,
+            "fault": False,
+            "mapVolts": map_volts,
+            "mapAbsKpa": round(map_abs_kpa, 2),
+            "ambientKpa": ambient_kpa,
+        },
     }
-    LOGS.append({"ts": payload["epochMs"], "psi": psi, "zone": payload["zone"], "demo": True})
+    LOGS.append({"ts": payload["epochMs"], "psi": psi, "zone": payload["zone"], "demo": demo})
     del LOGS[:-3600]
     return payload
 
@@ -208,6 +223,7 @@ def themes_payload() -> dict:
         "arcGradient": bool(CONFIG.get("arcGradient", False)),
         "hudGradient": bool(CONFIG.get("hudGradient", False)),
         "teSync": bool(CONFIG.get("teSync", False)),
+        "demoMode": bool(CONFIG.get("demoMode", False)),
         "vaultFace": str(CONFIG.get("vaultFace", "#05281a")),
         "vaultVignette": int(CONFIG.get("vaultVignette", 60)),
         "themes": out,
@@ -383,6 +399,8 @@ class Handler(BaseHTTPRequestHandler):
                 CONFIG["hudGradient"] = bool(payload["hudGradient"])
             if "teSync" in payload:
                 CONFIG["teSync"] = bool(payload["teSync"])
+            if "demoMode" in payload:
+                CONFIG["demoMode"] = bool(payload["demoMode"])
             if "vaultFace" in payload:
                 CONFIG["vaultFace"] = str(payload["vaultFace"])
             if "vaultVignette" in payload:

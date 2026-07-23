@@ -47,6 +47,15 @@ typedef struct {
     int timezone_offset_minutes;
     char active_theme_id[BOOST_THEME_ID_MAX];
     boost_display_metrics_t display;
+    /* Real-sensor diagnostics, mirrored from the latest sample. Let the parent
+     * sanity-check readings on hardware (engine off: ambient ~101 kPa, gauge
+     * ~0 psi). Zero/false on the demo path. */
+    float map_volts;
+    float map_abs_kpa;
+    float ambient_kpa;
+    bool ads_present;
+    bool bmp_present;
+    bool sensor_fault;
 } boost_state_t;
 
 typedef struct {
