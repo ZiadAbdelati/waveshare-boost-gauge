@@ -423,6 +423,20 @@ boost_sample_t boost_sensors_get_sample(void)
     return out;
 }
 
+int boost_sensors_i2c_scan(uint8_t *out, int max)
+{
+    if (s_bus == NULL) {
+        return -1;   /* bus never initialised */
+    }
+    int n = 0;
+    for (uint8_t addr = 0x08; addr <= 0x77 && n < max; ++addr) {
+        if (i2c_master_probe(s_bus, addr, SENS_IO_TIMEOUT_MS) == ESP_OK) {
+            out[n++] = addr;
+        }
+    }
+    return n;
+}
+
 void boost_sensors_reset_peak(void)
 {
     if (s_lock == NULL) {

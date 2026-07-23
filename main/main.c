@@ -11,6 +11,8 @@
 #include "boost_theme.h"
 #include "boost_sim.h"
 #include "boost_sensors.h"
+#include "esp_ota_ops.h"
+#include "esp_partition.h"
 #include "boost_web.h"
 
 static const char *TAG = "boost_main";
@@ -124,6 +126,28 @@ void app_main(void)
     esp_err_t web_err = boost_web_start();
     if (web_err != ESP_OK) {
         ESP_LOGE(TAG, "web control plane failed: %s", esp_err_to_name(web_err));
+    }
+
+    /* OTA rollback gate. With CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE, a freshly
+     * OTA'd image boots in PENDING_VERIFY and must confirm itself healthy or the
+     * bootloader reverts to the previous slot on the next reset. "Healthy" here
+     * means the control plane came up, i.e. the device can be reached for the
+     * *next* OTA - which is exactly the property a rolled-back boot loop lacks.
+     * The board runs from 5 V with no serial, so this auto-revert is the safety
+     * net that makes a bad flash recoverable without a cable. */
+    if (web_err == ESP_OK) {
+        const esp_partition_t *running = esp_ota_get_running_partition();
+        esp_ota_img_states_t state;
+        if (running != NULL && esp_ota_get_state_partition(running, &state) == ESP_OK &&
+            state == ESP_OTA_IMG_PENDING_VERIFY) {
+            if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) {
+                ESP_LOGI(TAG, "OTA image confirmed healthy; rollback cancelled");
+            } else {
+                ESP_LOGW(TAG, "failed to mark OTA image valid");
+            }
+        }
+    } else {
+        ESP_LOGW(TAG, "control plane down; leaving OTA image unconfirmed for rollback");
     }
 
     ESP_LOGI(TAG, "tap=reset peak · hold 2s=brightness toggle · AP password boost1234");

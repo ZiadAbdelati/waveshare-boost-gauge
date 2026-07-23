@@ -28,6 +28,7 @@
 #include "nvs_flash.h"
 
 #include "boost_model.h"
+#include "boost_sensors.h"
 #include "boost_gauge.h"
 #include "boost_display.h"
 #include "boost_network.h"
@@ -202,6 +203,25 @@ static esp_err_t state_get(httpd_req_t *req)
     char json[896];
     const int n = state_json(json, sizeof(json));
     return n > 0 && n < (int)sizeof(json) ? send_json(req, json) : ESP_FAIL;
+}
+
+/* Live I2C bus scan — a serial-free way to see what is actually on the sensor
+ * bus. `busUp:false` means the bus never initialised; an empty `found` with the
+ * bus up points at wiring/power/pull-ups or swapped SDA/SCL; 0x48 and 0x76
+ * confirm the ADS1115 and BMP280. */
+static esp_err_t sensors_scan_get(httpd_req_t *req)
+{
+    uint8_t found[32];
+    const int count = boost_sensors_i2c_scan(found, (int)sizeof(found));
+    char json[256];
+    int off = snprintf(json, sizeof(json), "{\"busUp\":%s,\"found\":[",
+                       count < 0 ? "false" : "true");
+    for (int i = 0; i < count && off < (int)sizeof(json) - 8; ++i) {
+        off += snprintf(json + off, sizeof(json) - off, "%s\"0x%02X\"",
+                        i ? "," : "", found[i]);
+    }
+    snprintf(json + off, sizeof(json) - off, "]}");
+    return send_json(req, json);
 }
 
 static void state_ws_send_done(esp_err_t err, int socket, void *arg)
@@ -1386,6 +1406,7 @@ esp_err_t boost_web_start(void)
     cfg.core_id = 1;
     ESP_RETURN_ON_ERROR(httpd_start(&s_httpd, &cfg), TAG, "httpd");
     register_uri(API_BASE "/state", HTTP_GET, state_get);
+    register_uri(API_BASE "/sensors/scan", HTTP_GET, sensors_scan_get);
     register_websocket_uri(WS_STATE_PATH, state_ws_get);
     register_uri(API_BASE "/config", HTTP_GET, config_get);
     register_uri(API_BASE "/config", HTTP_PUT, config_put);

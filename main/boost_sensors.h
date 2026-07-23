@@ -44,6 +44,16 @@ boost_sample_t boost_sensors_get_sample(void);
 /** Zero the real-path peak (wired to the same tap that resets the sim peak). */
 void boost_sensors_reset_peak(void);
 
+/**
+ * Live I2C bus scan for diagnostics: probes every 7-bit address 0x08..0x77 on
+ * the sensor bus and writes the ones that ACK into `out` (up to `max`),
+ * returning the count. Returns -1 if the bus never came up. Used by the
+ * /api/v1/sensors/scan endpoint so the bus can be inspected without serial —
+ * an empty result points at wiring/power/pull-ups, expected 0x48+0x76 confirms
+ * both are present, and other addresses reveal a misconfigured device.
+ */
+int boost_sensors_i2c_scan(uint8_t *out, int max);
+
 #ifdef __cplusplus
 }
 #endif

@@ -78,3 +78,4 @@ CONFIG_HTTPD_WS_SUPPORT=y
 # Debug aid: lets /api/v1/debug/snapshot re-render the live screen so the
 # physical face can be captured off-device (tools/fetch_panel_snapshot.py).
 CONFIG_LV_USE_SNAPSHOT=y
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
