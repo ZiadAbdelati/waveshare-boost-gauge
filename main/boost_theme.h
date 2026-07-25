@@ -32,8 +32,10 @@ typedef struct {
     uint32_t boost;
     uint32_t overboost;
     uint32_t zero;
-    int brightness_high;
-    int brightness_low;
+    /* Deliberately no brightness here. Brightness is a display setting owned by
+     * the user and the dim schedule; themes carried their own pair and silently
+     * overwrote the configured value on every theme switch. A theme changes how
+     * the gauge looks, never how bright the panel is. */
 } boost_theme_t;
 
 /* Stable lowercase token for the JSON API / web dispatch, e.g. "arc". */

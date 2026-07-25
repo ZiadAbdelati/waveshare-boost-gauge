@@ -6,6 +6,7 @@
 #include <sys/time.h>
 #include <time.h>
 
+#include "esp_app_desc.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -14,6 +15,12 @@
 #include "nvs_flash.h"
 
 #include "boost_brightness.h"
+
+/* Factory brightness. These match what the default theme used to impose, so a
+ * fresh device behaves exactly as before; they are now plain defaults that the
+ * user and the dim schedule own outright rather than theme properties. */
+#define DEFAULT_BRIGHTNESS_HIGH 92
+#define DEFAULT_BRIGHTNESS_LOW  18
 
 #define NVS_NS "boost"
 #define NVS_KEY_CONFIG "config"
@@ -171,8 +178,8 @@ static void defaults(boost_config_t *cfg)
 {
     const boost_theme_t *theme = boost_theme_default();
     memset(cfg, 0, sizeof(*cfg));
-    cfg->brightness_high = theme->brightness_high;
-    cfg->brightness_low = theme->brightness_low;
+    cfg->brightness_high = DEFAULT_BRIGHTNESS_HIGH;
+    cfg->brightness_low = DEFAULT_BRIGHTNESS_LOW;
     cfg->dim_schedule.enabled = false;
     cfg->dim_schedule.start_minutes = 21 * 60;
     cfg->dim_schedule.end_minutes = 7 * 60;
@@ -277,7 +284,11 @@ esp_err_t boost_model_init(void)
     xSemaphoreTake(s_lock, portMAX_DELAY);
     load_config();
     memset(&s_state, 0, sizeof(s_state));
-    s_state.firmware_version = "0.3.0-web";
+    /* Report what is actually running. CMakeLists sets no PROJECT_VER, so
+     * ESP-IDF fills the app description from `git describe` at build time -
+     * a hard-coded literal here went stale the moment it was written. */
+    const esp_app_desc_t *desc = esp_app_get_description();
+    s_state.firmware_version = (desc != NULL) ? desc->version : "unknown";
     s_state.brightness = s_config.brightness_high;
     s_state.timezone_offset_minutes = s_config.timezone_offset_minutes;
     strlcpy(s_state.active_theme_id, s_config.active_theme_id, sizeof(s_state.active_theme_id));
@@ -475,11 +486,11 @@ esp_err_t boost_model_set_active_theme(const char *id)
     if (theme == NULL) {
         return ESP_ERR_NOT_FOUND;
     }
-    patch.brightness_high = theme->brightness_high;
-    patch.brightness_low = theme->brightness_low;
-    return boost_model_update_config(
-        &patch,
-        BOOST_CONFIG_THEME | BOOST_CONFIG_BRIGHTNESS_HIGH | BOOST_CONFIG_BRIGHTNESS_LOW);
+    /* Theme selection touches the theme and nothing else. This used to also
+     * overwrite the configured brightness pair with the theme's own, which
+     * silently destroyed a hand-set brightness on every theme switch and left
+     * the dim schedule picking from values the user never chose. */
+    return boost_model_update_config(&patch, BOOST_CONFIG_THEME);
 }
 
 const boost_theme_t *boost_model_active_theme(void)

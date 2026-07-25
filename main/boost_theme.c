@@ -42,8 +42,6 @@ static const boost_theme_t s_defaults[] = {
         .boost = 0xB8F35A,
         .overboost = 0xFF4F6D,
         .zero = 0xFFFFFF,
-        .brightness_high = 92,
-        .brightness_low = 18,
     },
     {
         .id = "vault-tec",
@@ -57,8 +55,6 @@ static const boost_theme_t s_defaults[] = {
         .boost = 0x38F08A,
         .overboost = 0xEAFC50,
         .zero = 0x38F08A,
-        .brightness_high = 85,
-        .brightness_low = 12,
     },
     {
         .id = "night-city",
@@ -72,8 +68,6 @@ static const boost_theme_t s_defaults[] = {
         .boost = 0xFCEE0A,
         .overboost = 0xFF003C,
         .zero = 0x00E5FF,
-        .brightness_high = 90,
-        .brightness_low = 14,
     },
     {
         .id = "big-digit",
@@ -87,8 +81,6 @@ static const boost_theme_t s_defaults[] = {
         .boost = 0xB8F35A,
         .overboost = 0xFF4F6D,
         .zero = 0xFFFFFF,
-        .brightness_high = 90,
-        .brightness_low = 16,
     },
 };
 

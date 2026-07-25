@@ -152,14 +152,13 @@ static void append_theme_json(char *buf, size_t len, const boost_theme_t *theme)
              "{\"id\":\"%s\",\"name\":\"%s\",\"style\":\"%s\",\"colors\":{\"face\":\"#%06lx\","
              "\"track\":\"#%06lx\",\"text\":\"#%06lx\",\"muted\":\"#%06lx\","
              "\"vacuum\":\"#%06lx\",\"boost\":\"#%06lx\",\"overboost\":\"#%06lx\","
-             "\"zero\":\"#%06lx\"},\"brightnessHigh\":%d,\"brightnessLow\":%d,"
+             "\"zero\":\"#%06lx\"},"
              "\"customized\":%s}",
              theme->id, theme->name, boost_style_name(theme->style),
              (unsigned long)theme->face, (unsigned long)theme->track,
              (unsigned long)theme->text, (unsigned long)theme->muted,
              (unsigned long)theme->vacuum, (unsigned long)theme->boost,
              (unsigned long)theme->overboost, (unsigned long)theme->zero,
-             theme->brightness_high, theme->brightness_low,
              boost_theme_is_customized(theme->id) ? "true" : "false");
     strlcat(buf, tmp, len);
 }
