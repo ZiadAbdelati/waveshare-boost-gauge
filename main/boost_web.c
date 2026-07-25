@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -224,6 +225,123 @@ static esp_err_t sensors_scan_get(httpd_req_t *req)
     }
     snprintf(json + off, sizeof(json) - off, "]}");
     return send_json(req, json);
+}
+
+/* Calibration diagnostics live on their own endpoint rather than on /state:
+ * /state is rendered at the 20 Hz WebSocket cadence into a smaller buffer, and
+ * these fields are only ever read by the Settings panel. Keeping them apart is
+ * what stops the telemetry payload from growing for a once-a-service reading.
+ *
+ * Sourced from boost_sensors_get_sample(), so it reports the real sensor path
+ * even while demo mode is driving the gauge. */
+static long long age_ms_json(uint32_t age_ms)
+{
+    /* UINT32_MAX is the firmware's "never read successfully" sentinel; emitting
+     * it literally would read as a 49-day-old sample in the dashboard. */
+    return age_ms == UINT32_MAX ? -1 : (long long)age_ms;
+}
+
+static int sensors_calibration_json(char *json, size_t len)
+{
+    const boost_sample_t s = boost_sensors_get_sample();
+    const boost_map_cal_t cal = boost_sensors_get_calibration();
+    const bool cal_valid = cal.version != 0;
+    return snprintf(json, len,
+                    "{\"supplyVolts\":%.4f,"
+                    "\"live\":{\"adsPresent\":%s,\"bmpPresent\":%s,\"fault\":%s,"
+                    "\"mapVolts\":%.4f,\"mapAgeMs\":%lld,\"nominalKpa\":%.2f,"
+                    "\"correctedKpa\":%.2f,\"bmpKpa\":%.2f,\"bmpAgeMs\":%lld,"
+                    "\"bmpUpdates\":%lu,\"ambientIsFallback\":%s},"
+                    "\"calibration\":{\"valid\":%s,\"version\":%u,"
+                    "\"offsetKpa\":%.2f,\"offsetPsi\":%.3f,\"supplyVolts\":%.4f,"
+                    "\"refMapVolts\":%.4f,\"refNominalKpa\":%.2f,"
+                    "\"refBmpKpa\":%.2f,\"samples\":%u,\"epochMs\":%lld}}",
+                    (double)boost_sensors_get_supply_volts(),
+                    s.ads_present ? "true" : "false",
+                    s.bmp_present ? "true" : "false",
+                    s.sensor_fault ? "true" : "false",
+                    (double)s.map_volts, age_ms_json(s.ads_age_ms),
+                    (double)boost_sensors_nominal_kpa(s.map_volts),
+                    (double)s.map_abs_kpa, (double)s.ambient_kpa,
+                    age_ms_json(s.bmp_age_ms), (unsigned long)s.bmp_updates,
+                    s.ambient_is_fallback ? "true" : "false",
+                    cal_valid ? "true" : "false", (unsigned)cal.version,
+                    cal_valid ? (double)cal.offset_kpa : 0.0,
+                    cal_valid ? (double)(cal.offset_kpa * 0.145037738f) : 0.0,
+                    cal_valid ? (double)cal.supply_volts : 0.0,
+                    cal_valid ? (double)cal.ref_map_volts : 0.0,
+                    cal_valid ? (double)cal.ref_nominal_kpa : 0.0,
+                    cal_valid ? (double)cal.ref_bmp_kpa : 0.0,
+                    cal_valid ? (unsigned)cal.samples : 0u,
+                    cal_valid ? (long long)cal.epoch_ms : 0LL);
+}
+
+static esp_err_t sensors_calibration_send(httpd_req_t *req)
+{
+    char json[768];
+    const int n = sensors_calibration_json(json, sizeof(json));
+    return n > 0 && n < (int)sizeof(json) ? send_json(req, json) : ESP_FAIL;
+}
+
+static esp_err_t sensors_calibration_get(httpd_req_t *req)
+{
+    return sensors_calibration_send(req);
+}
+
+/* Blocks for roughly two seconds while boost_sensors_calibrate_atmosphere()
+ * observes published snapshots. That is deliberate for a manual, operator-
+ * triggered action, but it does occupy the single httpd task for the duration:
+ * state polls and queued WebSocket frames wait behind it. Do not call it from
+ * anything automatic. */
+static esp_err_t sensors_calibration_post(httpd_req_t *req)
+{
+    /* Body is ignored per the API contract, but it still has to be drained or
+     * the next request on this connection starts mid-body. */
+    char *body = read_body(req, MAX_JSON_BODY);
+    if (body == NULL) {
+        return send_err(req, HTTPD_400, "invalid_body");
+    }
+    free(body);
+    const boost_cal_result_t result = boost_sensors_calibrate_atmosphere(NULL);
+    if (result != BOOST_CAL_OK) {
+        /* The code string comes from the sensor module so the table lives in
+         * exactly one place. Only a persistence failure is a server fault; every
+         * other rejection means the bench state is wrong for calibrating. */
+        const char *status = (result == BOOST_CAL_ERR_PERSIST) ? HTTPD_500 : "409 Conflict";
+        return send_err(req, status, boost_sensors_cal_error_code(result));
+    }
+    return sensors_calibration_send(req);
+}
+
+static esp_err_t sensors_supply_put(httpd_req_t *req)
+{
+    char *body = read_body(req, MAX_JSON_BODY);
+    if (body == NULL) {
+        return send_err(req, HTTPD_400, "invalid_body");
+    }
+    cJSON *root = cJSON_Parse(body);
+    free(body);
+    const cJSON *volts = cJSON_GetObjectItemCaseSensitive(root, "supplyVolts");
+    if (!cJSON_IsNumber(volts)) {
+        cJSON_Delete(root);
+        return send_err(req, HTTPD_400, "invalid_supply");
+    }
+    const double v = volts->valuedouble;
+    cJSON_Delete(root);
+    /* Range-check as a double before narrowing: NaN or 1e300 cast to float is
+     * undefined, so the firmware's own bounds check would be judging a value
+     * that never arrived intact. */
+    if (!(v >= (double)BOOST_MAP_SUPPLY_MIN && v <= (double)BOOST_MAP_SUPPLY_MAX)) {
+        return send_err(req, HTTPD_400, "invalid_supply");
+    }
+    const esp_err_t err = boost_sensors_set_supply_volts((float)v);
+    if (err == ESP_ERR_INVALID_ARG) {
+        return send_err(req, HTTPD_400, "invalid_supply");
+    }
+    if (err != ESP_OK) {
+        return send_err(req, HTTPD_500, "persist_failed");
+    }
+    return sensors_calibration_send(req);
 }
 
 static void state_ws_send_done(esp_err_t err, int socket, void *arg)
@@ -1393,7 +1511,13 @@ esp_err_t boost_web_start(void)
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.stack_size = 10240;
     cfg.task_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
-    cfg.max_uri_handlers = 32;
+    /* Headroom matters more than the few bytes it costs: register_uri() wraps
+     * httpd_register_uri_handler() in ESP_ERROR_CHECK, so overflowing this
+     * aborts during boot rather than degrading. The panel runs from 5 V with no
+     * serial attached, and a boot abort precedes the HTTP server that OTA needs,
+     * making that failure unrecoverable without pulling the dash. Keep a wide
+     * margin over the registration count below. */
+    cfg.max_uri_handlers = 40;
     cfg.max_open_sockets = 7;
     cfg.lru_purge_enable = true;
     cfg.recv_wait_timeout = 90;
@@ -1409,6 +1533,9 @@ esp_err_t boost_web_start(void)
     ESP_RETURN_ON_ERROR(httpd_start(&s_httpd, &cfg), TAG, "httpd");
     register_uri(API_BASE "/state", HTTP_GET, state_get);
     register_uri(API_BASE "/sensors/scan", HTTP_GET, sensors_scan_get);
+    register_uri(API_BASE "/sensors/calibration", HTTP_GET, sensors_calibration_get);
+    register_uri(API_BASE "/sensors/calibration", HTTP_POST, sensors_calibration_post);
+    register_uri(API_BASE "/sensors/supply", HTTP_PUT, sensors_supply_put);
     register_websocket_uri(WS_STATE_PATH, state_ws_get);
     register_uri(API_BASE "/config", HTTP_GET, config_get);
     register_uri(API_BASE "/config", HTTP_PUT, config_put);

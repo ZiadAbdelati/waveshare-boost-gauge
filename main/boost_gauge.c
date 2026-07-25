@@ -331,6 +331,10 @@ static const int k_hud_slot_x[HUD_SLOT_COUNT] = { -50, 2, 42, 82 };
 #define HUD_SIGN_ONES_X (-45)
 #define HUD_SIGN_TENS_X (-97)
 #define HUD_VALUE_Y     (-2)
+/* A BMP280 that answered at boot but stopped responding must not leave a stale
+ * number on the corner readout, so the ATM line gates on read age, not on the
+ * boot presence flag alone. */
+#define HUD_BMP_FRESH_MS 2000u
 
 static lv_obj_t *s_hud_face;
 static lv_obj_t *s_hud_bg;
@@ -1994,7 +1998,10 @@ static void build_hud(lv_obj_t *scr)
     lv_obj_align(unit, LV_ALIGN_CENTER, 0, 84);
 
     s_hud_map = lv_label_create(scr);
-    lv_label_set_text(s_hud_map, "MAP 101kPa");
+    /* Measured atmospheric baseline from the BMP280, never a synthesised value.
+     * Built in the unknown state; update_hud() fills it once a fresh reading
+     * exists. See HUD_BMP_FRESH_MS. */
+    lv_label_set_text(s_hud_map, "ATM --kPa");
     lv_obj_set_style_text_font(s_hud_map, F_MONO16, 0);
     lv_obj_set_style_text_color(s_hud_map, c(theme->vacuum), 0);
     lv_obj_align(s_hud_map, LV_ALIGN_CENTER, -100, 128);
@@ -2122,7 +2129,19 @@ static void update_hud(const boost_sample_t *sample, const boost_theme_t *theme)
     }
 
     char buf[24];
-    snprintf(buf, sizeof(buf), "MAP %dkPa", (int)lroundf(101.0f + sample->psi * 6.895f));
+    /* Atmospheric baseline, reported only when the BMP280 actually measured it.
+     * ambient_is_fallback marks the 101.325 kPa standard-atmosphere constant,
+     * which must never be shown as a reading; bmp_age_ms guards a sensor that
+     * answered at boot and has since gone quiet (UINT32_MAX = never read). In
+     * demo mode the sim leaves all three zero/false, so bmp_present alone keeps
+     * the sweep from rendering "ATM 0kPa". */
+    const bool atm_fresh = sample->bmp_present && !sample->ambient_is_fallback &&
+                           sample->bmp_age_ms <= HUD_BMP_FRESH_MS;
+    if (atm_fresh) {
+        snprintf(buf, sizeof(buf), "ATM %dkPa", (int)lroundf(sample->ambient_kpa));
+    } else {
+        snprintf(buf, sizeof(buf), "ATM --kPa");
+    }
     if (strcmp(lv_label_get_text(s_hud_map), buf) != 0) lv_label_set_text(s_hud_map, buf);
     snprintf(buf, sizeof(buf), "PK %.1f", (double)s_peak_psi);
     if (strcmp(lv_label_get_text(s_hud_pk), buf) != 0) lv_label_set_text(s_hud_pk, buf);

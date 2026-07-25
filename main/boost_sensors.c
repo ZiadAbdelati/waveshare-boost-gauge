@@ -2,16 +2,17 @@
 
 #include <math.h>
 #include <string.h>
+#include <sys/time.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 
 #include "driver/i2c_master.h"
-#include "driver/gpio.h"
 #include "esp_log.h"
-#include "esp_rom_sys.h"
 #include "esp_timer.h"
+#include "nvs.h"
+#include "nvs_flash.h"
 
 static const char *TAG = "boost_sensors";
 
@@ -20,17 +21,23 @@ static const char *TAG = "boost_sensors";
  * ---------------------------------------------------------------------------
  * Our sensors live on a bus that is deliberately separate from the BSP's
  * touch/IO-expander bus (BSP_I2C_SCL=GPIO14, BSP_I2C_SDA=GPIO15, port 1). We
- * take I2C port 0 on GPIO18/17, which the BSP pin map never touches, so there
+ * take I2C port 0 on the exposed GPIO18/17 pads, which the BSP pin map never touches, so there
  * is no double-init of a bus the BSP already owns and no pin collision.
+ *
+ * 100 kHz is deliberate and load-bearing: it is the rate the bus was proven
+ * stable at during the hardware investigation. Do not raise it.
  */
 #define SENS_I2C_PORT       I2C_NUM_0
 #define SENS_SCL_GPIO       18
 #define SENS_SDA_GPIO       17
-#define SENS_I2C_HZ         400000
+#define SENS_I2C_HZ         100000
 #define SENS_IO_TIMEOUT_MS  50
 
 #define ADS1115_ADDR        0x48   /* ADDR pin -> GND */
 #define BMP280_ADDR         0x76   /* SDO pin  -> GND */
+/* A single probe on this bus has been observed to ACK a phantom address once;
+ * four consecutive ACKs is the filter that made the scanner trustworthy. */
+#define SCAN_CONFIRM_ATTEMPTS 4
 
 /* ---------------------------------------------------------------------------
  * ADS1115 (GM 3-bar MAP on A0, single-ended)
@@ -43,7 +50,7 @@ static const char *TAG = "boost_sensors";
  *   DR=101 (250 SPS)  COMP disabled (COMP_QUE=11)
  *   -> high byte 0xC0, low byte 0xA3
  *
- * PGA note: the GM 3-bar sensor is ratiometric to a 5 V supply and swings up to
+ * PGA note: the GM 3-bar sensor is ratiometric to its supply and swings up to
  * ~4.8 V, so the ADS1115 must be 5 V powered and the +/-6.144 V range is the
  * only one that covers the full span. LSB = 6.144/32768 = 187.5 uV. If the ADS
  * is instead run at 3.3 V, the input cannot exceed VDD; change the divider /
@@ -57,22 +64,43 @@ static const char *TAG = "boost_sensors";
 #define ADS_VOLTS_PER_LSB   (ADS_FSR_VOLTS / 32768.0f)
 
 /* ---------------------------------------------------------------------------
- * GM 3-bar MAP transfer function  (absolute pressure)
+ * GM 12223861 three-bar MAP transfer function  (absolute pressure)
  * ---------------------------------------------------------------------------
- * kPa_abs = (volts - MAP_VOLT_OFFSET) / MAP_VOLTS_PER_KPA
+ * The published curve is a straight line through two points, both specified at
+ * a 5.00 V supply:
  *
- * Default constants are the common GM 3-bar approximation the user supplied
- * (also seen in MegaSquirt / DIYAutoTune GM-3bar references). BOTH are named
- * and meant to be calibrated on the bench:
- *   - MAP_VOLT_OFFSET   : sensor volts at 0 kPa absolute (sets the zero)
- *   - MAP_VOLTS_PER_KPA : slope in volts per kPa (sets the span)
- * Calibrate: with the engine off, MAP == ambient, so read map_volts and adjust
- * MAP_VOLT_OFFSET until map_abs_kpa matches the BMP280 ambient (~101 kPa). Then
- * apply a known second pressure (e.g. a hand vacuum/pressure pump) to trim the
- * slope. Exposed raw over /api/v1/state precisely so this can be done.
+ *     0.619 V -> 40 kPa
+ *     4.818 V -> 304 kPa
+ *
+ * so, in kPa per volt,
+ *
+ *     slope     = (304 - 40) / (4.818 - 0.619)
+ *               = 264 / 4.199
+ *               = 62.8721124...          -> MAP_KPA_PER_VOLT
+ *     intercept = 40 - slope * 0.619
+ *               = 40 - 38.9178375...
+ *               =  1.08216242...         -> MAP_KPA_INTERCEPT
+ *
+ * Check: 62.8721124 * 4.818 + 1.08216242 = 304.000 kPa.
+ *
+ * The sensor is ratiometric, so a supply that is not 5.00 V scales the whole
+ * output. Normalize the measured voltage back onto the 5.00 V curve before
+ * applying the line:
+ *
+ *     normalized_volts = map_volts * 5.00 / supply_volts
+ *     nominal_kpa      = MAP_KPA_PER_VOLT * normalized_volts + MAP_KPA_INTERCEPT
+ *     corrected_kpa    = nominal_kpa + cal.offset_kpa
+ *     gauge_kpa        = corrected_kpa - ambient_kpa
+ *
+ * This replaces an earlier "volts / 0.0059 V-per-kPa" approximation that read a
+ * real 1.5735 V atmosphere sample as 165 kPa. Do not re-derive these constants
+ * from a slope-only datasheet blurb; the intercept is not zero.
+ *
+ * boost_sensors_nominal_kpa() is the only place this arithmetic lives.
  */
-#define MAP_VOLT_OFFSET     0.6f      /* V at 0 kPa absolute */
-#define MAP_VOLTS_PER_KPA   0.0059f   /* V per kPa */
+#define MAP_CURVE_SUPPLY_V  5.00f          /* supply the two-point fit is defined at */
+#define MAP_KPA_PER_VOLT    62.8721124f    /* 264 / 4.199 */
+#define MAP_KPA_INTERCEPT   1.08216242f    /* 40 - 62.8721124 * 0.619 */
 
 /* ---------------------------------------------------------------------------
  * BMP280 (ambient reference)
@@ -91,16 +119,62 @@ static const char *TAG = "boost_sensors";
 #define BMP280_CONFIG        0x08
 
 /* Fallback when the BMP280 is absent: run off a standard atmosphere so the
- * gauge is still usable (degraded), rather than reading nonsense. */
+ * gauge is still usable (degraded), rather than reading nonsense. Whenever this
+ * constant is in force the published sample sets ambient_is_fallback, and
+ * calibration refuses to use it as a reference. */
 #define STANDARD_ATM_KPA     101.325f
 
 #define KPA_TO_PSI           0.145037738f
 
 /* Reader cadence. ADS every loop; BMP once every N loops (ambient drifts
  * slowly, and forced/normal-mode BMP reads are the slow ones we keep off the
- * fast path). 20 ms loop -> 50 Hz MAP, 5 Hz ambient. */
-#define SENS_LOOP_MS         20
+ * fast path). The 16 ms loop is the AGENTS.md cadence contract: 62.5 Hz MAP,
+ * and 62.5/10 = 6.25 Hz ambient. */
+#define SENS_LOOP_MS         16
 #define BMP_EVERY_N          10
+
+/* Sustained read failures before we assume the bus is wedged and try to clock
+ * it free. 63 loops x 16 ms = 1008 ms, i.e. about one second; the same count
+ * also acts as the backoff before the next attempt. */
+#define SENS_RECOVER_AFTER   63
+
+/* ---------------------------------------------------------------------------
+ * Persistence
+ * ---------------------------------------------------------------------------
+ * Same "boost" namespace as boost_theme.c, but two dedicated keys rather than a
+ * field inside boost_config_t: growing the calibration record must never force
+ * a migration of (or risk discarding) the existing gauge settings.
+ *
+ * map_vsup is the source of truth for the configured supply and is stored on
+ * its own so it survives an unreadable/absent calibration record. The record is
+ * versioned and only accepted when both the version and the blob size match;
+ * anything else is treated as never-calibrated.
+ */
+#define NVS_NS               "boost"
+#define NVS_KEY_SUPPLY       "map_vsup"
+#define NVS_KEY_CAL          "map_cal"
+
+/* ---------------------------------------------------------------------------
+ * Atmospheric calibration window
+ * ---------------------------------------------------------------------------
+ * The reader task is the single owner of I2C traffic, so calibration only
+ * observes published snapshots. ~2 s at a 50 ms tick = 40 polls, over which a
+ * 6.25 Hz BMP delivers roughly 12 fresh values.
+ */
+#define CAL_POLL_MS          50
+#define CAL_POLLS            40
+#define CAL_MAX_ADS_AGE_MS   500
+#define CAL_MAX_BMP_AGE_MS   1000
+#define CAL_MIN_BMP_UPDATES  4
+#define CAL_NOMINAL_MIN_KPA  20.0f
+#define CAL_NOMINAL_MAX_KPA  200.0f
+#define CAL_BMP_MIN_KPA      50.0f
+#define CAL_BMP_MAX_KPA      115.0f
+#define CAL_MAX_VOLT_SPREAD  0.02f
+#define CAL_MAX_KPA_SPREAD   0.30f
+/* Anything before 2020-01-01 is an unsynchronised boot clock, not a wall clock;
+ * record 0 instead of a misleading 1970 timestamp. */
+#define CAL_EPOCH_VALID_SEC  1577836800LL
 
 /* --- BMP280 factory calibration (read from NVM at init) --- */
 static uint16_t s_dig_t1;
@@ -116,13 +190,17 @@ static bool s_ads_present;
 static bool s_bmp_present;
 
 static SemaphoreHandle_t s_lock;
+static SemaphoreHandle_t s_bus_admin_lock; /* serializes reset against HTTP scan */
+static SemaphoreHandle_t s_cal_lock;       /* guards s_supply_volts / s_cal / s_cal_busy */
 static boost_sample_t s_latest;   /* guarded by s_lock */
 static float s_peak;              /* guarded by s_lock */
 static uint32_t s_recoveries;     /* count of bus recoveries (reader task only) */
 
-/* Sustained read failures before we assume the bus is wedged and try to clock
- * it free. 50 loops x 20 ms = 1 s; also acts as the backoff between attempts. */
-#define SENS_RECOVER_AFTER 50
+/* Guarded by s_cal_lock. s_cal.version == 0 means never calibrated. Lock order
+ * is always s_cal_lock before s_lock; never the other way round. */
+static float s_supply_volts = BOOST_MAP_SUPPLY_DEFAULT;
+static boost_map_cal_t s_cal;
+static bool s_cal_busy;
 
 /* ------------------------------------------------------------------ helpers */
 
@@ -135,6 +213,63 @@ static esp_err_t reg_write8(i2c_master_dev_handle_t dev, uint8_t reg, uint8_t va
 static esp_err_t reg_read(i2c_master_dev_handle_t dev, uint8_t reg, uint8_t *out, size_t n)
 {
     return i2c_master_transmit_receive(dev, &reg, 1, out, n, SENS_IO_TIMEOUT_MS);
+}
+
+/* Age of a timestamp in ms. last_us <= 0 means "never read successfully". */
+static uint32_t age_ms(int64_t last_us, int64_t now_us)
+{
+    if (last_us <= 0) {
+        return UINT32_MAX;
+    }
+    int64_t delta = (now_us - last_us) / 1000;
+    if (delta < 0) {
+        delta = 0;
+    }
+    if (delta >= (int64_t)UINT32_MAX) {
+        return UINT32_MAX - 1u;   /* stale, but distinguishable from "never" */
+    }
+    return (uint32_t)delta;
+}
+
+/* ------------------------------------------------------------- conversion */
+
+/* The transfer function itself, with the supply passed explicitly so the
+ * supply-change path can re-evaluate the stored reference without disturbing
+ * live state. Everything else goes through boost_sensors_nominal_kpa(). */
+static float nominal_kpa_at(float map_volts, float supply_volts)
+{
+    if (!isfinite(map_volts) || !isfinite(supply_volts) || supply_volts <= 0.0f) {
+        return NAN;
+    }
+    const float normalized = map_volts * (MAP_CURVE_SUPPLY_V / supply_volts);
+    return MAP_KPA_PER_VOLT * normalized + MAP_KPA_INTERCEPT;
+}
+
+static float cal_supply_volts(void)
+{
+    float v = BOOST_MAP_SUPPLY_DEFAULT;
+    if (s_cal_lock != NULL && xSemaphoreTake(s_cal_lock, portMAX_DELAY) == pdTRUE) {
+        v = s_supply_volts;
+        xSemaphoreGive(s_cal_lock);
+    }
+    return v;
+}
+
+static float cal_offset_kpa(void)
+{
+    float off = 0.0f;
+    if (s_cal_lock != NULL && xSemaphoreTake(s_cal_lock, portMAX_DELAY) == pdTRUE) {
+        if (s_cal.version == BOOST_MAP_CAL_VERSION) {
+            off = s_cal.offset_kpa;
+        }
+        xSemaphoreGive(s_cal_lock);
+    }
+    return off;
+}
+
+float boost_sensors_nominal_kpa(float map_volts)
+{
+    return nominal_kpa_at(map_volts, cal_supply_volts());
 }
 
 /* ------------------------------------------------------------------- ADS1115 */
@@ -262,85 +397,32 @@ static esp_err_t add_bmp(void)
     return i2c_master_bus_add_device(s_bus, &cfg, &s_bmp);
 }
 
-static esp_err_t make_bus(void)
-{
-    const i2c_master_bus_config_t bus_cfg = {
-        .i2c_port = SENS_I2C_PORT,
-        .sda_io_num = SENS_SDA_GPIO,
-        .scl_io_num = SENS_SCL_GPIO,
-        .clk_source = I2C_CLK_SRC_DEFAULT,
-        .glitch_ignore_cnt = 7,
-        .flags = { .enable_internal_pullup = true },
-    };
-    return i2c_new_master_bus(&bus_cfg, &s_bus);
-}
-
-/*
- * Recover a wedged bus. A slave that saw a transaction interrupted (a glitch on
- * automotive power, a marginal connection) can sit holding SDA low forever,
- * waiting for the clocks to finish its byte. The master then just times out
- * every read. The fix is the standard one: tear the peripheral off the pins,
- * bit-bang up to 9 SCL pulses to walk the slave through its stuck byte + ACK
- * until it releases SDA, issue a STOP, then rebuild the bus and re-arm the
- * sensors. If the line is dead for a physical reason (unplugged/shorted) this
- * is harmless and simply retries.
- */
-/* Bit-bang SCL to release a slave stuck holding SDA low. Assumes the I2C
- * peripheral has been detached from the pins (bus deleted) so we can drive them
- * directly; leaves them idle-high afterwards for the bus to reclaim. */
-static void bitbang_clock_out(void)
-{
-    const gpio_config_t scl_cfg = {
-        .pin_bit_mask = 1ULL << SENS_SCL_GPIO,
-        .mode = GPIO_MODE_OUTPUT_OD,
-        .pull_up_en = GPIO_PULLUP_ENABLE,
-    };
-    const gpio_config_t sda_cfg = {
-        .pin_bit_mask = 1ULL << SENS_SDA_GPIO,
-        .mode = GPIO_MODE_INPUT,
-        .pull_up_en = GPIO_PULLUP_ENABLE,
-    };
-    gpio_config(&scl_cfg);
-    gpio_config(&sda_cfg);
-    gpio_set_level(SENS_SCL_GPIO, 1);
-    esp_rom_delay_us(10);
-    for (int i = 0; i < 9 && gpio_get_level(SENS_SDA_GPIO) == 0; ++i) {
-        gpio_set_level(SENS_SCL_GPIO, 0);
-        esp_rom_delay_us(5);
-        gpio_set_level(SENS_SCL_GPIO, 1);
-        esp_rom_delay_us(5);
-    }
-    /* STOP condition: SDA low->high while SCL is high. */
-    gpio_set_direction(SENS_SDA_GPIO, GPIO_MODE_OUTPUT_OD);
-    gpio_set_level(SENS_SDA_GPIO, 0);
-    esp_rom_delay_us(5);
-    gpio_set_level(SENS_SCL_GPIO, 1);
-    esp_rom_delay_us(5);
-    gpio_set_level(SENS_SDA_GPIO, 1);
-    esp_rom_delay_us(5);
-}
-
-/* Runtime recovery: tear the wedged bus down, clock it free, rebuild it, and
- * re-arm whatever was present at boot. */
+/* Reset the existing controller in place. This uses ESP-IDF's supported bus/FSM
+ * clear without invalidating the bus and device handles or exposing the pins. */
 static void bus_recover(void)
 {
-    if (s_ads) { i2c_master_bus_rm_device(s_ads); s_ads = NULL; }
-    if (s_bmp) { i2c_master_bus_rm_device(s_bmp); s_bmp = NULL; }
-    if (s_bus) { i2c_del_master_bus(s_bus); s_bus = NULL; }
-
-    bitbang_clock_out();
-
-    if (make_bus() != ESP_OK) {
-        s_bus = NULL;
+    if (s_bus == NULL || s_bus_admin_lock == NULL ||
+        xSemaphoreTake(s_bus_admin_lock, portMAX_DELAY) != pdTRUE) {
+        ESP_LOGE(TAG, "I2C bus reset lock failed");
         return;
     }
-    if (s_ads_present && add_ads() == ESP_OK) {
-        ads_configure();
+
+    const esp_err_t reset_err = i2c_master_bus_reset(s_bus);
+    if (reset_err == ESP_OK) {
+        if (s_ads_present && s_ads != NULL) {
+            ads_configure();
+        }
+        if (s_bmp_present && s_bmp != NULL) {
+            /* calib stays valid across recovery; just re-arm the mode registers. */
+            reg_write8(s_bmp, BMP280_REG_CTRL_MEAS, BMP280_CTRL_MEAS);
+            reg_write8(s_bmp, BMP280_REG_CONFIG, BMP280_CONFIG);
+        }
     }
-    if (s_bmp_present && add_bmp() == ESP_OK) {
-        /* calib stays valid across recovery; just re-arm the mode registers. */
-        reg_write8(s_bmp, BMP280_REG_CTRL_MEAS, BMP280_CTRL_MEAS);
-        reg_write8(s_bmp, BMP280_REG_CONFIG, BMP280_CONFIG);
+    xSemaphoreGive(s_bus_admin_lock);
+
+    if (reset_err != ESP_OK) {
+        ESP_LOGE(TAG, "I2C bus reset failed");
+        return;
     }
     ++s_recoveries;
     ESP_LOGW(TAG, "I2C bus recovery attempt #%u", (unsigned)s_recoveries);
@@ -364,12 +446,17 @@ static void sensors_task(void *arg)
 
     /* Seed from whatever init found; hold these across read failures. */
     float last_volts = 0.0f;
-    float last_map_kpa = 0.0f;
-    float ambient_kpa = s_bmp_present ? 0.0f : STANDARD_ATM_KPA;
+    float ambient_kpa = STANDARD_ATM_KPA;
     bool have_map = false;
-    bool have_ambient = s_bmp_present ? false : true;
+    bool have_ambient = false;
     uint32_t loop = 0;
     int consecutive_fail = 0;
+
+    /* Freshness bookkeeping. Touched only by this task; copied into the sample
+     * so consumers never have to guess whether a presence flag is still true. */
+    int64_t ads_last_us = 0;
+    int64_t bmp_last_us = 0;
+    uint32_t bmp_updates = 0;
 
     TickType_t next = xTaskGetTickCount();
     while (true) {
@@ -380,8 +467,8 @@ static void sensors_task(void *arg)
             float v;
             if (ads_read_volts(&v)) {
                 last_volts = v;
-                last_map_kpa = (v - MAP_VOLT_OFFSET) / MAP_VOLTS_PER_KPA;
                 have_map = true;
+                ads_last_us = esp_timer_get_time();
                 consecutive_fail = 0;
             } else {
                 fault = true;   /* hold last good */
@@ -391,8 +478,8 @@ static void sensors_task(void *arg)
             fault = true;       /* no MAP source at all */
         }
 
-        /* A run of failures means the bus is likely wedged (a slave stuck
-         * holding SDA low); try to clock it free rather than fault forever.
+        /* A run of failures means the bus is likely wedged; reset the hardware
+         * bus/FSM in place rather than fault forever.
          * Only worth it if something was ever detected to recover to. */
         if (consecutive_fail >= SENS_RECOVER_AFTER && (s_ads_present || s_bmp_present)) {
             bus_recover();
@@ -405,16 +492,22 @@ static void sensors_task(void *arg)
             if (bmp_read_kpa(&k)) {
                 ambient_kpa = k;
                 have_ambient = true;
+                bmp_last_us = esp_timer_get_time();
+                ++bmp_updates;
             } else {
                 /* Not a hard fault: a stale-but-recent ambient is fine, and if
-                 * we have never had one, fall back to standard atmosphere. */
+                 * we have never had one, fall back to standard atmosphere. The
+                 * age keeps growing so calibration still refuses it. */
                 if (!have_ambient) {
                     ambient_kpa = STANDARD_ATM_KPA;
                 }
             }
         }
 
-        const float map_kpa = have_map ? last_map_kpa : 0.0f;
+        /* One conversion, one place: boost_sensors_nominal_kpa() owns the
+         * transfer function and the supply normalization. */
+        const float nominal_kpa = have_map ? boost_sensors_nominal_kpa(last_volts) : 0.0f;
+        const float map_kpa = have_map ? nominal_kpa + cal_offset_kpa() : 0.0f;
         const float gauge_kpa = map_kpa - ambient_kpa;
         const float psi = have_map ? gauge_kpa * KPA_TO_PSI : 0.0f;
 
@@ -429,16 +522,22 @@ static void sensors_task(void *arg)
             peak = psi;
         }
 
+        const int64_t now_us = esp_timer_get_time();
         boost_sample_t s = {
             .psi = psi,
             .peak_psi = peak,
             .demo = false,
             .map_volts = last_volts,
             .map_abs_kpa = map_kpa,
+            .map_nominal_kpa = nominal_kpa,
             .ambient_kpa = ambient_kpa,
             .ads_present = s_ads_present,
             .bmp_present = s_bmp_present,
             .sensor_fault = fault,
+            .ads_age_ms = age_ms(ads_last_us, now_us),
+            .bmp_age_ms = age_ms(bmp_last_us, now_us),
+            .bmp_updates = bmp_updates,
+            .ambient_is_fallback = !have_ambient,
         };
         publish(&s, peak);
 
@@ -447,11 +546,104 @@ static void sensors_task(void *arg)
     }
 }
 
+/* ------------------------------------------------------------- persistence */
+
+/* Mount NVS here rather than relying on being called after boost_theme_init().
+ * Getting that order wrong is silent: nvs_open() just fails, the boot-time read
+ * is skipped, and writes appear to work right up until the next reboot drops
+ * them. nvs_flash_init() is idempotent, so calling it again is free. */
+static bool nvs_ready(void)
+{
+    static bool mounted;
+    if (mounted) {
+        return true;
+    }
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        if (nvs_flash_erase() == ESP_OK) {
+            err = nvs_flash_init();
+        }
+    }
+    mounted = (err == ESP_OK);
+    if (!mounted) {
+        ESP_LOGE(TAG, "NVS mount failed (%s)", esp_err_to_name(err));
+    }
+    return mounted;
+}
+
+/* Write either or both records in one transaction. NULL means "leave alone".
+ * Returns false if anything failed, in which case the caller must not activate
+ * whatever it was trying to save. */
+static bool persist_settings(const float *supply, const boost_map_cal_t *cal)
+{
+    if (!nvs_ready()) {
+        return false;
+    }
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) {
+        return false;
+    }
+    esp_err_t err = ESP_OK;
+    if (supply != NULL) {
+        err = nvs_set_blob(h, NVS_KEY_SUPPLY, supply, sizeof(*supply));
+    }
+    if (err == ESP_OK && cal != NULL) {
+        err = nvs_set_blob(h, NVS_KEY_CAL, cal, sizeof(*cal));
+    }
+    if (err == ESP_OK) {
+        err = nvs_commit(h);
+    }
+    nvs_close(h);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "calibration persist failed (%s)", esp_err_to_name(err));
+        return false;
+    }
+    return true;
+}
+
+/* Restore the configured supply and the calibration record. Must run before the
+ * reader task starts, so the very first published sample already uses them. */
+static void load_settings(void)
+{
+    if (!nvs_ready()) {
+        return;
+    }
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) {
+        return;   /* namespace not created yet: defaults stand */
+    }
+
+    float supply = 0.0f;
+    size_t len = sizeof(supply);
+    if (nvs_get_blob(h, NVS_KEY_SUPPLY, &supply, &len) == ESP_OK &&
+        len == sizeof(supply) && isfinite(supply) &&
+        supply >= BOOST_MAP_SUPPLY_MIN && supply <= BOOST_MAP_SUPPLY_MAX) {
+        s_supply_volts = supply;
+    }
+
+    /* Accepted only when both the version and the exact blob size match; a
+     * record written by another schema is treated as never-calibrated rather
+     * than reinterpreted field by field. */
+    boost_map_cal_t rec;
+    size_t rec_len = sizeof(rec);
+    if (nvs_get_blob(h, NVS_KEY_CAL, &rec, &rec_len) == ESP_OK &&
+        rec_len == sizeof(rec) && rec.version == BOOST_MAP_CAL_VERSION &&
+        isfinite(rec.offset_kpa) && fabsf(rec.offset_kpa) <= BOOST_MAP_CAL_MAX_KPA) {
+        s_cal = rec;
+    }
+    nvs_close(h);
+
+    ESP_LOGI(TAG, "MAP supply %.2f V, calibration %s (offset %.3f kPa)",
+             (double)s_supply_volts,
+             s_cal.version == BOOST_MAP_CAL_VERSION ? "restored" : "none",
+             (double)s_cal.offset_kpa);
+}
+
 /* ---------------------------------------------------------------------- init */
 
 /* Probe, add, and configure both sensors on the current bus, setting the
  * present flags. Factored out so the boot path can call it a second time after
- * a clock-out recovery. */
+ * an in-place bus reset. */
 static void detect_sensors(void)
 {
     if (i2c_master_probe(s_bus, ADS1115_ADDR, SENS_IO_TIMEOUT_MS) == ESP_OK &&
@@ -497,8 +689,34 @@ bool boost_sensors_init(void)
         ESP_LOGE(TAG, "mutex alloc failed");
         return false;
     }
+    s_bus_admin_lock = xSemaphoreCreateMutex();
+    if (s_bus_admin_lock == NULL) {
+        ESP_LOGE(TAG, "I2C admin mutex alloc failed");
+        vSemaphoreDelete(s_lock);
+        s_lock = NULL;
+        return false;
+    }
+    s_cal_lock = xSemaphoreCreateMutex();
+    if (s_cal_lock == NULL) {
+        ESP_LOGE(TAG, "calibration mutex alloc failed");
+        vSemaphoreDelete(s_bus_admin_lock);
+        s_bus_admin_lock = NULL;
+        vSemaphoreDelete(s_lock);
+        s_lock = NULL;
+        return false;
+    }
     /* A sane zero snapshot until the first read lands. */
-    s_latest = (boost_sample_t){ .demo = false };
+    s_latest = (boost_sample_t){
+        .demo = false,
+        .ambient_kpa = STANDARD_ATM_KPA,
+        .ads_age_ms = UINT32_MAX,
+        .bmp_age_ms = UINT32_MAX,
+        .ambient_is_fallback = true,
+    };
+
+    /* Supply voltage and calibration must be live before the reader task can
+     * publish its first sample, otherwise one frame goes out uncorrected. */
+    load_settings();
 
     const i2c_master_bus_config_t bus_cfg = {
         .i2c_port = SENS_I2C_PORT,
@@ -518,17 +736,11 @@ bool boost_sensors_init(void)
 
     detect_sensors();
 
-    /* A soft reboot does not power-cycle the sensors, so a slave left holding
-     * SDA low (a glitch or a marginal contact before the reset) keeps the bus
-     * wedged and both probes fail. When nothing answers, clock the bus free and
-     * try once more before giving up - this is what lets a lockup self-heal on
-     * boot without pulling power. A genuinely dead line (unplugged/shorted) just
-     * fails the retry too, harmlessly. */
+    /* Retry once after the driver's supported in-place hardware/FSM reset,
+     * preserving the original bus and device-handle lifecycle. */
     if (!s_ads_present && !s_bmp_present) {
-        ESP_LOGW(TAG, "no sensors answered; clocking the bus free and retrying");
-        if (s_bus) { i2c_del_master_bus(s_bus); s_bus = NULL; }
-        bitbang_clock_out();
-        if (make_bus() == ESP_OK) {
+        ESP_LOGW(TAG, "no sensors answered; resetting the bus in place and retrying");
+        if (i2c_master_bus_reset(s_bus) == ESP_OK) {
             detect_sensors();
         }
     }
@@ -568,15 +780,26 @@ uint32_t boost_sensors_recoveries(void)
 
 int boost_sensors_i2c_scan(uint8_t *out, int max)
 {
-    if (s_bus == NULL) {
+    if (s_bus == NULL || s_bus_admin_lock == NULL) {
         return -1;   /* bus never initialised */
+    }
+    if (xSemaphoreTake(s_bus_admin_lock, portMAX_DELAY) != pdTRUE) {
+        return -1;
     }
     int n = 0;
     for (uint8_t addr = 0x08; addr <= 0x77 && n < max; ++addr) {
-        if (i2c_master_probe(s_bus, addr, SENS_IO_TIMEOUT_MS) == ESP_OK) {
+        bool stable_ack = true;
+        for (int attempt = 0; attempt < SCAN_CONFIRM_ATTEMPTS; ++attempt) {
+            if (i2c_master_probe(s_bus, addr, SENS_IO_TIMEOUT_MS) != ESP_OK) {
+                stable_ack = false;
+                break;
+            }
+        }
+        if (stable_ack) {
             out[n++] = addr;
         }
     }
+    xSemaphoreGive(s_bus_admin_lock);
     return n;
 }
 
@@ -590,4 +813,276 @@ void boost_sensors_reset_peak(void)
         s_latest.peak_psi = s_peak;
         xSemaphoreGive(s_lock);
     }
+}
+
+/* ------------------------------------------------------- calibration access */
+
+boost_map_cal_t boost_sensors_get_calibration(void)
+{
+    boost_map_cal_t out = (boost_map_cal_t){0};
+    if (s_cal_lock != NULL && xSemaphoreTake(s_cal_lock, portMAX_DELAY) == pdTRUE) {
+        out = s_cal;
+        xSemaphoreGive(s_cal_lock);
+    }
+    return out;
+}
+
+float boost_sensors_get_supply_volts(void)
+{
+    return cal_supply_volts();
+}
+
+esp_err_t boost_sensors_set_supply_volts(float volts)
+{
+    if (!isfinite(volts) || volts < BOOST_MAP_SUPPLY_MIN || volts > BOOST_MAP_SUPPLY_MAX) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (s_cal_lock == NULL) {
+        return ESP_FAIL;
+    }
+
+    boost_map_cal_t rec;
+    if (xSemaphoreTake(s_cal_lock, portMAX_DELAY) != pdTRUE) {
+        return ESP_FAIL;
+    }
+    rec = s_cal;
+    xSemaphoreGive(s_cal_lock);
+
+    /* Recompute from the stored reference rather than rescaling the old offset:
+     * the offset is an additive kPa correction derived under one normalization,
+     * so it has no meaning under another. ref_map_volts / ref_bmp_kpa are the
+     * raw observation and survive any number of supply changes. */
+    const bool have_cal = (rec.version == BOOST_MAP_CAL_VERSION);
+    if (have_cal) {
+        const float nominal = nominal_kpa_at(rec.ref_map_volts, volts);
+        if (!isfinite(nominal)) {
+            return ESP_FAIL;
+        }
+        rec.supply_volts = volts;
+        rec.ref_nominal_kpa = nominal;
+        rec.offset_kpa = rec.ref_bmp_kpa - nominal;
+    }
+
+    /* Persist before going live: a supply that survived the reboot but a
+     * calibration that did not would silently apply the wrong correction. */
+    if (!persist_settings(&volts, have_cal ? &rec : NULL)) {
+        return ESP_FAIL;
+    }
+
+    if (xSemaphoreTake(s_cal_lock, portMAX_DELAY) == pdTRUE) {
+        s_supply_volts = volts;
+        if (have_cal) {
+            s_cal = rec;
+        }
+        xSemaphoreGive(s_cal_lock);
+    }
+    ESP_LOGI(TAG, "MAP supply set to %.2f V%s", (double)volts,
+             have_cal ? " (calibration offset recomputed)" : "");
+    return ESP_OK;
+}
+
+/* These strings are the wire contract for the JSON `error` field and are
+ * mirrored by the explanation table in web/app.js. Changing one without the
+ * other degrades a specific diagnosis into a generic failure message. */
+const char *boost_sensors_cal_error_code(boost_cal_result_t result)
+{
+    switch (result) {
+        case BOOST_CAL_OK:                 return "ok";
+        case BOOST_CAL_ERR_NO_ADS:         return "no_ads";
+        case BOOST_CAL_ERR_NO_BMP:         return "no_bmp";
+        case BOOST_CAL_ERR_STALE:          return "stale_reading";
+        case BOOST_CAL_ERR_UNSTABLE:       return "unstable_reading";
+        case BOOST_CAL_ERR_IMPLAUSIBLE:    return "implausible_pressure";
+        case BOOST_CAL_ERR_OUT_OF_RANGE:   return "correction_out_of_range";
+        case BOOST_CAL_ERR_PERSIST:        return "persist_failed";
+        case BOOST_CAL_ERR_BUSY:           return "busy";
+        default:                           return "calibration_failed";
+    }
+}
+
+/* --------------------------------------------------------- calibration run */
+
+static int64_t wall_clock_ms(void)
+{
+    struct timeval tv;
+    if (gettimeofday(&tv, NULL) != 0 || tv.tv_sec < CAL_EPOCH_VALID_SEC) {
+        return 0;
+    }
+    return (int64_t)tv.tv_sec * 1000 + (int64_t)(tv.tv_usec / 1000);
+}
+
+/* Observe published snapshots only. Issuing I2C from here would give the bus a
+ * second owner and race the reader task's transactions. */
+static boost_cal_result_t calibrate_observe(boost_map_cal_t *out)
+{
+    const float supply = cal_supply_volts();
+
+    int ads_fresh = 0;
+    int bmp_fresh = 0;
+    int used = 0;
+    int bmp_increments = 0;
+    bool ads_seen = false;
+    bool bmp_seen = false;
+    bool bmp_measured = false;
+    bool have_prev_updates = false;
+    bool nonfinite = false;
+    uint32_t prev_updates = 0;
+
+    double sum_volts = 0.0;
+    double sum_nominal = 0.0;
+    double sum_bmp = 0.0;
+    float volts_min = 0.0f, volts_max = 0.0f;
+    float nominal_min = 0.0f, nominal_max = 0.0f;
+    float bmp_min = 0.0f, bmp_max = 0.0f;
+
+    for (int i = 0; i < CAL_POLLS; ++i) {
+        vTaskDelay(pdMS_TO_TICKS(CAL_POLL_MS));
+        const boost_sample_t s = boost_sensors_get_sample();
+
+        if (s.ads_present) {
+            ads_seen = true;
+        }
+        if (s.bmp_present) {
+            bmp_seen = true;
+        }
+        if (!s.ambient_is_fallback) {
+            bmp_measured = true;
+        }
+
+        const bool a_ok = s.ads_present && s.ads_age_ms <= CAL_MAX_ADS_AGE_MS;
+        const bool b_ok = s.bmp_present && !s.ambient_is_fallback &&
+                          s.bmp_age_ms <= CAL_MAX_BMP_AGE_MS;
+        if (a_ok) {
+            ++ads_fresh;
+        }
+        if (b_ok) {
+            ++bmp_fresh;
+            if (have_prev_updates && s.bmp_updates != prev_updates) {
+                ++bmp_increments;
+            }
+            prev_updates = s.bmp_updates;
+            have_prev_updates = true;
+        }
+        if (!a_ok || !b_ok) {
+            continue;
+        }
+
+        /* Always recomputed from the raw voltage. Averaging the already
+         * corrected pressure would fold the previous offset into the new one
+         * and make every recalibration compound. */
+        const float nominal = nominal_kpa_at(s.map_volts, supply);
+        if (!isfinite(s.map_volts) || !isfinite(nominal) || !isfinite(s.ambient_kpa)) {
+            nonfinite = true;
+            continue;
+        }
+
+        if (used == 0) {
+            volts_min = volts_max = s.map_volts;
+            nominal_min = nominal_max = nominal;
+            bmp_min = bmp_max = s.ambient_kpa;
+        } else {
+            if (s.map_volts < volts_min) { volts_min = s.map_volts; }
+            if (s.map_volts > volts_max) { volts_max = s.map_volts; }
+            if (nominal < nominal_min)   { nominal_min = nominal; }
+            if (nominal > nominal_max)   { nominal_max = nominal; }
+            if (s.ambient_kpa < bmp_min) { bmp_min = s.ambient_kpa; }
+            if (s.ambient_kpa > bmp_max) { bmp_max = s.ambient_kpa; }
+        }
+        sum_volts += (double)s.map_volts;
+        sum_nominal += (double)nominal;
+        sum_bmp += (double)s.ambient_kpa;
+        ++used;
+    }
+
+    /* Order matters: report the most fundamental missing precondition first, so
+     * the operator is told "no BMP" rather than "unstable" when the BMP is out. */
+    if (!ads_seen || ads_fresh == 0) {
+        return BOOST_CAL_ERR_NO_ADS;
+    }
+    if (!bmp_seen || !bmp_measured || bmp_fresh == 0) {
+        return BOOST_CAL_ERR_NO_BMP;
+    }
+    if (bmp_increments < CAL_MIN_BMP_UPDATES || used == 0) {
+        return BOOST_CAL_ERR_STALE;
+    }
+    if (nonfinite ||
+        nominal_min < CAL_NOMINAL_MIN_KPA || nominal_max > CAL_NOMINAL_MAX_KPA ||
+        bmp_min < CAL_BMP_MIN_KPA || bmp_max > CAL_BMP_MAX_KPA) {
+        return BOOST_CAL_ERR_IMPLAUSIBLE;
+    }
+    if ((volts_max - volts_min) > CAL_MAX_VOLT_SPREAD ||
+        (bmp_max - bmp_min) > CAL_MAX_KPA_SPREAD) {
+        return BOOST_CAL_ERR_UNSTABLE;
+    }
+
+    const float mean_volts = (float)(sum_volts / (double)used);
+    const float mean_nominal = (float)(sum_nominal / (double)used);
+    const float mean_bmp = (float)(sum_bmp / (double)used);
+    const float offset = mean_bmp - mean_nominal;
+    if (!isfinite(offset) || fabsf(offset) > BOOST_MAP_CAL_MAX_KPA) {
+        return BOOST_CAL_ERR_OUT_OF_RANGE;
+    }
+
+    const boost_map_cal_t rec = {
+        .version = BOOST_MAP_CAL_VERSION,
+        .samples = (uint16_t)used,
+        .offset_kpa = offset,
+        .supply_volts = supply,
+        .ref_map_volts = mean_volts,
+        .ref_nominal_kpa = mean_nominal,
+        .ref_bmp_kpa = mean_bmp,
+        .epoch_ms = wall_clock_ms(),
+    };
+
+    /* Persist first. If the write fails the live conversion must keep using the
+     * previous offset, otherwise a reboot would silently revert the gauge. */
+    if (!persist_settings(NULL, &rec)) {
+        return BOOST_CAL_ERR_PERSIST;
+    }
+
+    if (xSemaphoreTake(s_cal_lock, portMAX_DELAY) == pdTRUE) {
+        s_cal = rec;
+        xSemaphoreGive(s_cal_lock);
+    }
+    /* A peak captured under the previous conversion is not comparable. */
+    boost_sensors_reset_peak();
+
+    ESP_LOGI(TAG,
+             "atmosphere calibration: %d samples, %.4f V -> %.3f kPa nominal, "
+             "BMP %.3f kPa, offset %+.3f kPa at %.2f V supply",
+             used, (double)mean_volts, (double)mean_nominal, (double)mean_bmp,
+             (double)offset, (double)supply);
+
+    if (out != NULL) {
+        *out = rec;
+    }
+    return BOOST_CAL_OK;
+}
+
+boost_cal_result_t boost_sensors_calibrate_atmosphere(boost_map_cal_t *out)
+{
+    if (s_lock == NULL || s_cal_lock == NULL) {
+        return BOOST_CAL_ERR_NO_ADS;   /* sensors never came up at all */
+    }
+    if (xSemaphoreTake(s_cal_lock, portMAX_DELAY) != pdTRUE) {
+        return BOOST_CAL_ERR_BUSY;
+    }
+    if (s_cal_busy) {
+        xSemaphoreGive(s_cal_lock);
+        return BOOST_CAL_ERR_BUSY;
+    }
+    s_cal_busy = true;
+    xSemaphoreGive(s_cal_lock);
+
+    const boost_cal_result_t result = calibrate_observe(out);
+
+    if (xSemaphoreTake(s_cal_lock, portMAX_DELAY) == pdTRUE) {
+        s_cal_busy = false;
+        xSemaphoreGive(s_cal_lock);
+    }
+    if (result != BOOST_CAL_OK) {
+        ESP_LOGW(TAG, "atmosphere calibration rejected: %s",
+                 boost_sensors_cal_error_code(result));
+    }
+    return result;
 }
