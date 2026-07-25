@@ -35,6 +35,31 @@ function gaugeEmaTauMs() {
 }
 const SPARKLINE_FRAME_MS = 250;
 const POLL_FRAME_MS = 250;
+/* Sensor-diagnostics cadences. GET /api/v1/sensors/calibration is deliberately
+ * NOT on the 20 Hz WebSocket or the 4 Hz /state path - the firmware keeps it
+ * separate so the state payload and the smaller WebSocket JSON buffer stay
+ * small. These two timers are the only consumers.
+ *
+ * Settings panel: 500 ms (2 Hz). Fast enough that the live voltage/pressure
+ * readouts feel live while the operator sets up a calibration, and fast enough
+ * to notice a sensor going quiet inside the firmware's 2 s freshness window.
+ * Two small JSON GETs per second against a panel that is only open while
+ * someone is looking at it.
+ *
+ * Cockpit ambient: 1000 ms (1 Hz). Atmospheric pressure moves by fractions of a
+ * kPa per hour, so the value itself needs nothing faster; the rate is set by
+ * wanting to notice a stalled BMP280 promptly. Freshness is still evaluated
+ * continuously at render time by ageing the last reported bmpAgeMs against the
+ * browser clock, so a dead sensor flips the readout to "--" without waiting for
+ * the next poll. */
+const CAL_POLL_MS = 500;
+const AMBIENT_POLL_MS = 1000;
+/* Mirrors HUD_BMP_FRESH_MS in main/boost_gauge.c. Keep the two in step: the
+ * browser mirror and the physical Night City face must agree on when the
+ * atmospheric readout goes unavailable. */
+const BMP_FRESH_MS = 2000;
+/* Age fields arrive as -1 for "never read successfully" (firmware UINT32_MAX). */
+const AGE_NEVER = -1;
 const PAGE = document.body.dataset.page || "cockpit";
 const IS_COCKPIT = PAGE === "cockpit";
 const IS_SETTINGS = PAGE === "settings";
@@ -66,6 +91,14 @@ const state = {
   pixelShift: true,
   pixelShiftSec: 90,
   demoMode: false,
+  /* Whole GET /sensors/calibration body, folded back in from every response so
+   * the settings render never reads a half-updated mirror. Null until the first
+   * poll lands. */
+  calibration: null,
+  /* Cockpit-only: last measured atmosphere for the Night City corner readout.
+   * kpa/ageMs come from the device, at is the browser clock when the response
+   * landed, so the freshness window can advance between polls. */
+  ambient: null,
 };
 
 const el = {
@@ -132,6 +165,20 @@ const el = {
   zeroAngle: document.getElementById("zeroAngle"),
   saveRangeBtn: document.getElementById("saveRangeBtn"),
   rangeHint: document.getElementById("rangeHint"),
+  supplyVolts: document.getElementById("supplyVolts"),
+  calibrateBtn: document.getElementById("calibrateBtn"),
+  calConfirm: document.getElementById("calConfirm"),
+  calConfirmBtn: document.getElementById("calConfirmBtn"),
+  calCancelBtn: document.getElementById("calCancelBtn"),
+  calMapVolts: document.getElementById("calMapVolts"),
+  calNominalKpa: document.getElementById("calNominalKpa"),
+  calCorrectedKpa: document.getElementById("calCorrectedKpa"),
+  calBmpKpa: document.getElementById("calBmpKpa"),
+  calOffset: document.getElementById("calOffset"),
+  calStateText: document.getElementById("calStateText"),
+  calReference: document.getElementById("calReference"),
+  calSensors: document.getElementById("calSensors"),
+  calStatus: document.getElementById("calStatus"),
 };
 
 const ctx = el.canvas ? el.canvas.getContext("2d") : null;
@@ -808,12 +855,15 @@ function drawHudGauge(sample, psi, g) {
   ctx.font = `600 13px Consolas, monospace`;
   ctx.fillText("PSI // FORCED INDUCTION", 0, 74);
 
-  /* corner telemetry — MAP (manifold absolute) and real peak hold */
+  /* corner telemetry — measured atmosphere and real peak hold.
+   * This used to render `MAP 101 + psi * 6.895` kPa, which was arithmetic on the
+   * gauge reading dressed up as a sensor value. It is now the BMP280's own
+   * measurement, or "--" when there is no fresh one; see ambientAtmText(). */
   const peak = Math.max(0, Number(sample.peakPsi || 0));
   ctx.textAlign = "left";
   ctx.fillStyle = C;
   ctx.font = `600 15px Consolas, monospace`;
-  ctx.fillText(`MAP ${(101 + psi * 6.895).toFixed(0)}kPa`, -138, 128);
+  ctx.fillText(ambientAtmText(), -138, 128);
   ctx.textAlign = "right";
   ctx.fillText(`PK ${peak.toFixed(1)}`, 138, 128);
   ctx.fillStyle = p.muted;
@@ -1574,6 +1624,413 @@ function wireDisplayToggles() {
   }
 }
 
+/* ═══ MAP atmosphere calibration ══════════════════════════════════════════
+ *
+ * Backed by GET/POST /api/v1/sensors/calibration and PUT /api/v1/sensors/supply.
+ * Everything here is settings-only except captureAmbient/ambientAtmText, which
+ * the cockpit uses for the Night City corner readout.
+ */
+
+/* One message per machine code the contract defines. A bare code in the error
+ * box tells the operator nothing about what to go and check. */
+const CAL_ERROR_TEXT = {
+  no_ads: "No ADS1115. The MAP sensor's ADC is not answering at 0x48 — check its wiring, power, and the sensor bus before calibrating.",
+  no_bmp: "No usable BMP280 atmospheric reference. Either the sensor is absent at 0x76 or the reading has fallen back to the 101.325 kPa standard atmosphere, which is a constant and not a measurement.",
+  stale_reading: "Sensor readings went stale during the measurement. One of the sensors stopped returning fresh samples — check the bus and try again.",
+  unstable_reading: "The readings moved too much over the two-second window. Let the pressure settle (engine off, no airflow across the sensors) and try again.",
+  implausible_pressure: "The measured pressure is not plausible for atmosphere. Check the MAP supply voltage setting above and that the MAP port really is open to air.",
+  correction_out_of_range: "The required correction is larger than ±10 kPa. That points at the wrong sensor, the wrong supply voltage, or a MAP port still connected to the manifold. Nothing was saved.",
+  persist_failed: "The measurement was good but writing it to NVS failed. The previous calibration is still active and still in force.",
+  busy: "A calibration is already running on the device. Wait for it to finish, then try again.",
+};
+
+const SUPPLY_ERROR_TEXT = {
+  invalid_supply: "MAP supply voltage must be a number between 4.50 V and 5.50 V.",
+  persist_failed: "The supply voltage could not be written to NVS. The previous setting is still in force.",
+};
+
+function calErrorMessage(code) {
+  return CAL_ERROR_TEXT[code] || `Calibration failed: ${code}`;
+}
+
+function supplyErrorMessage(code) {
+  return SUPPLY_ERROR_TEXT[code] || `Supply voltage not saved: ${code}`;
+}
+
+const calUi = {
+  pollTimer: null,
+  inFlight: false,
+  busy: false,        /* POST in flight; it blocks ~2 s server-side */
+  supplyTimer: null,  /* debounce handle */
+  supplySaving: false,
+  pollFailed: false,
+};
+
+/* Calibration results go to a panel-local line rather than the shared
+ * #errorBox / #okBox. showError("") runs on every successful /state poll, which
+ * on HTTP fallback is 4 Hz - an error posted there is gone in 250 ms, and a
+ * two-second calibration that fails deserves better than a flash. */
+function setCalStatus(kind, message) {
+  if (!el.calStatus) return;
+  el.calStatus.hidden = !message;
+  el.calStatus.textContent = message || "";
+  el.calStatus.classList.toggle("error", kind === "error");
+  el.calStatus.classList.toggle("ok", kind === "ok");
+  el.calStatus.classList.toggle("pending", kind === "pending");
+}
+
+function setReadout(node, text, tone) {
+  if (!node) return;
+  node.textContent = text;
+  node.classList.toggle("cal-unavailable", tone === "unavailable");
+  node.classList.toggle("cal-warn", tone === "warn");
+}
+
+function signedFixed(value, digits) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "--";
+  return `${n < 0 ? "−" : "+"}${Math.abs(n).toFixed(digits)}`;
+}
+
+/* Ages arrive as -1 for "never read successfully" (firmware UINT32_MAX). A
+ * negative number on screen would read as a measurement; it is not one. */
+function formatAge(ms) {
+  const n = Number(ms);
+  if (!Number.isFinite(n) || n <= AGE_NEVER || n < 0) return "never read";
+  return n < 1000 ? `${Math.round(n)} ms` : `${(n / 1000).toFixed(1)} s`;
+}
+
+function ageIsFresh(ms) {
+  const n = Number(ms);
+  return Number.isFinite(n) && n >= 0 && n <= BMP_FRESH_MS;
+}
+
+function formatCalDate(epochMs) {
+  const n = Number(epochMs);
+  if (!Number.isFinite(n) || n < 1e12) return "";
+  const d = new Date(n);
+  const pad = (v) => String(v).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/* The supply field is the one control on this panel the user types into, so a
+ * poll or a save response must never yank it out from under a newer edit. */
+function supplyEditPending() {
+  return calUi.supplyTimer !== null || calUi.supplySaving;
+}
+
+function shouldWriteSupplyInput(force) {
+  if (!el.supplyVolts) return false;
+  if (supplyEditPending()) return false;
+  return force ? true : document.activeElement !== el.supplyVolts;
+}
+
+function syncSupplyInput() {
+  if (!el.supplyVolts) return;
+  const volts = Number(state.calibration && state.calibration.supplyVolts);
+  el.supplyVolts.value = Number.isFinite(volts) ? volts.toFixed(2) : "";
+}
+
+/* Single entry point for every response that carries the calibration body:
+ * poll, supply PUT, and calibration POST all return the same shape.
+ *
+ * Regression ledger, "Toggle unchecks itself but the effect sticks": a debounced
+ * write whose handler re-renders from local state must fold the WHOLE response
+ * into that state first, or the render races the save and shows the pre-save
+ * mirror. renderCalibration/syncSupplyInput below read only from
+ * state.calibration, and state.calibration is replaced wholesale here. */
+function applyCalibrationPayload(payload, opts = {}) {
+  if (!payload || typeof payload !== "object") return;
+  state.calibration = payload;
+  renderCalibration();
+  if (shouldWriteSupplyInput(Boolean(opts.force))) syncSupplyInput();
+}
+
+function renderCalibration() {
+  if (!el.calMapVolts) return;
+  const payload = state.calibration;
+  const live = payload && typeof payload.live === "object" ? payload.live : null;
+  const cal = payload && typeof payload.calibration === "object" ? payload.calibration : null;
+
+  if (!live) {
+    setReadout(el.calMapVolts, "--", "unavailable");
+    setReadout(el.calNominalKpa, "--", "unavailable");
+    setReadout(el.calCorrectedKpa, "--", "unavailable");
+    setReadout(el.calBmpKpa, "--", "unavailable");
+    setReadout(el.calSensors, "No sensor data", "unavailable");
+  } else {
+    const mapFresh = Boolean(live.adsPresent) && ageIsFresh(live.mapAgeMs);
+    const bmpMeasured = Boolean(live.bmpPresent) && !live.ambientIsFallback && ageIsFresh(live.bmpAgeMs);
+    const volts = Number(live.mapVolts);
+
+    setReadout(
+      el.calMapVolts,
+      Number.isFinite(volts) && Boolean(live.adsPresent) ? `${volts.toFixed(4)} V` : "--",
+      live.adsPresent ? (mapFresh ? null : "warn") : "unavailable",
+    );
+    setReadout(el.calNominalKpa, kpaText(live.nominalKpa, live.adsPresent), live.adsPresent ? null : "unavailable");
+    setReadout(el.calCorrectedKpa, kpaText(live.correctedKpa, live.adsPresent), live.adsPresent ? null : "unavailable");
+
+    if (!live.bmpPresent) {
+      setReadout(el.calBmpKpa, "Absent", "unavailable");
+    } else if (live.ambientIsFallback) {
+      /* Never present the standard-atmosphere constant as a measurement. */
+      setReadout(el.calBmpKpa, "Fallback constant", "warn");
+    } else {
+      setReadout(el.calBmpKpa, kpaText(live.bmpKpa, true), bmpMeasured ? null : "warn");
+    }
+
+    const updates = Number(live.bmpUpdates);
+    const sensorBits = [
+      `ADS ${live.adsPresent ? formatAge(live.mapAgeMs) : "absent"}`,
+      `BMP ${live.bmpPresent ? formatAge(live.bmpAgeMs) : "absent"}`,
+      `${Number.isFinite(updates) ? updates : 0} BMP reads`,
+    ];
+    if (live.fault) sensorBits.push("fault");
+    setReadout(el.calSensors, sensorBits.join(" · "), live.fault || !mapFresh || !bmpMeasured ? "warn" : null);
+  }
+
+  if (cal && cal.valid) {
+    setReadout(el.calOffset, `${signedFixed(cal.offsetKpa, 2)} kPa · ${signedFixed(cal.offsetPsi, 3)} PSI`, null);
+    const when = formatCalDate(cal.epochMs);
+    setReadout(el.calStateText, when ? `Calibrated ${when}` : "Calibrated (device clock unset)", null);
+    const refVolts = Number(cal.refMapVolts);
+    const refBmp = Number(cal.refBmpKpa);
+    const refSupply = Number(cal.supplyVolts);
+    setReadout(
+      el.calReference,
+      `${Number.isFinite(refVolts) ? refVolts.toFixed(4) : "--"} V @ ${Number.isFinite(refSupply) ? refSupply.toFixed(2) : "--"} V · ${
+        Number.isFinite(refBmp) ? refBmp.toFixed(2) : "--"
+      } kPa · ${Number(cal.samples) || 0} samples`,
+      null,
+    );
+  } else {
+    setReadout(el.calOffset, "None (0.00 kPa)", "unavailable");
+    setReadout(el.calStateText, "Never calibrated", "warn");
+    setReadout(el.calReference, "No reference stored", "unavailable");
+  }
+}
+
+function kpaText(value, present) {
+  const n = Number(value);
+  if (!present || !Number.isFinite(n)) return "--";
+  return `${n.toFixed(2)} kPa`;
+}
+
+async function pollCalibration() {
+  /* Never race a write: an in-flight POST/PUT owns the panel until it settles,
+   * and a queued supply edit must not be overwritten by an older device value. */
+  if (calUi.inFlight || calUi.busy || supplyEditPending()) return;
+  calUi.inFlight = true;
+  try {
+    const payload = await api("/sensors/calibration");
+    applyCalibrationPayload(payload);
+    if (calUi.pollFailed) {
+      calUi.pollFailed = false;
+      setCalStatus(null, "");
+    }
+  } catch (error) {
+    if (!calUi.pollFailed) {
+      calUi.pollFailed = true;
+      setCalStatus("error", `Sensor diagnostics unavailable: ${error.message}`);
+    }
+    state.calibration = null;
+    renderCalibration();
+  } finally {
+    calUi.inFlight = false;
+  }
+}
+
+function startCalibrationPolling() {
+  if (!IS_SETTINGS || !el.calMapVolts || calUi.pollTimer !== null) return;
+  if (document.hidden) return;
+  calUi.pollTimer = window.setInterval(() => { void pollCalibration(); }, CAL_POLL_MS);
+  void pollCalibration();
+}
+
+function stopCalibrationPolling() {
+  if (calUi.pollTimer === null) return;
+  window.clearInterval(calUi.pollTimer);
+  calUi.pollTimer = null;
+}
+
+function readSupplyInput() {
+  const volts = Number(el.supplyVolts.value);
+  if (!Number.isFinite(volts)) throw new Error("MAP supply voltage must be a number");
+  if (!(volts >= 4.5 && volts <= 5.5)) {
+    throw new Error("MAP supply voltage must be between 4.50 V and 5.50 V");
+  }
+  return volts;
+}
+
+/* Typing in a number field fires per keystroke; one PUT per edit, not per key. */
+function queueSupplySave() {
+  if (!el.supplyVolts) return;
+  window.clearTimeout(calUi.supplyTimer);
+  calUi.supplyTimer = window.setTimeout(() => {
+    calUi.supplyTimer = null;
+    void saveSupplyVolts();
+  }, 400);
+}
+
+async function saveSupplyVolts() {
+  let volts;
+  try {
+    volts = readSupplyInput();
+  } catch (error) {
+    setCalStatus("error", error.message);
+    return;
+  }
+  calUi.supplySaving = true;
+  try {
+    setCalStatus(null, "");
+    const payload = await api("/sensors/supply", {
+      method: "PUT",
+      body: JSON.stringify({ supplyVolts: volts }),
+    });
+    calUi.supplySaving = false;
+    applyCalibrationPayload(payload, { force: true });
+    setCalStatus("ok", `MAP supply ${volts.toFixed(2)} V saved`);
+  } catch (error) {
+    calUi.supplySaving = false;
+    setCalStatus("error", supplyErrorMessage(error.message));
+    /* Put the field back where the device actually is. */
+    if (shouldWriteSupplyInput(true)) syncSupplyInput();
+  }
+}
+
+function showCalConfirm(show) {
+  if (!el.calConfirm) return;
+  el.calConfirm.hidden = !show;
+}
+
+async function runCalibration() {
+  /* The POST blocks ~2 s server-side. Guard against a double fire from a second
+   * click, a keyboard activation, or an impatient double-click. */
+  if (calUi.busy) return;
+  calUi.busy = true;
+  showCalConfirm(false);
+  const btn = el.calibrateBtn;
+  const label = btn ? btn.textContent : "";
+  if (btn) {
+    btn.disabled = true;
+    btn.dataset.pending = "1";
+    btn.textContent = "Calibrating…";
+  }
+  if (el.calConfirmBtn) el.calConfirmBtn.disabled = true;
+  setCalStatus("pending", "Measuring atmosphere — about two seconds…");
+  try {
+    const payload = await api("/sensors/calibration", { method: "POST", body: "{}" });
+    applyCalibrationPayload(payload, { force: true });
+    const cal = (state.calibration && state.calibration.calibration) || {};
+    setCalStatus(
+      "ok",
+      `Calibrated · offset ${signedFixed(cal.offsetKpa, 2)} kPa (${signedFixed(cal.offsetPsi, 3)} PSI) from ${Number(cal.samples) || 0} samples`,
+    );
+  } catch (error) {
+    setCalStatus("error", calErrorMessage(error.message));
+  } finally {
+    calUi.busy = false;
+    if (btn) {
+      btn.disabled = false;
+      delete btn.dataset.pending;
+      btn.textContent = label;
+    }
+    if (el.calConfirmBtn) el.calConfirmBtn.disabled = false;
+  }
+}
+
+function wireCalibration() {
+  if (!IS_SETTINGS || !el.calMapVolts) return;
+  on(el.supplyVolts, "input", queueSupplySave);
+  on(el.supplyVolts, "change", queueSupplySave);
+  on(el.calibrateBtn, "click", () => {
+    if (calUi.busy) return;
+    showCalConfirm(el.calConfirm ? el.calConfirm.hidden : true);
+  });
+  on(el.calCancelBtn, "click", () => showCalConfirm(false));
+  on(el.calConfirmBtn, "click", () => { void runCalibration(); });
+  renderCalibration();
+}
+
+/* ── Cockpit: measured atmosphere for the Night City corner readout ───────── */
+
+const ambientUi = { pollTimer: null, inFlight: false };
+
+function captureAmbient(live) {
+  if (!live || typeof live !== "object") {
+    state.ambient = null;
+    return;
+  }
+  const ageMs = Number(live.bmpAgeMs);
+  state.ambient = {
+    kpa: Number(live.bmpKpa),
+    ageMs: Number.isFinite(ageMs) ? ageMs : AGE_NEVER,
+    present: Boolean(live.bmpPresent),
+    fallback: Boolean(live.ambientIsFallback),
+    at: performance.now(),
+  };
+}
+
+/* Mirrors the atm_fresh gate in update_hud() in main/boost_gauge.c: the value is
+ * shown only when the BMP280 actually measured it. bmpPresent is a boot-time
+ * flag, ambientIsFallback marks the 101.325 kPa constant, and bmpAgeMs catches a
+ * sensor that answered at boot and has since gone quiet. The poll interval is
+ * added back onto the reported age so the label goes unavailable on schedule
+ * instead of on the next poll. */
+function ambientAtmText() {
+  const a = state.ambient;
+  if (!a || !a.present || a.fallback) return "ATM --kPa";
+  if (!Number.isFinite(a.kpa) || a.ageMs < 0) return "ATM --kPa";
+  if (a.ageMs + (performance.now() - a.at) > BMP_FRESH_MS) return "ATM --kPa";
+  return `ATM ${Math.round(a.kpa)}kPa`;
+}
+
+async function pollAmbient() {
+  if (ambientUi.inFlight) return;
+  ambientUi.inFlight = true;
+  try {
+    const payload = await api("/sensors/calibration");
+    captureAmbient(payload && payload.live);
+  } catch (_) {
+    /* Unreachable, or firmware without the endpoint. Fall back to the
+     * unavailable placeholder — never to a stale or synthetic number — and stay
+     * quiet: this is a diagnostic garnish, not the telemetry path, and it must
+     * not take over the cockpit error box from /state. */
+    state.ambient = null;
+  } finally {
+    ambientUi.inFlight = false;
+  }
+}
+
+function startAmbientPolling() {
+  if (!IS_COCKPIT || ambientUi.pollTimer !== null) return;
+  if (document.hidden) return;
+  ambientUi.pollTimer = window.setInterval(() => { void pollAmbient(); }, AMBIENT_POLL_MS);
+  void pollAmbient();
+}
+
+function stopAmbientPolling() {
+  if (ambientUi.pollTimer === null) return;
+  window.clearInterval(ambientUi.pollTimer);
+  ambientUi.pollTimer = null;
+}
+
+/* A hidden tab needs neither readout. Both timers are cheap, but neither is on
+ * the telemetry path, so there is nothing to be gained by running them blind.
+ * Called at boot as well as on every visibility change: no visibilitychange
+ * event fires for the state a page loads in, so a page opened in a background
+ * tab would otherwise start its timers and leave them to browser throttling. */
+function syncSensorPolling() {
+  if (document.hidden) {
+    stopCalibrationPolling();
+    stopAmbientPolling();
+    return;
+  }
+  startCalibrationPolling();
+  startAmbientPolling();
+}
+
 async function refreshNetwork() {
   const net = await api("/network");
   renderNetwork(net);
@@ -2036,6 +2493,9 @@ state.config = {
 state.gaugeTarget = { psi: 0, peakPsi: 0, zone: "ATMO", demo: true };
 wireControls();
 wireDisplayToggles();
+wireCalibration();
+document.addEventListener("visibilitychange", syncSensorPolling);
+syncSensorPolling();
 if (IS_COCKPIT) {
   scheduleGaugeRender();
   drawSparkline();

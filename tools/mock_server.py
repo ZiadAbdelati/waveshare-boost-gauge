@@ -135,6 +135,186 @@ LOGS: list[dict[str, float | int | str | bool]] = []
 PEAK = 0.0
 TIME_ANCHOR_MS = int(time.time() * 1000)
 
+# ---------------------------------------------------------------- sensors ---
+# Mirrors main/boost_sensors.c. The GM 12223861 curve is defined at 5.00 V and
+# the sensor is ratiometric, so the configured supply is normalized out before
+# the transfer function is applied:
+#     normalized = map_volts * 5.00 / supply_volts
+#     nominal    = 62.8721124 * normalized + 1.08216242
+#     corrected  = nominal + offset_kpa
+MAP_KPA_PER_VOLT = 62.8721124
+MAP_KPA_INTERCEPT = 1.08216242
+MAP_SUPPLY_MIN = 4.50
+MAP_SUPPLY_MAX = 5.50
+MAP_CAL_MAX_KPA = 10.0
+KPA_TO_PSI = 0.145037738
+
+SENSORS = {
+    "supplyVolts": 5.20,
+    # version 0 == never calibrated; the GET reports the rest as 0 in that case.
+    "cal": {
+        "version": 0,
+        "samples": 0,
+        "offsetKpa": 0.0,
+        "supplyVolts": 5.20,
+        "refMapVolts": 0.0,
+        "refNominalKpa": 0.0,
+        "refBmpKpa": 0.0,
+        "epochMs": 0,
+    },
+    "bmpUpdates": 4000,
+}
+
+# Mock-only fault injection so the dashboard's error rendering can actually be
+# exercised without hardware. Drive it with:
+#   PUT /api/v1/mock/sensors  {"calFail": "no_bmp"}
+#   POST /api/v1/sensors/calibration?fail=unstable_reading   (one-shot)
+# `mapAgeMs`/`bmpAgeMs` accept -1 to exercise the "never read" rendering.
+MOCK = {
+    "calFail": None,
+    "adsPresent": True,
+    "bmpPresent": True,
+    "ambientIsFallback": False,
+    "fault": False,
+    "mapAgeMs": None,
+    "bmpAgeMs": None,
+    "calDelaySec": 2.0,
+}
+
+CAL_ERROR_STATUS = {
+    "no_ads": HTTPStatus.CONFLICT,
+    "no_bmp": HTTPStatus.CONFLICT,
+    "stale_reading": HTTPStatus.CONFLICT,
+    "unstable_reading": HTTPStatus.CONFLICT,
+    "implausible_pressure": HTTPStatus.CONFLICT,
+    "correction_out_of_range": HTTPStatus.CONFLICT,
+    "persist_failed": HTTPStatus.INTERNAL_SERVER_ERROR,
+    "busy": HTTPStatus.CONFLICT,
+}
+
+
+def nominal_kpa(map_volts: float, supply_volts: float) -> float:
+    normalized = map_volts * 5.0 / supply_volts
+    return MAP_KPA_PER_VOLT * normalized + MAP_KPA_INTERCEPT
+
+
+def volts_for_nominal(kpa: float, supply_volts: float) -> float:
+    normalized = (kpa - MAP_KPA_INTERCEPT) / MAP_KPA_PER_VOLT
+    return normalized * supply_volts / 5.0
+
+
+def true_bmp_kpa() -> float:
+    """Slowly drifting atmosphere so the live readouts visibly move."""
+    return 98.58 + 0.04 * math.sin((time.time() - STARTED_AT) / 37.0)
+
+
+def live_sensors() -> dict:
+    """Live block of GET /api/v1/sensors/calibration.
+
+    The simulated MAP sensor reads ~2.37 kPa low at atmosphere, which is what a
+    one-point calibration is there to remove.
+    """
+    supply = float(SENSORS["supplyVolts"])
+    bmp = true_bmp_kpa()
+    elapsed = time.time() - STARTED_AT
+    map_volts = volts_for_nominal(bmp - 2.37, supply) + 0.0004 * math.sin(elapsed * 3.1)
+    nominal = nominal_kpa(map_volts, supply)
+    offset = float(SENSORS["cal"]["offsetKpa"]) if SENSORS["cal"]["version"] else 0.0
+
+    map_age = MOCK["mapAgeMs"] if MOCK["mapAgeMs"] is not None else int(elapsed * 1000) % 17
+    bmp_age = MOCK["bmpAgeMs"] if MOCK["bmpAgeMs"] is not None else int(elapsed * 1000) % 160
+    return {
+        "adsPresent": bool(MOCK["adsPresent"]),
+        "bmpPresent": bool(MOCK["bmpPresent"]),
+        "fault": bool(MOCK["fault"]),
+        "mapVolts": round(map_volts, 4),
+        "mapAgeMs": int(map_age),
+        "nominalKpa": round(nominal, 2),
+        "correctedKpa": round(nominal + offset, 2),
+        "bmpKpa": round(bmp, 2),
+        "bmpAgeMs": int(bmp_age),
+        "bmpUpdates": int(SENSORS["bmpUpdates"] + elapsed * 5),
+        "ambientIsFallback": bool(MOCK["ambientIsFallback"]),
+    }
+
+
+def calibration_payload() -> dict:
+    """Body of GET /api/v1/sensors/calibration, and of every successful write."""
+    cal = SENSORS["cal"]
+    valid = int(cal["version"]) != 0
+    return {
+        "supplyVolts": round(float(SENSORS["supplyVolts"]), 2),
+        "live": live_sensors(),
+        "calibration": {
+            "valid": valid,
+            "version": int(cal["version"]),
+            "offsetKpa": round(float(cal["offsetKpa"]), 2) if valid else 0.0,
+            "offsetPsi": round(float(cal["offsetKpa"]) * KPA_TO_PSI, 3) if valid else 0.0,
+            "supplyVolts": round(float(cal["supplyVolts"]), 2) if valid else 0.0,
+            "refMapVolts": round(float(cal["refMapVolts"]), 4) if valid else 0.0,
+            "refNominalKpa": round(float(cal["refNominalKpa"]), 2) if valid else 0.0,
+            "refBmpKpa": round(float(cal["refBmpKpa"]), 2) if valid else 0.0,
+            "samples": int(cal["samples"]) if valid else 0,
+            "epochMs": int(cal["epochMs"]) if valid else 0,
+        },
+    }
+
+
+def run_calibration() -> tuple[dict, HTTPStatus]:
+    """Validate, persist, activate — or fail and change nothing."""
+    forced = MOCK["calFail"]
+    if forced:
+        return {"error": forced}, CAL_ERROR_STATUS.get(forced, HTTPStatus.CONFLICT)
+
+    live = live_sensors()
+    # The same gates the firmware applies, so the mock cannot "succeed" while
+    # showing a state that would be rejected on hardware.
+    if not live["adsPresent"]:
+        return {"error": "no_ads"}, HTTPStatus.CONFLICT
+    if not live["bmpPresent"] or live["ambientIsFallback"]:
+        return {"error": "no_bmp"}, HTTPStatus.CONFLICT
+    if live["mapAgeMs"] < 0 or live["bmpAgeMs"] < 0 or live["bmpAgeMs"] > 2000:
+        return {"error": "stale_reading"}, HTTPStatus.CONFLICT
+
+    supply = float(SENSORS["supplyVolts"])
+    offset = live["bmpKpa"] - live["nominalKpa"]
+    if abs(offset) > MAP_CAL_MAX_KPA:
+        return {"error": "correction_out_of_range"}, HTTPStatus.CONFLICT
+
+    SENSORS["cal"] = {
+        "version": 1,
+        "samples": 40,
+        "offsetKpa": offset,
+        "supplyVolts": supply,
+        "refMapVolts": live["mapVolts"],
+        "refNominalKpa": live["nominalKpa"],
+        "refBmpKpa": live["bmpKpa"],
+        "epochMs": TIME_ANCHOR_MS + int((time.time() - STARTED_AT) * 1000),
+    }
+    return calibration_payload(), HTTPStatus.OK
+
+
+def set_supply_volts(value: object) -> tuple[dict, HTTPStatus]:
+    try:
+        volts = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return {"error": "invalid_supply"}, HTTPStatus.BAD_REQUEST
+    if not math.isfinite(volts) or not MAP_SUPPLY_MIN <= volts <= MAP_SUPPLY_MAX:
+        return {"error": "invalid_supply"}, HTTPStatus.BAD_REQUEST
+    if MOCK["calFail"] == "persist_failed":
+        return {"error": "persist_failed"}, HTTPStatus.INTERNAL_SERVER_ERROR
+
+    SENSORS["supplyVolts"] = volts
+    cal = SENSORS["cal"]
+    if int(cal["version"]):
+        # Recompute the offset from the stored reference under the new
+        # normalization, preserving the same atmospheric reference rather than
+        # carrying an offset derived under the old supply.
+        cal["refNominalKpa"] = nominal_kpa(float(cal["refMapVolts"]), volts)
+        cal["offsetKpa"] = float(cal["refBmpKpa"]) - float(cal["refNominalKpa"])
+        cal["supplyVolts"] = volts
+    return calibration_payload(), HTTPStatus.OK
+
 
 def current_psi() -> float:
     elapsed = time.time() - STARTED_AT
@@ -277,6 +457,17 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(NETWORK)
         elif path == "/api/v1/network/scan":
             self.send_json({"networks": SCAN_NETWORKS})
+        elif path == "/api/v1/sensors/calibration":
+            self.send_json(calibration_payload())
+        elif path == "/api/v1/sensors/scan":
+            found = []
+            if MOCK["adsPresent"]:
+                found.append("0x48")
+            if MOCK["bmpPresent"]:
+                found.append("0x76")
+            self.send_json({"busUp": True, "recoveries": 0, "found": found})
+        elif path == "/api/v1/mock/sensors":
+            self.send_json(MOCK)
         elif path == "/api/v1/events":
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/event-stream")
@@ -419,6 +610,17 @@ class Handler(BaseHTTPRequestHandler):
                         if key in ("vacuum", "boost", "overboost"):
                             theme["colors"][key] = value
             self.send_json(themes_payload())
+        elif parsed.path == "/api/v1/sensors/supply":
+            payload = self.read_json()
+            body, status = set_supply_volts(payload.get("supplyVolts"))
+            self.send_json(body, status)
+        elif parsed.path == "/api/v1/mock/sensors":
+            # Mock-only fault injection. No firmware equivalent.
+            payload = self.read_json()
+            for key in MOCK:
+                if key in payload:
+                    MOCK[key] = payload[key]
+            self.send_json(MOCK)
         elif parsed.path == "/api/v1/network":
             payload = self.read_json()
             if payload.get("mode") in ("ap", "apsta"):
@@ -462,6 +664,19 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": "binary too small to be a firmware image"}, HTTPStatus.BAD_REQUEST)
                 return
             self.send_json({"status": "OTA image accepted by mock; reboot pending", "sizeBytes": len(body), "progress": 100})
+        elif parsed.path == "/api/v1/sensors/calibration":
+            self.rfile.read(length)  # body ignored, per the contract
+            # The firmware observes sensor snapshots for ~2 s; the dashboard has
+            # to hold a pending state for the whole window, so the mock blocks
+            # for the same time rather than answering instantly.
+            forced = parse_qs(parsed.query).get("fail", [None])[0]
+            if forced:
+                MOCK["calFail"] = forced
+            time.sleep(float(MOCK["calDelaySec"]))
+            body, status = run_calibration()
+            if forced:
+                MOCK["calFail"] = None
+            self.send_json(body, status)
         elif parsed.path == "/api/v1/network/reconnect":
             self.rfile.read(length)
             NETWORK["staConnected"] = NETWORK["mode"] == "apsta"

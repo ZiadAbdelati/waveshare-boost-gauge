@@ -742,3 +742,59 @@ output {
 }
 .theme-range-row input[type="range"] { flex: 1 1 auto; accent-color: var(--teal, #2ee6c5); }
 .theme-range-row span { flex: 0 0 auto; min-width: 8.5rem; }
+
+/* ---- Settings > MAP atmosphere calibration ---------------------------- */
+/* The supply voltage is a single narrow number; letting it span the panel
+   reads as a text field, same reasoning as the pixel-shift picker. */
+.calibration-panel .cal-supply { max-width: 14rem; margin-top: 0.1rem; }
+.calibration-panel .cal-supply + .hint-text { margin: 0.45rem 0 0.9rem; }
+
+/* Eight readouts: two across on narrow, four across beside the other panels. */
+.cal-grid { margin-top: 0.2rem; }
+@media (min-width: 1100px) {
+  .calibration-panel .cal-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+
+/* Live sensor numbers should not jitter in width as digits change. */
+.cal-grid strong { font-size: 1.05rem; }
+.cal-grid strong.cal-unavailable { color: var(--muted); }
+.cal-grid strong.cal-warn { color: var(--boost); }
+
+/* Destructive-ish confirmation: it persists to NVS, so it gets its own
+   bordered block rather than a native dialog the page cannot style. */
+.cal-confirm {
+  margin-top: 0.9rem;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid color-mix(in srgb, var(--boost) 55%, var(--line));
+  background: color-mix(in srgb, var(--boost) 10%, transparent);
+  border-radius: 8px;
+}
+.cal-confirm[hidden] { display: none; }
+.cal-confirm-lead {
+  margin: 0 0 0.45rem;
+  font-size: 0.86rem;
+  font-weight: 700;
+  color: var(--text);
+}
+.cal-confirm ul {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.cal-confirm ul strong { color: var(--text); }
+.cal-confirm .button-row { margin-top: 0.75rem; }
+
+/* Pending state: the POST blocks ~2 s server-side, so the control has to look
+   busy for the whole window rather than appearing to have done nothing. */
+#calibrateBtn[data-pending="1"] { opacity: 0.75; }
+
+/* Panel-local result line. It reuses the .error/.ok skins but lives inside the
+   panel because the shared boxes are cleared by the 4 Hz /state poll. */
+.cal-status { margin-top: 0.9rem; }
+.cal-status[hidden] { display: none; }
+.cal-status.pending {
+  border: 1px solid color-mix(in srgb, var(--boost) 55%, var(--line));
+  background: color-mix(in srgb, var(--boost) 12%, transparent);
+}

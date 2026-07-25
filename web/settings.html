@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <title>Boost Gauge Settings</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="/styles.css?v=20260720b">
+  <link rel="stylesheet" href="/styles.css?v=20260725a">
 </head>
 <body data-page="settings">
   <main class="shell shell-settings" id="shell">
@@ -16,7 +16,7 @@
           <span>Cockpit</span>
         </a>
         <h1>Settings</h1>
-        <p class="eyebrow">Gauge range &amp; Wi‑Fi</p>
+        <p class="eyebrow">Gauge range, sensors &amp; Wi‑Fi</p>
       </div>
       <div class="mast-actions">
         <div class="connection" id="connection">
@@ -54,6 +54,56 @@
           </label>
         </div>
         <p class="hint-text" id="rangeHint">Defaults −15 / 10 / 8 PSI and 236.25°. Zero position controls the notch; the optional midpoint label disappears if it would overlap overboost.</p>
+      </section>
+
+      <section class="panel calibration-panel">
+        <div class="section-title">
+          <span>MAP atmosphere calibration</span>
+          <button class="primary" id="calibrateBtn">Calibrate MAP to ATM</button>
+        </div>
+
+        <label class="field cal-supply">
+          <span>MAP supply voltage (4.50 – 5.50 V)</span>
+          <input id="supplyVolts" type="number" min="4.5" max="5.5" step="0.01" inputmode="decimal">
+        </label>
+        <p class="hint-text">The GM 12223861 curve is defined at 5.00 V and the sensor is
+          ratiometric, so the real supply is normalized out before the transfer function is
+          applied. Measure it at the sensor connector. Saves on its own; changing it recomputes
+          an existing offset against the same stored atmospheric reference.</p>
+
+        <div class="status-grid cal-grid">
+          <div><span>MAP signal</span><strong id="calMapVolts">--</strong></div>
+          <div><span>MAP nominal</span><strong id="calNominalKpa">--</strong></div>
+          <div><span>MAP corrected</span><strong id="calCorrectedKpa">--</strong></div>
+          <div><span>BMP280 atmosphere</span><strong id="calBmpKpa">--</strong></div>
+          <div><span>Saved offset</span><strong id="calOffset">--</strong></div>
+          <div><span>Calibration</span><strong id="calStateText">--</strong></div>
+          <div><span>Reference</span><strong id="calReference">--</strong></div>
+          <div><span>Sensors</span><strong id="calSensors">--</strong></div>
+        </div>
+
+        <div class="cal-confirm" id="calConfirm" hidden>
+          <p class="cal-confirm-lead">Confirm all three before calibrating:</p>
+          <ul>
+            <li>The <strong>engine is off</strong>.</li>
+            <li>The <strong>gauge stays powered</strong> for the whole two-second measurement.</li>
+            <li>The <strong>MAP port and the BMP280 are both open to the same atmosphere</strong>
+              &mdash; no vacuum line still connected to the manifold.</li>
+          </ul>
+          <div class="button-row">
+            <button class="primary" id="calConfirmBtn">Calibrate now</button>
+            <button id="calCancelBtn">Cancel</button>
+          </div>
+        </div>
+
+        <!-- Panel-local status. The shared #errorBox is cleared by every
+             successful /state poll (4 Hz on HTTP fallback), so a calibration
+             result posted there would vanish within 250 ms. -->
+        <div class="cal-status" id="calStatus" hidden></div>
+
+        <p class="hint-text" id="calHint">Aligns the MAP sensor to the BMP280 at a known
+          pressure. The measurement takes about two seconds and replaces any previous offset
+          &mdash; offsets never compound. Nothing is written unless every check passes.</p>
       </section>
 
       <section class="panel display-panel">
@@ -135,6 +185,6 @@
     </div>
   </main>
 
-  <script src="/app.js?v=20260720b" defer></script>
+  <script src="/app.js?v=20260725a" defer></script>
 </body>
 </html>
