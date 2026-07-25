@@ -622,6 +622,9 @@ output {
   border: 1px solid color-mix(in srgb, var(--overboost) 55%, var(--line));
   background: color-mix(in srgb, var(--overboost) 12%, transparent);
 }
+/* Scoped to the id, not .error: the panel-local #calStatus reuses the .error
+ * skin but is not dismissible. */
+#errorBox:not([hidden]) { cursor: pointer; }
 .ok {
   border: 1px solid color-mix(in srgb, var(--vacuum) 55%, var(--line));
   background: color-mix(in srgb, var(--vacuum) 12%, transparent);

@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "mock",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["tools/mock_server.py", "--port", "8099"],
+      "port": 8099,
+      "autoPort": false
+    }
+  ]
+}

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <title>Boost Gauge Settings</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="/styles.css?v=20260725a">
+  <link rel="stylesheet" href="/styles.css?v=20260725d">
 </head>
 <body data-page="settings">
   <main class="shell shell-settings" id="shell">
@@ -96,9 +96,11 @@
           </div>
         </div>
 
-        <!-- Panel-local status. The shared #errorBox is cleared by every
-             successful /state poll (4 Hz on HTTP fallback), so a calibration
-             result posted there would vanish within 250 ms. -->
+        <!-- Panel-local status: a two-second measurement's verdict belongs
+             beside the readouts it was taken from. (This started as a
+             workaround for the shared #errorBox being wiped by every
+             successful /state poll; that is fixed in app.js, so do not add
+             more panel-local status lines.) -->
         <div class="cal-status" id="calStatus" hidden></div>
 
         <p class="hint-text" id="calHint">Aligns the MAP sensor to the BMP280 at a known
@@ -185,6 +187,6 @@
     </div>
   </main>
 
-  <script src="/app.js?v=20260725a" defer></script>
+  <script src="/app.js?v=20260725d" defer></script>
 </body>
 </html>

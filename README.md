@@ -125,7 +125,7 @@ internal-DMA strips with Wi-Fi enabled and the full-rate physical gauge running:
 
 The 24-line test did **not** improve measured physical FPS. The browser mirror is
 independently limited by its network cadence and render loop. WebSocket telemetry
-targets **20 Hz**; the browser canvas interpolates at **60 FPS** between samples.
+targets **62.5 Hz**; the browser canvas interpolates between samples.
 When WebSockets are unavailable, the HTTP fallback polls at **4 Hz**. Treat
 perceived mirror responsiveness as a web telemetry or canvas-rendering issue, not
 a display-strip throughput win. Do not raise the strip height without both
@@ -198,14 +198,14 @@ The physical gauge samples and updates every **16 ms (~60 Hz)**. Network
 telemetry is deliberately lower-rate and independently owned: the WebSocket
 server maintains a fixed pool of **3 clients**, rather than a single dashboard
 owner. Each client may have at most one in-flight, heap-owned frame; the server
-performs a bounded broadcast at **20 Hz**. A newly connected dashboard MUST NOT
+performs a bounded broadcast at **62.5 Hz**. A newly connected dashboard MUST NOT
 close or evict an existing socket, because concurrent or stale tabs otherwise
 force Live/Fallback churn and can produce out-of-order target jitter.
 
 The browser sends an application heartbeat every **750 ms**; the server consumes
 that heartbeat as part of the WebSocket protocol. If the socket is unavailable,
 the browser uses HTTP `GET /api/v1/state` fallback at **4 Hz**. The connection
-badge exposes the active path as **Live · WebSocket 20 Hz** or
+badge exposes the active path as **Live · WebSocket 60 Hz** or
 **Live · HTTP 4 Hz**; **Disconnected** means neither transport is delivering
 state. The canvas renders every `requestAnimationFrame` and uses a short **35 ms**
 EMA to suppress packet-step jitter without adding the previous 90 ms visual lag.
@@ -220,7 +220,7 @@ display path.
 
 Background history logging is a separate **12.5 Hz** producer: the 1,800-sample
 RAM ring retains **2 minutes 24 seconds** regardless of whether the dashboard is
-receiving 20 Hz WebSocket telemetry or 4 Hz HTTP fallback.
+receiving 62.5 Hz WebSocket telemetry or 4 Hz HTTP fallback.
 
 ### Fourth-client behavior
 
@@ -231,7 +231,7 @@ continue receiving telemetry. The browser keeps its fallback poll at **4 Hz**
 successful `/api/v1/state` fallback sample shows **Live · HTTP 4 Hz**;
 **Disconnected** means both WebSocket and HTTP state polling are unavailable.
 A retry attempt must not downgrade healthy fallback, and a restored socket shows
-**Live · WebSocket 20 Hz**.
+**Live · WebSocket 60 Hz**.
 
 ### Layered GIF pipeline (decoder ownership)
 
@@ -292,6 +292,18 @@ idf.py build flash monitor   # look for BOOST_WEB_IP=192.168.x.y
   limited to **4 Hz**, and the browser GIF preview is disabled. In the verified
   30 s dashboard soak, the main-thread probe peaked at **9 ms** with no freezes
   longer than **500 ms**.
+- **Shared error box lifetime.** `#errorBox` is written by two kinds of producer
+  and each retracts only what it raised. `showError(msg, source)` /
+  `clearError(source)` take `ERR_LIVE` (unattended telemetry: `pollState`,
+  WebSocket frames) or `ERR_USER` (the outcome of a gesture). `ERR_USER`
+  outranks `ERR_LIVE` in both directions, so a poll can neither overwrite nor
+  erase the message an operator is reading; a `showOk()` or a click on the box
+  dismisses it. A transport error raised by `pollState` is `ERR_LIVE` and still
+  self-clears the moment polling recovers. The connection badge remains the
+  designated live-transport indicator and this path never touches it. This is
+  the **only** convention for the shared box &mdash; do not add per-panel status
+  elements to work around it (`#calStatus` predates the fix and stays for its
+  own reason: a two-second measurement's verdict belongs beside its readouts).
 ### Clock source, persistence, and CSV timestamps
 
 The dashboard's **Sync Time** control is the only time-synchronization action:
@@ -759,7 +771,7 @@ gauge still reads zero at atmosphere but is mis-scaled under boost, so check the
 displayed offset after changing supply, and recalibrate.
 
 Calibration diagnostics live on `GET /api/v1/sensors/calibration`, deliberately
-*not* on `/state` or the WebSocket payload: that path runs at 20 Hz into a smaller
+*not* on `/state` or the WebSocket payload: that path runs at 62.5 Hz into a smaller
 JSON buffer, and Settings must be able to show real sensor state even while demo
 mode is driving the gauge.
 

@@ -170,6 +170,13 @@ SENSORS = {
 #   PUT /api/v1/mock/sensors  {"calFail": "no_bmp"}
 #   POST /api/v1/sensors/calibration?fail=unstable_reading   (one-shot)
 # `mapAgeMs`/`bmpAgeMs` accept -1 to exercise the "never read" rendering.
+#
+# `scanFail` and `stateFail` exist for the shared-#errorBox lifetime rules in
+# web/app.js, which need the two producers to fail independently:
+#   {"scanFail": "scan busy"}  -> GET /network/scan 503, a user-sourced error
+#                                 that must survive the 4 Hz poll loop.
+#   {"stateFail": true}        -> GET /state 503, a live-sourced error that must
+#                                 clear itself once it is set back to false.
 MOCK = {
     "calFail": None,
     "adsPresent": True,
@@ -179,6 +186,8 @@ MOCK = {
     "mapAgeMs": None,
     "bmpAgeMs": None,
     "calDelaySec": 2.0,
+    "scanFail": None,
+    "stateFail": False,
 }
 
 CAL_ERROR_STATUS = {
@@ -435,6 +444,9 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         if path == "/api/v1/state":
+            if MOCK["stateFail"]:
+                self.send_json({"error": "state unavailable"}, HTTPStatus.SERVICE_UNAVAILABLE)
+                return
             self.send_json(state_payload())
         elif path == "/api/v1/config":
             self.send_json(CONFIG)
@@ -456,6 +468,10 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/v1/network":
             self.send_json(NETWORK)
         elif path == "/api/v1/network/scan":
+            forced = parse_qs(parsed.query).get("fail", [None])[0] or MOCK["scanFail"]
+            if forced:
+                self.send_json({"error": forced}, HTTPStatus.SERVICE_UNAVAILABLE)
+                return
             self.send_json({"networks": SCAN_NETWORKS})
         elif path == "/api/v1/sensors/calibration":
             self.send_json(calibration_payload())

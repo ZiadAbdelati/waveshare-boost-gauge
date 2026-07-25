@@ -36,7 +36,7 @@ function gaugeEmaTauMs() {
 const SPARKLINE_FRAME_MS = 250;
 const POLL_FRAME_MS = 250;
 /* Sensor-diagnostics cadences. GET /api/v1/sensors/calibration is deliberately
- * NOT on the 20 Hz WebSocket or the 4 Hz /state path - the firmware keeps it
+ * NOT on the 62.5 Hz WebSocket or the 4 Hz /state path - the firmware keeps it
  * separate so the state payload and the smaller WebSocket JSON buffer stay
  * small. These two timers are the only consumers.
  *
@@ -493,9 +493,14 @@ function drawArcGauge(sample, psi, g) {
   ctx.font = `700 ${Math.max(12, 14 * scale)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
   ctx.fillText(`PEAK  ${peak.toFixed(1)}`, cx, cy + 56 * scale);
 
-  ctx.fillStyle = state.palette.muted;
-  ctx.font = `700 ${Math.max(11, 12 * scale)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
-  ctx.fillText(sample.demo ? "DEMO" : "LIVE", cx, cy + 84 * scale);
+  /* DEMO only in demo. The panel sets this label to "" on the real-sensor path
+   * (boost_gauge.c), so drawing "LIVE" here made the mirror disagree with the
+   * device. Skip the draw entirely rather than painting an empty string. */
+  if (sample.demo) {
+    ctx.fillStyle = state.palette.muted;
+    ctx.font = `700 ${Math.max(11, 12 * scale)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
+    ctx.fillText("DEMO", cx, cy + 84 * scale);
+  }
 }
 
 /* Rounded-rect path helper for the themed faces (466-space). */
@@ -989,7 +994,10 @@ function drawBigDigitGauge(sample, psi, g) {
   ctx.fillText("PSI", 0, 118);
   ctx.globalAlpha = 0.72;
   ctx.font = `600 18px Consolas, monospace`;
-  ctx.fillText(`PEAK ${peak.toFixed(1)}   ${sample.demo ? "DEMO" : "LIVE"}`, 0, 168);
+  /* Matches the panel's `PEAK %.1f` exactly in live mode - no suffix, no
+   * trailing separator. The DEMO marker returns only in demo. */
+  ctx.fillText(sample.demo ? `PEAK ${peak.toFixed(1)}   DEMO`
+                           : `PEAK ${peak.toFixed(1)}`, 0, 168);
   ctx.globalAlpha = 1;
   ctx.restore();
 }
@@ -1129,19 +1137,69 @@ function startHeartbeat(socket) {
   }, 750);
 }
 
-function showError(message) {
-  el.errorBox.hidden = !message;
-  el.errorBox.textContent = message || "";
-  if (message) {
-    el.okBox.hidden = true;
+/* Shared #errorBox lifetime.
+ *
+ * Two very different producers write this one box and they must not fight over
+ * it, so every write carries the source that raised it:
+ *
+ *   ERR_LIVE - the unattended telemetry path (pollState, WebSocket frames).
+ *              Nobody asked for these messages, and on HTTP fallback the path
+ *              runs at POLL_FRAME_MS (4 Hz), so whatever it raises it must also
+ *              retract: a transient network error self-clears the instant
+ *              polling recovers.
+ *   ERR_USER - the outcome of a gesture (save, scan, reconnect, upload, range
+ *              validation). Nothing is polling on the operator's behalf, so the
+ *              message stays until another gesture supersedes it or the
+ *              operator clicks it away.
+ *
+ * A producer clears only what it raised. Before this, pollState() called
+ * showError("") on every successful /state sample, so any user-facing error was
+ * wiped within 250 ms of appearing - the reason the calibration panel grew its
+ * own panel-local #calStatus line rather than trusting this box.
+ *
+ * ERR_USER outranks ERR_LIVE in both directions: a poll failure may not paper
+ * over the Wi-Fi error being read, and a poll recovery may not erase it. No
+ * transport information is lost by that - the connection badge is the
+ * designated live-transport indicator and this path never touches it. */
+const ERR_LIVE = "live";
+const ERR_USER = "user";
+const ERR_RANK = { [ERR_LIVE]: 1, [ERR_USER]: 2 };
+/* Source of the message currently on screen; null when the box is empty. */
+let shownErrorSource = null;
+
+function showError(message, source = ERR_USER) {
+  if (!el.errorBox) return;
+  if (!message) {
+    clearError(source);
+    return;
   }
+  if (shownErrorSource && ERR_RANK[source] < ERR_RANK[shownErrorSource]) return;
+  shownErrorSource = source;
+  el.errorBox.hidden = false;
+  el.errorBox.textContent = message;
+  el.errorBox.title = "Click to dismiss";
+  if (el.okBox) el.okBox.hidden = true;
+}
+
+function clearError(source = ERR_USER) {
+  if (!el.errorBox) return;
+  if (shownErrorSource && ERR_RANK[source] < ERR_RANK[shownErrorSource]) return;
+  shownErrorSource = null;
+  el.errorBox.hidden = true;
+  el.errorBox.textContent = "";
+  el.errorBox.removeAttribute("title");
 }
 
 function showOk(message) {
+  if (!el.okBox) return;
   el.okBox.hidden = !message;
   el.okBox.textContent = message || "";
   if (message) {
-    el.errorBox.hidden = true;
+    /* A success supersedes whatever error was on screen, including a sticky
+     * user-sourced one. Clearing through clearError() rather than hiding the
+     * node keeps shownErrorSource honest - a stale record would otherwise
+     * outrank and suppress the next live error. */
+    clearError(ERR_USER);
     window.setTimeout(() => {
       if (el.okBox.textContent === message) {
         el.okBox.hidden = true;
@@ -1310,7 +1368,7 @@ function queueThemeConfig(body, okMsg) {
   clearTimeout(colorPutTimer);
   colorPutTimer = setTimeout(async () => {
     try {
-      showError("");
+      clearError(ERR_USER);
       const payload = await api("/themes/config", {
         method: "PUT",
         body: JSON.stringify(body),
@@ -1493,7 +1551,7 @@ function renderThemes() {
     `;
     button.addEventListener("click", async () => {
       try {
-        showError("");
+        clearError(ERR_USER);
         const payload = await api("/themes/active", {
           method: "PUT",
           body: JSON.stringify({ id: theme.id }),
@@ -1576,7 +1634,7 @@ function syncDisplayToggles() {
 function wireDisplayToggles() {
   const send = async (body, label) => {
     try {
-      showError("");
+      clearError(ERR_USER);
       const payload = await api("/themes/config", {
         method: "PUT",
         body: JSON.stringify(body),
@@ -1667,9 +1725,13 @@ const calUi = {
 };
 
 /* Calibration results go to a panel-local line rather than the shared
- * #errorBox / #okBox. showError("") runs on every successful /state poll, which
- * on HTTP fallback is 4 Hz - an error posted there is gone in 250 ms, and a
- * two-second calibration that fails deserves better than a flash. */
+ * #errorBox / #okBox. Originally that was a workaround: showError("") ran on
+ * every successful /state poll, so a result posted to the shared box was gone
+ * in 250 ms. The shared box no longer does that (see showError/clearError and
+ * ERR_USER/ERR_LIVE), and this line stays for the reason it is worth keeping
+ * on its own - a two-second measurement wants its verdict beside the readouts
+ * it was taken from, not up in the page-level banner. Do not grow more of
+ * these: the shared box is the place for everything else. */
 function setCalStatus(kind, message) {
   if (!el.calStatus) return;
   el.calStatus.hidden = !message;
@@ -2037,9 +2099,14 @@ async function refreshNetwork() {
   return net;
 }
 
-async function refreshAll() {
+/* `source` is ERR_USER for the Refresh button and ERR_LIVE for the unattended
+ * boot bootstrap. A boot-time failure is a transport failure nobody asked
+ * about, so it has to be retractable by the poll loop that follows it;
+ * marking it ERR_USER would leave a stale "Failed to fetch" on screen after
+ * the device came back. */
+async function refreshAll(source = ERR_USER) {
   try {
-    showError("");
+    clearError(source);
     if (IS_COCKPIT) {
       /* Keep device wall-clock aligned with the browser so dim schedules match local time. */
       try {
@@ -2082,7 +2149,7 @@ async function refreshAll() {
     if (!state.liveSocket || state.liveSocket.readyState !== WebSocket.OPEN) updateConnection("online", "http");
   } catch (error) {
     if (!state.liveSocket || state.liveSocket.readyState !== WebSocket.OPEN) updateConnection("offline");
-    showError(error.message);
+    showError(error.message, source);
   }
 }
 
@@ -2093,10 +2160,13 @@ async function pollState() {
     const sample = await api("/state");
     renderState(sample);
     updateConnection("online", "http");
-    showError("");
+    /* ERR_LIVE, not a blanket clear: this runs 4 Hz and must not retract an
+     * error some gesture put on screen a moment ago. It does still retract the
+     * transient one raised below, which is what "recovered" means here. */
+    clearError(ERR_LIVE);
   } catch (error) {
     updateConnection("offline");
-    showError(error.message);
+    showError(error.message, ERR_LIVE);
   } finally {
     state.pollInFlight = false;
   }
@@ -2142,7 +2212,7 @@ function connectEvents() {
     stopPolling();
     startHeartbeat(socket);
     updateConnection("online", "websocket");
-    showError("");
+    clearError(ERR_LIVE);
   };
   socket.onmessage = (event) => {
     if (state.liveSocket !== socket) return;
@@ -2150,9 +2220,9 @@ function connectEvents() {
       const sample = JSON.parse(event.data);
       renderState(sample);
       updateConnection("online", "websocket");
-      showError("");
+      clearError(ERR_LIVE);
     } catch (error) {
-      showError(`Live telemetry error: ${error.message}`);
+      showError(`Live telemetry error: ${error.message}`, ERR_LIVE);
     }
   };
   socket.onerror = () => {
@@ -2453,6 +2523,9 @@ async function uploadOta() {
 }
 
 function wireControls() {
+  /* User-sourced errors are deliberately sticky, so there has to be a way to
+   * put one away that is not "perform another action". */
+  on(el.errorBox, "click", () => clearError(ERR_USER));
   on(el.refreshBtn, "click", () => refreshAll().catch((e) => showError(e.message)));
   on(el.syncTimeBtn, "click", () => syncTime().catch((error) => showError(error.message)));
   on(el.saveConfigBtn, "click", () => saveConfig().catch((error) => showError(error.message)));
@@ -2500,4 +2573,4 @@ if (IS_COCKPIT) {
   scheduleGaugeRender();
   drawSparkline();
 }
-refreshAll().finally(connectEvents);
+refreshAll(ERR_LIVE).finally(connectEvents);

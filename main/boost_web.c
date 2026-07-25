@@ -227,7 +227,7 @@ static esp_err_t sensors_scan_get(httpd_req_t *req)
 }
 
 /* Calibration diagnostics live on their own endpoint rather than on /state:
- * /state is rendered at the 20 Hz WebSocket cadence into a smaller buffer, and
+ * /state is rendered at the 62.5 Hz WebSocket cadence into a smaller buffer, and
  * these fields are only ever read by the Settings panel. Keeping them apart is
  * what stops the telemetry payload from growing for a once-a-service reading.
  *
