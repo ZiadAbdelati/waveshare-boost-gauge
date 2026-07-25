@@ -1,7 +1,35 @@
-# Prebuilt firmware v0.3.2 — configurable dial zero
+# Prebuilt firmware v0.5.0 — real MAP conversion and atmosphere calibration
 
-Firmware **`0.3.0-web`**, built with **ESP-IDF 5.5.1** for **ESP32-S3**, 16 MB
-flash. Includes the embedded Wi-Fi dashboard, configurable zero-notch scale, and the DMA-safe AMOLED display path (`main/boost_display.c`). The same files are published on the [latest GitHub release](https://github.com/ZiadAbdelati/waveshare-boost-gauge/releases/latest).
+Firmware **`v0.5.0`**, built with **ESP-IDF 5.5.1** for **ESP32-S3**, 16 MB
+flash. Includes the embedded Wi-Fi dashboard, configurable zero-notch scale, the
+DMA-safe AMOLED display path (`main/boost_display.c`), and the live GM 12223861
+MAP path with BMP280-referenced atmosphere calibration. The same files are
+published on the [latest GitHub release](https://github.com/ZiadAbdelati/waveshare-boost-gauge/releases/latest).
+
+The image reports its own version on `/api/v1/state` (`firmwareVersion`), taken
+from `git describe` at build time rather than a literal — the previous releases
+all shipped reporting a stale hard-coded `0.3.0-web`.
+
+## Verified on hardware for this release
+
+Measured on the board at `192.168.50.102`, running this exact `boost_gauge.bin`
+(SHA-256 `3cb1337b…`, byte-identical to the published asset):
+
+| Gate | Result |
+|---|---|
+| Boot and network after OTA | `firmwareVersion v0.5.0`, control plane back in ~6 s |
+| Physical cadence, 30 s (arc face, demo mode) | **min 57, median 60 FPS** over 104 samples |
+| Sensor bus | `busUp true`, `["0x48","0x76"]`, **0 recoveries** |
+| Atmosphere calibration | offset **+2.43 kPa** over 40 samples; gauge reads **−0.0 PSI** at atmosphere |
+| Calibration durability | survived reboot *and* a firmware update with offset, sample count and supply intact |
+| Sensor soak, 120 s | **0 faults, 0 recoveries**, 0.040 PSI total spread |
+| Display metrics | `teTimeouts 0`, `worstRenderUs` 19,675 |
+
+**Not re-verified this cycle**, and not claimed: serial-log error absence (the
+board runs from 5 V with no serial attached), the media upload/abort/delete
+cycle (no GIF is present on the device and this release does not touch the media
+path), and WebSocket-transport badge behaviour on hardware (verified against the
+host mock in HTTP-fallback mode only).
 
 ## Display path (do not regress)
 
