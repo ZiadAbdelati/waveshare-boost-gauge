@@ -17,27 +17,58 @@ BLE fixes exactly that: the phone talks to the gauge **while keeping its data
 connection**. That is the whole justification. If the app were only ever used in
 the driveway, Wi-Fi would already be the better answer.
 
-## Hard constraint to settle first: internal RAM
+## Internal RAM — MEASURED, no longer a go/no-go
 
-This is the go/no-go, and it is not hypothetical. The regression ledger records
-that moving **24.5 KB** into internal RAM boot-looped this board with a
-`Guru Meditation LoadProhibited` through `wifi_softap_start` — the Wi-Fi driver
-faulted on a failed allocation rather than degrading. Display DMA buffers
-(37,280 B double-buffered) and Wi-Fi both live in the same internal DRAM.
+**Superseded by hardware measurement.** See
+[docs/research/2026-07-26-ble-wifi-coexistence.md](../research/2026-07-26-ble-wifi-coexistence.md).
 
-A BLE host costs roughly:
+An earlier draft of this plan called BLE+Wi-Fi coexistence a "high risk,
+go/no-go" gate. **That framing was wrong.** BLE advertising ran alongside Wi-Fi
+STA + SoftAP + HTTP + three WebSocket clients + the display on a single clean
+boot, and the **display cadence was unaffected** (min 57–58 / median 60, versus
+a min 57–58 / median 60 baseline).
 
-| Stack | Approximate internal RAM |
-|---|---|
-| Bluedroid | ~60–90 KB |
-| **NimBLE** | **~30–40 KB** |
+What the spike actually found:
 
-**NimBLE is the only viable choice**, and even that has to be measured, not
-assumed. Phase 0 exists solely to answer this.
+| Internal free at peak | bytes |
+|---|---:|
+| `main` as shipped | **13,611** (largest block 7,680) |
+| Same, with `LV_ATTRIBUTE_FAST_MEM_USE_IRAM=n` | 114,023 |
+| …plus NimBLE advertising | **77,703** |
 
-If BLE and Wi-Fi cannot coexist within budget, the fallback is a **mode switch**
-— BLE *or* Wi-Fi, selected in settings — which is honestly fine for the car use
-case, since the two are wanted in different places anyway.
+NimBLE costs **36,320 B** at runtime. The thing actually occupying internal DRAM
+is **`CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=y`, at 82,812 bytes** — roughly 2.3×
+NimBLE's entire runtime cost. So the budget question was never "does the radio
+fit", it was "is that LVGL IRAM option worth 82 KB", which is a tuning decision
+with a measurable price.
+
+The ledger's boot-loop row **does** generalise, and the "it was only about the
+GIF decoder" objection does not hold: bringing BLE up *before* Wi-Fi reproduced
+it byte-for-byte — `wifi:alloc eb len=752 type=4 fail`, `LoadProhibited`,
+backtrace through `ieee80211_hostap_attach ← wifi_softap_start`, 8 boot loops in
+32 s. It is the generic signature of internal-DRAM exhaustion. Ordering matters:
+bring the radio up first so a shortfall surfaces as a NimBLE init failure with
+the control plane already reachable, not as an unrecoverable boot loop.
+
+**The real cost of BLE is HTTP latency**, not memory and not cadence:
+`/api/v1/state` p50 goes **25 ms → 88–181 ms** while advertising. WebSocket
+telemetry is unaffected. Slowing advertising to 1 Hz only partly recovers it.
+Whether that is coexistence arbitration or `BT_CTRL_RUN_IN_FLASH_ONLY` (required
+to fit) was not separated.
+
+### Still unvalidated
+
+The spike had **no BLE central available** — the host adapter was in a fault
+state and no phone was reachable. So:
+
+- Nothing off-device ever saw the advertisement. All evidence is ESP-side.
+- **Throughput is entirely unmeasured.** The firmware *requests* a 15–30 ms
+  interval, which would support 33–66 Hz, but no connection was ever made. The
+  20 Hz design target is an assumption, not a measurement.
+- **Cadence with an active connection is untested** — and given the HTTP latency
+  result, this is the most important remaining gap.
+
+Validating these needs nothing more than nRF Connect on a phone.
 
 ## Safety gate before any of this ships
 
