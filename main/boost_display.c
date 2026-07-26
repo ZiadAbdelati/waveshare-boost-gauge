@@ -1,4 +1,5 @@
 #include "boost_display.h"
+#include "boost_theme.h"
 
 #include "bsp/display.h"
 #include "bsp/esp-bsp.h"
@@ -499,6 +500,19 @@ esp_err_t boost_display_set_brightness(int percent)
     return esp_lcd_panel_io_tx_param(s_panel_io, lcd_cmd, &param, 1);
 }
 
+/* Persisted rotation -> adapter enum. Quarter turns only; the adapter maps them
+ * onto the panel scan order, so they cost nothing per frame. Anything else is
+ * treated as 0 rather than guessed at. */
+static esp_lv_adapter_rotation_t rotation_setting(void)
+{
+    switch (boost_theme_rotation()) {
+    case 90:  return ESP_LV_ADAPTER_ROTATE_90;
+    case 180: return ESP_LV_ADAPTER_ROTATE_180;
+    case 270: return ESP_LV_ADAPTER_ROTATE_270;
+    default:  return ESP_LV_ADAPTER_ROTATE_0;
+    }
+}
+
 static lv_display_t *register_display(void)
 {
     ESP_RETURN_ON_FALSE(panel_new() == ESP_OK, NULL, TAG, "panel_new failed");
@@ -508,7 +522,7 @@ static lv_display_t *register_display(void)
         .panel_io = s_panel_io,
         .profile = {
             .interface = ESP_LV_ADAPTER_PANEL_IF_OTHER,
-            .rotation = ESP_LV_ADAPTER_ROTATE_0,
+            .rotation = rotation_setting(),
             .hor_res = BSP_LCD_H_RES,
             .ver_res = BSP_LCD_V_RES,
             .buffer_height = BOOST_LVGL_BUF_LINES,
@@ -532,9 +546,9 @@ static lv_display_t *register_display(void)
     lv_display_add_event_cb(disp, display_metrics_event_cb, LV_EVENT_RENDER_START, NULL);
     lv_display_add_event_cb(disp, display_metrics_event_cb, LV_EVENT_RENDER_READY, NULL);
     lv_display_add_event_cb(disp, display_metrics_event_cb, LV_EVENT_FLUSH_START, NULL);
-    ESP_LOGI(TAG, "LVGL %dx%d partial, %d lines, internal DMA buffers, strip=%u B",
+    ESP_LOGI(TAG, "LVGL %dx%d partial, %d lines, internal DMA buffers, strip=%u B, rotation %u deg",
              BSP_LCD_H_RES, BSP_LCD_V_RES, BOOST_LVGL_BUF_LINES,
-             (unsigned)BOOST_LVGL_STRIP_BYTES);
+             (unsigned)BOOST_LVGL_STRIP_BYTES, (unsigned)boost_theme_rotation());
 
 #if BOOST_LCD_USE_TE
     if (te_init() != ESP_OK) {
@@ -558,7 +572,8 @@ static lv_indev_t *register_touch(lv_display_t *disp)
 {
     bsp_display_cfg_t touch_cfg = {
         .lv_adapter_cfg = ESP_LV_ADAPTER_DEFAULT_CONFIG(),
-        .rotation = ESP_LV_ADAPTER_ROTATE_0,
+        /* Must match the display, or touch lands on the pre-rotation coords. */
+        .rotation = rotation_setting(),
         .tear_avoid_mode = ESP_LV_ADAPTER_TEAR_AVOID_MODE_NONE,
         .touch_flags = {
             .swap_xy = 0,

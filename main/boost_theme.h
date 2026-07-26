@@ -114,6 +114,22 @@ void boost_theme_set_hud_gradient(bool enabled);
 bool boost_theme_te_sync(void);
 void boost_theme_set_te_sync(bool enabled);
 
+/**
+ * Persisted panel rotation in degrees: **0, 90, 180 or 270 only**.
+ *
+ * Not an arbitrary angle. The LVGL adapter maps rotation onto the panel's scan
+ * order, which is why quarter turns are free; any other angle would need a
+ * full-frame affine resample every render, on a CPU-rasterised partial pipeline
+ * with no 2D accelerator. The ledger already records a single full-screen
+ * repaint costing ~45 ms, so an arbitrary angle would not hold 60 FPS.
+ *
+ * The adapter consumes rotation when the display is registered, so a change
+ * takes effect on the next boot. set_rotation() ignores any other value rather
+ * than snapping, so the API can report the rejection.
+ */
+uint16_t boost_theme_rotation(void);
+void boost_theme_set_rotation(uint16_t degrees);
+
 /*
  * Demo mode. OFF (the default) reads the real ADS1115/BMP280 sensors and shows
  * no DEMO indicator; ON runs the synthetic sweep and shows DEMO on every face.

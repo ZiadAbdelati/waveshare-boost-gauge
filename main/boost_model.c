@@ -462,7 +462,12 @@ esp_err_t boost_model_update_config(const boost_config_t *patch, uint32_t fields
     esp_err_t err = save_config_locked();
     const bool schedule_enabled = s_config.dim_schedule.enabled;
     const int high = s_config.brightness_high;
+    const int low = s_config.brightness_low;
     if (err == ESP_OK) {
+        /* Keep the long-press toggle on the same pair the dim schedule uses, so
+         * "hold to dim" lands on the configured brightnessLow rather than a
+         * hard-coded 12%. Cheap and lock-free; no SPI happens here. */
+        boost_brightness_set_levels(high, low);
         if (schedule_enabled) {
             s_last_schedule_minute = -1;
             /* Defer SPI brightness to control task — never block httpd. */

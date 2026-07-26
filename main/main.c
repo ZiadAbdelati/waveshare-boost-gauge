@@ -84,7 +84,10 @@ void app_main(void)
      * store and the display exist. Default is off. */
     boost_display_set_te(boost_theme_te_sync());
 
-    /* Start from persisted config; long-press still toggles max/min. */
+    /* Start from persisted config. Long-press toggles between the configured
+     * high/low pair - the same brightnessLow the dim schedule uses - rather
+     * than the compile-time fallbacks. */
+    boost_brightness_set_levels(cfg.brightness_high, cfg.brightness_low);
     boost_brightness_init(cfg.brightness_high);
 
     boost_sim_init();

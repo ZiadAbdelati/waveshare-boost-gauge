@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <title>Boost Gauge Settings</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="/styles.css?v=20260725d">
+  <link rel="stylesheet" href="/styles.css?v=20260726a">
 </head>
 <body data-page="settings">
   <main class="shell shell-settings" id="shell">
@@ -125,6 +125,19 @@
           redraws don&rsquo;t land mid-scan. Steadier, but it can drop the odd frame &mdash;
           toggle it and see which you prefer.</p>
         <label class="field">
+          <span>Screen rotation</span>
+          <select id="rotation">
+            <option value="0">0&deg; (normal)</option>
+            <option value="90">90&deg; clockwise</option>
+            <option value="180">180&deg; (upside down)</option>
+            <option value="270">270&deg; clockwise</option>
+          </select>
+        </label>
+        <p class="hint-text">Quarter turns only &mdash; these map onto the panel&rsquo;s own
+          scan order and cost nothing per frame. Arbitrary angles would need the whole
+          frame resampled on every redraw, which this display cannot do and hold 60 FPS.
+          <strong>Takes effect after a restart.</strong></p>
+        <label class="field">
           <span>Pixel shift (AMOLED burn-in protection)</span>
           <select id="pixelShiftMode">
             <option value="off">Off</option>
@@ -187,6 +200,6 @@
     </div>
   </main>
 
-  <script src="/app.js?v=20260725d" defer></script>
+  <script src="/app.js?v=20260726a" defer></script>
 </body>
 </html>

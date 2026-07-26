@@ -671,6 +671,7 @@ static esp_err_t themes_get(httpd_req_t *req)
              "\"bigDigitColorText\":%s,\"bigDigitStaticColor\":\"#%06lx\","
              "\"bigDigitTextColor\":\"#%06lx\","
              "\"arcGradient\":%s,\"hudGradient\":%s,\"teSync\":%s,"
+             "\"rotation\":%u,"
              "\"vaultFace\":\"#%06lx\",\"vaultVignette\":%u,"
              "\"demoMode\":%s,"
              "\"pixelShift\":%s,\"pixelShiftSec\":%u,\"themes\":[",
@@ -682,6 +683,7 @@ static esp_err_t themes_get(httpd_req_t *req)
              boost_theme_arc_gradient() ? "true" : "false",
              boost_theme_hud_gradient() ? "true" : "false",
              boost_theme_te_sync() ? "true" : "false",
+             (unsigned)boost_theme_rotation(),
              (unsigned long)boost_theme_vault_face(),
              (unsigned)boost_theme_vault_vignette_pct(),
              boost_theme_demo_mode() ? "true" : "false",
@@ -799,6 +801,20 @@ static esp_err_t themes_config_put(httpd_req_t *req)
         const bool on = cJSON_IsTrue(te);
         boost_theme_set_te_sync(on);
         boost_display_set_te(on);
+    }
+
+    /* Quarter turns only - see boost_theme.h for why an arbitrary angle is not
+     * on offer. Rejected rather than snapped so a typo is visible. The adapter
+     * takes rotation when the display is registered, so this needs a restart;
+     * the response carries restartRequired so the dashboard can say so. */
+    const cJSON *rot = cJSON_GetObjectItemCaseSensitive(root, "rotation");
+    if (cJSON_IsNumber(rot)) {
+        const double deg = rot->valuedouble;
+        if (deg != 0 && deg != 90 && deg != 180 && deg != 270) {
+            cJSON_Delete(root);
+            return send_err(req, HTTPD_400, "invalid_rotation");
+        }
+        boost_theme_set_rotation((uint16_t)deg);
     }
 
     /* Flips both the data source and the on-face DEMO text: the gauge/sample

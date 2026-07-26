@@ -13,6 +13,12 @@
 static const char *TAG = "boost_bright";
 static int s_percent = BOOST_BRIGHTNESS_MAX;
 
+/* Toggle targets. Seeded with the compile-time fallbacks so a long-press before
+ * the config is loaded still does something sane; boost_brightness_set_levels()
+ * replaces them with the user's configured pair. */
+static int s_level_high = BOOST_BRIGHTNESS_MAX;
+static int s_level_low = BOOST_BRIGHTNESS_MIN;
+
 static int clamp_percent(int percent)
 {
     if (percent < 0) {
@@ -56,16 +62,30 @@ int boost_brightness_get(void)
     return s_percent;
 }
 
+void boost_brightness_set_levels(int high, int low)
+{
+    high = clamp_percent(high);
+    low = clamp_percent(low);
+    /* A collapsed pair would make the toggle a no-op and strand the panel at
+     * whichever level it landed on, so keep at least a little separation. */
+    if (low >= high) {
+        low = high > 0 ? high - 1 : 0;
+    }
+    s_level_high = high;
+    s_level_low = low;
+    ESP_LOGI(TAG, "toggle levels %d%% / %d%%", s_level_high, s_level_low);
+}
+
 bool boost_brightness_is_max(void)
 {
-    return s_percent >= (BOOST_BRIGHTNESS_MAX + BOOST_BRIGHTNESS_MIN) / 2;
+    return s_percent >= (s_level_high + s_level_low) / 2;
 }
 
 void boost_brightness_toggle_max_min(void)
 {
     if (boost_brightness_is_max()) {
-        boost_brightness_set(BOOST_BRIGHTNESS_MIN);
+        boost_brightness_set(s_level_low);
     } else {
-        boost_brightness_set(BOOST_BRIGHTNESS_MAX);
+        boost_brightness_set(s_level_high);
     }
 }

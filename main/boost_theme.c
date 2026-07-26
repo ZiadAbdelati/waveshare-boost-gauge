@@ -23,6 +23,7 @@
 #define NVS_KEY_ARCGRAD "arc_gradient"
 #define NVS_KEY_HUDGRAD "hud_gradient"
 #define NVS_KEY_TESYNC  "te_sync"
+#define NVS_KEY_ROT     "rotation"
 #define NVS_KEY_VFACE   "vault_face"
 #define NVS_KEY_VVIG    "vault_vig"
 #define NVS_KEY_DEMO    "demo_mode"
@@ -98,6 +99,9 @@ static uint32_t s_bigdigit_text_color = 0xFFFFFFu;
 static bool s_arc_gradient;
 static bool s_hud_gradient;
 static bool s_te_sync;
+/* Panel rotation in degrees. The LVGL adapter accepts only quarter turns and
+ * takes the value at registration time, so this is applied at boot. */
+static uint16_t s_rotation;
 /* Vault dial glow. 0x1000000 sentinel = "unset" so an absent key keeps the
  * default while a stored value (including a dark one) is honoured. */
 static uint32_t s_vault_face = 0x05281Au;
@@ -164,6 +168,7 @@ static void persist(void)
     nvs_set_u8(h, NVS_KEY_ARCGRAD, s_arc_gradient ? 1 : 0);
     nvs_set_u8(h, NVS_KEY_HUDGRAD, s_hud_gradient ? 1 : 0);
     nvs_set_u8(h, NVS_KEY_TESYNC, s_te_sync ? 1 : 0);
+    nvs_set_u16(h, NVS_KEY_ROT, s_rotation);
     nvs_set_u32(h, NVS_KEY_VFACE, s_vault_face);
     nvs_set_u8(h, NVS_KEY_VVIG, s_vault_vig_pct);
     nvs_set_u8(h, NVS_KEY_DEMO, s_demo_mode ? 1 : 0);
@@ -239,6 +244,11 @@ void boost_theme_init(void)
     uint8_t te = 0;
     if (nvs_get_u8(h, NVS_KEY_TESYNC, &te) == ESP_OK) {
         s_te_sync = (te != 0);
+    }
+
+    uint16_t rot = 0;
+    if (nvs_get_u16(h, NVS_KEY_ROT, &rot) == ESP_OK) {
+        s_rotation = (rot == 90u || rot == 180u || rot == 270u) ? rot : 0u;
     }
 
     uint32_t vf = 0;
@@ -412,6 +422,25 @@ void boost_theme_set_hud_gradient(bool enabled)
 {
     ensure_loaded();
     s_hud_gradient = enabled;
+    persist();
+}
+
+uint16_t boost_theme_rotation(void)
+{
+    return s_rotation;
+}
+
+void boost_theme_set_rotation(uint16_t degrees)
+{
+    ensure_loaded();
+    /* Only quarter turns exist: the panel bridge maps rotation onto the CO5300
+     * scan order, and anything else would need a full-frame affine transform
+     * per render on a CPU-rasterised partial pipeline. Reject rather than
+     * silently snap, so the API can report the bad value. */
+    if (degrees != 0u && degrees != 90u && degrees != 180u && degrees != 270u) {
+        return;
+    }
+    s_rotation = degrees;
     persist();
 }
 

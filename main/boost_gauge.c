@@ -354,6 +354,7 @@ static float s_hud_prev_psi;
 static lv_obj_t *s_hud_map;
 static lv_obj_t *s_hud_pk;
 static lv_obj_t *s_hud_sys;
+static lv_obj_t *s_hud_tag;
 
 /* ---- bigdigit style ------------------------------------------------------ */
 static lv_obj_t *s_big_bg;
@@ -1992,7 +1993,7 @@ static void build_hud(lv_obj_t *scr)
 
     lv_obj_t *unit = lv_label_create(scr);
     lv_label_set_text(unit, "PSI // FORCED INDUCTION");
-    lv_obj_set_style_text_font(unit, F_COND14, 0);
+    lv_obj_set_style_text_font(unit, F_COND18, 0);
     lv_obj_set_style_text_color(unit, c(theme->muted), 0);
     /* Clear of the lower reticle brackets, which end at +52. */
     lv_obj_align(unit, LV_ALIGN_CENTER, 0, 84);
@@ -2012,11 +2013,20 @@ static void build_hud(lv_obj_t *scr)
     lv_obj_set_style_text_color(s_hud_pk, c(theme->vacuum), 0);
     lv_obj_align(s_hud_pk, LV_ALIGN_CENTER, 100, 128);
 
+    /* Sample-source indicator. "SYS LIVE" and "SYS DEMO" are the same length, so
+     * this centred label never changes width and cannot strand pixels. */
     s_hud_sys = lv_label_create(scr);
-    lv_label_set_text(s_hud_sys, "SYS ONLINE");
+    lv_label_set_text(s_hud_sys, "SYS LIVE");
     lv_obj_set_style_text_font(s_hud_sys, F_MONO16, 0);
     lv_obj_set_style_text_color(s_hud_sys, c(theme->muted), 0);
-    lv_obj_align(s_hud_sys, LV_ALIGN_CENTER, 0, 152);
+    lv_obj_align(s_hud_sys, LV_ALIGN_CENTER, -100, 152);
+
+    /* Static counterpart to the web mirror's NC-2077 tag, on the PK column. */
+    s_hud_tag = lv_label_create(scr);
+    lv_label_set_text(s_hud_tag, "NC-2077");
+    lv_obj_set_style_text_font(s_hud_tag, F_MONO16, 0);
+    lv_obj_set_style_text_color(s_hud_tag, c(theme->muted), 0);
+    lv_obj_align(s_hud_tag, LV_ALIGN_CENTER, 100, 152);
 }
 
 static void update_hud(const boost_sample_t *sample, const boost_theme_t *theme)
@@ -2145,8 +2155,9 @@ static void update_hud(const boost_sample_t *sample, const boost_theme_t *theme)
     if (strcmp(lv_label_get_text(s_hud_map), buf) != 0) lv_label_set_text(s_hud_map, buf);
     snprintf(buf, sizeof(buf), "PK %.1f", (double)s_peak_psi);
     if (strcmp(lv_label_get_text(s_hud_pk), buf) != 0) lv_label_set_text(s_hud_pk, buf);
-    /* Real-sensor mode carries no DEMO indicator; the sweep shows it as before. */
-    const char *sys = sample->demo ? "SYS DEMO" : "";
+    /* This one is a positive status indicator, not a demo watermark: LIVE means
+     * the reading came from the MAP sensor, DEMO means the synthetic sweep. */
+    const char *sys = sample->demo ? "SYS DEMO" : "SYS LIVE";
     if (strcmp(lv_label_get_text(s_hud_sys), sys) != 0) lv_label_set_text(s_hud_sys, sys);
 }
 
@@ -2493,7 +2504,7 @@ static void destroy_scene(void)
     s_hud_fill_psi = 0.0f;
     for (int k = 0; k < HUD_SLOT_COUNT; ++k) s_hud_slot[k] = NULL;
     s_hud_sign_x = HUD_SIGN_ONES_X;
-    s_hud_map = s_hud_pk = s_hud_sys = NULL;
+    s_hud_map = s_hud_pk = s_hud_sys = s_hud_tag = NULL;
 
     s_big_bg = s_big_minus = s_big_tens = s_big_ones = NULL;
     s_big_dot = s_big_tenths = s_big_unit = s_big_zone = s_big_peak = NULL;

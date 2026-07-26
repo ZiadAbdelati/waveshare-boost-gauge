@@ -91,6 +91,7 @@ const state = {
   pixelShift: true,
   pixelShiftSec: 90,
   demoMode: false,
+  rotation: 0,
   /* Whole GET /sensors/calibration body, folded back in from every response so
    * the settings render never reads a half-updated mirror. Null until the first
    * poll lands. */
@@ -130,6 +131,7 @@ const el = {
   themeList: document.getElementById("themeList"),
   pixelShiftMode: document.getElementById("pixelShiftMode"),
   teSync: document.getElementById("teSync"),
+  rotation: document.getElementById("rotation"),
   demoMode: document.getElementById("demoMode"),
   loadLogsBtn: document.getElementById("loadLogsBtn"),
   clearLogsBtn: document.getElementById("clearLogsBtn"),
@@ -857,7 +859,7 @@ function drawHudGauge(sample, psi, g) {
   ctx.fillStyle = over ? R : Y;
   drawFixedDecimal(intStr, fracPart, numDecimalX, 2);
   ctx.fillStyle = p.muted;
-  ctx.font = `600 13px Consolas, monospace`;
+  ctx.font = `600 16px Consolas, monospace`;
   ctx.fillText("PSI // FORCED INDUCTION", 0, 74);
 
   /* corner telemetry — measured atmosphere and real peak hold.
@@ -874,7 +876,7 @@ function drawHudGauge(sample, psi, g) {
   ctx.fillStyle = p.muted;
   ctx.textAlign = "left";
   ctx.font = `600 12px Consolas, monospace`;
-  ctx.fillText(sample.demo ? "SYS DEMO" : "SYS ONLINE", -138, 150);
+  ctx.fillText(sample.demo ? "SYS DEMO" : "SYS LIVE", -138, 150);
   ctx.textAlign = "right";
   ctx.fillText("NC-2077", 138, 150);
   ctx.restore();
@@ -1381,6 +1383,7 @@ function queueThemeConfig(body, okMsg) {
       state.arcGradient = !!payload.arcGradient;
       state.hudGradient = !!payload.hudGradient;
       state.teSync = !!payload.teSync;
+      state.rotation = Number(payload.rotation) || 0;
       state.vaultFace = payload.vaultFace || state.vaultFace;
       if (payload.vaultVignette !== undefined) state.vaultVignette = payload.vaultVignette;
       const active = state.themes.find((t) => t.id === state.activeThemeId);
@@ -1628,6 +1631,7 @@ function syncDisplayToggles() {
     el.pixelShiftMode.value = state.pixelShift ? String(seconds) : "off";
   }
   if (el.teSync) el.teSync.checked = !!state.teSync;
+  if (el.rotation) el.rotation.value = String(state.rotation ?? 0);
   if (el.demoMode) el.demoMode.checked = !!state.demoMode;
 }
 
@@ -1642,6 +1646,7 @@ function wireDisplayToggles() {
       state.pixelShift = !!payload.pixelShift;
       state.pixelShiftSec = Number(payload.pixelShiftSec) || state.pixelShiftSec;
       state.teSync = !!payload.teSync;
+      state.rotation = Number(payload.rotation) || 0;
       state.demoMode = !!payload.demoMode;
       state.bigDigitStaticBg = !!payload.bigDigitStaticBg;
       state.bigDigitColorText = !!payload.bigDigitColorText;
@@ -1658,6 +1663,15 @@ function wireDisplayToggles() {
     el.teSync.addEventListener("change", () =>
       send({ teSync: el.teSync.checked },
            el.teSync.checked ? "Tear sync on" : "Tear sync off"),
+    );
+  }
+  if (el.rotation) {
+    /* The LVGL adapter takes rotation when the display is registered, so the
+     * panel keeps its current orientation until the device restarts. Say so
+     * rather than letting it look like the setting did not stick. */
+    el.rotation.addEventListener("change", () =>
+      send({ rotation: Number(el.rotation.value) },
+           `Rotation ${el.rotation.value} deg - restart to apply`),
     );
   }
   if (el.demoMode) {
@@ -2132,6 +2146,7 @@ async function refreshAll(source = ERR_USER) {
     state.arcGradient = !!themes.arcGradient;
     state.hudGradient = !!themes.hudGradient;
     state.teSync = !!themes.teSync;
+    state.rotation = Number(themes.rotation) || 0;
     state.demoMode = !!themes.demoMode;
     state.vaultFace = themes.vaultFace || "#05281a";
     state.vaultVignette = themes.vaultVignette ?? 60;

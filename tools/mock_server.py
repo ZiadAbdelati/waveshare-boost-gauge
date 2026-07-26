@@ -36,7 +36,6 @@ THEMES = [
             "overboost": "#FF4F6D",
             "zero": "#FFFFFF",
         },
-        "brightnessDefaults": {"high": 92, "low": 18},
     },
     {
         "id": "vault-tec",
@@ -52,7 +51,6 @@ THEMES = [
             "overboost": "#EAFC50",
             "zero": "#38F08A",
         },
-        "brightnessDefaults": {"high": 85, "low": 12},
     },
     {
         "id": "night-city",
@@ -68,7 +66,6 @@ THEMES = [
             "overboost": "#FF003C",
             "zero": "#00E5FF",
         },
-        "brightnessDefaults": {"high": 90, "low": 14},
     },
     {
         "id": "big-digit",
@@ -84,7 +81,6 @@ THEMES = [
             "overboost": "#FF4F6D",
             "zero": "#FFFFFF",
         },
-        "brightnessDefaults": {"high": 90, "low": 16},
     },
 ]
 
@@ -412,6 +408,7 @@ def themes_payload() -> dict:
         "arcGradient": bool(CONFIG.get("arcGradient", False)),
         "hudGradient": bool(CONFIG.get("hudGradient", False)),
         "teSync": bool(CONFIG.get("teSync", False)),
+        "rotation": int(CONFIG.get("rotation", 0)),
         "demoMode": bool(CONFIG.get("demoMode", False)),
         "vaultFace": str(CONFIG.get("vaultFace", "#05281a")),
         "vaultVignette": int(CONFIG.get("vaultVignette", 60)),
@@ -606,6 +603,12 @@ class Handler(BaseHTTPRequestHandler):
                 CONFIG["hudGradient"] = bool(payload["hudGradient"])
             if "teSync" in payload:
                 CONFIG["teSync"] = bool(payload["teSync"])
+            if "rotation" in payload:
+                # Quarter turns only, matching boost_theme_set_rotation().
+                if payload["rotation"] not in (0, 90, 180, 270):
+                    self.send_json({"error": "invalid_rotation"}, HTTPStatus.BAD_REQUEST)
+                    return
+                CONFIG["rotation"] = int(payload["rotation"])
             if "demoMode" in payload:
                 CONFIG["demoMode"] = bool(payload["demoMode"])
             if "vaultFace" in payload:
