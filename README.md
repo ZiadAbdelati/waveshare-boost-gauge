@@ -337,8 +337,14 @@ deletion the physical gauge resumed and PSI changed.
 ### Animation performance contract
 
 GIF playback is an exclusive LVGL path. A 466×466 RGB565 frame is about
-**434 KB**; the active 60 MHz CO5300 QSPI trial has a transfer-only floor of
-about 14.5 ms (69.1 FPS), before GIF decoding and LVGL rendering.
+**434 KB**; at the active **80 MHz** CO5300 QSPI clock (`BOOST_LCD_PCLK_HZ`,
+4 data lines → 40 MB/s) that is a transfer-only floor of about **10.9 ms
+(≈92 FPS)**, before GIF decoding and LVGL rendering.
+
+(An earlier revision of this paragraph cited a "60 MHz trial" — that trial never
+existed; see the ledger row "Documented a setting that was never in effect". The
+14.5 ms / 69.1 FPS figure it quoted was the arithmetic for 60 MHz, which was
+never the active clock.)
 
 The uploaded 466×466 fixture (`IMG_5325-ezgif.com-optimize (2).gif`) is
 1,379,129 bytes, 101 frames, 3.37 seconds, and nominally 30 FPS. On the board
