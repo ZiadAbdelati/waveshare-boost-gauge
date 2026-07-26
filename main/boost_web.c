@@ -996,29 +996,6 @@ static esp_err_t debug_snapshot_get(httpd_req_t *req)
 }
 #endif
 
-/* SPIKE-ONLY (branch spike/lvgl-iram-benefit): internal-RAM headroom probe.
- * The regression ledger's lesson from the 24.5 kB GIF-decoder boot loop is that
- * internal DRAM must be measured at *peak* Wi-Fi usage, not at allocation time.
- * This endpoint makes that measurable from the LAN while the display, SoftAP,
- * STA and the WebSocket pool are all live. Do not merge to main. */
-static esp_err_t debug_heap_get(httpd_req_t *req)
-{
-    char json[384];
-    snprintf(json, sizeof(json),
-             "{\"internalFree\":%u,\"internalLargestBlock\":%u,"
-             "\"internalMinEverFree\":%u,\"dmaFree\":%u,"
-             "\"dmaLargestBlock\":%u,\"spiramFree\":%u,"
-             "\"uptimeMs\":%llu}",
-             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
-             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
-             (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
-             (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
-             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA),
-             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
-             (unsigned long long)(esp_timer_get_time() / 1000));
-    return send_json(req, json);
-}
-
 static esp_err_t logs_get(httpd_req_t *req)
 {
     size_t limit = 300;
@@ -1628,8 +1605,6 @@ esp_err_t boost_web_start(void)
 #if LV_USE_SNAPSHOT
     register_uri(API_BASE "/debug/snapshot", HTTP_GET, debug_snapshot_get);
 #endif
-    /* SPIKE-ONLY: see debug_heap_get(). Do not merge to main. */
-    register_uri(API_BASE "/debug/heap", HTTP_GET, debug_heap_get);
     register_uri("/*", HTTP_GET, root_get);
     register_uri("/*", HTTP_OPTIONS, options_handler);
     ESP_LOGI(TAG, "HTTP API ready");
