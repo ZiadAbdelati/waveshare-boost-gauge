@@ -52,6 +52,18 @@ CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=2
 # hardware: frames-over-budget per second did not improve (3 -> 4, i.e. noise).
 # Left at the default. The judder is renders occasionally exceeding the 16 ms
 # refresh period, not scheduler starvation - see AGENTS.md.
+#
+# LV_ATTRIBUTE_FAST_MEM_USE_IRAM parks LVGL's hot rendering functions in IRAM at
+# a cost of 82,812 bytes of DIRAM (idf.py size DIRAM remaining 67,869 -> 150,681).
+# It was set in the very first commit with no rationale and went unpriced for the
+# project's whole history. Measured on hardware 2026-07-26, all four faces, demo
+# mode, 3 WebSocket clients, three 30 s runs per face per build, each from a
+# fresh boot: no metric moves outside its run-to-run spread. renderFps,
+# worstRenderUs and pixelsPerSecond are flat on every face, including the
+# big-digit full-screen recolour where it should have helped most. Turning it off
+# releases 82,888 bytes of internal free at peak (13,723 -> 96,611) and takes the
+# largest free block from 7,680 to 63,488. Do not turn this back on without
+# before/after per-face evidence - see docs/research/2026-07-26-lvgl-iram-benefit.md.
 CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=n
 CONFIG_LV_FONT_MONTSERRAT_12=y
 CONFIG_LV_FONT_MONTSERRAT_14=y
