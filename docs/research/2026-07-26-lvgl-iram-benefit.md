@@ -552,3 +552,22 @@ to 67,869, generated `sdkconfig` back to
   gone from the flashed image
 
 The board is running stock `main` and is free for other work.
+
+## Board state at end of this work (2026-07-27, post-merge)
+
+`spike/lvgl-iram-benefit` fast-forward merged into `main` (`39c1adf`) and
+pushed to `origin/main`. Rebuilt from `main` at `39c1adf` and reflashed over
+COM3. Verified:
+
+- `GET /api/v1/state` responds — `firmwareVersion: v0.5.0-15-g39c1adf`,
+  `demo:false`, `activeThemeId: night-city`
+- `sensors.fault:true` is expected: both the ADS1115 and BMP280 are physically
+  absent from this bench unit, unrelated to this change
+- `GET /api/v1/media/status` — `present:false` (the synthetic test GIF used
+  for verification was deleted from both builds during testing)
+- generated `sdkconfig` confirmed `# CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM is
+  not set`, i.e. the merged option is active on the flashed image, not just in
+  `sdkconfig.defaults`
+
+The board is running stock `main` with the IRAM option merged and off, theme
+`night-city`, demo off, and is free for other work.
