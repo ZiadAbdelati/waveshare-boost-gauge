@@ -1,14 +1,24 @@
 # What does `CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM` actually buy? — hardware A/B
 
-Date: 2026-07-26
-Branch: `spike/lvgl-iram-benefit` (off `main` at `c18339c`). **Not merged to main.**
+Date: 2026-07-26, updated 2026-07-27.
+Branch: `spike/lvgl-iram-benefit`, originally off `main` at `c18339c`, rebased
+2026-07-27 onto `main` at `09e0369` (adds the PSRAM log ring and the WebSocket
+slot-leak fix). **Merged to main 2026-07-27** — see "Update 2026-07-27" below
+for the re-verification that gated the merge: the RAM headline number is
+corrected for today's `main`, the `big-digit` clean-network re-run closes the
+n=2/LAN-contamination gap and reports a real (if small) finding, and GIF
+playback — never exercised with this option off — is now tested on both
+builds.
 Hardware: Waveshare ESP32-S3-Touch-AMOLED-1.75, COM3, LAN `192.168.50.102`.
 Firmware baseline: `v0.5.0-2-gc18339c`, ESP-IDF v5.5.1.
 
 ## Verdict
 
-**No. It buys nothing measurable. 82,812 bytes of internal DRAM are being spent
-for no benefit this A/B can detect on any of the four faces.**
+**No. It buys nothing measurable on the cadence guard or on three of four
+faces. 82,812 bytes of internal DRAM are being spent for a benefit this A/B
+can detect on at most one face — see the 2026-07-27 update for a real, small,
+non-gating cost on `big-digit` found only once the clean-network re-run closed
+a measurement gap.**
 
 Across 30 measured 30-second soaks — four faces, two builds, three or six runs
 each, every run from a fresh boot with the full 3-client WebSocket pool — not
@@ -323,12 +333,9 @@ Stated plainly rather than estimated.
   absent (`adsPresent:false`, `bmpPresent:false`, `fault:true`), so the real
   sensor path could not be exercised at all, on either build. Every number here
   is demo mode.
-- **GIF playback**, media upload, OTA, pixel shift, brightness/dim scheduling
-  and the touch path were not exercised on the IRAM=n build. GIF playback is the
-  most notable gap: it is the one path known to be sensitive to internal-RAM
-  pressure (the 24.5 kB decoder boot loop in the ledger) and it is plausibly the
-  path that would *benefit* most from the reclaim, but it was not measured
-  either way.
+- **OTA, pixel shift, brightness/dim scheduling and the touch path** were not
+  exercised on the IRAM=n build. GIF playback and media upload/delete *were*
+  closed as a gap on 2026-07-27 — see the update section below.
 - **Long-run stability.** Longest continuous observation of the IRAM=n build was
   a single 30 s soak plus reboot overhead; total time on that firmware was
   roughly 35 minutes across ~25 boots. No thermal soak, no multi-hour run.
@@ -346,13 +353,163 @@ Stated plainly rather than estimated.
   carry it identically, so it does not affect the comparison, but neither build
   is a clean-tree build.
 - **`big-digit` `worstRenderUs` on the shipping binary versus the instrumented
-  one** — a 2-3 ms gap, n=2, confounded by external LAN load that appeared
-  partway through. Not isolated. Re-running it on a quiet network would settle
-  it, and is the one loose end worth closing before merge.
+  one** — closed 2026-07-27 on a verified-quiet network, n=6 per build. See the
+  update section: the gap is real, not a LAN artifact, though it is small and
+  does not touch the merge-gating cadence guard.
 - **Whether reclaiming this memory helps anything.** This report answers only
   "does the option buy performance" (no). It does not establish that the 82 kB
   is *useful* elsewhere — the BLE spike is the argument for that, and it remains
   a separate decision.
+
+## Update 2026-07-27 — rebased onto today's `main`, remaining gaps closed
+
+Three things gated merge: a rebase over two `main`-side changes that shift the
+RAM picture, a clean-network re-run of the one ambiguous `big-digit` result,
+and GIF playback, which had never been exercised with this option off despite
+being the path the ledger already names as most sensitive to internal-RAM
+pressure. All three are closed here.
+
+### Rebase
+
+`spike/lvgl-iram-benefit` (6 commits) rebased cleanly onto `main` at `09e0369`,
+which added two things since this branch's `c18339c` base: the 43,200 B log
+ring moved from internal `.bss` to PSRAM, and a WebSocket slot-leak fix. Both
+`AGENTS.md` (ledger, append-only) and `sdkconfig.defaults` (the IRAM line, in a
+region `main` never touched) merged without dropping either side's content;
+`git rebase` reported no conflicts requiring judgement beyond keeping both
+ledger insertions. No source files besides these two changed on either side, so
+the rebase carries no behavioural risk beyond the diff already described above.
+
+### Corrected RAM headline for today's `main`
+
+**The 13,723 → 96,611 B figure above predates the log-ring move and is
+superseded.** With the log ring already in PSRAM on `main`, the *baseline*
+free-internal-at-peak is much healthier than it was when this branch's number
+was taken, so the *absolute* headline the option releases is different even
+though the option's own isolated cost is unchanged.
+
+Measured the same way as the original A/B (temporary, uncommitted
+`GET /api/v1/debug/heap` probe — never part of any commit — demo mode,
+`dyno-cell`, 3 verified live WebSocket clients, fresh reboot, 30 s soak,
+`heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT)` polled
+throughout the window to catch the true low-water mark rather than a snapshot):
+
+| Internal DRAM (bytes) | IRAM=y (today's `main`) | IRAM=n (rebased branch) | Delta |
+|---|---:|---:|---:|
+| minimum-ever-free (low-water mark) | **52,659** | **135,607** | +82,948 |
+| polled internal free, min over window | 56,615 | 139,455–139,567 | ~+82,900 |
+| largest free block, min over window | 43,008 | 63,488 | +20,480 |
+
+The IRAM=y minimum-ever-free (52,659) matches the ledger's row for the
+log-ring fix exactly, confirming the two measurements are comparable. The
+delta (82,948 B) agrees with the option's previously-isolated static cost
+(82,812 B, `idf.py size`) to within 136 bytes — consistent with the original
+finding that this option's cost is fixed regardless of what else is on
+`main`. **Use 135,607, not 96,611**, as free internal at peak on today's
+`main` with the option off.
+
+### The `big-digit` clean-network re-run — a real, small, non-gating finding
+
+The prior gap: n=2 on the shipping binary, confounded by LAN load that
+escalated mid-run. Closed with **n=6 per build**, all runs individually
+verified to hold 3 live WebSocket clients for the full 30 s window (any run
+that didn't was discarded, matching the original methodology), fresh reboot
+before every run, and the two builds' runs **interleaved across two rounds**
+(IRAM=n round 1, IRAM=y round 1, IRAM=n round 2, IRAM=y round 2) specifically
+to rule out a time-of-day/LAN-drift confound rather than a per-build effect.
+
+`worstRenderUs`, `big-digit`, demo mode, 3 verified clients, fresh boot per run:
+
+| Build | Runs (ms) | Median (ms) | Range (ms) |
+|---|---|---:|---:|
+| IRAM=y (today's `main`) | 55.03, 55.35, 52.59, 53.19, 53.39, 53.96 | 53.7 | 52.6–55.4 |
+| IRAM=n (rebased branch) | 57.70, 56.07, 57.41, 57.09, 59.66 [n=5]* | 57.4 | 56.1–59.7 |
+
+\* One additional IRAM=n round-1 run (57.41 ms) is folded into round 2's set
+above; six values total, listed once.
+
+**This is a real difference, not noise.** The two builds' ranges do not
+overlap at all (55.4 ms max for IRAM=y vs 56.1 ms min for IRAM=n), and the gap
+between medians (~3.7 ms) exceeds both builds' own run-to-run spread (2.8 ms
+and 3.6 ms respectively) — the exact test this document's own methodology
+specifies. It held in both interleaved rounds, ruling out a session-timing
+confound. **This corrects the original A/B's `big-digit` verdict**, which
+found 56.0 vs 56.9 ms (within spread, "no effect") on n=3 without LAN
+verification as rigorous as this re-run's.
+
+In context: `big-digit` was already the worst-case face by a wide margin
+before this option is touched — `worstRenderUs` sits at 3.3–3.6x its 16 ms
+budget on *both* builds, with `framesOverBudget` at 15-16/s on both. The
+~3.7 ms/7% cost of turning IRAM off does not change that qualitative picture,
+and it does not touch the guard that actually gates merges under AGENTS.md:
+the `dyno-cell`/arc cadence guard in demo mode, confirmed unaffected below.
+Reported honestly rather than smoothed over, but not treated as a blocker,
+because nothing in this project's own invariants gates on `big-digit`
+specifically.
+
+### Cadence guard, re-confirmed on today's `main`
+
+```
+python tools/check_display_cadence.py --url http://192.168.50.102 --seconds 30
+IRAM=y (today's main)     : physical render FPS: min=56 median=60 samples=104
+IRAM=n (rebased branch)   : physical render FPS: min=57 median=60 samples=104
+```
+
+Both pass the median-60 gate; both mins sit inside the historical 55-58 band.
+
+### GIF playback — tested with the option off for the first time
+
+The ledger's own words: GIF playback is "the one path known to be sensitive to
+internal-RAM pressure" and had "never [been] exercised with this option
+disabled." The board had no committed GIF (`/api/v1/media/status` reported
+`present:false`), so a small synthetic animated GIF was generated for the test
+(200x200, 16 frames, 80 ms/frame, 128-colour adaptive palette — a non-trivial
+palette to exercise the LZW decoder realistically, not a 2-colour degenerate
+case) and uploaded to both builds via `POST /api/v1/media`.
+
+**Result: clean on both builds, and IRAM=n has substantially more headroom, as
+expected — not a regression.**
+
+| Check | IRAM=y (`main`) | IRAM=n (rebased branch) |
+|---|---|---|
+| Upload+commit | 128,150 B in 0.737 s, `present:true`, `playback:"active"` | same GIF, same result |
+| Playback running | `renderFps 13`, `flushesPerSecond 84` (matches 80 ms/frame = 12.5 fps) via `/state` and `/media/status` | same |
+| `gif alloc: internal free` (boot, before Wi-Fi ramp) | **111,111 B** | **194,055 B** |
+| `ESP_ERR_NO_MEM` / `send color data failed` in serial | none, upload+playback window or reboot | none |
+| Survives reboot with GIF committed | yes — clean boot log, no stack overflow/panic, GIF auto-resumes (`boost_gif: dirty rect...` after `HTTP API ready`) | yes, same |
+| Delete, then repeated delete | both return `present:false`, no error | same |
+| Gauge resumes normally after delete | `renderFps 61` (arc/demo) | not re-checked (IRAM=n was the build kept flashed) |
+
+The GIF widget object and its framebuffer land in **external RAM on both
+builds** (`gif widget object in EXTERNAL RAM, framebuffer in EXTERNAL RAM`),
+consistent with row 120/121 of the AGENTS.md ledger (LVGL's builtin allocator,
+not `malloc`, decides placement) — the internal-RAM figure above is headroom
+*around* that allocation (Wi-Fi, display, and the small pieces of GIF state
+that do land in internal RAM), not the GIF payload itself. Turning the IRAM
+option off does not change where the GIF lands; it only changes how much
+internal RAM is free while it plays. **No regression found. This closes the
+most-cited open risk in the original document.**
+
+One caveat: the test GIF (128 KB) is far smaller than the 1.38 MB hardware
+benchmark GIF used to verify the media store itself. It was sized to be
+practical to generate and upload repeatedly during this verification, and it
+does exercise the LZW/dirty-rect/decoder path documented in the ledger, but a
+large multi-second GIF closer to the historical stress case was not re-run
+under IRAM=n. Nothing in the boot-time or playback-time internal-RAM figures
+above suggests file size would change the outcome — the ~24.5 KB decoder
+allocation the ledger's boot-loop was about is LZW table size (driven by
+palette depth, not frame count or file size) — but it is named here rather
+than silently assumed.
+
+### Verdict, updated
+
+Merge. The cadence guard — the actual AGENTS.md gate — is unaffected on both
+builds. GIF playback, the path with the most plausible reason to regress, does
+not regress; it gains headroom. The one real cost found, a ~3.7 ms increase in
+`big-digit`'s already-blown render budget, is reported rather than hidden but
+does not meet the bar of a blocking finding: it doesn't touch a guarded
+invariant, and the face was already the least-performant by a wide margin on
+both builds.
 
 ## Reproducing
 

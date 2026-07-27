@@ -54,16 +54,22 @@ CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=2
 # refresh period, not scheduler starvation - see AGENTS.md.
 #
 # LV_ATTRIBUTE_FAST_MEM_USE_IRAM parks LVGL's hot rendering functions in IRAM at
-# a cost of 82,812 bytes of DIRAM (idf.py size DIRAM remaining 67,869 -> 150,681).
+# a cost of 82,812 bytes of DIRAM (idf.py size DIRAM remaining 67,869 -> 150,681,
+# measured pre-rebase; the option's isolated cost is unchanged post-rebase).
 # It was set in the very first commit with no rationale and went unpriced for the
 # project's whole history. Measured on hardware 2026-07-26, all four faces, demo
 # mode, 3 WebSocket clients, three 30 s runs per face per build, each from a
-# fresh boot: no metric moves outside its run-to-run spread. renderFps,
-# worstRenderUs and pixelsPerSecond are flat on every face, including the
-# big-digit full-screen recolour where it should have helped most. Turning it off
-# releases 82,888 bytes of internal free at peak (13,723 -> 96,611) and takes the
-# largest free block from 7,680 to 63,488. Do not turn this back on without
-# before/after per-face evidence - see docs/research/2026-07-26-lvgl-iram-benefit.md.
+# fresh boot: renderFps and pixelsPerSecond flat on every face. Re-verified
+# 2026-07-27 on today's main (post PSRAM-log-ring-move): a clean-network re-run
+# (n=6/build, interleaved) found a real, non-overlapping ~3.7 ms/7% worstRenderUs
+# cost on big-digit specifically - reported, not a blocker, since it does not
+# touch the dyno-cell/arc cadence guard. Turning it off releases 82,948 bytes of
+# internal free at peak on today's main (minimum-ever-free 52,659 -> 135,607) and
+# takes the largest free block from 43,008 to 63,488. GIF playback - the path
+# most sensitive to internal-RAM pressure - was verified clean on both builds
+# 2026-07-27, with substantially more headroom with this option off. Do not turn
+# this back on without before/after evidence - see
+# docs/research/2026-07-26-lvgl-iram-benefit.md.
 CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=n
 CONFIG_LV_FONT_MONTSERRAT_12=y
 CONFIG_LV_FONT_MONTSERRAT_14=y
