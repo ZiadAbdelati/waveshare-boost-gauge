@@ -106,6 +106,14 @@ internal-RAM figures (same approach as the prior spike). The three extra
 endpoint, so those three contribute cadence data only — they are excluded from
 the RAM table (12 of 15 IRAM=y runs carry heap data; 15 of 15 for IRAM=n).
 
+### The shipping binary was re-verified separately
+
+The A/B above compares two *instrumented* builds. The binary this branch
+actually ships has the heap probe reverted, so it is not the binary that was
+measured. It was therefore rebuilt, reflashed and re-run on all four faces —
+see "Verification of the shipping binary" below. Measuring one binary and
+shipping another is the failure mode this whole document exists to unpick.
+
 ### The WebSocket slot leak, and why back-to-back runs are not comparable
 
 **Found while building the harness; it is a genuine bug on `main` and it
@@ -147,6 +155,15 @@ runs are verified and retried rather than trusted.
 
 This bug has been filed as separate work; it is **not** fixed on this branch,
 because fixing it mid-A/B would have changed the firmware under measurement.
+
+**The general lesson is the reusable part.** A measurement harness that does not
+verify its own preconditions will silently report a different experiment than
+the one intended — here, "3 clients" that was often 2. The same failure class
+was found independently the same day in `sim/`: its screenshot path used
+`lv_snapshot_take()`, which re-renders the whole widget tree, so a screenshot
+could never show a partial-refresh trail and every past "no trails" claim from
+one was unfalsifiable. Assert the precondition in the harness, and record what
+was asserted next to the number.
 
 ## Per-face results
 
@@ -233,6 +250,13 @@ partial-update faces. Instruction fetch is not the bottleneck for a flat fill,
 and the ESP32-S3 caches the flash-resident rasteriser well enough that moving it
 to IRAM does not show up.
 
+**No SIMD alternative exists here, and none is implied.** The bundled LVGL tree
+offers only `NONE`, `NEON` and `HELIUM` blend backends — both accelerated ones
+are ARM — plus an empty `ASM_CUSTOM` hook. There is no Xtensa/ESP32-S3 assembly
+backend to switch on, so "turn the IRAM option off and enable SIMD instead" is
+not an available trade. The verdict rests on the measurements above, not on a
+substitute being available.
+
 ## WebSocket throughput hypothesis — refuted
 
 The spike's 133.1 (main) vs 200.1 (reclaimed) frames/s suggested memory pressure
@@ -252,6 +276,44 @@ reclaimed memory to buy, because `main` was already saturating the contract.
 The prior 133.1 figure is consistent with two live clients (125) rather than
 three, i.e. the slot leak described above, not memory pressure. **The
 telemetry-throughput argument for reclaiming the 82 kB should be withdrawn.**
+
+## Verification of the shipping binary
+
+Rebuilt from the branch tip with the probe reverted (`a58cb48`, reported as
+`v0.5.0-6-ga58cb48`), reflashed over COM3, `idf.py size` DIRAM remaining
+150,681 — identical to the measured IRAM=n build. Generated `sdkconfig` confirmed
+to contain `# CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM is not set`, per the ledger's
+rule that a line in `sdkconfig.defaults` is not evidence the symbol took effect.
+
+Official guard, demo mode on `dyno-cell`:
+
+```
+python tools/check_display_cadence.py --url http://192.168.50.102 --seconds 30
+physical render FPS: min=56 median=60 samples=104
+```
+
+**Median 60 — passes.** (`min` 56 sits inside the band observed on both
+instrumented builds, 55-57.)
+
+Per-face, one verified 3-client run each unless noted:
+
+| Face | renderFps median | worstRenderUs median | pixelsPerSecond median | framesOverBudget |
+|---|---:|---:|---:|---:|
+| `dyno-cell` | 60 | 21.9 ms | 501 k | 3 |
+| `vault-tec` | 56 | 25.5 ms | 394 k | 7 |
+| `night-city` | 38 | 32.4 ms | 293 k | 16 |
+| `big-digit` (n=2) | 27 | 59.2 ms [58.0-60.4] | 1295-1322 k | 16 |
+
+Three of the four faces land inside the instrumented IRAM=n bands. **`big-digit`
+`worstRenderUs` reads 2-3 ms higher** (59.2 ms vs 56.9 ms instrumented, vs
+56.0 ms on IRAM=y). This is reported rather than smoothed over, but it is **not
+isolated**, and it is unlikely to be caused by the probe revert, which only
+removes code. During these runs the external dashboard on the LAN escalated from
+holding one pool slot to holding two, and one attempt returned degraded
+per-client rates (32.9/51.5/51.5 f/s) plus a WebSocket protocol error — i.e.
+measurable extra load that was absent during the A/B. Only two clean 3/3 runs
+were obtainable before that contamination, so n=2. **Treat the A/B pair as the
+controlled comparison and this table as a smoke test of the shipping binary.**
 
 ## What I could NOT test
 
@@ -283,6 +345,10 @@ Stated plainly rather than estimated.
   holds uncommitted `README.md` changes in the shared worktree. Both builds
   carry it identically, so it does not affect the comparison, but neither build
   is a clean-tree build.
+- **`big-digit` `worstRenderUs` on the shipping binary versus the instrumented
+  one** — a 2-3 ms gap, n=2, confounded by external LAN load that appeared
+  partway through. Not isolated. Re-running it on a quiet network would settle
+  it, and is the one loose end worth closing before merge.
 - **Whether reclaiming this memory helps anything.** This report answers only
   "does the option buy performance" (no). It does not establish that the 82 kB
   is *useful* elsewhere — the BLE spike is the argument for that, and it remains
@@ -306,14 +372,15 @@ WebSocket clients to `/api/v1/state/ws` and verify all three receive frames,
 then poll `/api/v1/state` at 4 Hz for 30 s. Discard and re-run if fewer than 3
 clients stay live.
 
-Guard, on the IRAM=n build, demo mode on `dyno-cell` per AGENTS.md:
+Guard, demo mode on `dyno-cell` per AGENTS.md. Run on both IRAM=n binaries:
 
 ```
 python tools/check_display_cadence.py --url http://192.168.50.102 --seconds 30
-physical render FPS: min=57 median=60 samples=104
+instrumented IRAM=n build : physical render FPS: min=57 median=60 samples=104
+shipping binary (a58cb48) : physical render FPS: min=56 median=60 samples=104
 ```
 
-Reference is min 57 / median 60. **Passes.**
+Reference is min 57 / median 60. **Both pass** on the median, which is the gate.
 
 ## Board state at end of this work
 
