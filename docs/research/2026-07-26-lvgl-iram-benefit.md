@@ -384,5 +384,14 @@ Reference is min 57 / median 60. **Both pass** on the median, which is the gate.
 
 ## Board state at end of this work
 
-Reflashed to `main` (`c18339c`) over COM3 and verified: `/api/v1/state`
-responds, theme `night-city`, demo mode `false`.
+Rebuilt from `main` at `f0a08bc` and reflashed over COM3 (DIRAM remaining back
+to 67,869, generated `sdkconfig` back to
+`CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=y`). Verified:
+
+- `GET /api/v1/state` responds — `firmwareVersion: v0.5.0-3-gf0a08bc` (clean
+  tree, no `-dirty`)
+- theme `night-city`, demo mode `false`, zone `ATMO`
+- `GET /api/v1/debug/heap` returns **404**, confirming the temporary probe is
+  gone from the flashed image
+
+The board is running stock `main` and is free for other work.
