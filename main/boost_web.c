@@ -75,14 +75,22 @@ static httpd_handle_t s_httpd;
 /* Fallback cadence used only when no sample notification arrives (sample task
  * stalled, or not started yet). Keeps clients fed rather than going silent. */
 #define STATE_WS_FRAME_MS 50
+/* `gen` is bumped every time a slot is released. It is what lets a slot be
+ * reused while an async send for the previous occupant is still queued in the
+ * httpd task: the stale completion no longer matches the slot, so it frees its
+ * own ctx/payload and touches nothing. Matching on `fd` alone cannot do this -
+ * the release sets `fd = -1`, so the completion never matches, and `inflight`
+ * stays set forever. That is the slot leak. */
 typedef struct {
     int fd;
     bool inflight;
     void *payload;
+    uint32_t gen;
 } state_ws_client_t;
 typedef struct {
     int slot;
     int fd;
+    uint32_t gen;
     void *payload;
 } state_ws_send_ctx_t;
 static state_ws_client_t s_state_ws_clients[STATE_WS_MAX_CLIENTS] = {
@@ -343,6 +351,21 @@ static esp_err_t sensors_supply_put(httpd_req_t *req)
     return sensors_calibration_send(req);
 }
 
+/* Return a slot to the pool. A frame may still be queued in the httpd task at
+ * this point; `ctx` and `ctx->payload` are owned by state_ws_send_done() and
+ * MUST NOT be freed here. Once httpd_ws_send_data_async() has returned ESP_OK
+ * the completion always runs exactly once (httpd_ws_send_cb calls it whether
+ * the send succeeded or the socket was already gone), so dropping our pointer
+ * to the ctx leaks nothing. Bumping `gen` is what makes that late completion
+ * harmless and the slot immediately reusable. */
+static void state_ws_release_locked(int slot)
+{
+    s_state_ws_clients[slot].fd = -1;
+    s_state_ws_clients[slot].payload = NULL;
+    s_state_ws_clients[slot].inflight = false;
+    s_state_ws_clients[slot].gen++;
+}
+
 static void state_ws_send_done(esp_err_t err, int socket, void *arg)
 {
     state_ws_send_ctx_t *ctx = (state_ws_send_ctx_t *)arg;
@@ -350,10 +373,14 @@ static void state_ws_send_done(esp_err_t err, int socket, void *arg)
     portENTER_CRITICAL(&s_web_lock);
     if (ctx->slot >= 0 && ctx->slot < STATE_WS_MAX_CLIENTS) {
         state_ws_client_t *client = &s_state_ws_clients[ctx->slot];
-        if (client->fd == ctx->fd && client->payload == ctx) {
+        /* gen first: it rejects a completion for a previous occupant even when
+         * the kernel has handed the same fd back out. payload == ctx is kept
+         * so a stale completion inside the same generation still cannot clear
+         * the accounting for a different frame. */
+        if (client->gen == ctx->gen && client->fd == ctx->fd && client->payload == ctx) {
             client->payload = NULL;
             client->inflight = false;
-            if (err != ESP_OK) client->fd = -1;
+            if (err != ESP_OK) state_ws_release_locked(ctx->slot);
         }
     }
     portEXIT_CRITICAL(&s_web_lock);
@@ -370,6 +397,7 @@ static void state_ws_push(void *arg)
     for (int slot = 0; slot < STATE_WS_MAX_CLIENTS; ++slot) {
         portENTER_CRITICAL(&s_web_lock);
         const int fd = s_state_ws_clients[slot].fd;
+        const uint32_t gen = s_state_ws_clients[slot].gen;
         const bool allowed = s_httpd != NULL && fd >= 0 && !s_state_ws_clients[slot].inflight;
         if (allowed) s_state_ws_clients[slot].inflight = true;
         portEXIT_CRITICAL(&s_web_lock);
@@ -379,17 +407,19 @@ static void state_ws_push(void *arg)
         if (ctx == NULL || json == NULL) {
             free(ctx); free(json);
             portENTER_CRITICAL(&s_web_lock);
-            if (s_state_ws_clients[slot].fd == fd && s_state_ws_clients[slot].payload == NULL)
+            if (s_state_ws_clients[slot].gen == gen && s_state_ws_clients[slot].fd == fd &&
+                s_state_ws_clients[slot].payload == NULL)
                 s_state_ws_clients[slot].inflight = false;
             portEXIT_CRITICAL(&s_web_lock);
             continue;
         }
         memcpy(json, current, (size_t)n + 1U);
-        ctx->slot = slot; ctx->fd = fd; ctx->payload = json;
+        ctx->slot = slot; ctx->fd = fd; ctx->gen = gen; ctx->payload = json;
         httpd_ws_frame_t frame = { .final = true, .type = HTTPD_WS_TYPE_TEXT,
                                    .payload = (uint8_t *)json, .len = (size_t)n };
         portENTER_CRITICAL(&s_web_lock);
-        if (s_state_ws_clients[slot].fd != fd || !s_state_ws_clients[slot].inflight) {
+        if (s_state_ws_clients[slot].gen != gen || s_state_ws_clients[slot].fd != fd ||
+            !s_state_ws_clients[slot].inflight) {
             portEXIT_CRITICAL(&s_web_lock); free(json); free(ctx); continue;
         }
         s_state_ws_clients[slot].payload = ctx;
@@ -397,11 +427,12 @@ static void state_ws_push(void *arg)
         portEXIT_CRITICAL(&s_web_lock);
         const esp_err_t err = httpd_ws_send_data_async(httpd, fd, &frame, state_ws_send_done, ctx);
         if (err != ESP_OK) {
+            /* The work was never queued, so no completion will run: this path
+             * owns the buffers. */
             portENTER_CRITICAL(&s_web_lock);
-            if (s_state_ws_clients[slot].fd == fd && s_state_ws_clients[slot].payload == ctx) {
-                s_state_ws_clients[slot].payload = NULL;
-                s_state_ws_clients[slot].inflight = false;
-                s_state_ws_clients[slot].fd = -1;
+            if (s_state_ws_clients[slot].gen == gen && s_state_ws_clients[slot].fd == fd &&
+                s_state_ws_clients[slot].payload == ctx) {
+                state_ws_release_locked(slot);
             }
             portEXIT_CRITICAL(&s_web_lock);
             free(json); free(ctx);
@@ -496,7 +527,7 @@ static esp_err_t state_ws_get(httpd_req_t *req)
     if (frame.type == HTTPD_WS_TYPE_CLOSE || err != ESP_OK) {
         portENTER_CRITICAL(&s_web_lock);
         const int slot = state_ws_find_slot_locked(fd);
-        if (slot >= 0) s_state_ws_clients[slot].fd = -1;
+        if (slot >= 0) state_ws_release_locked(slot);
         portEXIT_CRITICAL(&s_web_lock);
     }
     return err;
