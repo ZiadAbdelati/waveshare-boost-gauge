@@ -222,6 +222,13 @@ Background history logging is a separate **12.5 Hz** producer: the 1,800-sample
 RAM ring retains **2 minutes 24 seconds** regardless of whether the dashboard is
 receiving 62.5 Hz WebSocket telemetry or 4 Hz HTTP fallback.
 
+The ring is **43,200 bytes and lives in PSRAM**, allocated once in
+`boost_model_init()` with `MALLOC_CAP_SPIRAM`. It is written at 12.5 Hz and read
+only for export - no DMA, no ISR, not latency-critical - so it has no business in
+internal DRAM, which is shared with Wi-Fi and display DMA. A failed allocation
+leaves the pointer NULL and disables logging rather than failing boot; every
+access stays under the existing `s_lock`.
+
 ### Fourth-client behavior
 
 The firmware owns a fixed pool of **3 WebSocket clients**. A fourth handshake is

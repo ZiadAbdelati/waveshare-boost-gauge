@@ -7,6 +7,7 @@
 #include <time.h>
 
 #include "esp_app_desc.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -31,7 +32,13 @@ static const char *TAG = "boost_model";
 static SemaphoreHandle_t s_lock;
 static boost_config_t s_config;
 static boost_state_t s_state;
-static boost_log_sample_t s_logs[BOOST_LOG_CAPACITY];
+/* The 1,800-entry ring is 43,200 bytes. As static .bss that is internal DRAM,
+ * more than the firmware has free at peak Wi-Fi usage (see the ledger row on
+ * the 24.5 kB GIF decoder that boot-looped the radio). It is written at 12.5 Hz
+ * and read only for CSV export - no DMA, no ISR, not latency-critical - so it
+ * lives in PSRAM. NULL means the allocation failed and logging is disabled;
+ * every access is guarded rather than the device refusing to boot. */
+static boost_log_sample_t *s_logs;
 static size_t s_log_head;
 static size_t s_log_count;
 static uint32_t s_log_divider;
@@ -281,6 +288,14 @@ esp_err_t boost_model_init(void)
         return ESP_ERR_NO_MEM;
     }
 
+    s_logs = heap_caps_calloc(BOOST_LOG_CAPACITY, sizeof(*s_logs), MALLOC_CAP_SPIRAM);
+    if (s_logs == NULL) {
+        /* Degrade to no logging. Boot must not depend on PSRAM being present:
+         * /logs and the CSV export return zero rows, everything else runs. */
+        ESP_LOGW(TAG, "log ring (%u bytes) not allocated in PSRAM; logging disabled",
+                 (unsigned)(BOOST_LOG_CAPACITY * sizeof(*s_logs)));
+    }
+
     xSemaphoreTake(s_lock, portMAX_DELAY);
     load_config();
     memset(&s_state, 0, sizeof(s_state));
@@ -323,7 +338,7 @@ void boost_model_publish_sample(const boost_sample_t *sample)
     s_state.timezone_offset_minutes = s_config.timezone_offset_minutes;
     strlcpy(s_state.active_theme_id, s_config.active_theme_id, sizeof(s_state.active_theme_id));
 
-    if (++s_log_divider >= 5) {
+    if (s_logs != NULL && ++s_log_divider >= 5) {
         s_log_divider = 0;
         boost_log_sample_t *dst = &s_logs[s_log_head];
         dst->t_ms = (uint32_t)s_state.uptime_ms;
@@ -610,6 +625,10 @@ size_t boost_model_copy_logs(boost_log_sample_t *out, size_t max_count)
         return 0;
     }
     xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (s_logs == NULL) {
+        xSemaphoreGive(s_lock);
+        return 0;
+    }
     size_t n = s_log_count < max_count ? s_log_count : max_count;
     size_t start = (s_log_head + BOOST_LOG_CAPACITY - n) % BOOST_LOG_CAPACITY;
     for (size_t i = 0; i < n; ++i) {
