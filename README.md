@@ -233,6 +233,14 @@ successful `/api/v1/state` fallback sample shows **Live · HTTP 4 Hz**;
 A retry attempt must not downgrade healthy fallback, and a restored socket shows
 **Live · WebSocket 60 Hz**.
 
+Slots are returned to the pool through a single `state_ws_release_locked()`,
+which clears `fd`/`payload`/`inflight` together and bumps a per-slot generation
+counter. The generation is what makes a slot safe to reuse while an async frame
+for the previous occupant is still queued in the httpd task: the late completion
+no longer matches the slot, so it frees only its own buffers. Never release a
+slot by clearing `fd` alone - the completion callback can then never match, and
+`inflight` stays set, which permanently removes that slot from the pool.
+
 ### Layered GIF pipeline (decoder ownership)
 
 This is a hybrid pipeline, **not a project-written GIF decompressor**:
