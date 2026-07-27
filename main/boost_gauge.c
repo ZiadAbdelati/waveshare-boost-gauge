@@ -267,19 +267,21 @@ static uint32_t s_px_settled_ms;
 static float s_px_ref_psi;
 
 /* ---- arc style ----------------------------------------------------------- */
-static lv_obj_t *s_arc_track;
+/* Static furniture (unfilled track ring, zero notch, scale numerals, "PSI"
+ * unit mark) is rasterised once into a PSRAM canvas at scene build, the same
+ * win vault/hud got. Only the filled wedge, the readout, peak and zone label
+ * stay live above it. */
+static lv_obj_t *s_arc_bg;
+static uint8_t *s_arc_bg_buf;
 static lv_obj_t *s_arc_value_canvas;
-static lv_obj_t *s_zero_notch;
 static lv_obj_t *s_value_sign_label;
 static lv_obj_t *s_value_tens_label;
 static lv_obj_t *s_value_ones_label;
 static lv_obj_t *s_value_decimal_label;
 static lv_obj_t *s_value_tenths_label;
-static lv_obj_t *s_unit_label;
 static lv_obj_t *s_peak_label;
 static lv_obj_t *s_mode_label;
 static lv_obj_t *s_zone_label;
-static lv_obj_t *s_tick_labels[5];
 
 /* ---- vault style --------------------------------------------------------- */
 /* Fixed readout slots (montserrat_40: digit advance ~23 px, '.' ~11, '-' ~15)
@@ -761,70 +763,126 @@ static void set_value_arc(float psi)
     }
 }
 
-static void place_tick_label(int idx, float psi, const char *text)
+/* Paint the whole static arc face — unfilled track, zero notch, scale
+ * numerals and the "PSI" unit mark — into an off-screen canvas ONCE. Redraws
+ * then become a blit instead of re-rasterising a 270 degree, 45 px-wide ring
+ * (by far the largest draw on this face) inside every wedge-invalidated dirty
+ * region. Mirrors paint_vault_background()/build_hud()'s canvas fill; only
+ * the moving wedge, readout, peak and zone label stay live above it.
+ *
+ * The unfilled-track arc below reproduces byte-for-byte the lv_draw_arc call
+ * the live s_arc_track lv_arc widget used to issue for LV_PART_MAIN (radius
+ * from its get_center(), which is ARC_DIAMETER/2 with zero padding here).
+ * LV_PART_INDICATOR was always LV_OPA_0 and drew nothing, so it is not
+ * reproduced. Zero notch and numeral placement match refresh_zero_notch()/
+ * place_tick_label() exactly, just measured and drawn into the layer instead
+ * of positioned as live objects. */
+static void paint_arc_background(lv_obj_t *canvas, const boost_theme_t *theme)
 {
-    const boost_theme_t *theme = active_theme();
-    const float deg = psi_to_angle(psi);
-    const float rad = deg * (float)M_PI / 180.0f;
-    /* Plain centre, no burn-in offset: lv_obj_set_pos() below is relative to
-     * the parent, and the parent is the container that carries the offset. */
     const float cx = DISP_SIZE * 0.5f;
     const float cy = DISP_SIZE * 0.5f;
 
-    lv_obj_t *lab = s_tick_labels[idx];
-    if (lab == NULL) {
-        /* s_root, not the screen: a tick label parented straight to the screen
-         * would be the one piece of the arc face that ignores the shift. */
-        lab = lv_label_create(s_root);
-        s_tick_labels[idx] = lab;
-        lv_obj_set_style_text_font(lab, TICK_FONT, 0);
-        lv_obj_clear_flag(lab, LV_OBJ_FLAG_CLICKABLE);
+    lv_layer_t layer;
+    lv_canvas_init_layer(canvas, &layer);
+
+    lv_draw_rect_dsc_t bg;
+    lv_draw_rect_dsc_init(&bg);
+    bg.bg_color = c(theme->face);
+    bg.bg_opa = LV_OPA_COVER;
+    lv_area_t full = { 0, 0, DISP_SIZE - 1, DISP_SIZE - 1 };
+    lv_draw_rect(&layer, &bg, &full);
+
+    lv_draw_arc_dsc_t arc;
+    lv_draw_arc_dsc_init(&arc);
+    arc.color = c(theme->track);
+    arc.width = ARC_WIDTH;
+    arc.start_angle = ARC_START;
+    arc.end_angle = ARC_END;
+    arc.center.x = (int32_t)lroundf(cx);
+    arc.center.y = (int32_t)lroundf(cy);
+    arc.radius = ARC_DIAMETER / 2;
+    arc.opa = LV_OPA_60;
+    arc.rounded = true;
+    lv_draw_arc(&layer, &arc);
+
+    {
+        const float deg = psi_to_angle(0.0f);
+        const float rad = deg * (float)M_PI / 180.0f;
+        const float r_outer = (float)ARC_DIAMETER * 0.5f - 1.0f;
+        const float r_inner = r_outer - (float)ARC_WIDTH + 1.0f;
+        lv_draw_line_dsc_t ln;
+        lv_draw_line_dsc_init(&ln);
+        ln.color = c(theme->zero);
+        ln.width = ZERO_LINE_W;
+        ln.opa = LV_OPA_COVER;
+        ln.round_start = true;
+        ln.round_end = true;
+        ln.p1.x = cx + r_inner * cosf(rad);
+        ln.p1.y = cy + r_inner * sinf(rad);
+        ln.p2.x = cx + r_outer * cosf(rad);
+        ln.p2.y = cy + r_outer * sinf(rad);
+        lv_draw_line(&layer, &ln);
     }
-    lv_label_set_text(lab, text);
-    lv_obj_set_style_text_color(lab, c(theme->muted), 0);
-    lv_obj_update_layout(lab);
 
-    const lv_coord_t w = lv_obj_get_width(lab);
-    const lv_coord_t h = lv_obj_get_height(lab);
-    float r = TICK_RADIUS;
-    if (fabsf(psi) < 0.01f) r = TICK_RADIUS - 18.0f;
-    const float x = cx + r * cosf(rad) - w * 0.5f;
-    const float y = cy + r * sinf(rad) - h * 0.5f;
-    lv_obj_set_pos(lab, (lv_coord_t)lroundf(x), (lv_coord_t)lroundf(y));
-}
-
-static void refresh_zero_notch(void)
-{
-    if (s_zero_notch == NULL) return;
-    static lv_point_precise_t zero_pts[2];
-    const float deg = psi_to_angle(0.0f);
-    const float rad = deg * (float)M_PI / 180.0f;
-    /* Line points are relative to the object, which sits at the parent origin,
-     * so this is parent space and must not carry the burn-in offset. */
-    const float cx = DISP_SIZE * 0.5f;
-    const float cy = DISP_SIZE * 0.5f;
-    const float r_outer = (float)ARC_DIAMETER * 0.5f - 1.0f;
-    const float r_inner = r_outer - (float)ARC_WIDTH + 1.0f;
-    zero_pts[0].x = cx + r_inner * cosf(rad);
-    zero_pts[0].y = cy + r_inner * sinf(rad);
-    zero_pts[1].x = cx + r_outer * cosf(rad);
-    zero_pts[1].y = cy + r_outer * sinf(rad);
-    lv_line_set_points(s_zero_notch, zero_pts, 2);
-}
-
-static void refresh_tick_labels(void)
-{
     compute_tick_psis();
     for (int i = 0; i < 5; ++i) {
-        if (!isfinite(s_tick_psi[i])) {
-            if (s_tick_labels[i] != NULL) lv_obj_add_flag(s_tick_labels[i], LV_OBJ_FLAG_HIDDEN);
-            continue;
-        }
+        if (!isfinite(s_tick_psi[i])) continue;
         char text[12];
         format_tick_text(text, sizeof(text), s_tick_psi[i]);
-        place_tick_label(i, s_tick_psi[i], text);
-        lv_obj_remove_flag(s_tick_labels[i], LV_OBJ_FLAG_HIDDEN);
+
+        const float deg = psi_to_angle(s_tick_psi[i]);
+        const float rad = deg * (float)M_PI / 180.0f;
+        float r = TICK_RADIUS;
+        if (fabsf(s_tick_psi[i]) < 0.01f) r = TICK_RADIUS - 18.0f;
+
+        lv_point_t size;
+        lv_text_get_size(&size, text, TICK_FONT, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+        const float x = cx + r * cosf(rad) - (float)size.x * 0.5f;
+        const float y = cy + r * sinf(rad) - (float)size.y * 0.5f;
+
+        lv_draw_label_dsc_t d;
+        lv_draw_label_dsc_init(&d);
+        d.font = TICK_FONT;
+        d.text = text;
+        /* `text` is a loop-local stack buffer, and lv_canvas_finish_layer()
+         * only dispatches (rasterises) queued tasks after every iteration has
+         * returned, so the draw task must own a copy rather than a pointer
+         * into a since-reused stack slot. */
+        d.text_local = 1;
+        d.color = c(theme->muted);
+        d.align = LV_TEXT_ALIGN_LEFT;
+        lv_area_t a = {
+            (int32_t)lroundf(x), (int32_t)lroundf(y),
+            (int32_t)lroundf(x) + size.x - 1, (int32_t)lroundf(y) + size.y - 1,
+        };
+        lv_draw_label(&layer, &d, &a);
     }
+
+    /* "PSI" unit mark: text never changes, so it bakes in with everything
+     * else. The live label used lv_obj_align(LV_ALIGN_CENTER, 0, 26) against
+     * a DISP_SIZE-sized parent centred at (cx, cy); reproduce that placement
+     * from measured text size. */
+    {
+        static const char *const unit_text = "PSI";
+        lv_point_t size;
+        lv_text_get_size(&size, unit_text, &lv_font_montserrat_16, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+        const float x = cx - (float)size.x * 0.5f;
+        const float y = cy + 26.0f - (float)size.y * 0.5f;
+
+        lv_draw_label_dsc_t d;
+        lv_draw_label_dsc_init(&d);
+        d.font = &lv_font_montserrat_16;
+        d.text = unit_text;
+        d.color = c(theme->muted);
+        d.align = LV_TEXT_ALIGN_LEFT;
+        lv_area_t a = {
+            (int32_t)lroundf(x), (int32_t)lroundf(y),
+            (int32_t)lroundf(x) + size.x - 1, (int32_t)lroundf(y) + size.y - 1,
+        };
+        lv_draw_label(&layer, &d, &a);
+    }
+
+    lv_canvas_finish_layer(canvas, &layer);
 }
 
 static lv_obj_t *add_value_slot(lv_obj_t *scr, const char *text, int x)
@@ -845,23 +903,22 @@ static void build_arc(lv_obj_t *scr)
 {
     const boost_theme_t *theme = active_theme();
 
-    s_arc_track = lv_arc_create(scr);
-    lv_obj_set_size(s_arc_track, ARC_DIAMETER, ARC_DIAMETER);
-    lv_obj_center(s_arc_track);
-    lv_arc_set_rotation(s_arc_track, 0);
-    lv_arc_set_bg_angles(s_arc_track, ARC_START, ARC_END);
-    lv_arc_set_angles(s_arc_track, ARC_START, ARC_START);
-    lv_arc_set_range(s_arc_track, 0, 1000);
-    lv_arc_set_value(s_arc_track, 0);
-    lv_obj_remove_style(s_arc_track, NULL, LV_PART_KNOB);
-    lv_obj_set_style_arc_width(s_arc_track, ARC_WIDTH, LV_PART_MAIN);
-    lv_obj_set_style_arc_width(s_arc_track, ARC_WIDTH, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_color(s_arc_track, c(theme->track), LV_PART_MAIN);
-    lv_obj_set_style_arc_color(s_arc_track, c(theme->track), LV_PART_INDICATOR);
-    lv_obj_set_style_arc_opa(s_arc_track, LV_OPA_60, LV_PART_MAIN);
-    lv_obj_set_style_arc_opa(s_arc_track, LV_OPA_0, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_rounded(s_arc_track, true, LV_PART_MAIN);
-    lv_obj_clear_flag(s_arc_track, LV_OBJ_FLAG_CLICKABLE);
+    /* Static face (unfilled track, zero notch, scale numerals, "PSI" mark) is
+     * rasterised once into PSRAM and blitted thereafter — the same win
+     * vault/hud got. A failed allocation degrades the same way vault's does:
+     * warn and skip the cached art rather than adding a second fallback
+     * convention. */
+    const uint32_t bg_bytes = LV_CANVAS_BUF_SIZE(DISP_SIZE, DISP_SIZE, 16, LV_DRAW_BUF_STRIDE_ALIGN);
+    s_arc_bg_buf = BG_ALLOC(bg_bytes);
+    if (s_arc_bg_buf != NULL) {
+        s_arc_bg = lv_canvas_create(scr);
+        lv_canvas_set_buffer(s_arc_bg, s_arc_bg_buf, DISP_SIZE, DISP_SIZE, LV_COLOR_FORMAT_RGB565);
+        lv_obj_center(s_arc_bg);
+        lv_obj_clear_flag(s_arc_bg, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+        paint_arc_background(s_arc_bg, theme);
+    } else {
+        ESP_LOGW(TAG, "arc background cache alloc failed (%u B)", (unsigned)bg_bytes);
+    }
 
     s_arc_value_canvas = lv_obj_create(scr);
     lv_obj_remove_style_all(s_arc_value_canvas);
@@ -869,16 +926,6 @@ static void build_arc(lv_obj_t *scr)
     lv_obj_center(s_arc_value_canvas);
     lv_obj_clear_flag(s_arc_value_canvas, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(s_arc_value_canvas, draw_value_arc, LV_EVENT_DRAW_MAIN, &s_display_psi);
-
-    s_zero_notch = lv_line_create(scr);
-    refresh_zero_notch();
-    lv_obj_set_style_line_width(s_zero_notch, ZERO_LINE_W, 0);
-    lv_obj_set_style_line_color(s_zero_notch, c(theme->zero), 0);
-    lv_obj_set_style_line_rounded(s_zero_notch, true, 0);
-    lv_obj_set_style_line_opa(s_zero_notch, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(s_zero_notch, LV_OBJ_FLAG_CLICKABLE);
-
-    refresh_tick_labels();
 
     s_zone_label = lv_label_create(scr);
     lv_label_set_text(s_zone_label, "ATMO");
@@ -892,13 +939,6 @@ static void build_arc(lv_obj_t *scr)
     s_value_ones_label = add_value_slot(scr, "0", VALUE_ONES_X);
     s_value_decimal_label = add_value_slot(scr, ".", VALUE_DECIMAL_X);
     s_value_tenths_label = add_value_slot(scr, "0", VALUE_TENTHS_X);
-
-    s_unit_label = lv_label_create(scr);
-    lv_label_set_text(s_unit_label, "PSI");
-    lv_obj_set_style_text_font(s_unit_label, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(s_unit_label, c(theme->muted), 0);
-    lv_obj_align(s_unit_label, LV_ALIGN_CENTER, 0, 26);
-    lv_obj_clear_flag(s_unit_label, LV_OBJ_FLAG_CLICKABLE);
 
     s_peak_label = lv_label_create(scr);
     lv_label_set_text(s_peak_label, "PEAK  0.0");
@@ -2472,13 +2512,16 @@ static void destroy_scene(void)
 
     s_well = NULL;
     s_root = NULL;
-    s_arc_track = NULL;
     s_arc_value_canvas = NULL;
-    s_zero_notch = NULL;
     s_value_sign_label = s_value_tens_label = s_value_ones_label = NULL;
     s_value_decimal_label = s_value_tenths_label = NULL;
-    s_unit_label = s_peak_label = s_mode_label = s_zone_label = NULL;
-    for (size_t k = 0; k < sizeof(s_tick_labels) / sizeof(s_tick_labels[0]); ++k) s_tick_labels[k] = NULL;
+    s_peak_label = s_mode_label = s_zone_label = NULL;
+
+    if (s_arc_bg_buf != NULL) {
+        BG_FREE(s_arc_bg_buf);
+        s_arc_bg_buf = NULL;
+    }
+    s_arc_bg = NULL;
 
     if (s_vault_bg_buf != NULL) {
         BG_FREE(s_vault_bg_buf);
@@ -2599,15 +2642,12 @@ void boost_gauge_apply_config(void)
 {
     if (!s_ui_ready) return;
     load_range_from_config();
-    if (s_built_style == BOOST_STYLE_ARC) {
-        refresh_zero_notch();
-        refresh_tick_labels();
-        if (s_arc_value_canvas) lv_obj_invalidate(s_arc_value_canvas);
-    } else {
-        /* Ranges move ticks/numerals on the stylised faces: rebuild. */
-        destroy_scene();
-        build_scene(s_built_style);
-    }
+    /* Range and zero-angle move every style's static art — ticks, notch,
+     * numerals — including the arc face's cached PSRAM background now that it
+     * has one. Rebuild rather than patch cached pixels in place; this is the
+     * same path vault/hud/bigdigit already take here. */
+    destroy_scene();
+    build_scene(s_built_style);
     lv_obj_invalidate(lv_screen_active());
 }
 
