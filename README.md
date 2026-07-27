@@ -621,15 +621,34 @@ roughly a quarter second. Anything that recolours the whole panel (the
 is also why translucent full-circle overlays were removed: five vignette rings
 re-blended ~107k px on every needle frame and dropped Vault from 60 to 37 FPS.
 
-**Cached static faces.** Vault-Tec and Night City each paint their entire static
-face **once** into a 434 KB PSRAM `lv_canvas` at scene build (`paint_vault_
-background`, `paint_hud_face(..., cached=true)`); every later redraw is a blit
-rather than re-rasterising vectors. This is the single biggest lever available,
-because the bottleneck is CPU rasterisation, not the panel link. Measured: Vault
+**Cached static faces.** Vault-Tec, Night City and now Dyno Cell each paint
+their entire static face **once** into a 434 KB PSRAM `lv_canvas` at scene
+build (`paint_vault_background`, `paint_hud_face(..., cached=true)`,
+`paint_arc_background`); every later redraw is a blit rather than
+re-rasterising vectors. This is the single biggest lever available, because
+the bottleneck is CPU rasterisation, not the panel link. Measured: Vault
 median 37 -> 61 FPS, min 4 -> 54, while *adding* the vignette and scanlines;
 Night City 32 -> 37. Elements that move (needle, fill arc, peak tell-tale,
 digits) stay as separate objects on top; only genuinely static art belongs in
 the cache. Free the buffer in `destroy_scene()`.
+
+Dyno Cell's cache covers the unfilled track ring, the zero notch, the five
+scale numerals and the static "PSI" mark — the value wedge
+(`s_arc_value_canvas`/`draw_value_arc`), the readout digits, peak and zone
+label stay live above it, and their invalidation is byte-for-byte unchanged
+(this is the face the 60 FPS guard was established against). Because range
+and zero-angle move the numerals and notch, `boost_gauge_apply_config()` no
+longer special-cases arc with an incremental `refresh_zero_notch()`/
+`refresh_tick_labels()` patch — those live objects no longer exist — and
+instead takes the same `destroy_scene()`/`build_scene()` rebuild path
+vault/hud/bigdigit already used for a config change, which is what makes the
+cache repaint rather than silently keep stale numerals. Measured hardware,
+demo mode, 3 fresh boots each, 30 s polling windows of `/api/v1/state`:
+`worstRenderUs` max 58.4-63.7k us / mean ~24-25k us before, 43.8-51.3k us /
+~22.7-23.1k us after; cadence guard min 56-57 -> 58-59, median 60 both. Host
+audit (`--theme dyno-cell --seconds 25`) is unchanged before/after (flushed
+px/cycle mean 10519 max 36488, 0 severe mismatches), confirming the geometry
+and wedge invalidation were not touched.
 
 Corollary: effects that would be prohibitive per-frame (vignettes, texture) are
 essentially free once baked. Prefer baking over per-frame drawing.
@@ -704,8 +723,10 @@ instead was the first cut of this metric and it was useless, because an idle
 screen produces long gaps and no stall at all.
 
 Measured medians / worst cycle at 80 MHz: `arc` 63 / 42 ms, `vault` 60 / 18 ms,
-`hud` 43 / 37 ms, `bigdigit` 31 / 39 ms. `arc` is now the worst-stalling face and is the
-next candidate for a cached ground.
+`hud` 43 / 37 ms, `bigdigit` 31 / 39 ms (pre-cache figures). `arc`'s static
+furniture (unfilled track, zero notch, scale numerals) is now cached the same
+way vault/hud's is — see "Cached static faces" above for the measured
+before/after `worstRenderUs`.
 
 ### Fonts
 
