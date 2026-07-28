@@ -117,8 +117,8 @@
  *
  * Used by the per-flush path (te_wait_for_vblank, region-dbuf OFF) where the
  * write always starts at the panel's top row, so "close enough to vblank" is
- * the only condition available. region-dbuf ON uses te_wait_for_region()
- * below instead, which knows the burst's actual top row and so is not
+ * the only condition available. region-dbuf ON uses te_wait_for_region_spans()
+ * below instead, which knows each span's actual row range and so is not
  * limited to this fixed window - this constant remains its fallback for the
  * first ~2 s after boot, before the panel's period has been measured.
  */
@@ -126,7 +126,7 @@
 
 /*
  * Rows of slack subtracted from the estimated scan position before
- * te_wait_for_region() decides a skip is safe: covers ISR-to-LVGL-task wake
+ * te_wait_for_region_spans() decides a skip is safe: covers ISR-to-LVGL-task wake
  * latency and the row-time estimate's own quantisation, both of which bias
  * the raw arithmetic toward optimism. Conservative default, not tuned
  * against hardware - tightening it needs an A/B against teSkips/teTimeouts
@@ -190,11 +190,11 @@ static bool s_te_period_logged;
 static bool s_te_gate_armed;               /* LVGL task only */
 static uint32_t s_te_waits;
 static uint32_t s_te_timeouts;
-static uint32_t s_te_skips;   /* te_wait_for_region() proved a wait unnecessary */
+static uint32_t s_te_skips;   /* te_wait_for_region_spans() proved a wait unnecessary */
 static uint8_t s_te_miss_streak;
 /* Panel row time in ns, derived from the measured TE period once
  * te_log_period_once() has enough samples; 0 until then. Nanoseconds (not
- * microseconds) so te_wait_for_region()'s scan-position estimate keeps a
+ * microseconds) so te_wait_for_region_spans()'s scan-position estimate keeps a
  * useful amount of precision without floating point. */
 static uint32_t s_te_row_time_ns;
 
@@ -306,114 +306,6 @@ static void te_wait_for_vblank(void)
 }
 
 /*
- * Fix 2. Called on the LVGL task, once per render cycle, from
- * region_dbuf_writeback() right before its burst - `top_row`/`bottom_row`
- * bound the rows the burst is about to write (min y0 / max y1 across the
- * sorted spans).
- *
- * te_wait_for_vblank() above always assumes the write starts at row 0, so
- * "safe to go now" can only mean "very close to the vblank edge"
- * (BOOST_LCD_TE_FRESH_US, a fixed 2 ms window). That assumption is wrong
- * here on two counts: region-dbuf's burst does not start at row 0, it starts
- * at top_row (frequently >100 for a needle/label update well down the
- * panel); and by the time this runs, ~13.6 ms of rasterisation has usually
- * already elapsed since RENDER_START, so the 2 ms window is stale on almost
- * every cycle - measured worst case, that forces a wait for the NEXT edge,
- * costing up to a full extra ~16.75 ms period on top of the raster time =
- * the observed 32 ms tail.
- *
- * The actual requirement is simpler than "start at vblank": with the write
- * now measured FASTER than the panel's scan (see the retraction block
- * comment above - 31.3 us/row write including memcpy vs 35.95 us/row scan),
- * there are TWO provably tear-free windows to start in, not one:
- *
- *   (a) EARLY: the scan has not yet reached top_row this pass. Proof sketch:
- *       let f(R) = time-for-write-to-reach-row-R - time-for-scan-to-reach-
- *       row-R for R in [top_row, bottom_row]. f is monotonically DEcreasing
- *       in R because the write is faster per row than the scan. If
- *       f(top_row) <= 0 - the scan has not yet passed top_row - then
- *       f(R) <= 0 for every later R too (write never falls behind): no tear
- *       anywhere in the burst.
- *   (b) LATE: the scan has already passed bottom_row this pass, i.e. it
- *       will not re-enter the burst's row range until its NEXT pass. Then
- *       f(top_row) >= 0 (scan is already past) AND f(bottom_row) >= 0 (the
- *       write, even starting from top_row, cannot cover ground fast enough
- *       to catch a scan that already has a head start over the ENTIRE
- *       burst height - the write is only ~13% faster per row, not enough to
- *       close a multi-row head start within one burst's own width). f
- *       decreasing and non-negative at both ends means it stays
- *       non-negative throughout: the scan reads OLD data for the whole
- *       region this pass, and the burst's new data shows cleanly on the
- *       panel's NEXT pass. No tear, and no half-frame-old flicker either -
- *       "next pass" is ~16.75 ms away, not user-visible as staleness.
- *
- * (The THIRD case - scan currently somewhere INSIDE [top_row, bottom_row] -
- * is the genuinely unsafe middle, and is deliberately NOT approximated here;
- * it falls back to waiting for the next edge, i.e. today's behaviour.)
- *
- * Scan position is estimated from elapsed time since the last TE edge and
- * the panel's own measured period (s_te_row_time_ns, set once by
- * te_log_period_once() - unavailable for the first ~2 s after boot, when
- * this falls back to the same FRESH_US window te_wait_for_vblank() uses).
- * This is deliberately conservative: it only skips the wait when it can
- * prove doing so is safe, and degrades to the pre-fix behaviour (never
- * worse) otherwise.
- */
-static void te_wait_for_region(int top_row, int bottom_row)
-{
-    if (!s_te_active || !s_te_enabled) {
-        return;
-    }
-
-    ++s_te_waits;
-
-    if (s_te_edges != 0) {
-        const uint32_t age = (uint32_t)esp_timer_get_time() - s_te_last_edge_us;
-        if (s_te_row_time_ns > 0) {
-            /* age is bounded to roughly one TE period (~16.75 ms) in normal
-             * operation; *1000 keeps this comfortably inside uint32_t even
-             * with an order of magnitude of slack (4.29e9 / 1000 = 4.29e6 us
-             * = 4.29 s) rather than risking overflow from a wider fixed-point
-             * scale. */
-            const int32_t scan_row = (int32_t)((age * 1000u) / s_te_row_time_ns);
-            const bool early = (scan_row + BOOST_LCD_TE_ROW_MARGIN <= top_row);
-            const bool late = (scan_row - BOOST_LCD_TE_ROW_MARGIN >= bottom_row);
-            if (early || late) {
-                s_te_miss_streak = 0;
-                ++s_te_skips;
-                return;
-            }
-        } else if (age < BOOST_LCD_TE_FRESH_US) {
-            /* Period not measured yet (first ~2 s after boot): fall back to
-             * the same fixed-window check te_wait_for_vblank() uses. */
-            s_te_miss_streak = 0;
-            ++s_te_skips;
-            return;
-        }
-    }
-
-    /* Drop the stale edge so the wait below returns on a fresh one. */
-    (void)xSemaphoreTake(s_te_sem, 0);
-
-    if (xSemaphoreTake(s_te_sem, pdMS_TO_TICKS(BOOST_LCD_TE_TIMEOUT_MS)) == pdTRUE) {
-        s_te_miss_streak = 0;
-        return;
-    }
-
-    ++s_te_timeouts;
-    if (s_te_miss_streak < BOOST_LCD_TE_GIVEUP_STREAK) {
-        ++s_te_miss_streak;
-    }
-    if (s_te_miss_streak >= BOOST_LCD_TE_GIVEUP_STREAK && s_te_active) {
-        s_te_active = false;
-        ESP_LOGW(TAG,
-                 "TE: no edge on GPIO%d for %d cycles (%u seen total) - gating off, "
-                 "display may tear but will not stall",
-                 BOOST_LCD_TE_GPIO, BOOST_LCD_TE_GIVEUP_STREAK, (unsigned)s_te_edges);
-    }
-}
-
-/*
  * ---------------------------------------------------------------------------
  * Region double-buffering
  * ---------------------------------------------------------------------------
@@ -493,7 +385,8 @@ static void te_wait_for_region(int top_row, int bottom_row)
  * needed to start below roughly row 86 to have unconditional margin; with
  * write faster than scan, a burst starting AT OR BEFORE the scan's current
  * position stays ahead of the scan for its ENTIRE length, not just from
- * some row onward. See te_wait_for_region() below - this is Fix 2.
+ * some row onward. See te_wait_for_region_spans() below - this argument is
+ * Fix 2, extended per-span as Fix 3 (both defined together further down).
  *
  * ---------------------------------------------------------------------------
  * Fix 1 (investigated, NOT implemented): LVGL rendering directly into the
@@ -667,6 +560,210 @@ static bool region_dbuf_alloc(void)
 }
 
 /*
+ * Fix 2 (superseded by Fix 3 below - kept as the reference proof, since Fix 3
+ * is an extension of exactly this argument, not a different one).
+ *
+ * Called once per render cycle, right before region-dbuf's burst. The
+ * original single-call version took one [top_row, bottom_row] spanning ALL
+ * of the cycle's dirty spans (min y0 / max y1 across them).
+ *
+ * te_wait_for_vblank() above always assumes the write starts at row 0, so
+ * "safe to go now" can only mean "very close to the vblank edge"
+ * (BOOST_LCD_TE_FRESH_US, a fixed 2 ms window). That assumption is wrong
+ * here on two counts: region-dbuf's burst does not start at row 0, it starts
+ * at top_row (frequently >100 for a needle/label update well down the
+ * panel); and by the time this runs, ~13.6 ms of rasterisation has usually
+ * already elapsed since RENDER_START, so the 2 ms window is stale on almost
+ * every cycle - measured worst case, that forces a wait for the NEXT edge,
+ * costing up to a full extra ~16.75 ms period on top of the raster time =
+ * the observed 32 ms tail.
+ *
+ * The actual requirement is simpler than "start at vblank": with the write
+ * now measured FASTER than the panel's scan (see the retraction block
+ * comment above - 31.3 us/row write including memcpy vs 35.95 us/row scan),
+ * there are TWO provably tear-free windows to start in, not one:
+ *
+ *   (a) EARLY: the scan has not yet reached top_row this pass. Proof sketch:
+ *       let f(R) = time-for-write-to-reach-row-R - time-for-scan-to-reach-
+ *       row-R for R in [top_row, bottom_row]. f is monotonically DEcreasing
+ *       in R because the write is faster per row than the scan. If
+ *       f(top_row) <= 0 - the scan has not yet passed top_row - then
+ *       f(R) <= 0 for every later R too (write never falls behind): no tear
+ *       anywhere in the burst.
+ *   (b) LATE: the scan has already passed bottom_row this pass, i.e. it
+ *       will not re-enter the burst's row range until its NEXT pass. Then
+ *       f(top_row) >= 0 (scan is already past) AND f(bottom_row) >= 0 (the
+ *       write, even starting from top_row, cannot cover ground fast enough
+ *       to catch a scan that already has a head start over the ENTIRE
+ *       burst height - the write is only ~13% faster per row, not enough to
+ *       close a multi-row head start within one burst's own width). f
+ *       decreasing and non-negative at both ends means it stays
+ *       non-negative throughout: the scan reads OLD data for the whole
+ *       region this pass, and the burst's new data shows cleanly on the
+ *       panel's NEXT pass. No tear, and no half-frame-old flicker either -
+ *       "next pass" is ~16.75 ms away, not user-visible as staleness.
+ *
+ * (The THIRD case - scan currently somewhere INSIDE [top_row, bottom_row] -
+ * is the genuinely unsafe middle, and is deliberately NOT approximated here;
+ * it falls back to waiting for the next edge, i.e. today's behaviour.)
+ *
+ * Scan position is estimated from elapsed time since the last TE edge and
+ * the panel's own measured period (s_te_row_time_ns, set once by
+ * te_log_period_once() - unavailable for the first ~2 s after boot, when
+ * this falls back to the same FRESH_US window te_wait_for_vblank() uses).
+ * This is deliberately conservative: it only skips the wait when it can
+ * prove doing so is safe, and degrades to the pre-fix behaviour (never
+ * worse) otherwise.
+ *
+ * Where this fell short (found measuring fast vault-tec motion, branch
+ * spike/fast-motion-cadence): the vault needle and a digit-slot label
+ * routinely invalidate in the SAME cycle at unrelated y ranges (this is
+ * exactly what region_span_add's disjoint-span tracking exists for). A scan
+ * position sitting in the GAP between two such spans can be genuinely LATE
+ * for the near span and genuinely EARLY for the far span at the same
+ * instant - two independently valid proofs this single blanket [top_row,
+ * bottom_row] question cannot see, because "top_row"/"bottom_row" force one
+ * yes/no answer about the union of rows nobody may even be writing (the gap
+ * rows are never transferred - see region_dbuf_writeback()'s per-span loop).
+ * See te_wait_for_region_spans() below, which asks this same early/late
+ * question per span instead. It is not a new argument, it is this one
+ * applied to the rows the write actually touches instead of their
+ * enclosing box.
+ */
+
+/*
+ * Fix 3 (spike/fast-motion-cadence): per-span instead of per-cycle-union.
+ *
+ * Same proof as Fix 2 above, applied per span instead of once to the whole
+ * cycle's [top_row, bottom_row] union. The two directions are NOT symmetric
+ * once there is more than one span, because region_dbuf_writeback() transfers
+ * spans SEQUENTIALLY (sorted by y0) and does not spend any time on the rows
+ * in a gap between them:
+ *
+ *   - LATE only needs "the scan, AS OF RIGHT NOW, has already passed this
+ *     span's bottom row". The current (unprojected) scan estimate is
+ *     conservative here: the scan only moves forward, so if it has already
+ *     passed a row now, it stays past that row for the rest of this pass no
+ *     matter when this particular span's transfer actually starts.
+ *
+ *   - EARLY needs "the scan has not yet reached this span's top row AT THE
+ *     MOMENT this span's transfer actually begins" - which, for the second
+ *     and later spans, is NOT now; it is after every earlier span in the
+ *     burst has already gone out. Using the CURRENT scan estimate for a
+ *     later span's EARLY test would be unsafe in the wrong direction - it
+ *     would UNDERSTATE how far the scan will really have moved by the time
+ *     the write gets there. So the estimate used for span i's EARLY test is
+ *     projected forward by a deliberately pessimistic estimate of how long
+ *     transferring spans 0..i-1 takes: their combined row count PLUS a fixed
+ *     overhead per BOOST_LVGL_BUF_LINES-row chunk (each one pays its own
+ *     CASET/RASET/RAMWR intercept - see the README's Animation performance
+ *     contract), both expressed in the SCAN's own (slower, ~35.95 us/row)
+ *     row time rather than the write's (faster, ~31.3 us/row measured) row
+ *     time, and BOOST_REGION_DBUF_CHUNK_OVERHEAD_US rounded UP from the
+ *     ~106 us measured intercept. Every one of those substitutions makes the
+ *     projection arrive LATER than reality, never earlier: overestimating
+ *     elapsed time can only make a later span's EARLY test harder to pass,
+ *     never wrongly satisfy it.
+ *
+ * Provably at least as safe as the Fix 2 union version, not just faster:
+ * union-EARLY used the first span's own y0 (top_row already equals it, since
+ * spans are sorted by y0) - so union-EARLY implies THIS span's EARLY test
+ * for span 0 (rows_before is 0 there, identical to Fix 2), and once the
+ * write is ahead of the scan for the very first row it touches, every span
+ * after it only gains lead time (a skipped gap costs the write ~0 rows while
+ * the scan keeps moving), so union-EARLY implies every later span's EARLY
+ * test too. Union-LATE used the LAST span's y1 - if the scan has already
+ * passed the highest row the whole burst touches, it has necessarily already
+ * passed every lower span's rows as well, so union-LATE implies every span's
+ * own LATE test. Anything the union proof could skip, this can still skip;
+ * this additionally skips cycles where no single blanket claim holds but
+ * every individual span still has its own valid proof (the needle-is-late /
+ * far-label-is-early case above) - a strictly more precise version of the
+ * exact same argument, not a looser one. Any span that cannot be proved
+ * either way still forces the real wait below - never worse than Fix 2.
+ */
+#define BOOST_REGION_DBUF_CHUNK_OVERHEAD_US 150u
+
+static void te_wait_for_region_spans(const region_span_t *spans, int count)
+{
+    if (!s_te_active || !s_te_enabled) {
+        return;
+    }
+
+    ++s_te_waits;
+
+    if (s_te_edges != 0 && s_te_row_time_ns > 0) {
+        /* age is bounded to roughly one TE period (~16.75 ms) in normal
+         * operation; *1000 keeps this comfortably inside uint32_t even with
+         * an order of magnitude of slack, same as Fix 2. */
+        const uint32_t age = (uint32_t)esp_timer_get_time() - s_te_last_edge_us;
+        const int32_t scan_row_now = (int32_t)((age * 1000u) / s_te_row_time_ns);
+        const uint32_t chunk_overhead_rows =
+            (uint32_t)((uint64_t)BOOST_REGION_DBUF_CHUNK_OVERHEAD_US * 1000u / s_te_row_time_ns);
+
+        uint32_t rows_before = 0;   /* pessimistic elapsed-time-so-far, in scan-row units */
+        bool all_provable = true;
+        for (int i = 0; i < count; ++i) {
+            const int y0 = spans[i].y0;
+            const int y1 = spans[i].y1;
+            const int height = y1 - y0;
+
+            bool span_ok = (scan_row_now - (int32_t)BOOST_LCD_TE_ROW_MARGIN >= y1); /* LATE */
+            if (!span_ok) {
+                const int32_t scan_row_projected = scan_row_now + (int32_t)rows_before;
+                span_ok = (scan_row_projected + (int32_t)BOOST_LCD_TE_ROW_MARGIN <= y0); /* EARLY */
+            }
+            if (!span_ok) {
+                all_provable = false;
+                break;
+            }
+
+            /* Whether this span was proved LATE or EARLY, the write still
+             * spends real time transferring it before the next span's
+             * transfer can start - accumulate that pessimistic cost for the
+             * next span's EARLY projection. */
+            const uint32_t chunks = ((uint32_t)height + BOOST_LVGL_BUF_LINES - 1) / BOOST_LVGL_BUF_LINES;
+            rows_before += (uint32_t)height + chunks * chunk_overhead_rows;
+        }
+
+        if (all_provable) {
+            s_te_miss_streak = 0;
+            ++s_te_skips;
+            return;
+        }
+    } else if (s_te_edges != 0) {
+        /* Period not measured yet (first ~2 s after boot): same fixed-window
+         * fallback te_wait_for_vblank() uses. */
+        const uint32_t age = (uint32_t)esp_timer_get_time() - s_te_last_edge_us;
+        if (age < BOOST_LCD_TE_FRESH_US) {
+            s_te_miss_streak = 0;
+            ++s_te_skips;
+            return;
+        }
+    }
+
+    /* Drop the stale edge so the wait below returns on a fresh one. */
+    (void)xSemaphoreTake(s_te_sem, 0);
+
+    if (xSemaphoreTake(s_te_sem, pdMS_TO_TICKS(BOOST_LCD_TE_TIMEOUT_MS)) == pdTRUE) {
+        s_te_miss_streak = 0;
+        return;
+    }
+
+    ++s_te_timeouts;
+    if (s_te_miss_streak < BOOST_LCD_TE_GIVEUP_STREAK) {
+        ++s_te_miss_streak;
+    }
+    if (s_te_miss_streak >= BOOST_LCD_TE_GIVEUP_STREAK && s_te_active) {
+        s_te_active = false;
+        ESP_LOGW(TAG,
+                 "TE: no edge on GPIO%d for %d cycles (%u seen total) - gating off, "
+                 "display may tear but will not stall",
+                 BOOST_LCD_TE_GPIO, BOOST_LCD_TE_GIVEUP_STREAK, (unsigned)s_te_edges);
+    }
+}
+
+/*
  * Pushes the accumulated spans to the panel back-to-back, full width, in the
  * same 20-line chunks the production path always uses. One TE wait for the
  * whole burst, taken here (right before the burst starts) rather than at the
@@ -691,9 +788,10 @@ static void region_dbuf_writeback(void)
 {
     /* Small N (<= BOOST_REGION_DBUF_MAX_SPANS): selection sort by y0 is
      * plenty cheap and keeps the burst's row order (and hence the scan-race
-     * margin) predictable. Sorted BEFORE the TE-wait decision below (Fix 2) -
-     * te_wait_for_region() needs the burst's actual topmost row, which is
-     * only known once this is sorted. */
+     * margin, and the per-span EARLY projection's cumulative-rows-before
+     * ordering) predictable. Sorted BEFORE the TE-wait decision below (Fix 3)
+     * - te_wait_for_region_spans() walks the spans in transfer order, which
+     * is only meaningful once this is sorted. */
     for (int i = 0; i < s_region_span_count - 1; ++i) {
         int min_idx = i;
         for (int j = i + 1; j < s_region_span_count; ++j) {
@@ -712,20 +810,8 @@ static void region_dbuf_writeback(void)
          * (display_metrics_event_cb) only invokes region_dbuf_writeback()
          * when s_region_has_data is true, which te_draw_bitmap_cb only sets
          * alongside adding at least one span. Guarded anyway rather than
-         * trusting that invariant across a future refactor.
-         *
-         * bottom_row is the max y1 across ALL spans, not just the last one
-         * after the y0-sort above: spans are usually also y1-ordered after
-         * that sort (region_span_add keeps them disjoint by y), but the
-         * "extend nearest span" fallback path (span budget exhausted) can
-         * break that, so this scans explicitly rather than assuming it. */
-        int top_row = 0;
-        int bottom_row = 0;
-        for (int i = 0; i < s_region_span_count; ++i) {
-            if (i == 0 || s_region_spans[i].y0 < top_row) top_row = s_region_spans[i].y0;
-            if (s_region_spans[i].y1 > bottom_row) bottom_row = s_region_spans[i].y1;
-        }
-        te_wait_for_region(top_row, bottom_row);
+         * trusting that invariant across a future refactor. */
+        te_wait_for_region_spans(s_region_spans, s_region_span_count);
     }
 
     for (int s = 0; s < s_region_span_count; ++s) {
@@ -829,7 +915,7 @@ static void te_log_period_once(void)
     s_te_period_logged = true;
     const uint32_t mean_us = s_te_probe_sum_us / BOOST_LCD_TE_PROBE_N;
     if (mean_us > 0) {
-        /* Row time for te_wait_for_region()'s scan-position estimate (Fix 2).
+        /* Row time for te_wait_for_region_spans()'s scan-position estimate.
          * mean_us * 1000 / BSP_LCD_V_RES: e.g. 16,753 us * 1000 / 466 =
          * 35,952 ns/row, matching the panel's independently-measured
          * ~35.95 us/row scan rate. */
