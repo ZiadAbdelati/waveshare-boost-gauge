@@ -434,23 +434,38 @@ unmodified organic demo waveform; both committed, both reproducible):
 | Organic demo, fastest quartile of seconds (~8 psi/s) | 41.5 (min 35) | 35,044 | 21.5 |
 | Organic demo, slowest quartile of seconds (~0.7 psi/s) | 55.0 (min 33) | 29,216 | 6.5 |
 
-Root cause: `te_wait_for_region()` (`main/boost_display.c`) decides whether a
-burst can skip its TE wait from the **union** of `top_row`/`bottom_row`
-across *every* span in the cycle, not each span's own range. The vault
-needle and the six digit-slot labels sit far apart on screen and both
-change on almost every 16 ms tick once psi is moving at all — during fast
-motion this is true on essentially every cycle, so the combined row range is
-wide almost every time, which makes the early/late proof fail more often and
-forces a real wait. When that wait lands after ~13.6 ms of rasterisation has
-already elapsed, the cycle's total cost roughly doubles to a second TE
-period, which reads as a stutter, not a rate reduction. Not fixed this
-session: the safety proof is exactly what a user's own eyes verified
-tear-free, and improving its precision (using actual per-span transfer time
-instead of the row-span union) needs a fresh visual check before being
-trusted, which no session without hardware eyes-on can provide. See the
-AGENTS.md ledger ("Fast-motion cadence isolated..." row) for the full
-writeup, the proof sketch for the untaken fix, and why a RAMWRC-based
-per-chunk command reduction was also investigated and not shipped.
+Root cause: `te_wait_for_region_spans()` (`main/boost_display.c`, was
+`te_wait_for_region()`) decides whether a burst can skip its TE wait from the
+**union** of `top_row`/`bottom_row` across *every* span in the cycle, not
+each span's own range. The vault needle and the six digit-slot labels sit
+far apart on screen and both change on almost every 16 ms tick once psi is
+moving at all — during fast motion this is true on essentially every cycle,
+so the combined row range is wide almost every time, which makes the
+early/late proof fail more often and forces a real wait. When that wait
+lands after ~13.6 ms of rasterisation has already elapsed, the cycle's total
+cost roughly doubles to a second TE period, which reads as a stutter, not a
+rate reduction.
+
+**Since fixed and shipped** (branch `spike/fast-motion-cadence`): the wait
+proof now scores each span's own row range independently instead of the
+whole cycle's union, provably at least as safe as the version it replaces
+(see the block comment on `te_wait_for_region_spans()` for the exact
+argument, including where it is and isn't a strict superset of the old
+proof). Verified with an interleaved hardware A/B (rebuild + reflash between
+every arm, 3 rounds): `teSkips` up ~6% on average and `framesOverBudget` down
+~3%, a real if modest improvement to the underlying mechanism — but
+`renderFps`/`worstRenderUs` did not move outside run-to-run noise in either
+isolation method, so this does **not** read as a fix for the perceived
+stutter. Most fast-motion cycles are apparently dominated by a single tall
+span (the needle alone) or adjacent spans, where the new per-span proof is
+mathematically identical to the old union one; the "needle and a far-away
+digit label invalidate together with a wide gap between them" case this
+targets is real but evidently not the dominant cost. The `dyno-cell`/arc
+guard is unaffected (min 56-58/median 60, matching the pre-existing noise
+band). See the AGENTS.md ledger for the full numbers, the bug an early cut
+of this fix had (using the scan's row time instead of the write's own,
+which caused a real measured regression before being corrected), and why a
+RAMWRC-based per-chunk command reduction is still not shipped.
 
 ### Host-only UI development
 
