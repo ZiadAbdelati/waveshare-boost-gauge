@@ -83,6 +83,7 @@ void app_main(void)
     /* Apply the persisted tearing-effect preference now that both the theme
      * store and the display exist. Default is off. */
     boost_display_set_te(boost_theme_te_sync());
+    boost_display_set_region_dbuf(boost_theme_region_dbuf());
 
     /* Start from persisted config. Long-press toggles between the configured
      * high/low pair - the same brightnessLow the dim schedule uses - rather

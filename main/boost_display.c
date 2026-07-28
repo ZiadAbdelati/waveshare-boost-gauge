@@ -6,7 +6,9 @@
 #include "bsp/touch.h"
 #include "driver/spi_master.h"
 #include "esp_check.h"
+#include "esp_heap_caps.h"
 #include "esp_lcd_co5300.h"
+#include "esp_lcd_panel_io.h"
 #include "esp_log.h"
 #include "esp_lv_adapter.h"
 #include "esp_timer.h"
@@ -280,6 +282,258 @@ static void te_wait_for_vblank(void)
 }
 
 /*
+ * ---------------------------------------------------------------------------
+ * Region double-buffering
+ * ---------------------------------------------------------------------------
+ * Fix for the residual needle tearing a per-flush TE wait could not touch
+ * (see the "TE sync engages but does not stop the needle tearing" ledger
+ * row): waiting for vblank only synchronises the FIRST strip of a render
+ * cycle. Rasterisation of later strips (CPU-bound; the S3 has no 2D
+ * accelerator) then lets the scan outrun the writes, so later strips still
+ * land mid-scan.
+ *
+ * The fix is to stop interleaving raster and transfer: rasterise the whole
+ * cycle's dirty strips into a PSRAM staging canvas first (te_draw_bitmap_cb
+ * below intercepts every strip, copies it into the canvas, and returns
+ * ESP_ERR_NOT_ALLOWED so the adapter calls flush_ready immediately without
+ * touching the panel), then push the accumulated region to the panel
+ * back-to-back after a single TE wait, from LV_EVENT_RENDER_READY.
+ *
+ * Feasibility was measured on hardware before building this (branch
+ * spike/region-double-buffer): per-strip DMA transfer at 80 MHz QSPI averaged
+ * 999.0 us (200 back-to-back transfers, 18,640 B each) against a ~0.47 ms
+ * theoretical figure; PSRAM->internal memcpy for the same block size averaged
+ * 50.9 us (~349 MB/s). For the needle's 205-row (~191 KB) worst-case band,
+ * rounded to 11 strips: 11 x (999.0 + 50.9) = 11,548.9 us against a measured
+ * tePeriodUs of 16,753 us - about 5.2 ms (31%) of margin. Rasterisation alone
+ * (measured by making this hook skip the real write and reading worstRenderUs
+ * with teSync off) had a 13.6 ms median over a 30 s window, also under the
+ * period. GDMA still cannot stream from PSRAM, so the memcpy into an internal
+ * DMA-capable scratch buffer per 20-line chunk is mandatory, not optional.
+ *
+ * Caveat found during measurement, not asked for but load-bearing: the
+ * measured write rate (999.0 us / 20 lines = 49.95 us/row) is SLOWER than the
+ * panel's own measured scan rate (16,753 us / 466 rows = 35.95 us/row). A
+ * single wait-then-blast burst only stays ahead of the scan for the WHOLE
+ * accumulated region if the region's top row is far enough down the panel
+ * (solving the closing-gap arithmetic for this board: roughly row 86 of 466
+ * or lower). A region starting nearer the top does not have unconditional
+ * protection from this scheme alone - the CO5300's set_tear_scanline (0x44,
+ * BOOST_LCD_TE_SCANLINE above) exists for exactly this and could shift the
+ * effective trigger point per-cycle, but that is a further change, not done
+ * here. This does not fail the Phase 1 gate (the scheme is a real, measured
+ * improvement over interleaved raster/transfer either way) but it does mean
+ * "eliminates tearing" would be an overclaim; "removes the interleaving that
+ * made every frame race the scan" is the honest claim.
+ *
+ * Second measured caveat, found during hardware verification of this feature
+ * (not Phase 1): a single cycle's dirty strips are not always one contiguous
+ * band. update_vault() can invalidate the needle AND a digit slot label in
+ * the same tick, at unrelated y ranges. A single min/max union across the
+ * whole cycle (the first version of this code) would then span - and
+ * transfer - every untouched row between them too: measured on hardware,
+ * that inflated pixelsPerSecond ~7.5x on vault-tec (437,764 -> 3,269,456 B/s
+ * median) and dropped the cadence guard from min 49/median 57 to min
+ * 30/median 53-54. The fix below tracks up to BOOST_REGION_DBUF_MAX_SPANS
+ * disjoint row-spans per cycle instead of one union, so unrelated dirty areas
+ * are transferred separately rather than dragging the gap between them along.
+ */
+#define BOOST_REGION_DBUF_QUEUE_DEPTH CONFIG_BSP_LCD_TRANS_QUEUE_DEPTH
+
+/* Needle + a handful of digit/peak labels is the realistic worst case for one
+ * vault tick; 8 is generous headroom over that. Exceeding it degrades to
+ * extending the nearest span (still correct, just coarser) rather than
+ * dropping rows. */
+#define BOOST_REGION_DBUF_MAX_SPANS 8
+
+typedef struct {
+    int y0; /* inclusive */
+    int y1; /* exclusive */
+    int x0; /* inclusive */
+    int x1; /* exclusive */
+} region_span_t;
+
+static volatile bool s_region_dbuf_enabled;                       /* runtime toggle */
+static uint16_t *s_region_canvas;                                 /* PSRAM, full panel */
+static uint16_t *s_region_xfer_bufs[BOOST_REGION_DBUF_QUEUE_DEPTH]; /* internal DMA-capable */
+static bool s_region_has_data;                                    /* LVGL task only */
+static region_span_t s_region_spans[BOOST_REGION_DBUF_MAX_SPANS];
+static int s_region_span_count;
+static uint32_t s_region_xfer_idx;
+
+/*
+ * Merge [x0,x1) x [y0,y1) into the accumulated span set for this cycle.
+ * Grouping is by y-overlap/adjacency only (x always unions into whichever
+ * span the row-range lands in); this matters because the vault needle's
+ * radial-wedge invalidation (VAULT_NEEDLE_SEGS=3) is column-narrow, not
+ * full-width, and transferring full BSP_LCD_H_RES for every span - the first
+ * version of this code - is exactly the kind of over-transfer this exists to
+ * avoid, the same way the y-span split avoids dragging untouched rows along
+ * with a digit-label update elsewhere on the face. Spans are not re-merged
+ * against each other after extension (a bounded amount of redundant transfer
+ * if two spans grow into overlapping, cheap at this scale).
+ */
+static void region_span_add(int x0, int y0, int x1, int y1)
+{
+    for (int i = 0; i < s_region_span_count; ++i) {
+        if (y0 <= s_region_spans[i].y1 && y1 >= s_region_spans[i].y0) {
+            if (y0 < s_region_spans[i].y0) s_region_spans[i].y0 = y0;
+            if (y1 > s_region_spans[i].y1) s_region_spans[i].y1 = y1;
+            if (x0 < s_region_spans[i].x0) s_region_spans[i].x0 = x0;
+            if (x1 > s_region_spans[i].x1) s_region_spans[i].x1 = x1;
+            return;
+        }
+    }
+    if (s_region_span_count < BOOST_REGION_DBUF_MAX_SPANS) {
+        s_region_spans[s_region_span_count] = (region_span_t){ .y0 = y0, .y1 = y1, .x0 = x0, .x1 = x1 };
+        ++s_region_span_count;
+        return;
+    }
+    /* Span budget exhausted this cycle: extend whichever existing span is
+     * closest rather than lose the strip. */
+    int nearest = 0;
+    int best_gap = INT32_MAX;
+    for (int i = 0; i < s_region_span_count; ++i) {
+        int gap = (y0 > s_region_spans[i].y1) ? (y0 - s_region_spans[i].y1)
+                                              : (s_region_spans[i].y0 - y1);
+        if (gap < 0) gap = 0;
+        if (gap < best_gap) { best_gap = gap; nearest = i; }
+    }
+    if (y0 < s_region_spans[nearest].y0) s_region_spans[nearest].y0 = y0;
+    if (y1 > s_region_spans[nearest].y1) s_region_spans[nearest].y1 = y1;
+    if (x0 < s_region_spans[nearest].x0) s_region_spans[nearest].x0 = x0;
+    if (x1 > s_region_spans[nearest].x1) s_region_spans[nearest].x1 = x1;
+}
+
+static void region_dbuf_free(void)
+{
+    if (s_region_canvas != NULL) {
+        heap_caps_free(s_region_canvas);
+        s_region_canvas = NULL;
+    }
+    for (size_t i = 0; i < BOOST_REGION_DBUF_QUEUE_DEPTH; ++i) {
+        if (s_region_xfer_bufs[i] != NULL) {
+            heap_caps_free(s_region_xfer_bufs[i]);
+            s_region_xfer_bufs[i] = NULL;
+        }
+    }
+    s_region_has_data = false;
+}
+
+/* Sized for the whole panel rather than the ~205-row needle band specifically:
+ * at 434,312 B against ~6.7 MB PSRAM free this costs nothing extra to make
+ * general, and it removes any need to reject/clamp a larger dirty cycle (a
+ * theme rebuild, pixel shift) instead of just degrading its cadence like the
+ * existing TE quantiser already does. */
+static bool region_dbuf_alloc(void)
+{
+    if (s_region_canvas != NULL) {
+        return true;
+    }
+    const size_t canvas_bytes = (size_t)BSP_LCD_H_RES * (size_t)BSP_LCD_V_RES *
+                                 (BSP_LCD_BITS_PER_PIXEL / 8);
+    s_region_canvas = (uint16_t *)heap_caps_malloc(canvas_bytes, MALLOC_CAP_SPIRAM);
+    if (s_region_canvas == NULL) {
+        ESP_LOGW(TAG, "region-dbuf: %u B PSRAM canvas alloc failed; staying on per-strip path",
+                 (unsigned)canvas_bytes);
+        return false;
+    }
+    for (size_t i = 0; i < BOOST_REGION_DBUF_QUEUE_DEPTH; ++i) {
+        s_region_xfer_bufs[i] = (uint16_t *)heap_caps_malloc(BOOST_LVGL_STRIP_BYTES,
+                                                              MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+        if (s_region_xfer_bufs[i] == NULL) {
+            ESP_LOGW(TAG, "region-dbuf: internal scratch buffer %u/%d alloc failed; "
+                     "staying on per-strip path", (unsigned)i, BOOST_REGION_DBUF_QUEUE_DEPTH);
+            region_dbuf_free();
+            return false;
+        }
+    }
+    ESP_LOGI(TAG, "region-dbuf: %u B PSRAM canvas + %d x %u B internal scratch buffers ready",
+             (unsigned)canvas_bytes, BOOST_REGION_DBUF_QUEUE_DEPTH, (unsigned)BOOST_LVGL_STRIP_BYTES);
+    return true;
+}
+
+/*
+ * Pushes the accumulated spans to the panel back-to-back, full width, in the
+ * same 20-line chunks the production path always uses. One TE wait for the
+ * whole burst, taken here (right before the burst starts) rather than at the
+ * first strip's rasterisation - waiting earlier would let the ~13 ms raster
+ * pass go stale against the edge it waited for, defeating the point of
+ * waiting at all. Spans are visited top-to-bottom so the burst writes in
+ * panel scan order, matching the race-margin arithmetic in the block comment
+ * above.
+ *
+ * Buffer-reuse safety for s_region_xfer_bufs relies on the SPI driver's own
+ * queue depth backpressure, not a completion callback: with exactly
+ * CONFIG_BSP_LCD_TRANS_QUEUE_DEPTH round-robin buffers, submitting chunk N
+ * cannot return until a queue slot frees, which only happens once chunk
+ * (N - QUEUE_DEPTH) - the transfer that owns the SAME buffer - has actually
+ * completed. No new completion signalling was added; the existing adapter
+ * on_color_trans_done registration still fires for these transfers and calls
+ * lv_display_flush_ready(), which is `disp->flushing = 0` in this LVGL build
+ * (CONFIG_ESP_LVGL_ADAPTER_ENABLE_FPS_STATS is off) - idempotent, so the
+ * extra calls this generates are harmless no-ops, not new state to manage.
+ */
+static void region_dbuf_writeback(void)
+{
+    if (s_te_gate_armed) {
+        s_te_gate_armed = false;
+        te_wait_for_vblank();
+    }
+
+    /* Small N (<= BOOST_REGION_DBUF_MAX_SPANS): selection sort by y0 is
+     * plenty cheap and keeps the burst's row order (and hence the scan-race
+     * margin) predictable. */
+    for (int i = 0; i < s_region_span_count - 1; ++i) {
+        int min_idx = i;
+        for (int j = i + 1; j < s_region_span_count; ++j) {
+            if (s_region_spans[j].y0 < s_region_spans[min_idx].y0) min_idx = j;
+        }
+        if (min_idx != i) {
+            const region_span_t tmp = s_region_spans[i];
+            s_region_spans[i] = s_region_spans[min_idx];
+            s_region_spans[min_idx] = tmp;
+        }
+    }
+
+    for (int s = 0; s < s_region_span_count; ++s) {
+        const int x0 = s_region_spans[s].x0;
+        const int x1 = s_region_spans[s].x1;
+        const int width = x1 - x0;
+        int y0 = s_region_spans[s].y0;
+        const int y_end = s_region_spans[s].y1;
+        while (y0 < y_end) {
+            int lines = BOOST_LVGL_BUF_LINES;
+            if (y0 + lines > y_end) {
+                lines = y_end - y0;
+            }
+            uint16_t *xfer = s_region_xfer_bufs[s_region_xfer_idx % BOOST_REGION_DBUF_QUEUE_DEPTH];
+            ++s_region_xfer_idx;
+            /* Per-span width can be narrower than the panel (the vault
+             * needle's radial-wedge invalidation is column-narrow), so copy
+             * row by row rather than one block memcpy: canvas rows are
+             * BSP_LCD_H_RES wide, the transfer buffer only needs `width`
+             * columns packed tight. */
+            for (int r = 0; r < lines; ++r) {
+                memcpy(xfer + (size_t)r * width,
+                       s_region_canvas + (size_t)(y0 + r) * BSP_LCD_H_RES + x0,
+                       (size_t)width * sizeof(uint16_t));
+            }
+            const esp_err_t ret = esp_lcd_panel_draw_bitmap(s_panel, x0, y0, x1, y0 + lines, xfer);
+            if (ret != ESP_OK) {
+                ESP_LOGE(TAG, "region-dbuf: draw_bitmap failed at x=%d y=%d: %s",
+                         x0, y0, esp_err_to_name(ret));
+                break;
+            }
+            ++s_flush_count;
+            s_pixel_count += (uint32_t)width * (uint32_t)lines;
+            y0 += lines;
+        }
+    }
+    s_region_span_count = 0;
+}
+
+/*
  * Replaces the adapter's own esp_lcd_panel_draw_bitmap() call. Contract from
  * esp_lv_adapter_display.h: return ESP_OK once the blit is under way and the
  * completion ISR will finish the handshake; return anything else and the
@@ -291,6 +545,27 @@ static esp_err_t te_draw_bitmap_cb(lv_display_t *disp, esp_lcd_panel_handle_t pa
 {
     (void)disp;
     (void)user_ctx;
+
+    if (s_region_dbuf_enabled && s_region_canvas != NULL) {
+        /* Accumulate into the PSRAM canvas; defer the real transfer to
+         * LV_EVENT_RENDER_READY so the whole dirty region goes out
+         * back-to-back instead of interleaved with rasterisation. Leave
+         * s_te_gate_armed untouched here - region_dbuf_writeback() consumes
+         * it later, once, right before the real burst. color_map arrives
+         * already stride-compacted to exactly (x_end-x_start) columns per
+         * row (display_bridge_v9_flush_default calls compact_stride_to_packed
+         * before invoking this hook), so a tight per-row copy is correct. */
+        const int rows = y_end - y_start;
+        const int cols = x_end - x_start;
+        const uint16_t *src = (const uint16_t *)color_map;
+        for (int r = 0; r < rows; ++r) {
+            uint16_t *dst_row = s_region_canvas + (size_t)(y_start + r) * BSP_LCD_H_RES + x_start;
+            memcpy(dst_row, src + (size_t)r * cols, (size_t)cols * sizeof(uint16_t));
+        }
+        region_span_add(x_start, y_start, x_end, y_end);
+        s_region_has_data = true;
+        return ESP_ERR_NOT_ALLOWED;
+    }
 
     if (s_te_gate_armed) {
         s_te_gate_armed = false;
@@ -335,11 +610,14 @@ static void display_metrics_event_cb(lv_event_t *e)
     const lv_event_code_t code = lv_event_get_code(e);
     if (code == LV_EVENT_RENDER_START) {
 #if BOOST_LCD_USE_TE
-        /* Arm the gate for this cycle. The first strip's blit consumes it; the
-         * rest of the cycle streams out unblocked. Same task as the flush, so
-         * a plain flag is sufficient. */
+        /* Arm the gate for this cycle. Consumed either by the first strip's
+         * blit (region-dbuf off: te_draw_bitmap_cb) or once, later, by
+         * region_dbuf_writeback() right before its burst (region-dbuf on).
+         * Same task as the flush, so a plain flag is sufficient. */
         s_te_gate_armed = true;
 #endif
+        s_region_has_data = false;
+        s_region_span_count = 0;
         const int64_t t = esp_timer_get_time();
         if (s_last_start_us != 0) {
             const uint32_t gap = (uint32_t)(t - s_last_start_us);
@@ -351,6 +629,13 @@ static void display_metrics_event_cb(lv_event_t *e)
         s_last_start_us = t;
         s_last_render_us = t;
     } else if (code == LV_EVENT_RENDER_READY) {
+        if (s_region_dbuf_enabled && s_region_canvas != NULL && s_region_has_data) {
+            /* Included in worst_render_us below by design: this is the real
+             * transfer for the cycle, and the metric is supposed to capture
+             * total cycle cost, not just rasterisation. */
+            region_dbuf_writeback();
+        }
+        s_region_has_data = false;
         ++s_render_count;
         /* Duration of the cycle itself, not the gap between cycles: an idle
          * screen produces long gaps but no stall, and conflating the two is
@@ -360,10 +645,17 @@ static void display_metrics_event_cb(lv_event_t *e)
             if (dur > s_worst_gap_us) s_worst_gap_us = dur;
         }
     } else if (code == LV_EVENT_FLUSH_START) {
-        const lv_area_t *area = lv_event_get_param(e);
-        if (area != NULL) {
-            ++s_flush_count;
-            s_pixel_count += (uint32_t)lv_area_get_width(area) * (uint32_t)lv_area_get_height(area);
+        /* When region-dbuf is engaged, every strip in the cycle still raises
+         * this event even though te_draw_bitmap_cb skipped the real transfer
+         * (it returns ESP_ERR_NOT_ALLOWED). Counting here too would double
+         * flushesPerSecond/pixelsPerSecond against region_dbuf_writeback()'s
+         * own accounting for the real burst, so skip it in that mode. */
+        if (!(s_region_dbuf_enabled && s_region_canvas != NULL)) {
+            const lv_area_t *area = lv_event_get_param(e);
+            if (area != NULL) {
+                ++s_flush_count;
+                s_pixel_count += (uint32_t)lv_area_get_width(area) * (uint32_t)lv_area_get_height(area);
+            }
         }
     }
     const int64_t now_us = esp_timer_get_time();
@@ -486,6 +778,39 @@ bool boost_display_te(void)
 #else
     return false;
 #endif
+}
+
+/*
+ * Lock around the enable/disable transition: the LVGL/adapter task
+ * dereferences s_region_canvas / s_region_xfer_bufs from the same context
+ * this lock already serialises against (te_draw_bitmap_cb and
+ * region_dbuf_writeback both run under it), so freeing them while a render
+ * cycle is mid-accumulation would be a use-after-free without it. A failed
+ * PSRAM allocation degrades to the existing per-strip path with a warning,
+ * the same pattern already used for the cached face backgrounds, rather than
+ * failing boot or the request.
+ */
+void boost_display_set_region_dbuf(bool enabled)
+{
+    if (boost_display_lock(1000) != ESP_OK) {
+        ESP_LOGW(TAG, "region-dbuf: could not acquire display lock, toggle skipped");
+        return;
+    }
+    s_region_dbuf_enabled = enabled;
+    if (enabled) {
+        if (!region_dbuf_alloc()) {
+            s_region_dbuf_enabled = false;
+        }
+    } else {
+        region_dbuf_free();
+    }
+    boost_display_unlock();
+    ESP_LOGI(TAG, "region double-buffer %s (runtime)", s_region_dbuf_enabled ? "enabled" : "disabled");
+}
+
+bool boost_display_region_dbuf(void)
+{
+    return s_region_dbuf_enabled && s_region_canvas != NULL;
 }
 
 esp_err_t boost_display_set_brightness(int percent)

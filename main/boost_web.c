@@ -701,7 +701,7 @@ static esp_err_t themes_get(httpd_req_t *req)
              "{\"activeThemeId\":\"%s\",\"bigDigitStaticBg\":%s,"
              "\"bigDigitColorText\":%s,\"bigDigitStaticColor\":\"#%06lx\","
              "\"bigDigitTextColor\":\"#%06lx\","
-             "\"arcGradient\":%s,\"hudGradient\":%s,\"teSync\":%s,"
+             "\"arcGradient\":%s,\"hudGradient\":%s,\"teSync\":%s,\"regionDBuf\":%s,"
              "\"rotation\":%u,"
              "\"vaultFace\":\"#%06lx\",\"vaultVignette\":%u,"
              "\"demoMode\":%s,"
@@ -714,6 +714,7 @@ static esp_err_t themes_get(httpd_req_t *req)
              boost_theme_arc_gradient() ? "true" : "false",
              boost_theme_hud_gradient() ? "true" : "false",
              boost_theme_te_sync() ? "true" : "false",
+             boost_theme_region_dbuf() ? "true" : "false",
              (unsigned)boost_theme_rotation(),
              (unsigned long)boost_theme_vault_face(),
              (unsigned)boost_theme_vault_vignette_pct(),
@@ -832,6 +833,13 @@ static esp_err_t themes_config_put(httpd_req_t *req)
         const bool on = cJSON_IsTrue(te);
         boost_theme_set_te_sync(on);
         boost_display_set_te(on);
+    }
+
+    const cJSON *rdb = cJSON_GetObjectItemCaseSensitive(root, "regionDBuf");
+    if (cJSON_IsBool(rdb)) {
+        const bool on = cJSON_IsTrue(rdb);
+        boost_theme_set_region_dbuf(on);
+        boost_display_set_region_dbuf(on);
     }
 
     /* Quarter turns only - see boost_theme.h for why an arbitrary angle is not

@@ -63,6 +63,25 @@ esp_err_t boost_display_set_brightness(int percent);
 void boost_display_set_te(bool enabled);
 bool boost_display_te(void);
 
+/*
+ * Region double-buffering: rasterise a whole render cycle's dirty strips into
+ * a PSRAM staging canvas instead of transferring each one immediately, then
+ * push the accumulated region to the panel back-to-back after a single TE
+ * wait. Fixes the residual needle tearing that a per-flush TE wait could not:
+ * per-flush waiting only synchronises the first strip, and rasterisation of
+ * later strips (CPU-bound, no 2D accelerator) lets the scan outrun the
+ * writes. See the "region double-buffer feasibility" ledger row for the
+ * measured per-strip transfer time and PSRAM->internal memcpy bandwidth this
+ * is sized against.
+ *
+ * Runtime-toggleable, default OFF, same shape as boost_display_set_te(): a
+ * failed PSRAM allocation degrades to the existing per-strip path with a
+ * warning rather than failing boot, matching the pattern already used for
+ * the cached face backgrounds.
+ */
+void boost_display_set_region_dbuf(bool enabled);
+bool boost_display_region_dbuf(void);
+
 esp_err_t boost_display_lock(uint32_t timeout_ms);
 void boost_display_unlock(void);
 void boost_display_get_metrics(boost_display_metrics_t *out);

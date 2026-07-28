@@ -23,6 +23,7 @@
 #define NVS_KEY_ARCGRAD "arc_gradient"
 #define NVS_KEY_HUDGRAD "hud_gradient"
 #define NVS_KEY_TESYNC  "te_sync"
+#define NVS_KEY_REGDBUF "region_dbuf"
 #define NVS_KEY_ROT     "rotation"
 #define NVS_KEY_VFACE   "vault_face"
 #define NVS_KEY_VVIG    "vault_vig"
@@ -99,6 +100,7 @@ static uint32_t s_bigdigit_text_color = 0xFFFFFFu;
 static bool s_arc_gradient;
 static bool s_hud_gradient;
 static bool s_te_sync;
+static bool s_region_dbuf;
 /* Panel rotation in degrees. The LVGL adapter accepts only quarter turns and
  * takes the value at registration time, so this is applied at boot. */
 static uint16_t s_rotation;
@@ -168,6 +170,7 @@ static void persist(void)
     nvs_set_u8(h, NVS_KEY_ARCGRAD, s_arc_gradient ? 1 : 0);
     nvs_set_u8(h, NVS_KEY_HUDGRAD, s_hud_gradient ? 1 : 0);
     nvs_set_u8(h, NVS_KEY_TESYNC, s_te_sync ? 1 : 0);
+    nvs_set_u8(h, NVS_KEY_REGDBUF, s_region_dbuf ? 1 : 0);
     nvs_set_u16(h, NVS_KEY_ROT, s_rotation);
     nvs_set_u32(h, NVS_KEY_VFACE, s_vault_face);
     nvs_set_u8(h, NVS_KEY_VVIG, s_vault_vig_pct);
@@ -244,6 +247,10 @@ void boost_theme_init(void)
     uint8_t te = 0;
     if (nvs_get_u8(h, NVS_KEY_TESYNC, &te) == ESP_OK) {
         s_te_sync = (te != 0);
+    }
+    uint8_t rdb = 0;
+    if (nvs_get_u8(h, NVS_KEY_REGDBUF, &rdb) == ESP_OK) {
+        s_region_dbuf = (rdb != 0);
     }
 
     uint16_t rot = 0;
@@ -453,6 +460,18 @@ void boost_theme_set_te_sync(bool enabled)
 {
     ensure_loaded();
     s_te_sync = enabled;
+    persist();
+}
+
+bool boost_theme_region_dbuf(void)
+{
+    return s_region_dbuf;
+}
+
+void boost_theme_set_region_dbuf(bool enabled)
+{
+    ensure_loaded();
+    s_region_dbuf = enabled;
     persist();
 }
 

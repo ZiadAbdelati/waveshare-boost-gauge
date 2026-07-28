@@ -114,6 +114,17 @@ void boost_theme_set_hud_gradient(bool enabled);
 bool boost_theme_te_sync(void);
 void boost_theme_set_te_sync(bool enabled);
 
+/*
+ * Region double-buffering preference, persisted. Default OFF, like te_sync.
+ * When on, one render cycle's dirty strips are rasterised into a PSRAM
+ * staging canvas instead of being transferred immediately, then pushed to
+ * the panel back-to-back after a single TE wait - see boost_display.c for
+ * the measured feasibility numbers and the mechanism itself. Applied to the
+ * display at boot and whenever changed, same as te_sync.
+ */
+bool boost_theme_region_dbuf(void);
+void boost_theme_set_region_dbuf(bool enabled);
+
 /**
  * Persisted panel rotation in degrees: **0, 90, 180 or 270 only**.
  *
