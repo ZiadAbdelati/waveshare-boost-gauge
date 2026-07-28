@@ -131,6 +131,7 @@ const el = {
   themeList: document.getElementById("themeList"),
   pixelShiftMode: document.getElementById("pixelShiftMode"),
   teSync: document.getElementById("teSync"),
+  regionDBuf: document.getElementById("regionDBuf"),
   rotation: document.getElementById("rotation"),
   demoMode: document.getElementById("demoMode"),
   loadLogsBtn: document.getElementById("loadLogsBtn"),
@@ -1383,6 +1384,7 @@ function queueThemeConfig(body, okMsg) {
       state.arcGradient = !!payload.arcGradient;
       state.hudGradient = !!payload.hudGradient;
       state.teSync = !!payload.teSync;
+      state.regionDBuf = !!payload.regionDBuf;
       state.rotation = Number(payload.rotation) || 0;
       state.vaultFace = payload.vaultFace || state.vaultFace;
       if (payload.vaultVignette !== undefined) state.vaultVignette = payload.vaultVignette;
@@ -1631,6 +1633,7 @@ function syncDisplayToggles() {
     el.pixelShiftMode.value = state.pixelShift ? String(seconds) : "off";
   }
   if (el.teSync) el.teSync.checked = !!state.teSync;
+  if (el.regionDBuf) el.regionDBuf.checked = !!state.regionDBuf;
   if (el.rotation) el.rotation.value = String(state.rotation ?? 0);
   if (el.demoMode) el.demoMode.checked = !!state.demoMode;
 }
@@ -1646,6 +1649,7 @@ function wireDisplayToggles() {
       state.pixelShift = !!payload.pixelShift;
       state.pixelShiftSec = Number(payload.pixelShiftSec) || state.pixelShiftSec;
       state.teSync = !!payload.teSync;
+      state.regionDBuf = !!payload.regionDBuf;
       state.rotation = Number(payload.rotation) || 0;
       state.demoMode = !!payload.demoMode;
       state.bigDigitStaticBg = !!payload.bigDigitStaticBg;
@@ -1663,6 +1667,12 @@ function wireDisplayToggles() {
     el.teSync.addEventListener("change", () =>
       send({ teSync: el.teSync.checked },
            el.teSync.checked ? "Tear sync on" : "Tear sync off"),
+    );
+  }
+  if (el.regionDBuf) {
+    el.regionDBuf.addEventListener("change", () =>
+      send({ regionDBuf: el.regionDBuf.checked },
+           el.regionDBuf.checked ? "Region double-buffer on" : "Region double-buffer off"),
     );
   }
   if (el.rotation) {
@@ -2146,6 +2156,7 @@ async function refreshAll(source = ERR_USER) {
     state.arcGradient = !!themes.arcGradient;
     state.hudGradient = !!themes.hudGradient;
     state.teSync = !!themes.teSync;
+    state.regionDBuf = !!themes.regionDBuf;
     state.rotation = Number(themes.rotation) || 0;
     state.demoMode = !!themes.demoMode;
     state.vaultFace = themes.vaultFace || "#05281a";

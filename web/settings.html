@@ -124,6 +124,16 @@
         <p class="hint-text">Locks screen updates to the panel&rsquo;s refresh so partial
           redraws don&rsquo;t land mid-scan. Steadier, but it can drop the odd frame &mdash;
           toggle it and see which you prefer.</p>
+        <label class="toggle-field">
+          <input id="regionDBuf" type="checkbox">
+          <span>Region double-buffer (experimental)</span>
+        </label>
+        <p class="hint-text">Stages the whole changed area off-screen first, then sends
+          it to the panel in one burst instead of dribbling it out while drawing. Aims
+          to remove the rest of the needle tearing that tear sync alone doesn&rsquo;t
+          catch. Costs a few frames per second and roughly doubles the worst-case
+          frame time, so judge it by eye &mdash; if the needle looks the same, leave
+          it off.</p>
         <label class="field">
           <span>Screen rotation</span>
           <select id="rotation">
