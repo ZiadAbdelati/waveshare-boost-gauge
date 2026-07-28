@@ -705,7 +705,7 @@ static esp_err_t themes_get(httpd_req_t *req)
              "\"arcGradient\":%s,\"hudGradient\":%s,\"teSync\":%s,\"regionDBuf\":%s,"
              "\"rotation\":%u,"
              "\"vaultFace\":\"#%06lx\",\"vaultVignette\":%u,"
-             "\"demoMode\":%s,"
+             "\"demoMode\":%s,\"demoFastSweep\":%s,"
              "\"pixelShift\":%s,\"pixelShiftSec\":%u,\"themes\":[",
              cfg.active_theme_id,
              boost_theme_bigdigit_static_bg() ? "true" : "false",
@@ -720,6 +720,7 @@ static esp_err_t themes_get(httpd_req_t *req)
              (unsigned long)boost_theme_vault_face(),
              (unsigned)boost_theme_vault_vignette_pct(),
              boost_theme_demo_mode() ? "true" : "false",
+             boost_sim_fast_sweep() ? "true" : "false",
              boost_theme_pixel_shift() ? "true" : "false",
              (unsigned)boost_theme_pixel_shift_sec());
     for (size_t i = 0; i < boost_theme_count(); ++i) {
@@ -863,6 +864,12 @@ static esp_err_t themes_config_put(httpd_req_t *req)
     const cJSON *demo = cJSON_GetObjectItemCaseSensitive(root, "demoMode");
     if (cJSON_IsBool(demo)) {
         boost_theme_set_demo_mode(cJSON_IsTrue(demo));
+    }
+
+    /* Diagnostic-only, transient (not persisted): see boost_sim.h. */
+    const cJSON *fsweep = cJSON_GetObjectItemCaseSensitive(root, "demoFastSweep");
+    if (cJSON_IsBool(fsweep)) {
+        boost_sim_set_fast_sweep(cJSON_IsTrue(fsweep));
     }
 
     const cJSON *vface = cJSON_GetObjectItemCaseSensitive(root, "vaultFace");

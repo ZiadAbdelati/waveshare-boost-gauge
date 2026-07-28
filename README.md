@@ -418,6 +418,40 @@ For smoother animation, reduce frame rate, palette complexity, changed-pixel
 area, or use a purpose-built low-area LVGL animation. Native 466×466 GIFs avoid
 additional scaling work, but still need to fit the decode/render budget.
 
+### Fast-motion cadence on vault-tec (regionDBuf ON)
+
+The whole-run `dyno-cell`/demo cadence guard (min ≥60) averages over a demo
+sweep whose slew rate varies continuously, which hides exactly the regime a
+user actually watches the needle react to: the fast segments. Isolated with
+`tools/bench_fast_motion.py` (two independent methods — a controlled
+constant-slew triangle sweep, and empirical velocity correlation against the
+unmodified organic demo waveform; both committed, both reproducible):
+
+| Regime | renderFps median | worstRenderUs median | framesOverBudget/s |
+|---|---:|---:|---:|
+| Controlled sweep, regionDBuf ON, 9.79 psi/s sustained | 59 (min 52) | 31,684 | 1 |
+| Controlled sweep, regionDBuf OFF (tears — reference only) | 60 (min 58) | 21,322 | 1 |
+| Organic demo, fastest quartile of seconds (~8 psi/s) | 41.5 (min 35) | 35,044 | 21.5 |
+| Organic demo, slowest quartile of seconds (~0.7 psi/s) | 55.0 (min 33) | 29,216 | 6.5 |
+
+Root cause: `te_wait_for_region()` (`main/boost_display.c`) decides whether a
+burst can skip its TE wait from the **union** of `top_row`/`bottom_row`
+across *every* span in the cycle, not each span's own range. The vault
+needle and the six digit-slot labels sit far apart on screen and both
+change on almost every 16 ms tick once psi is moving at all — during fast
+motion this is true on essentially every cycle, so the combined row range is
+wide almost every time, which makes the early/late proof fail more often and
+forces a real wait. When that wait lands after ~13.6 ms of rasterisation has
+already elapsed, the cycle's total cost roughly doubles to a second TE
+period, which reads as a stutter, not a rate reduction. Not fixed this
+session: the safety proof is exactly what a user's own eyes verified
+tear-free, and improving its precision (using actual per-span transfer time
+instead of the row-span union) needs a fresh visual check before being
+trusted, which no session without hardware eyes-on can provide. See the
+AGENTS.md ledger ("Fast-motion cadence isolated..." row) for the full
+writeup, the proof sketch for the untaken fix, and why a RAMWRC-based
+per-chunk command reduction was also investigated and not shipped.
+
 ### Host-only UI development
 
 ```bash
