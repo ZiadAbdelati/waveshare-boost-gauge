@@ -182,7 +182,7 @@ static int state_json(char *json, size_t len)
                     "\"display\":{\"renderFps\":%lu,\"flushesPerSecond\":%lu,\"pixelsPerSecond\":%lu,"
                     "\"worstRenderUs\":%lu,\"renderGapP50Us\":%lu,"
                     "\"renderGapMaxUs\":%lu,\"framesOverBudget\":%lu,"
-                    "\"tePeriodUs\":%lu,\"teWaits\":%lu,\"teTimeouts\":%lu},"
+                    "\"tePeriodUs\":%lu,\"teWaits\":%lu,\"teTimeouts\":%lu,\"teSkips\":%lu},"
                     /* Raw sensor readings so a bench check against a known value
                      * (atmospheric ~101.3 kPa, gauge ~0 psi engine-off) is
                      * possible without the display. */
@@ -200,6 +200,7 @@ static int state_json(char *json, size_t len)
                     (unsigned long)st.display.te_period_us,
                     (unsigned long)st.display.te_waits,
                     (unsigned long)st.display.te_timeouts,
+                    (unsigned long)st.display.te_skips,
                     st.ads_present ? "true" : "false",
                     st.bmp_present ? "true" : "false",
                     st.sensor_fault ? "true" : "false",

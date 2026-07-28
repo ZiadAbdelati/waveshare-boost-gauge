@@ -114,8 +114,26 @@
  * If the last edge is younger than this, blanking has only just started and
  * the write can go immediately - waiting would burn a whole extra frame for
  * nothing. Rasterisation of the first strip usually lands us here.
+ *
+ * Used by the per-flush path (te_wait_for_vblank, region-dbuf OFF) where the
+ * write always starts at the panel's top row, so "close enough to vblank" is
+ * the only condition available. region-dbuf ON uses te_wait_for_region()
+ * below instead, which knows the burst's actual top row and so is not
+ * limited to this fixed window - this constant remains its fallback for the
+ * first ~2 s after boot, before the panel's period has been measured.
  */
 #define BOOST_LCD_TE_FRESH_US 2000u
+
+/*
+ * Rows of slack subtracted from the estimated scan position before
+ * te_wait_for_region() decides a skip is safe: covers ISR-to-LVGL-task wake
+ * latency and the row-time estimate's own quantisation, both of which bias
+ * the raw arithmetic toward optimism. Conservative default, not tuned
+ * against hardware - tightening it needs an A/B against teSkips/teTimeouts
+ * and, since the payoff is invisible, the user's own eyes on the glass (see
+ * the ledger method rules: snapshots cannot show a tear by construction).
+ */
+#define BOOST_LCD_TE_ROW_MARGIN 20
 
 /*
  * CO5300 0x44 (set_tear_scanline) moves the TE assertion off V-blank to a
@@ -172,7 +190,13 @@ static bool s_te_period_logged;
 static bool s_te_gate_armed;               /* LVGL task only */
 static uint32_t s_te_waits;
 static uint32_t s_te_timeouts;
+static uint32_t s_te_skips;   /* te_wait_for_region() proved a wait unnecessary */
 static uint8_t s_te_miss_streak;
+/* Panel row time in ns, derived from the measured TE period once
+ * te_log_period_once() has enough samples; 0 until then. Nanoseconds (not
+ * microseconds) so te_wait_for_region()'s scan-position estimate keeps a
+ * useful amount of precision without floating point. */
+static uint32_t s_te_row_time_ns;
 
 /*
  * Not installed with ESP_INTR_FLAG_IRAM - the touch driver registers a
@@ -282,6 +306,114 @@ static void te_wait_for_vblank(void)
 }
 
 /*
+ * Fix 2. Called on the LVGL task, once per render cycle, from
+ * region_dbuf_writeback() right before its burst - `top_row`/`bottom_row`
+ * bound the rows the burst is about to write (min y0 / max y1 across the
+ * sorted spans).
+ *
+ * te_wait_for_vblank() above always assumes the write starts at row 0, so
+ * "safe to go now" can only mean "very close to the vblank edge"
+ * (BOOST_LCD_TE_FRESH_US, a fixed 2 ms window). That assumption is wrong
+ * here on two counts: region-dbuf's burst does not start at row 0, it starts
+ * at top_row (frequently >100 for a needle/label update well down the
+ * panel); and by the time this runs, ~13.6 ms of rasterisation has usually
+ * already elapsed since RENDER_START, so the 2 ms window is stale on almost
+ * every cycle - measured worst case, that forces a wait for the NEXT edge,
+ * costing up to a full extra ~16.75 ms period on top of the raster time =
+ * the observed 32 ms tail.
+ *
+ * The actual requirement is simpler than "start at vblank": with the write
+ * now measured FASTER than the panel's scan (see the retraction block
+ * comment above - 31.3 us/row write including memcpy vs 35.95 us/row scan),
+ * there are TWO provably tear-free windows to start in, not one:
+ *
+ *   (a) EARLY: the scan has not yet reached top_row this pass. Proof sketch:
+ *       let f(R) = time-for-write-to-reach-row-R - time-for-scan-to-reach-
+ *       row-R for R in [top_row, bottom_row]. f is monotonically DEcreasing
+ *       in R because the write is faster per row than the scan. If
+ *       f(top_row) <= 0 - the scan has not yet passed top_row - then
+ *       f(R) <= 0 for every later R too (write never falls behind): no tear
+ *       anywhere in the burst.
+ *   (b) LATE: the scan has already passed bottom_row this pass, i.e. it
+ *       will not re-enter the burst's row range until its NEXT pass. Then
+ *       f(top_row) >= 0 (scan is already past) AND f(bottom_row) >= 0 (the
+ *       write, even starting from top_row, cannot cover ground fast enough
+ *       to catch a scan that already has a head start over the ENTIRE
+ *       burst height - the write is only ~13% faster per row, not enough to
+ *       close a multi-row head start within one burst's own width). f
+ *       decreasing and non-negative at both ends means it stays
+ *       non-negative throughout: the scan reads OLD data for the whole
+ *       region this pass, and the burst's new data shows cleanly on the
+ *       panel's NEXT pass. No tear, and no half-frame-old flicker either -
+ *       "next pass" is ~16.75 ms away, not user-visible as staleness.
+ *
+ * (The THIRD case - scan currently somewhere INSIDE [top_row, bottom_row] -
+ * is the genuinely unsafe middle, and is deliberately NOT approximated here;
+ * it falls back to waiting for the next edge, i.e. today's behaviour.)
+ *
+ * Scan position is estimated from elapsed time since the last TE edge and
+ * the panel's own measured period (s_te_row_time_ns, set once by
+ * te_log_period_once() - unavailable for the first ~2 s after boot, when
+ * this falls back to the same FRESH_US window te_wait_for_vblank() uses).
+ * This is deliberately conservative: it only skips the wait when it can
+ * prove doing so is safe, and degrades to the pre-fix behaviour (never
+ * worse) otherwise.
+ */
+static void te_wait_for_region(int top_row, int bottom_row)
+{
+    if (!s_te_active || !s_te_enabled) {
+        return;
+    }
+
+    ++s_te_waits;
+
+    if (s_te_edges != 0) {
+        const uint32_t age = (uint32_t)esp_timer_get_time() - s_te_last_edge_us;
+        if (s_te_row_time_ns > 0) {
+            /* age is bounded to roughly one TE period (~16.75 ms) in normal
+             * operation; *1000 keeps this comfortably inside uint32_t even
+             * with an order of magnitude of slack (4.29e9 / 1000 = 4.29e6 us
+             * = 4.29 s) rather than risking overflow from a wider fixed-point
+             * scale. */
+            const int32_t scan_row = (int32_t)((age * 1000u) / s_te_row_time_ns);
+            const bool early = (scan_row + BOOST_LCD_TE_ROW_MARGIN <= top_row);
+            const bool late = (scan_row - BOOST_LCD_TE_ROW_MARGIN >= bottom_row);
+            if (early || late) {
+                s_te_miss_streak = 0;
+                ++s_te_skips;
+                return;
+            }
+        } else if (age < BOOST_LCD_TE_FRESH_US) {
+            /* Period not measured yet (first ~2 s after boot): fall back to
+             * the same fixed-window check te_wait_for_vblank() uses. */
+            s_te_miss_streak = 0;
+            ++s_te_skips;
+            return;
+        }
+    }
+
+    /* Drop the stale edge so the wait below returns on a fresh one. */
+    (void)xSemaphoreTake(s_te_sem, 0);
+
+    if (xSemaphoreTake(s_te_sem, pdMS_TO_TICKS(BOOST_LCD_TE_TIMEOUT_MS)) == pdTRUE) {
+        s_te_miss_streak = 0;
+        return;
+    }
+
+    ++s_te_timeouts;
+    if (s_te_miss_streak < BOOST_LCD_TE_GIVEUP_STREAK) {
+        ++s_te_miss_streak;
+    }
+    if (s_te_miss_streak >= BOOST_LCD_TE_GIVEUP_STREAK && s_te_active) {
+        s_te_active = false;
+        ESP_LOGW(TAG,
+                 "TE: no edge on GPIO%d for %d cycles (%u seen total) - gating off, "
+                 "display may tear but will not stall",
+                 BOOST_LCD_TE_GPIO, BOOST_LCD_TE_GIVEUP_STREAK, (unsigned)s_te_edges);
+    }
+}
+
+/*
  * ---------------------------------------------------------------------------
  * Region double-buffering
  * ---------------------------------------------------------------------------
@@ -337,6 +469,87 @@ static void te_wait_for_vblank(void)
  * 30/median 53-54. The fix below tracks up to BOOST_REGION_DBUF_MAX_SPANS
  * disjoint row-spans per cycle instead of one union, so unrelated dirty areas
  * are transferred separately rather than dragging the gap between them along.
+ *
+ * ---------------------------------------------------------------------------
+ * RETRACTION (branch fix/region-dbuf-worst-case): the 999.0 us figure above
+ * does not reproduce and the "write is SLOWER than scan" conclusion it
+ * supported is wrong.
+ * ---------------------------------------------------------------------------
+ * Re-measured with a committed harness (size sweep 932 B - 37,280 B, three
+ * clocks, 40 reps, completion-to-completion deltas - see the "measurement
+ * nobody can re-run is not evidence" ledger row and README's Animation
+ * performance contract section): the same 18,640 B strip at 80 MHz measures
+ * 575.9 us at quiet boot / 578.1 us under full Wi-Fi+LVGL+HTTP load, not
+ * 999.0 us. That is 28.8 us/row, AGAINST the panel's own measured scan rate
+ * of 35.95 us/row (16,753 us / 466 rows) - the write is ~25% FASTER than the
+ * scan, not slower. Including the PSRAM->internal memcpy (~2.5 us/row at the
+ * measured ~349 MB/s), total write cost is ~31.3 us/row against the same
+ * 35.95 us/row scan: roughly 13% margin, still write-faster-than-scan. The
+ * root cause of the original 999.0 us figure was never found (it was not
+ * committed as inspectable code - see the retraction row); it simply does
+ * not reproduce.
+ *
+ * This changes the closing-gap arithmetic entirely: previously the burst
+ * needed to start below roughly row 86 to have unconditional margin; with
+ * write faster than scan, a burst starting AT OR BEFORE the scan's current
+ * position stays ahead of the scan for its ENTIRE length, not just from
+ * some row onward. See te_wait_for_region() below - this is Fix 2.
+ *
+ * ---------------------------------------------------------------------------
+ * Fix 1 (investigated, NOT implemented): LVGL rendering directly into the
+ * PSRAM canvas, eliminating the LVGL-strip -> canvas memcpy in
+ * te_draw_bitmap_cb ("copy 1").
+ * ---------------------------------------------------------------------------
+ * This needs LVGL's direct render mode (LV_DISPLAY_RENDER_MODE_DIRECT):
+ * LVGL rasterises straight into a full-screen buffer it owns, rather than a
+ * small strip, so there is no intermediate strip to copy out of. The
+ * vendored adapter (managed_components/espressif__esp_lvgl_adapter) DOES
+ * support this - display_manager_pick_render_mode() maps
+ * ESP_LV_ADAPTER_TEAR_AVOID_MODE_DOUBLE_DIRECT to
+ * ESP_LV_ADAPTER_DISPLAY_RENDER_MODE_DIRECT (display_manager.c:1869-1881) -
+ * but display_manager_validate_tearing_mode() (display_manager.c:1814-1864)
+ * only accepts tear_avoid_mode NONE or TE_SYNC for
+ * ESP_LV_ADAPTER_PANEL_IF_OTHER, which is what this QSPI/CO5300 panel uses
+ * (register_display() below). DOUBLE_DIRECT is accepted only for
+ * ESP_LV_ADAPTER_PANEL_IF_RGB / MIPI_DSI. Passing DOUBLE_DIRECT here does
+ * not degrade to something safe - display_manager_validate_tearing_mode()
+ * returns false, esp_lv_adapter_register_display() returns NULL at
+ * display_manager.c:219-221, and boost_display_start() fails outright. This
+ * is a hard block confirmed by reading the vendored source, not a
+ * measurement - no hardware needed to know it fails, and none was used.
+ *
+ * The alternative - bypassing esp_lv_adapter_register_display()'s own mode
+ * picking and calling LVGL's lv_display_set_render_mode()/
+ * lv_display_set_buffers() directly to force direct mode behind the
+ * adapter's back - was considered and rejected without being built. The
+ * adapter's own node state (esp_lv_adapter_display_node_t.cfg) tracks
+ * render_mode/buffer layout for its OTHER entry points (rotation change,
+ * sleep/wake framebuffer refetch, panel rebind); desyncing that from what
+ * LVGL is actually doing is exactly the class of "edit a vendored
+ * component's behaviour without it knowing" failure this repo has already
+ * paid for twice (the phantom 60 MHz QSPI trial reverted by a dependency
+ * refresh; bsp_display_brightness_set()'s file-static panel_handle left
+ * NULL after panel_new() took over bring-up). Unlike those two, this one
+ * cannot even be evaluated without hardware, and hardware is the one thing
+ * not available while writing this. Per the task's own instruction: this is
+ * a genuine blocker, so it falls back to optimising copy 1 instead of
+ * removing it (below), not to a behind-the-back hack.
+ *
+ * Copy 1 optimisation actually made (te_draw_bitmap_cb): when the strip is
+ * full panel width (x_start==0, x_end==BSP_LCD_H_RES - the common case for
+ * most invalidated areas, though NOT the vault needle's column-narrow
+ * wedge), source rows (color_map, already stride-compacted to exactly
+ * `cols` per row) and destination rows (canvas stride BSP_LCD_H_RES) are
+ * BOTH contiguous across the whole strip, so the per-row memcpy loop
+ * collapses to one memcpy of rows*cols*2 bytes. This removes (rows-1) memcpy
+ * call overheads per full-width strip; it does not touch the per-row path
+ * needed when the strip is narrower than the panel, which cannot collapse
+ * (destination rows are not contiguous when x_start > 0 or x_end <
+ * BSP_LCD_H_RES). This is a real but modest reduction in call overhead, not
+ * a change in bytes moved - it has NOT been measured on hardware, and PSRAM
+ * write bandwidth/cache behaviour for the ORIGINAL idea (LVGL rasterising
+ * into PSRAM directly) was never measured either, because the adapter
+ * block above makes that measurement moot for this panel interface.
  */
 #define BOOST_REGION_DBUF_QUEUE_DEPTH CONFIG_BSP_LCD_TRANS_QUEUE_DEPTH
 
@@ -476,14 +689,11 @@ static bool region_dbuf_alloc(void)
  */
 static void region_dbuf_writeback(void)
 {
-    if (s_te_gate_armed) {
-        s_te_gate_armed = false;
-        te_wait_for_vblank();
-    }
-
     /* Small N (<= BOOST_REGION_DBUF_MAX_SPANS): selection sort by y0 is
      * plenty cheap and keeps the burst's row order (and hence the scan-race
-     * margin) predictable. */
+     * margin) predictable. Sorted BEFORE the TE-wait decision below (Fix 2) -
+     * te_wait_for_region() needs the burst's actual topmost row, which is
+     * only known once this is sorted. */
     for (int i = 0; i < s_region_span_count - 1; ++i) {
         int min_idx = i;
         for (int j = i + 1; j < s_region_span_count; ++j) {
@@ -494,6 +704,28 @@ static void region_dbuf_writeback(void)
             s_region_spans[i] = s_region_spans[min_idx];
             s_region_spans[min_idx] = tmp;
         }
+    }
+
+    if (s_te_gate_armed) {
+        s_te_gate_armed = false;
+        /* s_region_span_count == 0 cannot happen here: the caller
+         * (display_metrics_event_cb) only invokes region_dbuf_writeback()
+         * when s_region_has_data is true, which te_draw_bitmap_cb only sets
+         * alongside adding at least one span. Guarded anyway rather than
+         * trusting that invariant across a future refactor.
+         *
+         * bottom_row is the max y1 across ALL spans, not just the last one
+         * after the y0-sort above: spans are usually also y1-ordered after
+         * that sort (region_span_add keeps them disjoint by y), but the
+         * "extend nearest span" fallback path (span budget exhausted) can
+         * break that, so this scans explicitly rather than assuming it. */
+        int top_row = 0;
+        int bottom_row = 0;
+        for (int i = 0; i < s_region_span_count; ++i) {
+            if (i == 0 || s_region_spans[i].y0 < top_row) top_row = s_region_spans[i].y0;
+            if (s_region_spans[i].y1 > bottom_row) bottom_row = s_region_spans[i].y1;
+        }
+        te_wait_for_region(top_row, bottom_row);
     }
 
     for (int s = 0; s < s_region_span_count; ++s) {
@@ -558,9 +790,23 @@ static esp_err_t te_draw_bitmap_cb(lv_display_t *disp, esp_lcd_panel_handle_t pa
         const int rows = y_end - y_start;
         const int cols = x_end - x_start;
         const uint16_t *src = (const uint16_t *)color_map;
-        for (int r = 0; r < rows; ++r) {
-            uint16_t *dst_row = s_region_canvas + (size_t)(y_start + r) * BSP_LCD_H_RES + x_start;
-            memcpy(dst_row, src + (size_t)r * cols, (size_t)cols * sizeof(uint16_t));
+        uint16_t *dst_row = s_region_canvas + (size_t)y_start * BSP_LCD_H_RES + x_start;
+        if (cols == BSP_LCD_H_RES) {
+            /* Full panel width: source (stride-compacted to `cols`) and
+             * destination (canvas stride is exactly BSP_LCD_H_RES) are both
+             * contiguous across the whole strip, so this collapses to one
+             * memcpy instead of `rows` of them. See the "Fix 1 (investigated,
+             * NOT implemented)" block comment above - this is the fallback
+             * optimisation for copy 1, not a replacement for eliminating it. */
+            memcpy(dst_row, src, (size_t)rows * (size_t)cols * sizeof(uint16_t));
+        } else {
+            /* Narrower than the panel (e.g. the vault needle's column-narrow
+             * wedge): destination rows are BSP_LCD_H_RES apart, not `cols`
+             * apart, so they cannot be collapsed - copy row by row. */
+            for (int r = 0; r < rows; ++r) {
+                memcpy(dst_row + (size_t)r * BSP_LCD_H_RES, src + (size_t)r * cols,
+                       (size_t)cols * sizeof(uint16_t));
+            }
         }
         region_span_add(x_start, y_start, x_end, y_end);
         s_region_has_data = true;
@@ -583,6 +829,11 @@ static void te_log_period_once(void)
     s_te_period_logged = true;
     const uint32_t mean_us = s_te_probe_sum_us / BOOST_LCD_TE_PROBE_N;
     if (mean_us > 0) {
+        /* Row time for te_wait_for_region()'s scan-position estimate (Fix 2).
+         * mean_us * 1000 / BSP_LCD_V_RES: e.g. 16,753 us * 1000 / 466 =
+         * 35,952 ns/row, matching the panel's independently-measured
+         * ~35.95 us/row scan rate. */
+        s_te_row_time_ns = (mean_us * 1000u) / BSP_LCD_V_RES;
         ESP_LOGI(TAG, "TE period %u us measured over %u edges (%u.%u Hz panel scan)",
                  (unsigned)mean_us, (unsigned)BOOST_LCD_TE_PROBE_N,
                  (unsigned)(1000000u / mean_us),
@@ -682,8 +933,10 @@ static void display_metrics_event_cb(lv_event_t *e)
         te_log_period_once();
         s_metrics.te_waits = s_te_waits;
         s_metrics.te_timeouts = s_te_timeouts;
+        s_metrics.te_skips = s_te_skips;
         s_te_waits = 0;
         s_te_timeouts = 0;
+        s_te_skips = 0;
 #endif
         s_gap_n = 0;
         s_gap_max_us = 0;

@@ -43,6 +43,14 @@ typedef struct {
     uint32_t te_period_us;
     uint32_t te_waits;
     uint32_t te_timeouts;
+    /* Region-dbuf's adaptive wait (te_wait_for_region(), Fix 2): count of
+     * cycles per second where the estimated panel scan position was proven
+     * to be either before the burst's dirty rows or already past all of
+     * them, so the vblank wait was skipped as unnecessary rather than
+     * burning up to a full ~16.75 ms period. 0 when region-dbuf is off (the
+     * per-flush path still uses the older fixed-window check, which is not
+     * counted here). */
+    uint32_t te_skips;
 } boost_display_metrics_t;
 
 lv_display_t *boost_display_start(void);
