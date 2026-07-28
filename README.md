@@ -352,23 +352,52 @@ deletion the physical gauge resumed and PSI changed.
 ### Animation performance contract
 
 GIF playback is an exclusive LVGL path. A 466×466 RGB565 frame is about
-**434 KB**. **Measured** on hardware, an 18,640-byte strip takes **999 µs** to
-transfer at the active 80 MHz clock (200 back-to-back transfers, avg 999.0,
-min 997, max 999) — a real link rate of **18.7 MB/s**. That puts the
-transfer-only floor for a full frame at about **23.3 ms (≈43 FPS)**, before GIF
-decoding and LVGL rendering.
+**434 KB**. The transfer cost of a strip is **linear in its size**, measured by
+sweeping transfer sizes from 932 B to 37,280 B at three clocks (40 reps each,
+completion-to-completion deltas, no chunking boundary anywhere in that range):
 
-That is **2.1× slower than the arithmetic** suggests. 80 MHz over 4 data lines
-computes to 40 MB/s and a 10.9 ms floor; the hardware does not deliver it, and
-per-transfer overhead is the likely difference. Two earlier revisions of this
-paragraph quoted the arithmetic as though it were a measurement — first for a
-60 MHz clock that was never active at all (see the ledger row "Documented a
-setting that was never in effect"), then for 80 MHz. Both were wrong in the same
-way. The figure above is the first one taken from the panel.
+| clock | slope | link rate | vs theory | fixed intercept |
+|-------|-------|-----------|-----------|-----------------|
+| 80 MHz | 0.02539 µs/B | **39.4 MB/s** | 98.5% | 106.3 µs |
+| 40 MHz | 0.05041 µs/B | 19.8 MB/s | 99.2% | 108.2 µs |
+| 20 MHz | 0.10045 µs/B | 10.0 MB/s | 99.6% | 115.1 µs |
+
+The slope halves exactly with the clock while the intercept does not move, which
+is what separates the two costs: the bus itself runs at essentially the full
+arithmetic rate, and there is a **clock-independent ~106 µs of software overhead
+per transfer** — three separate blocking calls (CASET, RASET, RAMWR), each with
+its own bus acquire/release. The raw command bits account for under 1 µs of it.
+
+A full frame is 24 transfers (23 × 20 lines + one 6-line remainder), so the
+transfer-only floor is **13.6 ms (≈74 FPS)**, before GIF decoding and LVGL
+rendering. Of that, 11.0 ms is pixel data and 2.5 ms is per-transfer overhead.
+
+The clock is confirmed at the requested rate two independent ways:
+`spi_device_get_actual_freq()` returns exactly 80000/40000/20000 kHz for the
+three requests, and the measured throughput tracks theory to within 1.5%. The
+pins are entirely GPIO-matrix routed (PCLK=GPIO38 is not an SPI2 IOMUX pin), but
+that costs nothing here — the IOMUX-vs-matrix frequency penalty is **ESP32-only**
+and does not apply to the S3 at or below 80 MHz.
+
+> **Three earlier revisions of this paragraph were wrong**, each in a way the
+> next one failed to catch. The first two quoted arithmetic as though it were a
+> measurement — once for a 60 MHz clock that was never active (see the ledger row
+> "Documented a setting that was never in effect"), then for 80 MHz. The third
+> over-corrected: it reported a genuinely-taken but unreproducible measurement of
+> 999 µs per strip / 18.7 MB/s / 23.3 ms per frame, and built a "the hardware
+> does not deliver the arithmetic" conclusion on top of it. That figure does not
+> reproduce — the same strip size at the same clock and queue depth measures
+> 575.9 µs, consistently, under both quiet-boot and fully-loaded conditions. The
+> original measurement was never committed as inspectable code, only described in
+> a commit message, so the cause could not be found. **The lesson is not "measure
+> instead of calculating" — it is that a measurement nobody can re-run is not
+> evidence.** The table above comes from a harness that was committed before its
+> numbers were quoted.
 
 This does not change the conclusion that the QSPI clock is not the lever for
-partial-update faces — it raises measured bus utilisation from ~6% to ~12%,
-which is still far from the constraint.
+partial-update faces — bus utilisation on a needle update is a few percent, far
+from the constraint. The ~106 µs intercept is the only part worth attacking, and
+only for full-frame work.
 
 The uploaded 466×466 fixture (`IMG_5325-ezgif.com-optimize (2).gif`) is
 1,379,129 bytes, 101 frames, 3.37 seconds, and nominally 30 FPS. On the board
