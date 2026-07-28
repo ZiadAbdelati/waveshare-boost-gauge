@@ -352,14 +352,23 @@ deletion the physical gauge resumed and PSI changed.
 ### Animation performance contract
 
 GIF playback is an exclusive LVGL path. A 466×466 RGB565 frame is about
-**434 KB**; at the active **80 MHz** CO5300 QSPI clock (`BOOST_LCD_PCLK_HZ`,
-4 data lines → 40 MB/s) that is a transfer-only floor of about **10.9 ms
-(≈92 FPS)**, before GIF decoding and LVGL rendering.
+**434 KB**. **Measured** on hardware, an 18,640-byte strip takes **999 µs** to
+transfer at the active 80 MHz clock (200 back-to-back transfers, avg 999.0,
+min 997, max 999) — a real link rate of **18.7 MB/s**. That puts the
+transfer-only floor for a full frame at about **23.3 ms (≈43 FPS)**, before GIF
+decoding and LVGL rendering.
 
-(An earlier revision of this paragraph cited a "60 MHz trial" — that trial never
-existed; see the ledger row "Documented a setting that was never in effect". The
-14.5 ms / 69.1 FPS figure it quoted was the arithmetic for 60 MHz, which was
-never the active clock.)
+That is **2.1× slower than the arithmetic** suggests. 80 MHz over 4 data lines
+computes to 40 MB/s and a 10.9 ms floor; the hardware does not deliver it, and
+per-transfer overhead is the likely difference. Two earlier revisions of this
+paragraph quoted the arithmetic as though it were a measurement — first for a
+60 MHz clock that was never active at all (see the ledger row "Documented a
+setting that was never in effect"), then for 80 MHz. Both were wrong in the same
+way. The figure above is the first one taken from the panel.
+
+This does not change the conclusion that the QSPI clock is not the lever for
+partial-update faces — it raises measured bus utilisation from ~6% to ~12%,
+which is still far from the constraint.
 
 The uploaded 466×466 fixture (`IMG_5325-ezgif.com-optimize (2).gif`) is
 1,379,129 bytes, 101 frames, 3.37 seconds, and nominally 30 FPS. On the board
