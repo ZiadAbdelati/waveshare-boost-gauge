@@ -653,36 +653,69 @@ static bool region_dbuf_alloc(void)
  *     later span's EARLY test would be unsafe in the wrong direction - it
  *     would UNDERSTATE how far the scan will really have moved by the time
  *     the write gets there. So the estimate used for span i's EARLY test is
- *     projected forward by a deliberately pessimistic estimate of how long
- *     transferring spans 0..i-1 takes: their combined row count PLUS a fixed
- *     overhead per BOOST_LVGL_BUF_LINES-row chunk (each one pays its own
- *     CASET/RASET/RAMWR intercept - see the README's Animation performance
- *     contract), both expressed in the SCAN's own (slower, ~35.95 us/row)
- *     row time rather than the write's (faster, ~31.3 us/row measured) row
- *     time, and BOOST_REGION_DBUF_CHUNK_OVERHEAD_US rounded UP from the
- *     ~106 us measured intercept. Every one of those substitutions makes the
- *     projection arrive LATER than reality, never earlier: overestimating
- *     elapsed time can only make a later span's EARLY test harder to pass,
- *     never wrongly satisfy it.
+ *     projected forward by a deliberately pessimistic (but not needlessly
+ *     so - see below) estimate of how long transferring spans 0..i-1 takes:
+ *     their combined row count at the WRITE's own measured row time
+ *     (BOOST_REGION_DBUF_WRITE_ROW_TIME_NS, ~31.3 us/row measured, rounded up
+ *     to 32 us/row) PLUS a fixed overhead per BOOST_LVGL_BUF_LINES-row chunk
+ *     (each one pays its own CASET/RASET/RAMWR intercept -
+ *     BOOST_REGION_DBUF_CHUNK_OVERHEAD_US, rounded up from the ~106 us
+ *     measured intercept), both converted to the SCAN's row-time units
+ *     (s_te_row_time_ns) since it is the scan's future position being
+ *     projected, and both roundings up (ceiling division): under-estimating
+ *     elapsed time is the unsafe direction here, so every rounding is chosen
+ *     to overestimate, never underestimate, how far the scan will have moved.
  *
- * Provably at least as safe as the Fix 2 union version, not just faster:
- * union-EARLY used the first span's own y0 (top_row already equals it, since
- * spans are sorted by y0) - so union-EARLY implies THIS span's EARLY test
- * for span 0 (rows_before is 0 there, identical to Fix 2), and once the
- * write is ahead of the scan for the very first row it touches, every span
- * after it only gains lead time (a skipped gap costs the write ~0 rows while
- * the scan keeps moving), so union-EARLY implies every later span's EARLY
- * test too. Union-LATE used the LAST span's y1 - if the scan has already
- * passed the highest row the whole burst touches, it has necessarily already
- * passed every lower span's rows as well, so union-LATE implies every span's
- * own LATE test. Anything the union proof could skip, this can still skip;
- * this additionally skips cycles where no single blanket claim holds but
- * every individual span still has its own valid proof (the needle-is-late /
- * far-label-is-early case above) - a strictly more precise version of the
- * exact same argument, not a looser one. Any span that cannot be proved
- * either way still forces the real wait below - never worse than Fix 2.
+ * An earlier version of this function used the SCAN's row time (not the
+ * write's) for the elapsed-time estimate above, on the theory that "slower
+ * than the real write" is simply more conservative. It is conservative, but
+ * it turned out to be conservative enough to cost real skips: a hardware A/B
+ * on this branch measured a regression (fast-sweep renderFps median dropping
+ * from 59 to 54-57 versus the Fix 2 union baseline) traced to exactly this -
+ * an ordinary tall first span (the needle near vertical is ~150-200 rows)
+ * alone inflated the projected scan position enough that spans the union
+ * check called EARLY could no longer be proved EARLY here. Using the write's
+ * own (faster, but still rounded-up-conservative) rate fixes that.
+ *
+ * At least as safe as the Fix 2 union version for the two cases Fix 2 itself
+ * handled (a single span, or the FIRST span of a multi-span cycle): rows_before
+ * is 0 there, so this test is identical to Fix 2's. For a SECOND or later
+ * span, this is a materially different (and, per the paragraph above,
+ * DELIBERATELY not maximally conservative) calculation from anything Fix 2
+ * did, so "union-EARLY implies every span's own EARLY" is not claimed as an
+ * exact identity for every possible span geometry (two spans separated by a
+ * gap of only a handful of rows could, in principle, see this be marginally
+ * more conservative than an idealized real-write-speed projection would be -
+ * BOOST_LCD_TE_ROW_MARGIN's existing 20-row slack absorbs most of that). What
+ * is true, and is the actual safety property this relies on: every estimate
+ * feeding an EARLY decision is chosen to overestimate real elapsed time, so
+ * EARLY is only ever claimed when the (pessimistic) numbers prove it, the
+ * same standard Fix 2 held itself to - this is a more precise application of
+ * that standard to disjoint spans, not a loosening of it. Any span that
+ * cannot be proved either way still forces the real wait below - never worse
+ * than falling back to Fix 2's behaviour.
  */
 #define BOOST_REGION_DBUF_CHUNK_OVERHEAD_US 150u
+
+/*
+ * Rounded UP from the measured ~31.3-31.45 us/row write cost including the
+ * PSRAM->internal memcpy (README's Animation performance contract /
+ * bench_region_dbuf.py: 575.9-578.1 us for an 18,640 B / 20-line strip, plus
+ * ~50.9 us memcpy for the same block). Deliberately the WRITE's own row
+ * time, NOT the scan's slower ~35.95 us/row (s_te_row_time_ns) - using the
+ * scan's rate here was the bug an early hardware A/B on this branch caught:
+ * it values every row of an earlier span as if the write moved at the SAME
+ * speed as the panel scans it, so an ordinary tall span (e.g. the needle
+ * near vertical, ~150-200 rows) alone could inflate the projected scan
+ * position enough to turn spans the old union check called EARLY into ones
+ * this could no longer prove - a real, measured regression on the fast
+ * sweep (renderFps median 59->54-57 across repeated runs), not a hypothetical
+ * one. Using the write's own (faster) rate here removes that false cost;
+ * the conversion to scan-row units below still (correctly) divides by the
+ * scan's own rate, because what is actually being asked is "how far will the
+ * SCAN have moved," not "how many write-rows is that."
+ */
+#define BOOST_REGION_DBUF_WRITE_ROW_TIME_NS 32000u
 
 static void te_wait_for_region_spans(const region_span_t *spans, int count)
 {
@@ -698,10 +731,8 @@ static void te_wait_for_region_spans(const region_span_t *spans, int count)
          * an order of magnitude of slack, same as Fix 2. */
         const uint32_t age = (uint32_t)esp_timer_get_time() - s_te_last_edge_us;
         const int32_t scan_row_now = (int32_t)((age * 1000u) / s_te_row_time_ns);
-        const uint32_t chunk_overhead_rows =
-            (uint32_t)((uint64_t)BOOST_REGION_DBUF_CHUNK_OVERHEAD_US * 1000u / s_te_row_time_ns);
 
-        uint32_t rows_before = 0;   /* pessimistic elapsed-time-so-far, in scan-row units */
+        uint32_t rows_before = 0;   /* pessimistic elapsed-time-so-far, in SCAN-row units */
         bool all_provable = true;
         for (int i = 0; i < count; ++i) {
             const int y0 = spans[i].y0;
@@ -719,11 +750,19 @@ static void te_wait_for_region_spans(const region_span_t *spans, int count)
             }
 
             /* Whether this span was proved LATE or EARLY, the write still
-             * spends real time transferring it before the next span's
-             * transfer can start - accumulate that pessimistic cost for the
-             * next span's EARLY projection. */
+             * spends real wall-clock time transferring it before the next
+             * span's transfer can start - accumulate that pessimistic cost,
+             * in SCAN-row-equivalent units, for the next span's EARLY
+             * projection. Both terms round UP (ceiling division): under-
+             * estimating elapsed time is the unsafe direction for an EARLY
+             * proof, so every rounding here is chosen to overestimate,
+             * matching the rest of this function's conservative bias. */
             const uint32_t chunks = ((uint32_t)height + BOOST_LVGL_BUF_LINES - 1) / BOOST_LVGL_BUF_LINES;
-            rows_before += (uint32_t)height + chunks * chunk_overhead_rows;
+            const uint32_t rows_for_height = (uint32_t)(((uint64_t)height * BOOST_REGION_DBUF_WRITE_ROW_TIME_NS
+                                                          + s_te_row_time_ns - 1) / s_te_row_time_ns);
+            const uint32_t rows_for_chunks = (uint32_t)(((uint64_t)chunks * BOOST_REGION_DBUF_CHUNK_OVERHEAD_US * 1000u
+                                                          + s_te_row_time_ns - 1) / s_te_row_time_ns);
+            rows_before += rows_for_height + rows_for_chunks;
         }
 
         if (all_provable) {
