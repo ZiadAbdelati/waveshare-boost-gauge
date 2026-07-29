@@ -467,6 +467,26 @@ of this fix had (using the scan's row time instead of the write's own,
 which caused a real measured regression before being corrected), and why a
 RAMWRC-based per-chunk command reduction is still not shipped.
 
+
+**Needle raster cost fixed:** the Vault-Tec wedge was submitted as three
+triangles even though two already tile its convex trapezoid exactly; the third
+triangle lay wholly inside that union. LVGL's software triangle renderer still
+allocated/applied three edge masks and blended every covered scanline for the
+redundant task. Removing it preserves the tapered base, blunt tip, colors, hub,
+and dirty-region geometry. A same-firmware runtime A/B isolated only that task:
+two triangles delivered median **60/59 FPS**, raster p50 **8.25/9.58 ms**, and
+**7/17** over-budget frames per 19-second run; restoring the third delivered
+**56/55 FPS**, **9.50/10.84 ms**, and **104/116** over-budget frames. After
+removing the temporary profiler, the production build measured median **60 FPS**
+(min 58), `worstRenderUs` median **17,949 us**, and 8 total over-budget frames
+in the controlled sweep. The organic fastest quartile improved from the
+historical **41.5 FPS / 21.5 over-budget frames** to **55 FPS / 6** in the final
+90-second cross-check, though its single min-21/max-118.9 ms outlier shows the
+tail remains noisy. Fixing the hundredths digit at `0` was also measured: it
+cut transferred pixels by about 10% but did not improve cadence, because the
+tenths digit still changes on nearly every fast-sweep frame. That display
+shortcut is not shipped.
+
 ### Host-only UI development
 
 ```bash

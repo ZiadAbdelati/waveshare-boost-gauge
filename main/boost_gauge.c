@@ -1311,7 +1311,9 @@ static void draw_vault_needle(lv_event_t *e)
     const float tx = cx + (float)VAULT_NEEDLE_LEN * nx;
     const float ty = cy + (float)VAULT_NEEDLE_LEN * ny;
 
-    /* Trapezoid: wide at the hub, blunt at the tip (a spike read as too sharp). */
+    /* Two triangles exactly tile the convex trapezoid. A former third A-B-D
+     * triangle was wholly inside this union and paid LVGL's full mask/raster
+     * cost again without adding geometry. */
     const float tipw = 2.5f;
     lv_draw_triangle_dsc_t tri;
     lv_draw_triangle_dsc_init(&tri);
@@ -1324,10 +1326,6 @@ static void draw_vault_needle(lv_event_t *e)
     tri.p[0].x = bx + hw * px;   tri.p[0].y = by + hw * py;
     tri.p[1].x = tx + tipw * px; tri.p[1].y = ty + tipw * py;
     tri.p[2].x = tx - tipw * px; tri.p[2].y = ty - tipw * py;
-    lv_draw_triangle(layer, &tri);
-    tri.p[0].x = bx + hw * px;   tri.p[0].y = by + hw * py;
-    tri.p[1].x = bx - hw * px;   tri.p[1].y = by - hw * py;
-    tri.p[2].x = tx + tipw * px; tri.p[2].y = ty + tipw * py;
     lv_draw_triangle(layer, &tri);
 
     /* Hub: dark centre with a ring, so the pivot reads as a cap. */
