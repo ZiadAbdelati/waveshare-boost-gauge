@@ -704,7 +704,7 @@ static void on_screen_event(lv_event_t *e)
     if (code == LV_EVENT_PRESSED) {
         s_gesture.active = false;
         s_hold_dim_fired = false;
-        lv_indev_t *indev = lv_indev_get_active();
+        lv_indev_t *indev = lv_indev_get_act();
         if (indev != NULL) {
             lv_point_t point;
             lv_indev_get_point(indev, &point);
@@ -713,7 +713,7 @@ static void on_screen_event(lv_event_t *e)
         return;
     }
     if (code == LV_EVENT_PRESSING) {
-        lv_indev_t *indev = lv_indev_get_active();
+        lv_indev_t *indev = lv_indev_get_act();
         if (indev != NULL) {
             lv_point_t point;
             lv_indev_get_point(indev, &point);
@@ -728,7 +728,7 @@ static void on_screen_event(lv_event_t *e)
         return;
     }
     if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
-        lv_indev_t *indev = lv_indev_get_active();
+        lv_indev_t *indev = lv_indev_get_act();
         if (indev != NULL) {
             lv_point_t point;
             lv_indev_get_point(indev, &point);
