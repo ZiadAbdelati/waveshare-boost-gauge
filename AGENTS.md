@@ -21,6 +21,19 @@ Verified release baseline is firmware `0.3.0-web`; preserve that identity in har
 - `web/`: dashboard source (cockpit + settings views). `main/generated_web_assets.c/.h` are generated outputs only.
 - `tools/embed_web.py`, `web.mk`: web asset regeneration. `tools/mock_server.py` mirrors config/network APIs. `release/`: explicitly produced release artifacts only.
 
+### Theme controls and physical input
+
+`boost_theme.c:s_defaults[]` is the single authoritative theme order. The web
+picker and physical swipes consume that order through `/api/v1/themes` and
+`boost_theme_at()`. A vertical swipe up advances to the next entry; swipe down
+moves to the previous entry. The screen requires 48 px of predominantly
+vertical travel, preserving short-tap peak reset and the two-second brightness
+hold. Theme changes rebuild one LVGL scene under the existing display lock; no
+full-frame transition buffer or animation is used because it would threaten
+the 16 ms partial-refresh path. Vault needle red is a persisted theme setting,
+defaults to green, recolors only the body, and must invalidate the stationary
+needle when changed.
+
 ## Cadence contract
 
 Keep these rates distinct; never use one as a substitute for another:

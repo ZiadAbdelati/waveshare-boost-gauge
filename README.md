@@ -11,10 +11,28 @@ The live MAP path reads a GM 3-bar sensor through an ADS1115, with an optional B
 - Big signed PSI, zone label (`VAC` / `ATMO` / `BOOST` / `OVER`)
 - Peak hold; **short tap** resets peak
 - **Hold ~2s** toggles max/min brightness (100% ↔ 12%)
+- Vault-Tec supports a persisted phosphor-green or signal-red needle selection;
+  red changes only the needle body and leaves the green hub unchanged.
+- A deliberate vertical swipe cycles themes in dashboard order. Swipe up
+  advances (`Dyno Cell` -> `Vault-Tec` -> `Night City` -> `Big Digit` ->
+  `Dyno Cell`); swipe down moves backward. Taps and the existing brightness
+  hold retain their behavior.
 - Top chip reads `DEMO` until a live sensor path sets `sample.demo = false`
 - Samples, the unified-color filled arc, center PSI, and peak hold update every 16 ms (~60 Hz). The physical gauge remains on that cadence while network telemetry is intentionally decoupled from the display loop.
 
 This firmware **replaces** the factory app launcher.
+
+Theme swipes use the ordered `boost_theme_at()` table, which is also the order
+emitted by `/api/v1/themes` and consumed by the web picker. A swipe requires at
+least 48 px of predominantly vertical travel, avoiding noisy diagonal drags.
+Theme changes persist through the active-theme model path and rebuild the LVGL
+scene in the existing locked LVGL context.
+
+There is intentionally no crossfade or slide animation. The live gauge uses
+partial internal-DMA strips and rich faces cache static art in PSRAM; a smooth
+transition would require unsafe full-frame dual-scene storage or an expensive
+full-panel repaint that would violate the 16 ms display budget. The bounded
+transition is an immediate single-scene swap rather than a misleading effect.
 
 ## Layout
 

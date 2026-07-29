@@ -687,11 +687,15 @@ output {
   border-radius: 8px;
 }
 .theme-color-row,
+.theme-select-row,
 .theme-toggle-row {
   display: flex;
   align-items: center;
   gap: 0.6rem;
   font-size: 0.8rem;
+}
+.theme-select-row select {
+  min-width: 9.5rem;
 }
 .theme-color-row input[type="color"] {
   width: 2.4rem;

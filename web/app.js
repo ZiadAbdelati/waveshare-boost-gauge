@@ -92,6 +92,7 @@ const state = {
   pixelShiftSec: 90,
   demoMode: false,
   rotation: 0,
+  vaultNeedleRed: false,
   /* Whole GET /sensors/calibration body, folded back in from every response so
    * the settings render never reads a half-updated mirror. Null until the first
    * poll lands. */
@@ -557,6 +558,7 @@ function drawVaultGauge(sample, psi, g) {
   const vignAlpha = (state.vaultVignette ?? 60) / 100;
   const green = p.text;
   const warn = p.overboost;
+  const needle = state.vaultNeedleRed ? "#FF3B30" : (psi >= range.psiOverboost ? warn : green);
   const dim = p.muted;
   /* Same 270° face + zero-angle mapping as Dyno Cell, so the settings-page
    * zero position and vacuum/boost scaling are honored here too. */
@@ -684,7 +686,7 @@ function drawVaultGauge(sample, psi, g) {
   ctx.lineTo(2, -150);
   ctx.lineTo(-2, -150);
   ctx.closePath();
-  ctx.fillStyle = psi >= range.psiOverboost ? warn : green;
+  ctx.fillStyle = needle;
   ctx.fill();
   ctx.restore();
   ctx.beginPath();
@@ -1388,6 +1390,7 @@ function queueThemeConfig(body, okMsg) {
       state.rotation = Number(payload.rotation) || 0;
       state.vaultFace = payload.vaultFace || state.vaultFace;
       if (payload.vaultVignette !== undefined) state.vaultVignette = payload.vaultVignette;
+      if (payload.vaultNeedleRed !== undefined) state.vaultNeedleRed = !!payload.vaultNeedleRed;
       const active = state.themes.find((t) => t.id === state.activeThemeId);
       if (active) setTheme(active);
       renderThemes();
@@ -1474,6 +1477,24 @@ function themeEditor(theme) {
     });
     vrow.append(vname, vin);
     wrap.append(vrow);
+
+    const nrow = document.createElement("label");
+    nrow.className = "theme-select-row";
+    const nselect = document.createElement("select");
+    nselect.innerHTML = `
+      <option value="green">Phosphor green</option>
+      <option value="red">Signal red</option>
+    `;
+    nselect.value = state.vaultNeedleRed ? "red" : "green";
+    nselect.addEventListener("change", () => {
+      state.vaultNeedleRed = nselect.value === "red";
+      scheduleGaugeRender();
+      queueThemeConfig({ vaultNeedleRed: state.vaultNeedleRed });
+    });
+    const nname = document.createElement("span");
+    nname.textContent = "Needle colour";
+    nrow.append(nname, nselect);
+    wrap.append(nrow);
   }
 
   if (theme.style === "arc") {
@@ -1563,7 +1584,7 @@ function renderThemes() {
         });
         state.activeThemeId = payload.activeThemeId || theme.id;
         state.themes = payload.themes || state.themes;
-        setTheme(theme);
+        setTheme(state.themes.find((t) => t.id === state.activeThemeId) || theme);
         state.config = { ...state.config, activeThemeId: state.activeThemeId };
         renderThemes();
         showOk(`Theme ${theme.name}`);
@@ -1654,6 +1675,7 @@ function wireDisplayToggles() {
       state.demoMode = !!payload.demoMode;
       state.bigDigitStaticBg = !!payload.bigDigitStaticBg;
       state.bigDigitColorText = !!payload.bigDigitColorText;
+      state.vaultNeedleRed = !!payload.vaultNeedleRed;
       state.themes = payload.themes || state.themes;
       syncDisplayToggles();
       showOk(label);
@@ -2161,6 +2183,7 @@ async function refreshAll(source = ERR_USER) {
     state.demoMode = !!themes.demoMode;
     state.vaultFace = themes.vaultFace || "#05281a";
     state.vaultVignette = themes.vaultVignette ?? 60;
+    state.vaultNeedleRed = !!themes.vaultNeedleRed;
     state.pixelShift = !!themes.pixelShift;
     state.pixelShiftSec = Number(themes.pixelShiftSec) || state.pixelShiftSec;
     syncDisplayToggles();
