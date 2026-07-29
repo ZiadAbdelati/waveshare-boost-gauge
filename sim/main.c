@@ -251,11 +251,38 @@ static int run_audit(const char *theme_id, int seconds)
             fprintf(stderr, "unknown theme: %s\n", theme_id);
             return 1;
         }
-        boost_gauge_apply_theme(t);
+        if (t->style == BOOST_STYLE_VAULT) {
+            /* Reproduce switching into Vault-Tec while the reading is already
+             * nonzero. The scene must render the committed needle position
+             * before the next sample arrives. */
+            boost_sample_t pressure = { .psi = 8.0f, .peak_psi = 8.0f, .demo = true };
+            hold_state(&pressure, 64);
+            boost_gauge_apply_theme(t);
+            pump_lvgl(50);
+            const float initial_deg = boost_gauge_host_vault_needle_deg();
+            boost_gauge_update(&pressure);
+            const float sampled_deg = boost_gauge_host_vault_needle_deg();
+            const float jump_deg = fabsf(sampled_deg - initial_deg);
+            printf("theme switch vault-tec first-sample needle jump=%.3f deg\n",
+                   (double)jump_deg);
+            if (jump_deg > 0.001f) return 2;
+        } else if (t->style == BOOST_STYLE_HUD) {
+            /* Reproduce switching into Night City while already in vacuum.
+             * Pump the rebuild before its first sample, matching the ordering
+             * that exposed a missing initial full-span invalidation on-device. */
+            boost_sample_t vacuum = { .psi = -8.0f, .demo = true };
+            hold_state(&vacuum, 64);
+            boost_gauge_apply_theme(t);
+            pump_lvgl(50);
+            hold_state(&vacuum, 64);
+        } else {
+            boost_gauge_apply_theme(t);
+        }
     }
     /* Let the build settle so the scene-build repaint is not charged to the
      * steady-state figures (AGENTS.md: discard the first samples after a PUT). */
     boost_sample_t warm = { 0 };
+    if (theme_id != NULL && strcmp(theme_id, "night-city") == 0) warm.psi = -8.0f;
     warm.demo = true;
     hold_state(&warm, 500);
 

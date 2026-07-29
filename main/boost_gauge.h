@@ -27,6 +27,10 @@ bool boost_gauge_media_load(void);
 /** Destroy the GIF before releasing its raw-partition mapping. */
 void boost_gauge_media_delete(void);
 
+#ifndef ESP_PLATFORM
+/** Host regression hook for checking scene-build needle state. */
+float boost_gauge_host_vault_needle_deg(void);
+#endif
 
 #ifdef __cplusplus
 }

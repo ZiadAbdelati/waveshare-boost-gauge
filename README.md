@@ -653,7 +653,11 @@ the bottleneck is CPU rasterisation, not the panel link. Measured: Vault
 median 37 -> 61 FPS, min 4 -> 54, while *adding* the vignette and scanlines;
 Night City 32 -> 37. Elements that move (needle, fill arc, peak tell-tale,
 digits) stay as separate objects on top; only genuinely static art belongs in
-the cache. Free the buffer in `destroy_scene()`.
+the cache. Vault's completed canvas remains allocated across theme switches
+because its serial per-pixel error-diffusion vignette is expensive to recreate;
+range, zero angle, palette, face, and vignette values form its cache key, so a
+setting change still repaints it once. Other faces continue to free their cache
+in `destroy_scene()`.
 
 Dyno Cell's cache covers the unfilled track ring, the zero notch, the five
 scale numerals and the static "PSI" mark — the value wedge
@@ -732,6 +736,23 @@ fixed 310x100 box on every value change; bounding it to the slots that actually
 changed (usually the tenths alone) took the style from 37 to 42 FPS median and
 22 to 31 min. `HUD_GLITCH_DX` is shared between the draw and the invalidation so
 the dirty box can never be narrower than the pixels the ghosts touch.
+
+Night City's first sample is the exception to endpoint-only invalidation: after
+a scene switch it invalidates the complete zero-to-current span. Without that
+one-time dirty region, a rebuild rendered before the first vacuum sample left
+the fill empty, and later endpoint wedges clipped the full arc into a moving
+blob until the reading crossed zero. The host audit deliberately switches into
+Night City from an already-negative reading to preserve this regression case.
+Host verification reported 104 comparisons with zero stale pixels. On hardware,
+the first Vault build took 1077 ms, while three cached returns took 64-101 ms;
+the Dyno Cell cadence guard after a 3 s settle passed at min 58 / median 61 FPS
+over 104 samples.
+
+Vault-Tec also seeds its newly-built needle from the last committed pressure
+when a theme switch rebuilds the scene. Previously the object started at zero
+for one frame and jumped on the next sample. The simulator audit switches into
+Vault-Tec at +8.0 PSI before the next gauge update and requires that update to
+move the needle by 0.000 degrees.
 
 **`render_fps` is not a smoothness metric.** It counts `LV_EVENT_RENDER_READY`,
 i.e. render cycles actually performed, and LVGL only renders when something is

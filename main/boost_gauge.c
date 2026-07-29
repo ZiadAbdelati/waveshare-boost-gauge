@@ -310,6 +310,19 @@ static const int k_vault_slot_x[VAULT_SLOT_COUNT] = { -60, -36, -12, 12, 36, 60 
 
 static lv_obj_t *s_vault_bg;
 static uint8_t *s_vault_bg_buf;
+typedef struct {
+    float psi_min;
+    float psi_max;
+    float psi_overboost;
+    float zero_angle;
+    uint32_t face;
+    uint32_t text;
+    uint32_t muted;
+    uint32_t overboost;
+    uint8_t vignette_pct;
+    bool valid;
+} vault_bg_key_t;
+static vault_bg_key_t s_vault_bg_key;
 static lv_obj_t *s_vault_crt;
 static lv_obj_t *s_vault_peak_mark;
 static float s_vault_peak_deg;
@@ -1170,7 +1183,7 @@ static bool clip_reaches_radius(lv_layer_t *layer, float cx, float cy, float r)
  * become a blit instead of re-rasterising a bezel, 41 ticks, vignette rings and
  * scanlines inside every dirty region. This is what makes the needle smooth and
  * what makes the vignette/scanlines affordable at all. */
-static void paint_vault_background(lv_obj_t *canvas, const boost_theme_t *theme)
+static bool paint_vault_background(lv_obj_t *canvas, const boost_theme_t *theme)
 {
     const float cx = DISP_SIZE * 0.5f;
     const float cy = DISP_SIZE * 0.5f;
@@ -1306,7 +1319,7 @@ static void paint_vault_background(lv_obj_t *canvas, const boost_theme_t *theme)
      * resolution, which is the only way to get a smooth ramp out of a channel
      * this dark. The pattern is baked, so it never shimmers. */
     lv_draw_buf_t *db = lv_canvas_get_draw_buf(canvas);
-    if (db == NULL) return;
+    if (db == NULL) return false;
 
     /*
      * Serpentine error-diffused vignette.
@@ -1340,7 +1353,7 @@ static void paint_vault_background(lv_obj_t *canvas, const boost_theme_t *theme)
     if (err_cur == NULL || err_nxt == NULL) {
         BG_FREE(err_cur);
         BG_FREE(err_nxt);
-        return; /* face is still correct, just undithered */
+        return false; /* face is usable, but retry the dither on the next build */
     }
     memset(err_cur, 0, errbytes);
     memset(err_nxt, 0, errbytes);
@@ -1404,6 +1417,7 @@ static void paint_vault_background(lv_obj_t *canvas, const boost_theme_t *theme)
     }
     BG_FREE(err_cur);
     BG_FREE(err_nxt);
+    return true;
 }
 
 /* CRT scanlines, drawn last so they cross the needle and the digits the way
@@ -1683,15 +1697,40 @@ static void build_vault(lv_obj_t *scr)
 {
     const boost_theme_t *theme = active_theme();
 
-    /* Static face is rendered once into PSRAM and then only blitted. */
+    /* Keep the expensive completed face across theme switches. Its serial
+     * error-diffusion pass touches every pixel, so rebuilding it here made
+     * every return to Vault pause for about a second. */
     const uint32_t bg_bytes = LV_CANVAS_BUF_SIZE(DISP_SIZE, DISP_SIZE, 16, LV_DRAW_BUF_STRIDE_ALIGN);
-    s_vault_bg_buf = BG_ALLOC(bg_bytes);
+    if (s_vault_bg_buf == NULL) s_vault_bg_buf = BG_ALLOC(bg_bytes);
     if (s_vault_bg_buf != NULL) {
         s_vault_bg = lv_canvas_create(scr);
         lv_canvas_set_buffer(s_vault_bg, s_vault_bg_buf, DISP_SIZE, DISP_SIZE, LV_COLOR_FORMAT_RGB565);
         lv_obj_center(s_vault_bg);
         lv_obj_clear_flag(s_vault_bg, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
-        paint_vault_background(s_vault_bg, theme);
+        const vault_bg_key_t key = {
+            .psi_min = s_psi_min,
+            .psi_max = s_psi_max,
+            .psi_overboost = s_psi_overboost,
+            .zero_angle = s_zero_angle,
+            .face = boost_theme_vault_face(),
+            .text = theme->text,
+            .muted = theme->muted,
+            .overboost = theme->overboost,
+            .vignette_pct = boost_theme_vault_vignette_pct(),
+            .valid = true,
+        };
+        if (!s_vault_bg_key.valid ||
+            s_vault_bg_key.psi_min != key.psi_min ||
+            s_vault_bg_key.psi_max != key.psi_max ||
+            s_vault_bg_key.psi_overboost != key.psi_overboost ||
+            s_vault_bg_key.zero_angle != key.zero_angle ||
+            s_vault_bg_key.face != key.face ||
+            s_vault_bg_key.text != key.text ||
+            s_vault_bg_key.muted != key.muted ||
+            s_vault_bg_key.overboost != key.overboost ||
+            s_vault_bg_key.vignette_pct != key.vignette_pct) {
+            if (paint_vault_background(s_vault_bg, theme)) s_vault_bg_key = key;
+        }
         /* The cached face is exactly screen-sized, so the burn-in shift slides
          * a margin of up to two pixels off one edge and exposes the screen's
          * own background at the other. By the time the face reaches its rim the
@@ -1810,8 +1849,12 @@ static void build_vault(lv_obj_t *scr)
     lv_obj_center(s_vault_needle);
     lv_obj_clear_flag(s_vault_needle, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(s_vault_needle, draw_vault_needle, LV_EVENT_DRAW_MAIN, NULL);
-    s_vault_needle_deg = psi_to_sweep(0.0f, VAULT_A0, VAULT_A1);
+    /* A scene rebuild does not reset the live reading. Seed the new needle
+     * from the committed value so the first frame after a theme switch is
+     * already in sync with the other faces. */
+    s_vault_needle_deg = psi_to_sweep(s_display_psi, VAULT_A0, VAULT_A1);
     s_vault_needle_red = boost_theme_vault_needle_red();
+    s_vault_needle_over = s_display_psi >= s_psi_overboost;
 
     /* Created last so it draws over everything, matching the web's ordering. */
     s_vault_crt = lv_obj_create(scr);
@@ -2232,9 +2275,14 @@ static void build_hud(lv_obj_t *scr)
 static void update_hud(const boost_sample_t *sample, const boost_theme_t *theme)
 {
     if (!s_hud_fill_valid) {
+        const float zero_a = psi_to_sweep(0.0f, HUD_A0, HUD_A1);
         s_hud_fill_deg = psi_to_sweep(sample->psi, HUD_A0, HUD_A1);
         s_hud_fill_psi = sample->psi;
         s_hud_fill_valid = true;
+        /* The scene-build repaint can finish before this first sample. Request
+         * the complete zero-to-value span; otherwise later endpoint-only dirty
+         * regions clip the full arc into a moving blob until zero is crossed. */
+        invalidate_hud_fill(zero_a, s_hud_fill_deg);
     }
     const float old_a = s_hud_fill_deg;
     const float new_a = psi_to_sweep(sample->psi, HUD_A0, HUD_A1);
@@ -2686,10 +2734,8 @@ static void destroy_scene(void)
     }
     s_arc_bg = NULL;
 
-    if (s_vault_bg_buf != NULL) {
-        BG_FREE(s_vault_bg_buf);
-        s_vault_bg_buf = NULL;
-    }
+    /* s_vault_bg_buf is a memoized static face. Keep it across scene switches;
+     * build_vault() repaints it when any static-art input changes. */
     s_vault_bg = s_vault_peak_mark = s_vault_crt = NULL;
     s_vault_needle = s_vault_window = NULL;
     s_vault_peak = s_vault_alert = s_vault_alert_marks = NULL;
@@ -2922,3 +2968,10 @@ void boost_gauge_update(const boost_sample_t *sample)
 
     s_display_psi = sample->psi;
 }
+
+#ifndef ESP_PLATFORM
+float boost_gauge_host_vault_needle_deg(void)
+{
+    return s_vault_needle_deg;
+}
+#endif
