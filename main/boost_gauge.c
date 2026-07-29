@@ -273,13 +273,14 @@ static uint32_t s_px_settled_ms;
 static float s_px_ref_psi;
 
 /* ---- arc style ----------------------------------------------------------- */
-/* Static furniture (unfilled track ring, zero notch, scale numerals, "PSI"
- * unit mark) is rasterised once into a PSRAM canvas at scene build, the same
- * win vault/hud got. Only the filled wedge, the readout, peak and zone label
- * stay live above it. */
+/* Static furniture (unfilled track ring, scale numerals, "PSI" unit mark) is
+ * rasterised once into a PSRAM canvas at scene build, the same win vault/hud
+ * got. The zero notch stays live above the moving wedge so the wedge cannot
+ * cover it. */
 static lv_obj_t *s_arc_bg;
 static uint8_t *s_arc_bg_buf;
 static lv_obj_t *s_arc_value_canvas;
+static lv_obj_t *s_zero_notch;
 static lv_obj_t *s_value_sign_label;
 static lv_obj_t *s_value_tens_label;
 static lv_obj_t *s_value_ones_label;
@@ -913,8 +914,8 @@ static void set_value_arc(float psi)
     }
 }
 
-/* Paint the whole static arc face — unfilled track, zero notch, scale
- * numerals and the "PSI" unit mark — into an off-screen canvas ONCE. Redraws
+/* Paint the static arc face — unfilled track, scale numerals and the "PSI"
+ * unit mark — into an off-screen canvas ONCE. Redraws
  * then become a blit instead of re-rasterising a 270 degree, 45 px-wide ring
  * (by far the largest draw on this face) inside every wedge-invalidated dirty
  * region. Mirrors paint_vault_background()/build_hud()'s canvas fill; only
@@ -924,9 +925,7 @@ static void set_value_arc(float psi)
  * the live s_arc_track lv_arc widget used to issue for LV_PART_MAIN (radius
  * from its get_center(), which is ARC_DIAMETER/2 with zero padding here).
  * LV_PART_INDICATOR was always LV_OPA_0 and drew nothing, so it is not
- * reproduced. Zero notch and numeral placement match refresh_zero_notch()/
- * place_tick_label() exactly, just measured and drawn into the layer instead
- * of positioned as live objects. */
+ * reproduced. */
 static void paint_arc_background(lv_obj_t *canvas, const boost_theme_t *theme)
 {
     const float cx = DISP_SIZE * 0.5f;
@@ -954,25 +953,6 @@ static void paint_arc_background(lv_obj_t *canvas, const boost_theme_t *theme)
     arc.opa = LV_OPA_60;
     arc.rounded = true;
     lv_draw_arc(&layer, &arc);
-
-    {
-        const float deg = psi_to_angle(0.0f);
-        const float rad = deg * (float)M_PI / 180.0f;
-        const float r_outer = (float)ARC_DIAMETER * 0.5f - 1.0f;
-        const float r_inner = r_outer - (float)ARC_WIDTH + 1.0f;
-        lv_draw_line_dsc_t ln;
-        lv_draw_line_dsc_init(&ln);
-        ln.color = c(theme->zero);
-        ln.width = ZERO_LINE_W;
-        ln.opa = LV_OPA_COVER;
-        ln.round_start = true;
-        ln.round_end = true;
-        ln.p1.x = cx + r_inner * cosf(rad);
-        ln.p1.y = cy + r_inner * sinf(rad);
-        ln.p2.x = cx + r_outer * cosf(rad);
-        ln.p2.y = cy + r_outer * sinf(rad);
-        lv_draw_line(&layer, &ln);
-    }
 
     compute_tick_psis();
     for (int i = 0; i < 5; ++i) {
@@ -1049,11 +1029,27 @@ static lv_obj_t *add_value_slot(lv_obj_t *scr, const char *text, int x)
     return slot;
 }
 
+static void refresh_zero_notch(void)
+{
+    if (s_zero_notch == NULL) return;
+    static lv_point_precise_t points[2];
+    const float rad = psi_to_angle(0.0f) * (float)M_PI / 180.0f;
+    const float cx = DISP_SIZE * 0.5f;
+    const float cy = DISP_SIZE * 0.5f;
+    const float r_outer = (float)ARC_DIAMETER * 0.5f - 1.0f;
+    const float r_inner = r_outer - (float)ARC_WIDTH + 1.0f;
+    points[0].x = cx + r_inner * cosf(rad);
+    points[0].y = cy + r_inner * sinf(rad);
+    points[1].x = cx + r_outer * cosf(rad);
+    points[1].y = cy + r_outer * sinf(rad);
+    lv_line_set_points(s_zero_notch, points, 2);
+}
+
 static void build_arc(lv_obj_t *scr)
 {
     const boost_theme_t *theme = active_theme();
 
-    /* Static face (unfilled track, zero notch, scale numerals, "PSI" mark) is
+    /* Static face (unfilled track, scale numerals, "PSI" mark) is
      * rasterised once into PSRAM and blitted thereafter — the same win
      * vault/hud got. A failed allocation degrades the same way vault's does:
      * warn and skip the cached art rather than adding a second fallback
@@ -1076,6 +1072,16 @@ static void build_arc(lv_obj_t *scr)
     lv_obj_center(s_arc_value_canvas);
     lv_obj_clear_flag(s_arc_value_canvas, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(s_arc_value_canvas, draw_value_arc, LV_EVENT_DRAW_MAIN, &s_display_psi);
+
+    /* Created after the value arc so the zero reference remains visible over
+     * both vacuum and boost fills, matching the original verified layering. */
+    s_zero_notch = lv_line_create(scr);
+    refresh_zero_notch();
+    lv_obj_set_style_line_width(s_zero_notch, ZERO_LINE_W, 0);
+    lv_obj_set_style_line_color(s_zero_notch, c(theme->zero), 0);
+    lv_obj_set_style_line_rounded(s_zero_notch, true, 0);
+    lv_obj_set_style_line_opa(s_zero_notch, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(s_zero_notch, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
 
     s_zone_label = lv_label_create(scr);
     lv_label_set_text(s_zone_label, "ATMO");
@@ -2669,6 +2675,7 @@ static void destroy_scene(void)
     s_well = NULL;
     s_root = NULL;
     s_arc_value_canvas = NULL;
+    s_zero_notch = NULL;
     s_value_sign_label = s_value_tens_label = s_value_ones_label = NULL;
     s_value_decimal_label = s_value_tenths_label = NULL;
     s_peak_label = s_mode_label = s_zone_label = NULL;

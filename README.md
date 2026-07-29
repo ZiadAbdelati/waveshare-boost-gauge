@@ -807,6 +807,10 @@ streams it as raw little-endian RGB565 (466x466). `tools/fetch_panel_snapshot.py
 turns that into a PNG. This is how the physical face is verified without
 photographing the panel. Requires `CONFIG_LV_USE_SNAPSHOT=y`.
 
+The Dyno Cell zero notch is intentionally a live overlay above its moving value
+arc. The track, numerals, and unit label remain cached, but baking the notch into
+that lower canvas lets the colored wedge cover the zero reference.
+
 ---
 
 ## Build from source
