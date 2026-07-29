@@ -23,8 +23,11 @@ The live MAP path reads a GM 3-bar sensor through an ADS1115, with an optional B
 This firmware **replaces** the factory app launcher.
 
 Theme swipes use the ordered `boost_theme_at()` table, which is also the order
-emitted by `/api/v1/themes` and consumed by the web picker. A swipe requires at
-least 48 px of predominantly vertical travel, avoiding noisy diagonal drags.
+emitted by `/api/v1/themes` and consumed by the web picker. The classifier
+tracks maximum movement during the press: only movement within the 48 px tap
+slop resets peak, a valid predominantly vertical drag changes one theme, and
+horizontal or ambiguous drags do nothing. Returning to the start after a
+meaningful drag is still a drag, not a tap.
 Theme changes persist through the active-theme model path and rebuild the LVGL
 scene in the existing locked LVGL context.
 

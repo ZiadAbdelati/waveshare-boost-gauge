@@ -34,6 +34,14 @@ the 16 ms partial-refresh path. Vault needle red is a persisted theme setting,
 defaults to green, recolors only the body, and must invalidate the stationary
 needle when changed.
 
+Gesture classification tracks the greatest signed excursion during
+`LV_EVENT_PRESSING`, not only the release coordinate. Only movement within the
+48 px tap slop resets peak; a meaningful horizontal/ambiguous drag is rejected,
+and a valid vertical drag changes one theme. GIF playback suppresses all
+screen gestures. The screen object survives theme rebuilds, so synchronous
+`boost_gauge_apply_theme()` from `LV_EVENT_RELEASED` deletes children but not
+the event target and does not require an unverified async callback.
+
 ## Cadence contract
 
 Keep these rates distinct; never use one as a substitute for another:

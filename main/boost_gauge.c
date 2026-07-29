@@ -83,7 +83,8 @@
 #define HOLD_DIM_MS   2000
 #define WELL_SIZE     DISP_SIZE
 #define THEME_SWIPE_MIN_PX 48
-#define THEME_SWIPE_AXIS_RATIO 1.25f
+
+_Static_assert(THEME_SWIPE_MIN_PX == 48, "theme swipe threshold is part of the input contract");
 
 /*
  * AMOLED burn-in countermeasure.
@@ -390,9 +391,24 @@ static float s_display_psi;
 static float s_peak_psi;
 static bool s_ui_ready;
 static bool s_hold_dim_fired;
-static uint32_t s_press_start_ms;
-static lv_point_t s_press_start_point;
-static bool s_press_point_valid;
+typedef enum {
+    GESTURE_NONE = 0,
+    GESTURE_TAP,
+    GESTURE_SWIPE_UP,
+    GESTURE_SWIPE_DOWN,
+    GESTURE_REJECTED_DRAG,
+    GESTURE_HOLD,
+} gesture_result_t;
+
+typedef struct {
+    lv_point_t start;
+    int32_t max_dx;
+    int32_t max_dy;
+    uint32_t start_ms;
+    bool active;
+} gesture_state_t;
+
+static gesture_state_t s_gesture;
 static char s_theme_id[BOOST_THEME_ID_MAX];
 static float s_psi_min = DEFAULT_PSI_MIN;
 static float s_psi_max = DEFAULT_PSI_MAX;
@@ -592,35 +608,58 @@ static void reset_peak_ui(void)
     ESP_LOGI(TAG, "peak reset");
 }
 
-static bool screen_swipe_direction(int *direction)
+static int32_t abs_i32(int32_t value)
 {
-    if (!s_press_point_valid || direction == NULL) return false;
-#if LV_USE_GIF
-    /* Media playback owns the screen until it is explicitly deleted. */
-    if (s_media_gif != NULL) return false;
-#endif
+    return value < 0 ? -value : value;
+}
 
-    lv_indev_t *indev = lv_indev_get_active();
-    if (indev == NULL) return false;
-    lv_point_t end;
-    lv_indev_get_point(indev, &end);
+static void gesture_begin(gesture_state_t *gesture, lv_point_t start, uint32_t now_ms)
+{
+    if (gesture == NULL) return;
+    gesture->start = start;
+    gesture->max_dx = 0;
+    gesture->max_dy = 0;
+    gesture->start_ms = now_ms;
+    gesture->active = true;
+}
 
-    const int32_t dx = end.x - s_press_start_point.x;
-    const int32_t dy = end.y - s_press_start_point.y;
-    const int32_t ax = dx < 0 ? -dx : dx;
-    const int32_t ay = dy < 0 ? -dy : dy;
-    if (ax < THEME_SWIPE_MIN_PX && ay < THEME_SWIPE_MIN_PX) return false;
+static void gesture_update(gesture_state_t *gesture, lv_point_t point)
+{
+    if (gesture == NULL || !gesture->active) return;
+    const int32_t dx = point.x - gesture->start.x;
+    const int32_t dy = point.y - gesture->start.y;
+    if (abs_i32(dx) > abs_i32(gesture->max_dx)) gesture->max_dx = dx;
+    if (abs_i32(dy) > abs_i32(gesture->max_dy)) gesture->max_dy = dy;
+}
 
-    if (ay >= THEME_SWIPE_MIN_PX && ay >= (int32_t)((float)ax * THEME_SWIPE_AXIS_RATIO)) {
-        /* Up advances to the next theme in web/API order; down goes previous. */
-        *direction = dy < 0 ? 1 : -1;
-        return true;
+static gesture_result_t gesture_classify(const gesture_state_t *gesture,
+                                          uint32_t elapsed_ms, bool released)
+{
+    if (gesture == NULL || !gesture->active || !released) return GESTURE_NONE;
+    if (elapsed_ms >= HOLD_DIM_MS) return GESTURE_HOLD;
+
+    const int32_t ax = abs_i32(gesture->max_dx);
+    const int32_t ay = abs_i32(gesture->max_dy);
+    /* Any movement beyond tap slop is a drag, even if it returns to origin. */
+    if (ax < THEME_SWIPE_MIN_PX && ay < THEME_SWIPE_MIN_PX) return GESTURE_TAP;
+    /* 4:5 is the integer form of the 1.25 vertical-dominance ratio. */
+    if (ay >= THEME_SWIPE_MIN_PX && (int64_t)ay * 4 >= (int64_t)ax * 5) {
+        return gesture->max_dy < 0 ? GESTURE_SWIPE_UP : GESTURE_SWIPE_DOWN;
     }
-    return false;
+    return GESTURE_REJECTED_DRAG;
+}
+
+static void gesture_end(gesture_state_t *gesture)
+{
+    if (gesture != NULL) gesture->active = false;
 }
 
 static bool apply_swiped_theme(int direction)
 {
+#if LV_USE_GIF
+    /* Media playback owns the screen until it is explicitly deleted. */
+    if (s_media_gif != NULL) return false;
+#endif
     const size_t count = boost_theme_count();
     if (count == 0) return false;
 
@@ -641,7 +680,8 @@ static bool apply_swiped_theme(int direction)
 
 #ifdef ESP_PLATFORM
     if (boost_model_set_active_theme(theme->id) != ESP_OK) return false;
-    /* Touch events are dispatched by the LVGL task while its display lock is held. */
+    /* The event target is the persistent screen; apply_theme deletes only its
+     * children, so synchronous rebuild is safe during RELEASED dispatch. */
     boost_gauge_apply_theme(boost_model_active_theme());
 #else
     boost_gauge_apply_theme(theme);
@@ -655,18 +695,25 @@ static void on_screen_event(lv_event_t *e)
     const lv_event_code_t code = lv_event_get_code(e);
 
     if (code == LV_EVENT_PRESSED) {
-        s_press_start_ms = lv_tick_get();
+        s_gesture.active = false;
         s_hold_dim_fired = false;
-        s_press_point_valid = false;
         lv_indev_t *indev = lv_indev_get_active();
         if (indev != NULL) {
-            lv_indev_get_point(indev, &s_press_start_point);
-            s_press_point_valid = true;
+            lv_point_t point;
+            lv_indev_get_point(indev, &point);
+            gesture_begin(&s_gesture, point, lv_tick_get());
         }
         return;
     }
     if (code == LV_EVENT_PRESSING) {
-        if (!s_hold_dim_fired && lv_tick_elaps(s_press_start_ms) >= HOLD_DIM_MS) {
+        lv_indev_t *indev = lv_indev_get_active();
+        if (indev != NULL) {
+            lv_point_t point;
+            lv_indev_get_point(indev, &point);
+            gesture_update(&s_gesture, point);
+        }
+        if (!s_hold_dim_fired && s_gesture.active &&
+            lv_tick_elaps(s_gesture.start_ms) >= HOLD_DIM_MS) {
             s_hold_dim_fired = true;
             boost_brightness_toggle_max_min();
             ESP_LOGI(TAG, "brightness toggle -> %d%%", boost_brightness_get());
@@ -674,16 +721,36 @@ static void on_screen_event(lv_event_t *e)
         return;
     }
     if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
-        int swipe_direction = 0;
-        const bool swiped = code == LV_EVENT_RELEASED && !s_hold_dim_fired &&
-                            lv_tick_elaps(s_press_start_ms) < HOLD_DIM_MS &&
-                            screen_swipe_direction(&swipe_direction);
-        if (swiped) apply_swiped_theme(swipe_direction);
-        if (!s_hold_dim_fired && lv_tick_elaps(s_press_start_ms) < HOLD_DIM_MS) {
-            if (!swiped) reset_peak_ui();
+        lv_indev_t *indev = lv_indev_get_active();
+        if (indev != NULL) {
+            lv_point_t point;
+            lv_indev_get_point(indev, &point);
+            gesture_update(&s_gesture, point);
         }
+        const gesture_result_t result = gesture_classify(
+            &s_gesture, s_gesture.active ? lv_tick_elaps(s_gesture.start_ms) : 0,
+            code == LV_EVENT_RELEASED);
+        if (code == LV_EVENT_RELEASED) {
+            switch (result) {
+            case GESTURE_TAP:
+#if LV_USE_GIF
+                if (s_media_gif == NULL) reset_peak_ui();
+#else
+                reset_peak_ui();
+#endif
+                break;
+            case GESTURE_SWIPE_UP:
+                apply_swiped_theme(1);
+                break;
+            case GESTURE_SWIPE_DOWN:
+                apply_swiped_theme(-1);
+                break;
+            default:
+                break;
+            }
+        }
+        gesture_end(&s_gesture);
         s_hold_dim_fired = false;
-        s_press_point_valid = false;
         return;
     }
     if (code == LV_EVENT_LONG_PRESSED && !s_hold_dim_fired) {
