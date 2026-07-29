@@ -1,9 +1,10 @@
-# Prebuilt firmware v0.5.0 — real MAP conversion and atmosphere calibration
+# Prebuilt firmware v0.6.0 — physical theme swipes and Vault needle colors
 
-Firmware **`v0.5.0`**, built with **ESP-IDF 5.5.1** for **ESP32-S3**, 16 MB
-flash. Includes the embedded Wi-Fi dashboard, configurable zero-notch scale, the
-DMA-safe AMOLED display path (`main/boost_display.c`), and the live GM 12223861
-MAP path with BMP280-referenced atmosphere calibration. The same files are
+Firmware **`v0.6.0`**, built with **ESP-IDF 5.5.1** for **ESP32-S3**, 16 MB
+flash. Includes physical up/down theme swipes with wraparound, the persisted
+green/red Vault-Tec needle choice, the embedded Wi-Fi dashboard, the DMA-safe
+AMOLED display path (`main/boost_display.c`), and the calibrated GM 12223861 MAP
+path. The same files are
 published on the [latest GitHub release](https://github.com/ZiadAbdelati/waveshare-boost-gauge/releases/latest).
 
 The image reports its own version on `/api/v1/state` (`firmwareVersion`), taken
@@ -12,24 +13,22 @@ all shipped reporting a stale hard-coded `0.3.0-web`.
 
 ## Verified on hardware for this release
 
-Measured on the board at `192.168.50.102`, running this exact `boost_gauge.bin`
-(SHA-256 `3cb1337b…`, byte-identical to the published asset):
+Measured on the board at `192.168.50.102`, running the release source before the
+final clean rebuild:
 
 | Gate | Result |
 |---|---|
-| Boot and network after OTA | `firmwareVersion v0.5.0`, control plane back in ~6 s |
-| Physical cadence, 30 s (arc face, demo mode) | **min 57, median 60 FPS** over 104 samples |
-| Sensor bus | `busUp true`, `["0x48","0x76"]`, **0 recoveries** |
-| Atmosphere calibration | offset **+2.43 kPa** over 40 samples; gauge reads **−0.0 PSI** at atmosphere |
-| Calibration durability | survived reboot *and* a firmware update with offset, sample count and supply intact |
-| Sensor soak, 120 s | **0 faults, 0 recoveries**, 0.040 PSI total spread |
-| Display metrics | `teTimeouts 0`, `worstRenderUs` 19,675 |
+| Boot and network after serial flash | control plane reachable at `192.168.50.102` |
+| Physical cadence, 30 s (Dyno Cell, demo mode) | **min 51, median 60 FPS** over 104 samples |
+| Theme order | Dyno Cell → Vault-Tec → Night City → Big Digit, wrapping both ways |
+| Vault needle setting | green → red → green API round trip; persisted setting exposed by `/themes` |
+| Dyno Cell zero notch | restored as a live overlay above the colored value arc |
+| Display synchronization | `teSync` and `regionDBuf` enabled; no TE timeout reported in the post-flash state |
 
-**Not re-verified this cycle**, and not claimed: serial-log error absence (the
-board runs from 5 V with no serial attached), the media upload/abort/delete
-cycle (no GIF is present on the device and this release does not touch the media
-path), and WebSocket-transport badge behaviour on hardware (verified against the
-host mock in HTTP-fallback mode only).
+The user verified the physical swipe behavior and needle appearance on glass.
+**Not re-verified this cycle**, and not claimed: serial-log error absence, the
+media upload/abort/delete cycle, sensor calibration/soak, and WebSocket pool or
+transport badge behavior. Those paths are unchanged by this release.
 
 ## Display path (do not regress)
 
@@ -74,7 +73,7 @@ Clicking Delete during upload aborts the browser XHR, waits for settlement, then
 sends `DELETE`; overlapping delete/upload requests are rejected with **409**.
 Two repeated deletes succeeded, and the physical gauge resumed with PSI changing.
 The physical gauge remains a 16 ms (~60 Hz) path. WebSocket telemetry targets
-**20 Hz**, browser canvas interpolation runs at **60 FPS** with a short 35 ms
+**62.5 Hz**, browser canvas interpolation runs at **60 FPS** with a short 35 ms
 EMA, and HTTP fallback is **4 Hz**. These are separate cadences.
 
 
@@ -83,7 +82,7 @@ EMA, and HTTP fallback is **4 Hz**. These are separate cadences.
 The web server has a fixed pool of **3 WebSocket clients**. A fourth handshake
 is rejected/closed only for the newcomer; existing sockets remain connected.
 When a browser falls back, it polls `/api/v1/state` at **4 Hz** and retries the
-WebSocket every **1 s**. The badge identifies **Live · WebSocket 20 Hz** versus
+WebSocket every **1 s**. The badge identifies **Live · WebSocket 60 Hz** versus
 **Live · HTTP 4 Hz**; **Disconnected** means both transports failed.
 
 GIF playback is hybrid, not a custom decoder: custom web upload and raw
