@@ -158,6 +158,8 @@ uint32_t boost_theme_vault_face(void);
 void boost_theme_set_vault_face(uint32_t rgb);
 uint8_t boost_theme_vault_vignette_pct(void);
 void boost_theme_set_vault_vignette_pct(uint8_t pct);
+bool boost_theme_vault_needle_red(void);
+void boost_theme_set_vault_needle_red(bool enabled);
 
 /*
  * AMOLED burn-in countermeasure. The gauge shows one static-heavy face for

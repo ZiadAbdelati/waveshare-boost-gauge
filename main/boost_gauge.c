@@ -82,6 +82,8 @@
 #define VALUE_TENTHS_X     30
 #define HOLD_DIM_MS   2000
 #define WELL_SIZE     DISP_SIZE
+#define THEME_SWIPE_MIN_PX 48
+#define THEME_SWIPE_AXIS_RATIO 1.25f
 
 /*
  * AMOLED burn-in countermeasure.
@@ -313,9 +315,11 @@ static lv_obj_t *s_vault_peak;
 static lv_obj_t *s_vault_alert;
 static lv_obj_t *s_vault_alert_marks;
 static float s_vault_needle_deg;
-/* Overboost recolours the needle. Without tracking it, a colour flip with a
- * near-static angle left the old yellow needle on screen. */
+/* Track the body colour independently of angle so a colour-only setting change
+ * clears the old pixels even when the needle is stationary. */
+static bool s_vault_needle_red;
 static bool s_vault_needle_over;
+#define VAULT_NEEDLE_RED 0xFF3B30u
 
 /* ---- hud style ----------------------------------------------------------- */
 /* Right-aligned fixed slots (hud_big 76 px: digit advance ~51, '.' ~17,
@@ -387,6 +391,8 @@ static float s_peak_psi;
 static bool s_ui_ready;
 static bool s_hold_dim_fired;
 static uint32_t s_press_start_ms;
+static lv_point_t s_press_start_point;
+static bool s_press_point_valid;
 static char s_theme_id[BOOST_THEME_ID_MAX];
 static float s_psi_min = DEFAULT_PSI_MIN;
 static float s_psi_max = DEFAULT_PSI_MAX;
@@ -586,6 +592,64 @@ static void reset_peak_ui(void)
     ESP_LOGI(TAG, "peak reset");
 }
 
+static bool screen_swipe_direction(int *direction)
+{
+    if (!s_press_point_valid || direction == NULL) return false;
+#if LV_USE_GIF
+    /* Media playback owns the screen until it is explicitly deleted. */
+    if (s_media_gif != NULL) return false;
+#endif
+
+    lv_indev_t *indev = lv_indev_get_active();
+    if (indev == NULL) return false;
+    lv_point_t end;
+    lv_indev_get_point(indev, &end);
+
+    const int32_t dx = end.x - s_press_start_point.x;
+    const int32_t dy = end.y - s_press_start_point.y;
+    const int32_t ax = dx < 0 ? -dx : dx;
+    const int32_t ay = dy < 0 ? -dy : dy;
+    if (ax < THEME_SWIPE_MIN_PX && ay < THEME_SWIPE_MIN_PX) return false;
+
+    if (ay >= THEME_SWIPE_MIN_PX && ay >= (int32_t)((float)ax * THEME_SWIPE_AXIS_RATIO)) {
+        /* Up advances to the next theme in web/API order; down goes previous. */
+        *direction = dy < 0 ? 1 : -1;
+        return true;
+    }
+    return false;
+}
+
+static bool apply_swiped_theme(int direction)
+{
+    const size_t count = boost_theme_count();
+    if (count == 0) return false;
+
+    const boost_theme_t *current = active_theme();
+    size_t index = 0;
+    for (; index < count; ++index) {
+        const boost_theme_t *candidate = boost_theme_at(index);
+        if (candidate != NULL && current != NULL && strcmp(candidate->id, current->id) == 0) {
+            break;
+        }
+    }
+    if (index == count) return false;
+
+    const size_t next = direction > 0 ? (index + 1u) % count
+                                     : (index + count - 1u) % count;
+    const boost_theme_t *theme = boost_theme_at(next);
+    if (theme == NULL) return false;
+
+#ifdef ESP_PLATFORM
+    if (boost_model_set_active_theme(theme->id) != ESP_OK) return false;
+    /* Touch events are dispatched by the LVGL task while its display lock is held. */
+    boost_gauge_apply_theme(boost_model_active_theme());
+#else
+    boost_gauge_apply_theme(theme);
+#endif
+    ESP_LOGI(TAG, "swipe theme -> %s", theme->id);
+    return true;
+}
+
 static void on_screen_event(lv_event_t *e)
 {
     const lv_event_code_t code = lv_event_get_code(e);
@@ -593,6 +657,12 @@ static void on_screen_event(lv_event_t *e)
     if (code == LV_EVENT_PRESSED) {
         s_press_start_ms = lv_tick_get();
         s_hold_dim_fired = false;
+        s_press_point_valid = false;
+        lv_indev_t *indev = lv_indev_get_active();
+        if (indev != NULL) {
+            lv_indev_get_point(indev, &s_press_start_point);
+            s_press_point_valid = true;
+        }
         return;
     }
     if (code == LV_EVENT_PRESSING) {
@@ -604,10 +674,16 @@ static void on_screen_event(lv_event_t *e)
         return;
     }
     if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+        int swipe_direction = 0;
+        const bool swiped = code == LV_EVENT_RELEASED && !s_hold_dim_fired &&
+                            lv_tick_elaps(s_press_start_ms) < HOLD_DIM_MS &&
+                            screen_swipe_direction(&swipe_direction);
+        if (swiped) apply_swiped_theme(swipe_direction);
         if (!s_hold_dim_fired && lv_tick_elaps(s_press_start_ms) < HOLD_DIM_MS) {
-            reset_peak_ui();
+            if (!swiped) reset_peak_ui();
         }
         s_hold_dim_fired = false;
+        s_press_point_valid = false;
         return;
     }
     if (code == LV_EVENT_LONG_PRESSED && !s_hold_dim_fired) {
@@ -1336,8 +1412,10 @@ static void draw_vault_needle(lv_event_t *e)
     const float cy = px_cy();
     const float rad = s_vault_needle_deg * (float)M_PI / 180.0f;
 
-    const lv_color_t needle_col =
-        s_vault_needle_over ? c(theme->overboost) : c(theme->text);
+    const lv_color_t needle_col = s_vault_needle_red
+                                      ? c(VAULT_NEEDLE_RED)
+                                      : (s_vault_needle_over ? c(theme->overboost)
+                                                              : c(theme->text));
     const float nx = cosf(rad);
     const float ny = sinf(rad);
     const float px = -ny; /* perpendicular */
@@ -1653,6 +1731,7 @@ static void build_vault(lv_obj_t *scr)
     lv_obj_clear_flag(s_vault_needle, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(s_vault_needle, draw_vault_needle, LV_EVENT_DRAW_MAIN, NULL);
     s_vault_needle_deg = psi_to_sweep(0.0f, VAULT_A0, VAULT_A1);
+    s_vault_needle_red = boost_theme_vault_needle_red();
 
     /* Created last so it draws over everything, matching the web's ordering. */
     s_vault_crt = lv_obj_create(scr);
@@ -1666,11 +1745,14 @@ static void build_vault(lv_obj_t *scr)
 static void update_vault(const boost_sample_t *sample, const boost_theme_t *theme)
 {
     const float deg = psi_to_sweep(sample->psi, VAULT_A0, VAULT_A1);
+    const bool needle_red = boost_theme_vault_needle_red();
     const bool needle_over = sample->psi >= s_psi_overboost;
     /* Sub-degree jitter isn't visible but costs a full needle-sized repaint. */
-    if (fabsf(deg - s_vault_needle_deg) > 0.35f || needle_over != s_vault_needle_over) {
+    if (fabsf(deg - s_vault_needle_deg) > 0.35f || needle_red != s_vault_needle_red ||
+        needle_over != s_vault_needle_over) {
         const float old = s_vault_needle_deg;
         s_vault_needle_deg = deg;
+        s_vault_needle_red = needle_red;
         s_vault_needle_over = needle_over;
         invalidate_vault_needle(old, deg);
     }
