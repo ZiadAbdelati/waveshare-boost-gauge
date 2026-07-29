@@ -21,6 +21,29 @@ Verified release baseline is firmware `0.3.0-web`; preserve that identity in har
 - `web/`: dashboard source (cockpit + settings views). `main/generated_web_assets.c/.h` are generated outputs only.
 - `tools/embed_web.py`, `web.mk`: web asset regeneration. `tools/mock_server.py` mirrors config/network APIs. `release/`: explicitly produced release artifacts only.
 
+### Theme controls and physical input
+
+`boost_theme.c:s_defaults[]` is the single authoritative theme order. The web
+picker and physical swipes consume that order through `/api/v1/themes` and
+`boost_theme_at()`. A vertical swipe up advances to the next entry; swipe down
+moves to the previous entry. The screen requires 48 px of predominantly
+vertical travel, preserving short-tap peak reset and the two-second brightness
+hold. Theme changes rebuild one LVGL scene under the existing display lock; no
+full-frame transition buffer or animation is used because it would threaten
+the 16 ms partial-refresh path. Vault needle red is a persisted theme setting,
+defaults to green, recolors only the body, and must invalidate the stationary
+needle when changed.
+
+Gesture classification tracks the greatest signed excursion during
+`LV_EVENT_PRESSING`, not only the release coordinate. Only movement within the
+12 px tap slop resets peak; a meaningful horizontal/ambiguous drag is rejected,
+and a valid vertical drag changes one theme at 48 px. GIF playback suppresses all
+screen gestures. Movement from
+12 through 47 px is a rejected drag rather than a peak reset. The screen object
+survives theme rebuilds, so synchronous
+`boost_gauge_apply_theme()` from `LV_EVENT_RELEASED` deletes children but not
+the event target and does not require an unverified async callback.
+
 ## Cadence contract
 
 Keep these rates distinct; never use one as a substitute for another:

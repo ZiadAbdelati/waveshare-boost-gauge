@@ -95,6 +95,7 @@ CONFIG = {
     "dimSchedule": {"enabled": True, "startMinutes": 21 * 60, "endMinutes": 7 * 60},
     "timezoneOffsetMinutes": 0,
     "activeThemeId": "dyno-cell",
+    "vaultNeedleRed": False,
     "psiMin": -15.0,
     "psiMax": 10.0,
     "psiOverboost": 8.0,
@@ -412,6 +413,7 @@ def themes_payload() -> dict:
         "demoMode": bool(CONFIG.get("demoMode", False)),
         "vaultFace": str(CONFIG.get("vaultFace", "#05281a")),
         "vaultVignette": int(CONFIG.get("vaultVignette", 60)),
+        "vaultNeedleRed": bool(CONFIG.get("vaultNeedleRed", False)),
         "themes": out,
     }
 
@@ -615,6 +617,8 @@ class Handler(BaseHTTPRequestHandler):
                 CONFIG["vaultFace"] = str(payload["vaultFace"])
             if "vaultVignette" in payload:
                 CONFIG["vaultVignette"] = int(payload["vaultVignette"])
+            if "vaultNeedleRed" in payload and isinstance(payload["vaultNeedleRed"], bool):
+                CONFIG["vaultNeedleRed"] = payload["vaultNeedleRed"]
             theme_id = payload.get("id")
             if theme_id:
                 theme = next((t for t in THEMES if t["id"] == theme_id), None)

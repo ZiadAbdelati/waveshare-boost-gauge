@@ -704,7 +704,7 @@ static esp_err_t themes_get(httpd_req_t *req)
              "\"bigDigitTextColor\":\"#%06lx\","
              "\"arcGradient\":%s,\"hudGradient\":%s,\"teSync\":%s,\"regionDBuf\":%s,"
              "\"rotation\":%u,"
-             "\"vaultFace\":\"#%06lx\",\"vaultVignette\":%u,"
+             "\"vaultFace\":\"#%06lx\",\"vaultVignette\":%u,\"vaultNeedleRed\":%s,"
              "\"demoMode\":%s,\"demoFastSweep\":%s,"
              "\"pixelShift\":%s,\"pixelShiftSec\":%u,\"themes\":[",
              cfg.active_theme_id,
@@ -719,6 +719,7 @@ static esp_err_t themes_get(httpd_req_t *req)
              (unsigned)boost_theme_rotation(),
              (unsigned long)boost_theme_vault_face(),
              (unsigned)boost_theme_vault_vignette_pct(),
+              boost_theme_vault_needle_red() ? "true" : "false",
              boost_theme_demo_mode() ? "true" : "false",
              boost_sim_fast_sweep() ? "true" : "false",
              boost_theme_pixel_shift() ? "true" : "false",
@@ -889,6 +890,10 @@ static esp_err_t themes_config_put(httpd_req_t *req)
             return send_err(req, HTTPD_400, "invalid_vignette");
         }
         boost_theme_set_vault_vignette_pct((uint8_t)v);
+    }
+    const cJSON *vred = cJSON_GetObjectItemCaseSensitive(root, "vaultNeedleRed");
+    if (cJSON_IsBool(vred)) {
+        boost_theme_set_vault_needle_red(cJSON_IsTrue(vred));
     }
 
     const cJSON *id = cJSON_GetObjectItemCaseSensitive(root, "id");

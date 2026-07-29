@@ -82,6 +82,12 @@
 #define VALUE_TENTHS_X     30
 #define HOLD_DIM_MS   2000
 #define WELL_SIZE     DISP_SIZE
+#define TAP_SLOP_PX 12
+#define THEME_SWIPE_MIN_PX 48
+
+_Static_assert(TAP_SLOP_PX > 0 && TAP_SLOP_PX < THEME_SWIPE_MIN_PX,
+               "tap slop must be smaller than the theme swipe threshold");
+_Static_assert(THEME_SWIPE_MIN_PX == 48, "theme swipe threshold is part of the input contract");
 
 /*
  * AMOLED burn-in countermeasure.
@@ -313,9 +319,11 @@ static lv_obj_t *s_vault_peak;
 static lv_obj_t *s_vault_alert;
 static lv_obj_t *s_vault_alert_marks;
 static float s_vault_needle_deg;
-/* Overboost recolours the needle. Without tracking it, a colour flip with a
- * near-static angle left the old yellow needle on screen. */
+/* Track the body colour independently of angle so a colour-only setting change
+ * clears the old pixels even when the needle is stationary. */
+static bool s_vault_needle_red;
 static bool s_vault_needle_over;
+#define VAULT_NEEDLE_RED 0xFF3B30u
 
 /* ---- hud style ----------------------------------------------------------- */
 /* Right-aligned fixed slots (hud_big 76 px: digit advance ~51, '.' ~17,
@@ -386,7 +394,24 @@ static float s_display_psi;
 static float s_peak_psi;
 static bool s_ui_ready;
 static bool s_hold_dim_fired;
-static uint32_t s_press_start_ms;
+typedef enum {
+    GESTURE_NONE = 0,
+    GESTURE_TAP,
+    GESTURE_SWIPE_UP,
+    GESTURE_SWIPE_DOWN,
+    GESTURE_REJECTED_DRAG,
+    GESTURE_HOLD,
+} gesture_result_t;
+
+typedef struct {
+    lv_point_t start;
+    int32_t max_dx;
+    int32_t max_dy;
+    uint32_t start_ms;
+    bool active;
+} gesture_state_t;
+
+static gesture_state_t s_gesture;
 static char s_theme_id[BOOST_THEME_ID_MAX];
 static float s_psi_min = DEFAULT_PSI_MIN;
 static float s_psi_max = DEFAULT_PSI_MAX;
@@ -586,17 +611,116 @@ static void reset_peak_ui(void)
     ESP_LOGI(TAG, "peak reset");
 }
 
+static int32_t abs_i32(int32_t value)
+{
+    return value < 0 ? -value : value;
+}
+
+static void gesture_begin(gesture_state_t *gesture, lv_point_t start, uint32_t now_ms)
+{
+    if (gesture == NULL) return;
+    gesture->start = start;
+    gesture->max_dx = 0;
+    gesture->max_dy = 0;
+    gesture->start_ms = now_ms;
+    gesture->active = true;
+}
+
+static void gesture_update(gesture_state_t *gesture, lv_point_t point)
+{
+    if (gesture == NULL || !gesture->active) return;
+    const int32_t dx = point.x - gesture->start.x;
+    const int32_t dy = point.y - gesture->start.y;
+    if (abs_i32(dx) > abs_i32(gesture->max_dx)) gesture->max_dx = dx;
+    if (abs_i32(dy) > abs_i32(gesture->max_dy)) gesture->max_dy = dy;
+}
+
+static gesture_result_t gesture_classify(const gesture_state_t *gesture,
+                                          uint32_t elapsed_ms, bool released)
+{
+    if (gesture == NULL || !gesture->active || !released) return GESTURE_NONE;
+    if (elapsed_ms >= HOLD_DIM_MS) return GESTURE_HOLD;
+
+    const int32_t ax = abs_i32(gesture->max_dx);
+    const int32_t ay = abs_i32(gesture->max_dy);
+    /* Only small jitter is a tap. A 12..47 px movement is a rejected drag,
+     * even if it returns to origin. Contract examples: (0,0)/(11,11) TAP;
+     * (0,20)/(20,0)/(0,47) REJECTED_DRAG; (0,-48) SWIPE_UP;
+     * (0,48) SWIPE_DOWN; (60,-30) REJECTED_DRAG; (0,-52)->origin SWIPE_UP;
+     * elapsed >= HOLD_DIM_MS HOLD. */
+    if (ax < TAP_SLOP_PX && ay < TAP_SLOP_PX) return GESTURE_TAP;
+    /* 4:5 is the integer form of the 1.25 vertical-dominance ratio. */
+    if (ay >= THEME_SWIPE_MIN_PX && (int64_t)ay * 4 >= (int64_t)ax * 5) {
+        return gesture->max_dy < 0 ? GESTURE_SWIPE_UP : GESTURE_SWIPE_DOWN;
+    }
+    return GESTURE_REJECTED_DRAG;
+}
+
+static void gesture_end(gesture_state_t *gesture)
+{
+    if (gesture != NULL) gesture->active = false;
+}
+
+static bool apply_swiped_theme(int direction)
+{
+#if LV_USE_GIF
+    /* Media playback owns the screen until it is explicitly deleted. */
+    if (s_media_gif != NULL) return false;
+#endif
+    const size_t count = boost_theme_count();
+    if (count == 0) return false;
+
+    const boost_theme_t *current = active_theme();
+    size_t index = 0;
+    for (; index < count; ++index) {
+        const boost_theme_t *candidate = boost_theme_at(index);
+        if (candidate != NULL && current != NULL && strcmp(candidate->id, current->id) == 0) {
+            break;
+        }
+    }
+    if (index == count) return false;
+
+    const size_t next = direction > 0 ? (index + 1u) % count
+                                     : (index + count - 1u) % count;
+    const boost_theme_t *theme = boost_theme_at(next);
+    if (theme == NULL) return false;
+
+#ifdef ESP_PLATFORM
+    if (boost_model_set_active_theme(theme->id) != ESP_OK) return false;
+    /* The event target is the persistent screen; apply_theme deletes only its
+     * children, so synchronous rebuild is safe during RELEASED dispatch. */
+    boost_gauge_apply_theme(boost_model_active_theme());
+#else
+    boost_gauge_apply_theme(theme);
+#endif
+    ESP_LOGI(TAG, "swipe theme -> %s", theme->id);
+    return true;
+}
+
 static void on_screen_event(lv_event_t *e)
 {
     const lv_event_code_t code = lv_event_get_code(e);
 
     if (code == LV_EVENT_PRESSED) {
-        s_press_start_ms = lv_tick_get();
+        s_gesture.active = false;
         s_hold_dim_fired = false;
+        lv_indev_t *indev = lv_indev_get_act();
+        if (indev != NULL) {
+            lv_point_t point;
+            lv_indev_get_point(indev, &point);
+            gesture_begin(&s_gesture, point, lv_tick_get());
+        }
         return;
     }
     if (code == LV_EVENT_PRESSING) {
-        if (!s_hold_dim_fired && lv_tick_elaps(s_press_start_ms) >= HOLD_DIM_MS) {
+        lv_indev_t *indev = lv_indev_get_act();
+        if (indev != NULL) {
+            lv_point_t point;
+            lv_indev_get_point(indev, &point);
+            gesture_update(&s_gesture, point);
+        }
+        if (!s_hold_dim_fired && s_gesture.active &&
+            lv_tick_elaps(s_gesture.start_ms) >= HOLD_DIM_MS) {
             s_hold_dim_fired = true;
             boost_brightness_toggle_max_min();
             ESP_LOGI(TAG, "brightness toggle -> %d%%", boost_brightness_get());
@@ -604,9 +728,35 @@ static void on_screen_event(lv_event_t *e)
         return;
     }
     if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
-        if (!s_hold_dim_fired && lv_tick_elaps(s_press_start_ms) < HOLD_DIM_MS) {
-            reset_peak_ui();
+        lv_indev_t *indev = lv_indev_get_act();
+        if (indev != NULL) {
+            lv_point_t point;
+            lv_indev_get_point(indev, &point);
+            gesture_update(&s_gesture, point);
         }
+        const gesture_result_t result = gesture_classify(
+            &s_gesture, s_gesture.active ? lv_tick_elaps(s_gesture.start_ms) : 0,
+            code == LV_EVENT_RELEASED);
+        if (code == LV_EVENT_RELEASED) {
+            switch (result) {
+            case GESTURE_TAP:
+#if LV_USE_GIF
+                if (s_media_gif == NULL) reset_peak_ui();
+#else
+                reset_peak_ui();
+#endif
+                break;
+            case GESTURE_SWIPE_UP:
+                apply_swiped_theme(1);
+                break;
+            case GESTURE_SWIPE_DOWN:
+                apply_swiped_theme(-1);
+                break;
+            default:
+                break;
+            }
+        }
+        gesture_end(&s_gesture);
         s_hold_dim_fired = false;
         return;
     }
@@ -1336,8 +1486,10 @@ static void draw_vault_needle(lv_event_t *e)
     const float cy = px_cy();
     const float rad = s_vault_needle_deg * (float)M_PI / 180.0f;
 
-    const lv_color_t needle_col =
-        s_vault_needle_over ? c(theme->overboost) : c(theme->text);
+    const lv_color_t needle_col = s_vault_needle_red
+                                      ? c(VAULT_NEEDLE_RED)
+                                      : (s_vault_needle_over ? c(theme->overboost)
+                                                              : c(theme->text));
     const float nx = cosf(rad);
     const float ny = sinf(rad);
     const float px = -ny; /* perpendicular */
@@ -1653,6 +1805,7 @@ static void build_vault(lv_obj_t *scr)
     lv_obj_clear_flag(s_vault_needle, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(s_vault_needle, draw_vault_needle, LV_EVENT_DRAW_MAIN, NULL);
     s_vault_needle_deg = psi_to_sweep(0.0f, VAULT_A0, VAULT_A1);
+    s_vault_needle_red = boost_theme_vault_needle_red();
 
     /* Created last so it draws over everything, matching the web's ordering. */
     s_vault_crt = lv_obj_create(scr);
@@ -1666,11 +1819,14 @@ static void build_vault(lv_obj_t *scr)
 static void update_vault(const boost_sample_t *sample, const boost_theme_t *theme)
 {
     const float deg = psi_to_sweep(sample->psi, VAULT_A0, VAULT_A1);
+    const bool needle_red = boost_theme_vault_needle_red();
     const bool needle_over = sample->psi >= s_psi_overboost;
     /* Sub-degree jitter isn't visible but costs a full needle-sized repaint. */
-    if (fabsf(deg - s_vault_needle_deg) > 0.35f || needle_over != s_vault_needle_over) {
+    if (fabsf(deg - s_vault_needle_deg) > 0.35f || needle_red != s_vault_needle_red ||
+        needle_over != s_vault_needle_over) {
         const float old = s_vault_needle_deg;
         s_vault_needle_deg = deg;
+        s_vault_needle_red = needle_red;
         s_vault_needle_over = needle_over;
         invalidate_vault_needle(old, deg);
     }
