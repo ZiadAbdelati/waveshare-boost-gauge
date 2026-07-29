@@ -19,11 +19,12 @@ final clean rebuild:
 | Gate | Result |
 |---|---|
 | Boot and network after serial flash | control plane reachable at `192.168.50.102` |
-| Physical cadence, 30 s (Dyno Cell, demo mode) | **min 51, median 60 FPS** over 104 samples |
+| Physical cadence, 30 s (Dyno Cell, demo mode) | **min 58, median 61 FPS** over 104 samples |
 | Theme order | Dyno Cell → Vault-Tec → Night City → Big Digit, wrapping both ways |
 | Vault needle setting | green → red → green API round trip; persisted setting exposed by `/themes` |
 | Dyno Cell zero notch | restored as a live overlay above the colored value arc |
-| Display synchronization | `teSync` and `regionDBuf` enabled; no TE timeout reported in the post-flash state |
+| Release identity | published app image reports **`firmwareVersion v0.6.0`** |
+| Display synchronization | `teSync` and `regionDBuf` enabled; `teTimeouts 0` after flashing the release image |
 
 The user verified the physical swipe behavior and needle appearance on glass.
 **Not re-verified this cycle**, and not claimed: serial-log error absence, the
