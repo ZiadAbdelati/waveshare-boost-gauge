@@ -82,8 +82,11 @@
 #define VALUE_TENTHS_X     30
 #define HOLD_DIM_MS   2000
 #define WELL_SIZE     DISP_SIZE
+#define TAP_SLOP_PX 12
 #define THEME_SWIPE_MIN_PX 48
 
+_Static_assert(TAP_SLOP_PX > 0 && TAP_SLOP_PX < THEME_SWIPE_MIN_PX,
+               "tap slop must be smaller than the theme swipe threshold");
 _Static_assert(THEME_SWIPE_MIN_PX == 48, "theme swipe threshold is part of the input contract");
 
 /*
@@ -640,8 +643,12 @@ static gesture_result_t gesture_classify(const gesture_state_t *gesture,
 
     const int32_t ax = abs_i32(gesture->max_dx);
     const int32_t ay = abs_i32(gesture->max_dy);
-    /* Any movement beyond tap slop is a drag, even if it returns to origin. */
-    if (ax < THEME_SWIPE_MIN_PX && ay < THEME_SWIPE_MIN_PX) return GESTURE_TAP;
+    /* Only small jitter is a tap. A 12..47 px movement is a rejected drag,
+     * even if it returns to origin. Contract examples: (0,0)/(11,11) TAP;
+     * (0,20)/(20,0)/(0,47) REJECTED_DRAG; (0,-48) SWIPE_UP;
+     * (0,48) SWIPE_DOWN; (60,-30) REJECTED_DRAG; (0,-52)->origin SWIPE_UP;
+     * elapsed >= HOLD_DIM_MS HOLD. */
+    if (ax < TAP_SLOP_PX && ay < TAP_SLOP_PX) return GESTURE_TAP;
     /* 4:5 is the integer form of the 1.25 vertical-dominance ratio. */
     if (ay >= THEME_SWIPE_MIN_PX && (int64_t)ay * 4 >= (int64_t)ax * 5) {
         return gesture->max_dy < 0 ? GESTURE_SWIPE_UP : GESTURE_SWIPE_DOWN;
