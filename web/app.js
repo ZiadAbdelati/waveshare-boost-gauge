@@ -851,13 +851,14 @@ function drawHudGauge(sample, psi, g) {
   const intStr = `${neg ? "−" : ""}${intPart}`;
   hudPrevPsi = psi;
   ctx.font = `700 italic 88px "Bahnschrift", "DIN Alternate", system-ui, sans-serif`;
-  /* Permanent chromatic split rather than a spike-triggered flash: the
-   * conditional version left stranded ghosts on the physical panel. */
-  ctx.globalAlpha = 0.4;
+  /* Match the physical face's visible chromatic ghost passes. Keep the offset
+   * layers opaque at their pre-blended strength so the effect is not lost
+   * beneath the main glyph pass. */
+  ctx.globalAlpha = 0.7;
   ctx.fillStyle = R;
-  drawFixedDecimal(intStr, fracPart, numDecimalX - 3, 2);
+  drawFixedDecimal(intStr, fracPart, numDecimalX - 6, -4);
   ctx.fillStyle = C;
-  drawFixedDecimal(intStr, fracPart, numDecimalX + 3, 2);
+  drawFixedDecimal(intStr, fracPart, numDecimalX + 6, -4);
   ctx.globalAlpha = 1;
   ctx.fillStyle = over ? R : Y;
   drawFixedDecimal(intStr, fracPart, numDecimalX, 2);
@@ -899,10 +900,14 @@ function bigDigitBackground(psi, range) {
 
 function drawBigDigitGauge(sample, psi, g) {
   const range = psiRange();
+  const p = state.palette;
   const { cx, cy, size } = g;
 
-  /* Solid round ground that sweeps cyan → lime → red with the reading. */
-  ctx.fillStyle = bigDigitBackground(psi, range);
+  /* The panel uses the configured static colour when requested; otherwise the
+   * ground follows the live sweep. */
+  ctx.fillStyle = state.bigDigitStaticBg
+    ? (state.bigDigitStaticColor || "#000000")
+    : bigDigitBackground(psi, range);
   ctx.beginPath();
   ctx.arc(cx, cy, size / 2, 0, Math.PI * 2);
   ctx.fill();
@@ -918,7 +923,7 @@ function drawBigDigitGauge(sample, psi, g) {
 
   /* top zone chip */
   ctx.globalAlpha = 0.82;
-  ctx.fillStyle = "#ffffff";
+  ctx.fillStyle = p.text || "#ffffff";
   ctx.font = `700 20px "Bahnschrift", system-ui, sans-serif`;
   ctx.fillText(zone, 0, -150);
   ctx.globalAlpha = 1;
@@ -960,7 +965,10 @@ function drawBigDigitGauge(sample, psi, g) {
   ctx.shadowColor = "rgba(0,0,0,0.30)";
   ctx.shadowBlur = 22;
   ctx.shadowOffsetY = 6;
-  ctx.fillStyle = "#ffffff";
+  const readoutColor = state.bigDigitColorText
+    ? bigDigitBackground(psi, range)
+    : (state.bigDigitTextColor || p.text || "#ffffff");
+  ctx.fillStyle = readoutColor;
   ctx.textAlign = "center";
   ctx.fillText(".", decimalX, numY);
   ctx.fillText(String(tenth), tenthsCenter, numY);
@@ -994,10 +1002,11 @@ function drawBigDigitGauge(sample, psi, g) {
 
   /* unit + peak */
   ctx.globalAlpha = 0.9;
-  ctx.fillStyle = "#ffffff";
+  ctx.fillStyle = p.text || "#ffffff";
   ctx.font = `700 30px "Bahnschrift", system-ui, sans-serif`;
   ctx.fillText("PSI", 0, 118);
   ctx.globalAlpha = 0.72;
+  ctx.fillStyle = p.text || "#ffffff";
   ctx.font = `600 18px Consolas, monospace`;
   /* Matches the panel's `PEAK %.1f` exactly in live mode - no suffix, no
    * trailing separator. The DEMO marker returns only in demo. */

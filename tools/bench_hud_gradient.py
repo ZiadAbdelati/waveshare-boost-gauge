@@ -53,6 +53,16 @@ def wait_online(base: str, timeout_s: float = 30.0) -> None:
     raise RuntimeError(f"device did not come back online: {last_error}")
 
 
+def wait_display_metrics(base: str, timeout_s: float = 10.0) -> dict:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        state = api_get(base, "/api/v1/state")
+        if state["display"].get("renderFps"):
+            return state
+        time.sleep(0.25)
+    raise RuntimeError("display metrics did not resume after restart")
+
+
 def collect_arm(base: str, gradient: bool, settle_s: float, sample_s: float) -> dict:
     api_post(base, "/api/v1/restart")
     time.sleep(2)
@@ -63,14 +73,20 @@ def collect_arm(base: str, gradient: bool, settle_s: float, sample_s: float) -> 
         "demoFastSweep": False,
         "hudGradient": gradient,
         "pixelShift": False,
+        "teSync": True,
+        "regionDBuf": True,
     })
     state = api_get(base, "/api/v1/state")
     if config.get("hudGradient") is not gradient:
         raise RuntimeError(f"hudGradient did not take effect: {config}")
     if state.get("activeThemeId") != "night-city" or state.get("demo") is not True:
         raise RuntimeError(f"Night City demo arm not active: {state}")
+    if config.get("teSync") is not True or config.get("regionDBuf") is not True:
+        raise RuntimeError(f"display controls did not take effect: {config}")
 
+    wait_display_metrics(base)
     time.sleep(settle_s)
+    start_state = api_get(base, "/api/v1/state")
     rows = []
     deadline = time.monotonic() + sample_s
     while time.monotonic() < deadline:
@@ -94,6 +110,8 @@ def collect_arm(base: str, gradient: bool, settle_s: float, sample_s: float) -> 
 
     return {
         "gradient": gradient,
+        "firmwareVersion": start_state.get("firmwareVersion"),
+        "uptimeMsAtStart": start_state.get("uptimeMs"),
         "samples": len(rows),
         "distinctWindows": len(deduped),
         "renderFpsMin": min(values("renderFps")),
@@ -118,7 +136,8 @@ def main() -> int:
     parser.add_argument("--url", default="http://192.168.50.102")
     parser.add_argument("--rounds", type=int, default=3)
     parser.add_argument("--settle", type=float, default=10.0)
-    parser.add_argument("--sample", type=float, default=20.0)
+    parser.add_argument("--sample", type=float, default=60.0,
+                        help="seconds per arm; 60 covers four complete 15 s demo envelopes")
     parser.add_argument("--out", type=Path, default=Path("hud_gradient_results.json"))
     args = parser.parse_args()
     base = args.url.rstrip("/")
@@ -136,7 +155,9 @@ def main() -> int:
     results = []
     try:
         for round_number in range(1, args.rounds + 1):
-            for gradient in (False, True):
+            # Alternate order so time drift cannot consistently favor one arm.
+            arm_order = (False, True) if round_number % 2 else (True, False)
+            for gradient in arm_order:
                 label = "ON" if gradient else "OFF"
                 print(f"round {round_number}/{args.rounds}, gradient {label}", file=sys.stderr)
                 result = collect_arm(base, gradient, args.settle, args.sample)

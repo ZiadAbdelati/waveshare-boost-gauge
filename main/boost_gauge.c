@@ -253,6 +253,7 @@ LV_FONT_DECLARE(font_wide_32);
 #define F_WIDE22 (&font_wide_22)
 #define F_WIDE32 (&font_wide_32)
 #define HUD_VALUE_FONT F_COND96
+#define HUD_READOUT_GLYPH_COUNT 12
 
 static const char *TAG = "boost_gauge";
 
@@ -368,6 +369,18 @@ static lv_obj_t *s_hud_slot[HUD_SLOT_COUNT];
 static lv_obj_t *s_hud_sign;
 static int s_hud_sign_x = HUD_SIGN_ONES_X;
 static lv_obj_t *s_hud_glitch;
+/* The Night City readout uses a scene-owned immutable font. Its ten digits,
+ * decimal point and minus sign are expanded once from the packed source font,
+ * then read concurrently by LVGL's software draw units without changing image
+ * sources at runtime. */
+typedef struct {
+    lv_font_t font;
+    lv_font_glyph_dsc_t glyph[HUD_READOUT_GLYPH_COUNT];
+    uint32_t offset[HUD_READOUT_GLYPH_COUNT];
+    uint8_t *pixels;
+    size_t pixels_size;
+} hud_readout_font_t;
+static hud_readout_font_t s_hud_readout_font;
 /* Angle/value the fill was last painted at. Drawing and invalidating must
  * agree: a skipped invalidation with a moved draw leaves stale pixels. */
 static float s_hud_fill_deg;
@@ -612,6 +625,100 @@ static void format_value_slots(char *sign, char *tens, char *ones, char *tenths,
     *tens = whole >= 10 ? (char)('0' + whole / 10) : ' ';
     *ones = (char)('0' + whole % 10);
     *tenths = (char)('0' + tenths_psi % 10);
+}
+
+static int hud_readout_glyph_index(uint32_t letter)
+{
+    if (letter >= '0' && letter <= '9') return (int)(letter - '0');
+    if (letter == '.') return 10;
+    if (letter == '-') return 11;
+    return -1;
+}
+
+static bool hud_readout_get_glyph_dsc(const lv_font_t *font, lv_font_glyph_dsc_t *dsc,
+                                      uint32_t letter, uint32_t letter_next)
+{
+    (void)letter_next;
+    const hud_readout_font_t *cache = font->dsc;
+    const int index = hud_readout_glyph_index(letter);
+    if (index < 0) return false;
+    *dsc = cache->glyph[index];
+    return true;
+}
+
+static const void *hud_readout_get_glyph_bitmap(lv_font_glyph_dsc_t *dsc,
+                                                lv_draw_buf_t *draw_buf)
+{
+    (void)draw_buf;
+    const hud_readout_font_t *cache = dsc->resolved_font->dsc;
+    return cache->pixels + cache->offset[dsc->gid.index];
+}
+
+static void destroy_hud_readout_font(void)
+{
+    if (s_hud_readout_font.pixels != NULL) BG_FREE(s_hud_readout_font.pixels);
+    memset(&s_hud_readout_font, 0, sizeof(s_hud_readout_font));
+}
+
+static bool build_hud_readout_font(void)
+{
+    destroy_hud_readout_font();
+
+    size_t total = 0;
+    for (uint32_t index = 0; index < HUD_READOUT_GLYPH_COUNT; ++index) {
+        const uint32_t letter = index < 10 ? '0' + index : index == 10 ? '.' : '-';
+        lv_font_glyph_dsc_t *g = &s_hud_readout_font.glyph[index];
+        if (!lv_font_get_glyph_dsc(HUD_VALUE_FONT, g, letter, 0)) goto fail;
+        g->gid.index = index;
+        total = LV_ROUND_UP(total, LV_DRAW_BUF_ALIGN);
+        total += (size_t)lv_draw_buf_width_to_stride(g->box_w, LV_COLOR_FORMAT_A8) * g->box_h;
+    }
+
+    s_hud_readout_font.pixels = BG_ALLOC(total);
+    if (s_hud_readout_font.pixels == NULL) goto fail;
+    s_hud_readout_font.pixels_size = total;
+
+    size_t offset = 0;
+    for (uint32_t index = 0; index < HUD_READOUT_GLYPH_COUNT; ++index) {
+        offset = LV_ROUND_UP(offset, LV_DRAW_BUF_ALIGN);
+        const uint32_t letter = index < 10 ? '0' + index : index == 10 ? '.' : '-';
+        lv_font_glyph_dsc_t source;
+        lv_font_get_glyph_dsc(HUD_VALUE_FONT, &source, letter, 0);
+        const uint32_t stride = lv_draw_buf_width_to_stride(source.box_w, LV_COLOR_FORMAT_A8);
+        const size_t bytes = (size_t)stride * source.box_h;
+        lv_draw_buf_t draw_buf;
+        if (lv_draw_buf_init(&draw_buf, source.box_w, source.box_h, LV_COLOR_FORMAT_A8,
+                             stride, s_hud_readout_font.pixels + offset, bytes) != LV_RESULT_OK) goto fail;
+        const lv_draw_buf_t *bitmap = lv_font_get_glyph_bitmap(&source, &draw_buf);
+        const bool valid = bitmap != NULL && bitmap->data == draw_buf.data;
+        lv_font_glyph_release_draw_data(&source);
+        if (!valid) goto fail;
+
+        s_hud_readout_font.offset[index] = (uint32_t)offset;
+        s_hud_readout_font.glyph[index].resolved_font = &s_hud_readout_font.font;
+        s_hud_readout_font.glyph[index].format = LV_FONT_GLYPH_FORMAT_A8;
+        s_hud_readout_font.glyph[index].stride = stride;
+        offset += bytes;
+    }
+
+    s_hud_readout_font.font.get_glyph_dsc = hud_readout_get_glyph_dsc;
+    s_hud_readout_font.font.get_glyph_bitmap = hud_readout_get_glyph_bitmap;
+    s_hud_readout_font.font.line_height = HUD_VALUE_FONT->line_height;
+    s_hud_readout_font.font.base_line = HUD_VALUE_FONT->base_line;
+    s_hud_readout_font.font.static_bitmap = 1;
+    s_hud_readout_font.font.dsc = &s_hud_readout_font;
+    ESP_LOGI(TAG, "hud readout font cache: %u B", (unsigned)total);
+    return true;
+
+fail:
+    ESP_LOGW(TAG, "hud readout font cache unavailable; using source font");
+    destroy_hud_readout_font();
+    return false;
+}
+
+static const lv_font_t *hud_readout_font(bool cached)
+{
+    return cached ? &s_hud_readout_font.font : HUD_VALUE_FONT;
 }
 
 static void reset_peak_ui(void)
@@ -2097,7 +2204,7 @@ static void draw_hud_glitch(lv_event_t *e)
 
     lv_draw_label_dsc_t d;
     lv_draw_label_dsc_init(&d);
-    d.font = HUD_VALUE_FONT;
+    d.font = hud_readout_font(s_hud_readout_font.pixels != NULL);
     d.text = s_hud_val_str;
     d.align = LV_TEXT_ALIGN_RIGHT;
     /* The face beneath the shifted glyph edges is static and known. Pre-blend
@@ -2163,6 +2270,7 @@ static void invalidate_hud_fill(float a, float b)
 static void build_hud(lv_obj_t *scr)
 {
     const boost_theme_t *theme = active_theme();
+    const bool readout_cached = build_hud_readout_font();
 
     /* Chevrons, arrows, reticle brackets, tick ring, track and zero notch are
      * all static: rasterise once into PSRAM and blit thereafter, the same win
@@ -2220,7 +2328,9 @@ static void build_hud(lv_obj_t *scr)
     for (int i = 0; i < HUD_SLOT_COUNT; ++i) {
         s_hud_slot[i] = lv_label_create(scr);
         lv_label_set_text(s_hud_slot[i], i == HUD_SLOT_DOT ? "." : (i == HUD_SLOT_ONES ? "0" : ""));
-        lv_obj_set_style_text_font(s_hud_slot[i], HUD_VALUE_FONT, 0);
+        lv_obj_set_style_text_font(s_hud_slot[i],
+                                   hud_readout_font(readout_cached),
+                                   0);
         lv_obj_set_style_text_color(s_hud_slot[i], c(theme->boost), 0);
         lv_obj_set_size(s_hud_slot[i], 56, 70);
         lv_obj_set_style_text_align(s_hud_slot[i], LV_TEXT_ALIGN_CENTER, 0);
@@ -2229,7 +2339,7 @@ static void build_hud(lv_obj_t *scr)
     }
     s_hud_sign = lv_label_create(scr);
     lv_label_set_text(s_hud_sign, "");
-    lv_obj_set_style_text_font(s_hud_sign, HUD_VALUE_FONT, 0);
+    lv_obj_set_style_text_font(s_hud_sign, hud_readout_font(readout_cached), 0);
     lv_obj_set_style_text_color(s_hud_sign, c(theme->boost), 0);
     lv_obj_set_size(s_hud_sign, 38, 70);
     lv_obj_set_style_text_align(s_hud_sign, LV_TEXT_ALIGN_CENTER, 0);
@@ -2709,6 +2819,9 @@ static void update_bigdigit(const boost_sample_t *sample, const boost_theme_t *t
 
 static void destroy_scene(void)
 {
+    /* Draw tasks retain object styles and font bitmap pointers. Drain both
+     * software draw units before deleting the objects or their PSRAM caches. */
+    lv_draw_wait_for_finish();
     lv_obj_t *scr = lv_screen_active();
     uint32_t i = 0;
     while (i < lv_obj_get_child_count(scr)) {
@@ -2758,6 +2871,7 @@ static void destroy_scene(void)
     for (int k = 0; k < HUD_SLOT_COUNT; ++k) s_hud_slot[k] = NULL;
     s_hud_sign_x = HUD_SIGN_ONES_X;
     s_hud_map = s_hud_pk = s_hud_sys = s_hud_tag = NULL;
+    destroy_hud_readout_font();
 
     s_big_bg = s_big_minus = s_big_tens = s_big_ones = NULL;
     s_big_dot = s_big_tenths = s_big_unit = s_big_zone = s_big_peak = NULL;

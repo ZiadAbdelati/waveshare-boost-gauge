@@ -764,6 +764,37 @@ with gradient on improved median cadence **39 -> 44 FPS**; gradient off measured
 and the remaining costs are distributed across fill, primary glyphs, background
 compositing, TE waits, and other live labels.
 
+The tenths-only glyph-cache prototype exposed two independent LVGL contract
+violations: `lv_font_get_glyph_bitmap()` returns an `lv_draw_buf_t *`, not raw
+pixel bytes, and mutable PSRAM-backed A8 image sources outlived their draw-task
+assumptions. The completed readout cache is one scene-owned, immutable PSRAM
+block of **34,786 B** containing digits 0-9, decimal, minus, every main label,
+and the ghost pass. Draw callbacks publish stable descriptors only; the block
+is never mutated or republished. The lifecycle is draw-unit safe: drain with
+`lv_draw_wait_for_finish()` before scene teardown or cache release, and keep the
+cache alive until all draw units finish. Allocation failure retains the source
+font fallback. Host Night City audit: **517 comparisons / 0 mismatches**.
+Hardware confirmation: 60 rapid four-theme cycles plus a 60-second Night City
+soak completed with live rendering, no freeze, panic, `ESP_ERR_NO_MEM`,
+send-color error, or TE timeout.
+
+The full-cache hardware benchmark is **3 interleaved rounds** (6 arms, 336
+samples total), versus **1 prior round** for the tenths-only benchmark (2 arms,
+112 samples). Full-cache Night City gradient-off arms measured median FPS
+**40-42.5** (aggregate median **42.0**), median `worstRenderUs`
+**18,985.5-19,894 us** (aggregate **19,378.25 us**), and median
+`pixelsPerSecond` **691,490-795,718** (aggregate **741,639**), with zero TE
+timeouts. The prior tenths-only arms measured **40-41.5 FPS** (aggregate
+**40.75**), **27,824-29,056 us** (aggregate **28,440 us**), and **690,014-
+766,462 pixels/s** (aggregate **728,238**). These are honest directional
+figures, not a clean causal A/B: the old result is one round, while the full
+cache is three.
+
+Two web-mirror fixes closed remaining parity bugs. Night City's chromatic split
+had become visually negligible at **0.4 alpha / 3 px**; it now uses **0.7 / 6
+px**. The Big Digit renderer ignored `bigDigitStaticBg`, `staticColor`,
+`colorText`, and `textColor`; it now consumes all four settings.
+
 Night City's first sample is the exception to endpoint-only invalidation: after
 a scene switch it invalidates the complete zero-to-current span. Without that
 one-time dirty region, a rebuild rendered before the first vacuum sample left
