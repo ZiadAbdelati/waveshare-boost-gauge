@@ -737,6 +737,33 @@ changed (usually the tenths alone) took the style from 37 to 42 FPS median and
 22 to 31 min. `HUD_GLITCH_DX` is shared between the draw and the invalidation so
 the dirty box can never be narrower than the pixels the ghosts touch.
 
+Night City's gradient fill has a measurable but secondary cadence cost. A
+three-round fresh-boot hardware A/B (`night-city`, demo mode, pixel shift off,
+20 s per arm) measured gradient off at min/median **30/40 FPS** and gradient on
+at **29/39, 29/39, and 29/38 FPS**. Across-round medians were **31.8 vs 32.0 ms**
+`worstRenderUs`, **11 vs 13** over-budget frames/s, and **0.688 vs 0.735 Mpx/s**.
+The implementation explains the extra work: the fill is one quantized solid
+colour, and each of its 24 colour-step crossings invalidates and recolours the
+complete zero-to-value arc. Endpoint movement between crossings already uses a
+tight wedge. Reproduce the comparison with `tools/bench_hud_gradient.py`; judge
+an optimization on render time, pacing, and pixels/s rather than FPS alone.
+
+Component-isolation builds preserved Night City's invalidation geometry while
+suppressing one raster operation at a time. Against the 39 FPS / 30.6 ms
+gradient-on baseline, removing the chromatic ghost draws reached **45 FPS / 19.1
+ms**, removing the primary digits **44.5 FPS / 28.8 ms**, removing the fill arc
+**43 FPS / 27.6 ms**, and suppressing the cached background blit **41 FPS / 28.0
+ms**. The ghost's two semi-transparent 96 px label passes were therefore the
+largest discrete raster cost. They now pre-blend their colours against the
+known static face and draw opaque, preserving the same offsets, glyphs and dirty
+regions while avoiding two destination read/blend passes. This intentionally
+approximates the original alpha composition where the two shifted copies overlap
+or cross other art; it is not framebuffer-identical. A production hardware run
+with gradient on improved median cadence **39 -> 44 FPS**; gradient off measured
+**46 FPS**. This is a substantial win, but the face still does not reach 60 FPS
+and the remaining costs are distributed across fill, primary glyphs, background
+compositing, TE waits, and other live labels.
+
 Night City's first sample is the exception to endpoint-only invalidation: after
 a scene switch it invalidates the complete zero-to-current span. Without that
 one-time dirty region, a rebuild rendered before the first vacuum sample left

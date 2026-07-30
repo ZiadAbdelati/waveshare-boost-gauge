@@ -2100,18 +2100,21 @@ static void draw_hud_glitch(lv_event_t *e)
     d.font = HUD_VALUE_FONT;
     d.text = s_hud_val_str;
     d.align = LV_TEXT_ALIGN_RIGHT;
-    d.opa = LV_OPA_70;
+    /* The face beneath the shifted glyph edges is static and known. Pre-blend
+     * once instead of making the software renderer read and alpha-blend every
+     * covered destination pixel in both chromatic passes. */
+    d.opa = LV_OPA_COVER;
 
     lv_area_t a1 = area;
     a1.x1 -= HUD_GLITCH_DX;
     a1.x2 -= HUD_GLITCH_DX;
-    d.color = c(theme->overboost);
+    d.color = lv_color_mix(c(theme->overboost), c(theme->face), LV_OPA_70);
     lv_draw_label(layer, &d, &a1);
 
     lv_area_t a2 = area;
     a2.x1 += HUD_GLITCH_DX;
     a2.x2 += HUD_GLITCH_DX;
-    d.color = c(theme->vacuum);
+    d.color = lv_color_mix(c(theme->vacuum), c(theme->face), LV_OPA_70);
     lv_draw_label(layer, &d, &a2);
 }
 
