@@ -398,7 +398,11 @@ static void state_ws_send_done(esp_err_t err, int socket, void *arg)
 static void state_ws_push(void *arg)
 {
     (void)arg;
-    char current[1024];
+    /* Static: this runs only on the single boost_ws task, once per loop
+     * iteration, so there is no reentrancy. Keeping the 1 KB serialization
+     * buffer off the task stack is what stops the TPMS-augmented payload from
+     * overflowing it (the stack was sized for the pre-TPMS 768 B buffer). */
+    static char current[1024];
     const int n = state_json(current, sizeof(current));
     if (n <= 0 || n >= (int)sizeof(current)) return;
     for (int slot = 0; slot < STATE_WS_MAX_CLIENTS; ++slot) {
@@ -1646,7 +1650,7 @@ esp_err_t boost_web_start(void)
     /* Priority 2, below LVGL's swdraw threads at 4: at equal priority these two
      * round-robin, and since this task now wakes on every sample it would steal
      * slices from pixel rasterisation 62 times a second. */
-    if (xTaskCreatePinnedToCore(state_ws_task, "boost_ws", 3072, NULL, 3,
+    if (xTaskCreatePinnedToCore(state_ws_task, "boost_ws", 4096, NULL, 3,
                                 (TaskHandle_t *)&s_state_ws_task, 1) != pdPASS) {
         ESP_LOGW(TAG, "live WebSocket task not started");
     }
