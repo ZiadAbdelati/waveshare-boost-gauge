@@ -16,6 +16,8 @@
 #include "nvs_flash.h"
 
 #include "boost_brightness.h"
+#include "boost_page.h"
+#include "boost_display.h"
 
 /* Factory brightness. These match what the default theme used to impose, so a
  * fresh device behaves exactly as before; they are now plain defaults that the
@@ -393,6 +395,7 @@ void boost_model_refresh_status(void)
     s_state.epoch_ms = epoch_ms_now();
     s_state.timezone_offset_minutes = s_config.timezone_offset_minutes;
     strlcpy(s_state.active_theme_id, s_config.active_theme_id, sizeof(s_state.active_theme_id));
+    s_state.active_page = (int)boost_page_active();
     xSemaphoreGive(s_lock);
 
     if (pending == -2) {
@@ -523,6 +526,15 @@ esp_err_t boost_model_set_active_theme(const char *id)
      * silently destroyed a hand-set brightness on every theme switch and left
      * the dim schedule picking from values the user never chose. */
     return boost_model_update_config(&patch, BOOST_CONFIG_THEME);
+}
+
+void boost_model_set_active_page(int page)
+{
+    if (page < 0 || page > 1) return;
+    if (boost_display_lock(-1) == ESP_OK) {
+        boost_page_show((boost_page_id_t)page);
+        boost_display_unlock();
+    }
 }
 
 const boost_theme_t *boost_model_active_theme(void)

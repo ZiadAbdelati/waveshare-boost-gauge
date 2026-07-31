@@ -25,9 +25,18 @@
         </div>
       </div>
 
-      <div class="gauge-wrap">
+      <div class="gauge-wrap" id="gaugeMirror">
         <div class="gauge-device" id="gaugeDevice">
           <canvas id="gaugeCanvas" width="466" height="466" aria-label="Boost gauge face"></canvas>
+        </div>
+        <div class="page-toggle" id="pageToggle" role="group" aria-label="Gauge page">
+          <span class="page-toggle-indicator" aria-hidden="true"></span>
+          <button type="button" class="page-segment active" data-page="0" aria-pressed="true">BOOST</button>
+          <button type="button" class="page-segment" data-page="1" aria-pressed="false">TPMS</button>
+        </div>
+        <div class="page-dots" id="pageDots" aria-label="Gauge page position">
+          <button type="button" class="page-dot active" data-page="0" aria-label="Boost page"></button>
+          <button type="button" class="page-dot" data-page="1" aria-label="TPMS page"></button>
         </div>
       </div>
 
@@ -147,16 +156,6 @@
           </label>
           <button class="wide primary" id="uploadOtaBtn">Upload OTA</button>
           <progress id="otaProgress" max="100" value="0"></progress>
-        </section>
-
-        <section class="panel tpms-panel" id="tpmsPanel">
-          <div class="section-title"><span>Tire Pressure</span></div>
-          <div class="tpms-grid" id="tpmsGrid">
-            <div class="tpms-cell" id="tpmsFL"><span class="tpms-name">FL</span><span class="tpms-psi">--.-</span><span class="tpms-status">--</span></div>
-            <div class="tpms-cell" id="tpmsFR"><span class="tpms-name">FR</span><span class="tpms-psi">--.-</span><span class="tpms-status">--</span></div>
-            <div class="tpms-cell" id="tpmsRL"><span class="tpms-name">RL</span><span class="tpms-psi">--.-</span><span class="tpms-status">--</span></div>
-            <div class="tpms-cell" id="tpmsRR"><span class="tpms-name">RR</span><span class="tpms-psi">--.-</span><span class="tpms-status">--</span></div>
-          </div>
         </section>
       </div>
     </aside>

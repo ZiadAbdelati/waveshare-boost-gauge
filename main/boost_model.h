@@ -46,6 +46,7 @@ typedef struct {
     int64_t epoch_ms;
     int timezone_offset_minutes;
     char active_theme_id[BOOST_THEME_ID_MAX];
+    int active_page;
     boost_display_metrics_t display;
     /* Real-sensor diagnostics, mirrored from the latest sample. Let the parent
      * sanity-check readings on hardware (engine off: ambient ~101 kPa, gauge
@@ -90,6 +91,7 @@ void boost_model_set_display_metrics(const boost_display_metrics_t *metrics);
 void boost_model_get_config(boost_config_t *out);
 esp_err_t boost_model_update_config(const boost_config_t *patch, uint32_t fields);
 esp_err_t boost_model_set_active_theme(const char *id);
+void boost_model_set_active_page(int page);
 const boost_theme_t *boost_model_active_theme(void);
 esp_err_t boost_model_set_time(int64_t epoch_ms, int timezone_offset_minutes);
 void boost_model_apply_schedule(void);

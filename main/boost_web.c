@@ -178,7 +178,7 @@ static int state_json(char *json, size_t len)
     return snprintf(json, len,
                     "{\"psi\":%.2f,\"peakPsi\":%.2f,\"zone\":\"%s\",\"demo\":%s,"
                     "\"brightness\":%d,\"firmwareVersion\":\"%s\",\"uptimeMs\":%llu,"
-                    "\"epochMs\":%lld,\"timezoneOffsetMinutes\":%d,\"activeThemeId\":\"%s\","
+                    "\"epochMs\":%lld,\"timezoneOffsetMinutes\":%d,\"activeThemeId\":\"%s\",\"activePage\":%d,"
                     "\"display\":{\"renderFps\":%lu,\"flushesPerSecond\":%lu,\"pixelsPerSecond\":%lu,"
                     "\"worstRenderUs\":%lu,\"renderGapP50Us\":%lu,"
                     "\"renderGapMaxUs\":%lu,\"framesOverBudget\":%lu,"
@@ -191,7 +191,7 @@ static int state_json(char *json, size_t len)
                     "\"tpms\":{\"status\":%d,\"wheels\":[{\"psi\":%.1f,\"valid\":%s},{\"psi\":%.1f,\"valid\":%s},{\"psi\":%.1f,\"valid\":%s},{\"psi\":%.1f,\"valid\":%s}]}}",
                     (double)st.psi, (double)st.peak_psi, st.zone, st.demo ? "true" : "false",
                     st.brightness, st.firmware_version, (unsigned long long)st.uptime_ms,
-                    (long long)st.epoch_ms, st.timezone_offset_minutes, st.active_theme_id,
+                    (long long)st.epoch_ms, st.timezone_offset_minutes, st.active_theme_id, st.active_page,
                     (unsigned long)st.display.render_fps, (unsigned long)st.display.flushes_per_second,
                     (unsigned long)st.display.pixels_per_second,
                     (unsigned long)st.display.worst_render_us,
@@ -959,6 +959,23 @@ static esp_err_t themes_config_put(httpd_req_t *req)
     return themes_get(req);
 }
 
+static esp_err_t page_put(httpd_req_t *req)
+{
+    char *body = read_body(req, MAX_JSON_BODY);
+    if (body == NULL) return send_err(req, HTTPD_400, "invalid_body");
+    cJSON *root = cJSON_Parse(body);
+    free(body);
+    if (!cJSON_IsObject(root)) { cJSON_Delete(root); return send_err(req, HTTPD_400, "invalid_json"); }
+    int page = -1;
+    if (!json_int(root, "page", &page)) json_int(root, "activePage", &page);
+    cJSON_Delete(root);
+    if (page < 0 || page > 1) return send_err(req, HTTPD_400, "invalid_page");
+    boost_model_set_active_page(page);
+    char json[64];
+    snprintf(json, sizeof(json), "{\"ok\":true,\"activePage\":%d}", page);
+    return send_json(req, json);
+}
+
 static esp_err_t theme_active_put(httpd_req_t *req)
 {
     char *body = read_body(req, MAX_JSON_BODY);
@@ -1626,6 +1643,7 @@ esp_err_t boost_web_start(void)
     register_uri(API_BASE "/themes", HTTP_GET, themes_get);
     register_uri(API_BASE "/themes/active", HTTP_PUT, theme_active_put);
     register_uri(API_BASE "/themes/config", HTTP_PUT, themes_config_put);
+    register_uri(API_BASE "/page", HTTP_PUT, page_put);
     register_uri(API_BASE "/logs", HTTP_GET, logs_get);
     register_uri(API_BASE "/logs", HTTP_DELETE, logs_delete);
     register_uri(API_BASE "/logs.csv", HTTP_GET, logs_csv_get);

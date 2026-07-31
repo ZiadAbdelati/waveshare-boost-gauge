@@ -67,6 +67,8 @@ const CANVAS_DPR_MAX = 2;
 
 const state = {
   activeThemeId: "dyno-cell",
+  activePage: 0,
+  tpms: { status: 2, wheels: [] },
   themes: [],
   config: null,
   network: null,
@@ -113,6 +115,10 @@ const el = {
   canvas: document.getElementById("gaugeCanvas"),
   sparkline: document.getElementById("sparkline"),
   gaugeDevice: document.getElementById("gaugeDevice"),
+  gaugeMirror: document.getElementById("gaugeMirror"),
+  pageToggle: document.getElementById("pageToggle"),
+  pageSegments: [...document.querySelectorAll(".page-segment")],
+  pageDots: [...document.querySelectorAll(".page-dot")],
   sampleCount: document.getElementById("sampleCount"),
   emptyState: document.getElementById("emptyState"),
   firmwareVersion: document.getElementById("firmwareVersion"),
@@ -410,6 +416,10 @@ function drawGauge(sample) {
   const g = gaugeGeom();
   const psi = Number(sample.psi ?? 0);
   ctx.clearRect(0, 0, g.cssW, g.cssH);
+  if (state.activePage === 1) {
+    drawTpmsFace(sample, g);
+    return;
+  }
   switch (activeThemeStyle()) {
     case "vault":
       return drawVaultGauge(sample, psi, g);
@@ -1079,6 +1089,74 @@ function drawBigDigitGauge(sample, psi, g) {
   ctx.restore();
 }
 
+function drawTpmsFace(sample, g) {
+  const { cx, cy, scale } = g;
+  const wheels = state.tpms?.wheels || [];
+  const status = Number(state.tpms?.status ?? 2);
+  const S = (v) => v * scale;
+  ctx.save();
+  ctx.translate(cx - S(233), cy - S(233));
+  ctx.scale(scale, scale);
+  ctx.fillStyle = "#080B10";
+  ctx.fillRect(0, 0, 466, 466);
+  const vignette = ctx.createRadialGradient(233, 222, 30, 233, 222, 265);
+  vignette.addColorStop(0, "rgba(29,39,51,0.14)");
+  vignette.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = vignette; ctx.fillRect(0, 0, 466, 466);
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillStyle = "#E7EDF4"; ctx.font = '700 20px system-ui, sans-serif'; ctx.fillText("TIRE PRESSURE", 233, 28);
+  ctx.fillStyle = "#667383"; ctx.font = '600 12px system-ui, sans-serif'; ctx.fillText("LIVE SENSOR STATUS", 233, 52);
+  const rr = (x, y, w, h, r) => { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); };
+  rr(162, 96, 142, 274, 54); ctx.fillStyle = "#1D2733"; ctx.fill(); ctx.strokeStyle = "#667383"; ctx.lineWidth = 2; ctx.stroke();
+  rr(186, 130, 94, 76, 24); ctx.fillStyle = "#101923"; ctx.fill(); ctx.strokeStyle = "#667383"; ctx.lineWidth = 1; ctx.stroke();
+  ctx.strokeStyle = "rgba(102,115,131,0.4)"; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(233, 214); ctx.lineTo(233, 358); ctx.stroke();
+  const names = ["FL", "FR", "RL", "RR"], xs = [28, 314, 28, 314], ys = [112, 112, 286, 286];
+  const pulse = 0.72 + 0.28 * (0.5 + 0.5 * Math.sin(performance.now() / 260));
+  for (let i = 0; i < 4; i++) {
+    const w = wheels[i] || {}; const valid = Boolean(w.valid); const psi = Number(w.psi);
+    const stale = status === 1; const offline = status === 2 || !valid;
+    const low = !offline && !stale && psi < 31.9;
+    let label = "OFFLINE", value = "--.- PSI", color = "#FF4D5A";
+    if (stale) { label = "STALE"; value = Number.isFinite(psi) ? `${psi.toFixed(1)} PSI` : "--.- PSI"; color = "#FFB020"; }
+    else if (!offline && low) { label = "LOW"; value = `${psi.toFixed(1)} PSI`; color = "#FFB020"; }
+    else if (!offline) { label = "OK"; value = `${psi.toFixed(1)} PSI`; color = "#62D6A5"; }
+    rr(xs[i], ys[i], 124, 78, 20); ctx.fillStyle = "#121923"; ctx.fill(); ctx.strokeStyle = "#667383"; ctx.lineWidth = 1; ctx.stroke();
+    ctx.textAlign = "left"; ctx.fillStyle = "#667383"; ctx.font = '600 12px system-ui, sans-serif'; ctx.fillText(names[i], xs[i] + 14, ys[i] + 16);
+    ctx.fillStyle = "#E7EDF4"; ctx.font = '700 20px system-ui, sans-serif'; ctx.fillText(value, xs[i] + 14, ys[i] + 43);
+    ctx.globalAlpha = (stale || low) ? pulse : 1; ctx.fillStyle = color; ctx.font = '700 12px system-ui, sans-serif'; ctx.fillText(label, xs[i] + 14, ys[i] + 67); ctx.globalAlpha = 1;
+  }
+  ctx.textAlign = "center"; ctx.fillStyle = "#667383"; ctx.font = '600 12px system-ui, sans-serif'; ctx.fillText("TPMS  /  FOUR-WHEEL MONITOR", 233, 442);
+  ctx.restore();
+}
+
+function syncPageUI() {
+  const page = state.activePage === 1 ? 1 : 0;
+  state.activePage = page;
+  if (el.pageToggle) el.pageToggle.dataset.page = String(page);
+  el.pageSegments.forEach((button) => { const active = Number(button.dataset.page) === page; button.classList.toggle("active", active); button.setAttribute("aria-pressed", String(active)); });
+  el.pageDots.forEach((button) => button.classList.toggle("active", Number(button.dataset.page) === page));
+  const sparkWrap = el.sparkline?.closest(".sparkline-wrap");
+  if (sparkWrap) sparkWrap.hidden = page === 1;
+  if (el.gaugeMirror) { el.gaugeMirror.classList.remove("page-fade"); void el.gaugeMirror.offsetWidth; el.gaugeMirror.classList.add("page-fade"); window.setTimeout(() => el.gaugeMirror?.classList.remove("page-fade"), 170); }
+  scheduleGaugeRender();
+}
+
+function setPage(page) {
+  const p = Number(page);
+  if (p !== 0 && p !== 1) return;
+  if (p === state.activePage) return;
+  state.activePage = p; syncPageUI();
+  api("/page", { method: "PUT", body: JSON.stringify({ page: p }) }).catch(() => {});
+}
+
+function wirePageControls() {
+  [...el.pageSegments, ...el.pageDots].forEach((button) => button.addEventListener("click", () => setPage(button.dataset.page)));
+  let startX = 0, startY = 0;
+  on(el.gaugeDevice, "pointerdown", (event) => { startX = event.clientX; startY = event.clientY; el.gaugeDevice.setPointerCapture?.(event.pointerId); });
+  on(el.gaugeDevice, "pointerup", (event) => { const dx = event.clientX - startX; const dy = event.clientY - startY; if (Math.abs(dx) >= 48 && Math.abs(dx) > Math.abs(dy) * 1.2 && ((state.activePage === 0 && dx < 0) || (state.activePage === 1 && dx > 0))) setPage(state.activePage === 0 ? 1 : 0); });
+  syncPageUI();
+}
+
 function scheduleGaugeRender() {
   if (!IS_COCKPIT || !el.canvas || state.gaugeRaf !== null) return;
   state.gaugeRaf = requestAnimationFrame(renderGaugeFrame);
@@ -1344,26 +1422,13 @@ function renderState(sample) {
     if (el.deviceClock) el.deviceClock.textContent = formatClock(sample.epochMs, sample.timezoneOffsetMinutes || 0);
     if (sample.brightness != null && el.brightnessNow) el.brightnessNow.textContent = `${sample.brightness}%`;
     if (sample.tpms) {
-      const wheels = ["FL", "FR", "RL", "RR"];
-      const statusLabels = ["OK", "STALE", "OFFLINE"];
-      const statusClasses = ["tpms-ok", "tpms-stale", "tpms-offline"];
-      for (let i = 0; i < 4; i++) {
-        const cell = document.getElementById("tpms" + wheels[i]);
-        if (!cell) continue;
-        const w = sample.tpms.wheels && sample.tpms.wheels[i];
-        const psiEl = cell.querySelector(".tpms-psi");
-        const statusEl = cell.querySelector(".tpms-status");
-        if (w && w.valid) {
-          psiEl.textContent = Number(w.psi).toFixed(1);
-        } else {
-          psiEl.textContent = "--.-";
-        }
-        const si = sample.tpms.status != null ? Number(sample.tpms.status) : 2;
-        const safeSi = si >= 0 && si < statusLabels.length ? si : 2;
-        statusEl.textContent = w && w.valid ? statusLabels[safeSi] : "OFFLINE";
-        statusEl.className = "tpms-status " + (w && w.valid ? statusClasses[safeSi] : statusClasses[2]);
-      }
+      state.tpms = sample.tpms;
+      scheduleGaugeRender();
     }
+  }
+  if (typeof sample.activePage === "number" && sample.activePage !== state.activePage) {
+    state.activePage = sample.activePage;
+    syncPageUI();
   }
   if (sample.activeThemeId && sample.activeThemeId !== state.activeThemeId) {
     state.activeThemeId = sample.activeThemeId;
@@ -2711,6 +2776,7 @@ state.config = {
   psiOverboost: DEFAULT_PSI_OVERBOOST,
 };
 state.gaugeTarget = { psi: 0, peakPsi: 0, zone: "ATMO", demo: true };
+wirePageControls();
 wireControls();
 wireDisplayToggles();
 wireCalibration();
