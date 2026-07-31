@@ -4,16 +4,26 @@
 
 #include "boost_sim.h"
 #include "boost_theme.h"
+#include "lvgl.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/** Build the full-screen boost gauge on the active LVGL screen. */
+/** Build the boost gauge on the active LVGL screen (legacy convenience API). */
 void boost_gauge_create(void);
+
+/** Build the boost gauge below a caller-owned page root. */
+void boost_gauge_create_in(lv_obj_t *parent);
 
 /** Push a new sample into the UI. Must be called under bsp_display_lock. */
 void boost_gauge_update(const boost_sample_t *sample);
+
+/** Reset the boost peak without exposing renderer state to the page coordinator. */
+void boost_gauge_reset_peak(void);
+
+/** True while the exclusive mapped GIF widget owns the display. */
+bool boost_gauge_media_active(void);
 
 /** Re-apply colors from the active runtime theme. Must be called under lock. */
 void boost_gauge_apply_theme(const boost_theme_t *theme);

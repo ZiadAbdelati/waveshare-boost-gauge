@@ -3,6 +3,8 @@ idf_component_register(
         "main.c"
         "boost_display.c"
         "boost_gauge.c"
+        "boost_page.c"
+        "boost_tpms_ui.c"
         "boost_model.c"
         "boost_sim.c"
         "boost_sensors.c"

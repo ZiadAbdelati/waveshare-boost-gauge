@@ -7,6 +7,7 @@
 
 #include "boost_brightness.h"
 #include "boost_gauge.h"
+#include "boost_page.h"
 #include "boost_model.h"
 #include "boost_theme.h"
 #include "boost_sim.h"
@@ -36,7 +37,7 @@ static void gauge_timer_cb(lv_timer_t *timer)
 {
     LV_UNUSED(timer);
     const boost_sample_t sample = next_sample();
-    boost_gauge_update(&sample);
+    boost_page_update(&sample);
     lv_timer_set_period(timer, 16U);
 }
 
@@ -105,10 +106,10 @@ void app_main(void)
     /* The physical gauge receives samples directly in its LVGL timer. */
 
     if (boost_display_lock(-1) == ESP_OK) {
-        boost_gauge_create();
+        boost_page_create();
 
         const boost_sample_t initial = next_sample();
-        boost_gauge_update(&initial);
+        boost_page_update(&initial);
         lv_timer_t *gauge_timer = lv_timer_create(gauge_timer_cb, 16, NULL);
         if (gauge_timer == NULL) {
             boost_display_unlock();

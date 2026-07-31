@@ -269,6 +269,8 @@ static const char *TAG = "boost_gauge";
 
 /* ---- shared scene state -------------------------------------------------- */
 static lv_obj_t *s_well;
+/* Parent supplied by boost_page; the active screen remains the legacy default. */
+static lv_obj_t *s_scene_parent;
 static boost_gauge_style_t s_built_style = BOOST_STYLE_ARC;
 
 /* Every scene object is a child of this; moving it moves the whole face. It is
@@ -2012,7 +2014,7 @@ static void build_vault(lv_obj_t *scr)
          * as a bright hairline tracing one side of the glass. The other three
          * styles need no such trick: hud's cached face and bigdigit's ground
          * are flat fills that already equal the screen background. */
-        lv_obj_set_style_bg_color(lv_screen_active(),
+        lv_obj_set_style_bg_color(s_scene_parent != NULL ? s_scene_parent : lv_screen_active(),
                                   c(scale_rgb(boost_theme_vault_face(),
                                               1.0f - (float)boost_theme_vault_vignette_pct() / 100.0f)), 0);
     } else {
@@ -2847,7 +2849,7 @@ static void build_bigdigit(lv_obj_t *scr)
     /* Explicitly the screen, not `scr`: `scr` is the shifting container now,
      * and the whole point of this fill is that it does NOT shift, so it backs
      * the margin the shift opens at the edge. */
-    lv_obj_set_style_bg_color(lv_screen_active(), c(ground), 0);
+    lv_obj_set_style_bg_color(s_scene_parent != NULL ? s_scene_parent : lv_screen_active(), c(ground), 0);
     s_big_bg_step = -1;
 
     /* Recolouring the ground in one go dirties all 217k pixels at once: a ~69 ms
@@ -2967,7 +2969,7 @@ static void update_bigdigit(const boost_sample_t *sample, const boost_theme_t *t
              * BIG_BANDS == 1 this lands on the same tick and unions into the
              * full-screen invalidation the band already caused, for free. */
             if (s_big_band_next == BIG_BANDS) {
-                lv_obj_set_style_bg_color(lv_screen_active(), c(s_big_band_color), 0);
+                lv_obj_set_style_bg_color(s_scene_parent != NULL ? s_scene_parent : lv_screen_active(), c(s_big_band_color), 0);
             }
         }
     }
@@ -3209,7 +3211,7 @@ static void destroy_scene(void)
     /* Draw tasks retain object styles and font bitmap pointers. Drain both
      * software draw units before deleting the objects or their PSRAM caches. */
     lv_draw_wait_for_finish();
-    lv_obj_t *scr = lv_screen_active();
+    lv_obj_t *scr = s_scene_parent != NULL ? s_scene_parent : lv_screen_active();
     uint32_t i = 0;
     while (i < lv_obj_get_child_count(scr)) {
         lv_obj_t *child = lv_obj_get_child(scr, i);
@@ -3275,11 +3277,11 @@ static void destroy_scene(void)
 static void build_scene(boost_gauge_style_t style)
 {
     const boost_theme_t *theme = active_theme();
-    lv_obj_t *scr = lv_screen_active();
+    lv_obj_t *scr = s_scene_parent != NULL ? s_scene_parent : lv_screen_active();
 
-    /* The screen's own opaque background is the face. A second full-screen
-     * "well" object used to sit on top of it, which meant every dirty region
-     * was filled twice per frame — pure cost on the needle sweep. */
+    /* The screen's own opaque background is the face in legacy mode. A page
+     * root owns the face when the coordinator is active, so page chrome can
+     * remain separate from the renderer. */
     lv_obj_set_style_bg_color(scr,
                               style == BOOST_STYLE_HUD ? hud_face_color(theme) : c(theme->face),
                               0);
@@ -3321,19 +3323,28 @@ static void build_scene(boost_gauge_style_t style)
 
 void boost_gauge_create(void)
 {
+    boost_gauge_create_in(lv_screen_active());
+}
+
+void boost_gauge_create_in(lv_obj_t *parent)
+{
+    if (parent == NULL) return;
+    s_scene_parent = parent;
     load_range_from_config();
     const boost_theme_t *theme = active_theme();
     snprintf(s_theme_id, sizeof(s_theme_id), "%s", theme->id);
 
-    lv_obj_t *scr = lv_screen_active();
-    lv_obj_remove_style_all(scr);
-    lv_obj_set_size(scr, DISP_SIZE, DISP_SIZE);
-    lv_obj_add_flag(scr, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(scr, on_screen_event, LV_EVENT_PRESSED, NULL);
-    lv_obj_add_event_cb(scr, on_screen_event, LV_EVENT_PRESSING, NULL);
-    lv_obj_add_event_cb(scr, on_screen_event, LV_EVENT_RELEASED, NULL);
-    lv_obj_add_event_cb(scr, on_screen_event, LV_EVENT_PRESS_LOST, NULL);
-    lv_obj_add_event_cb(scr, on_screen_event, LV_EVENT_LONG_PRESSED, NULL);
+    lv_obj_t *scr = parent;
+    if (scr == lv_screen_active()) {
+        lv_obj_remove_style_all(scr);
+        lv_obj_set_size(scr, DISP_SIZE, DISP_SIZE);
+        lv_obj_add_flag(scr, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(scr, on_screen_event, LV_EVENT_PRESSED, NULL);
+        lv_obj_add_event_cb(scr, on_screen_event, LV_EVENT_PRESSING, NULL);
+        lv_obj_add_event_cb(scr, on_screen_event, LV_EVENT_RELEASED, NULL);
+        lv_obj_add_event_cb(scr, on_screen_event, LV_EVENT_PRESS_LOST, NULL);
+        lv_obj_add_event_cb(scr, on_screen_event, LV_EVENT_LONG_PRESSED, NULL);
+    }
 
     s_display_psi = 0.0f;
     s_peak_psi = 0.0f;
@@ -3359,6 +3370,21 @@ void boost_gauge_apply_theme(const boost_theme_t *theme)
     destroy_scene();
     build_scene(theme->style);
     lv_obj_invalidate(lv_screen_active());
+}
+
+void boost_gauge_reset_peak(void)
+{
+    if (!s_ui_ready || boost_gauge_media_active()) return;
+    reset_peak_ui();
+}
+
+bool boost_gauge_media_active(void)
+{
+#if LV_USE_GIF
+    return s_media_gif != NULL;
+#else
+    return false;
+#endif
 }
 
 void boost_gauge_apply_config(void)
