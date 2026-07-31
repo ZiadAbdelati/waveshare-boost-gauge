@@ -33,9 +33,18 @@ moves to the previous entry. The screen requires 48 px of predominantly
 vertical travel, preserving short-tap peak reset and the two-second brightness
 hold. Theme changes rebuild one LVGL scene under the existing display lock; no
 full-frame transition buffer or animation is used because it would threaten
-the 16 ms partial-refresh path. Vault needle red is a persisted theme setting,
-defaults to green, recolors only the body, and must invalidate the stationary
-needle when changed.
+the 16 ms partial-refresh path. Sport Cluster's static ring/ticks are baked
+once into a PSRAM `lv_canvas`; only its bounded readout rectangle is invalidated
+per frame. Preserve the audit contract of roughly 1.7e4 flushed px/cycle versus
+~2.17e5 for a full face, with zero stale pixels. Vault needle red is a persisted
+theme setting, defaults to green, recolors only the body, and must invalidate
+the stationary needle when changed.
+
+`boost_page.c/.h` owns page 0 (boost) and page 1 (TPMS): LEFT enters TPMS and
+RIGHT returns to boost, with no wrap-around. Vertical theme swipes and tap peak
+reset are page-0-only; the two-second brightness hold works on either page.
+TPMS BLE central remains feature-flagged off by default (`BOOST_TPMS_BLE_ENABLED=0`)
+until a verified vLinker FD+ BLE GATT profile exists.
 
 Gesture classification tracks the greatest signed excursion during
 `LV_EVENT_PRESSING`, not only the release coordinate. Only movement within the

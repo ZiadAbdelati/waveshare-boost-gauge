@@ -10,6 +10,13 @@
 #define BOOST_TPMS_BLE_ENABLED 0
 #endif
 
+static boost_tpms_snapshot_t s_snapshot;
+static boost_tpms_config_t s_config = {
+    .stale_after_ms = 5000,
+    .replacement_offset_kpa = 0.0f,
+    .enabled = true,
+};
+
 static void publish_raw(uint32_t now_ms, const uint16_t raw[4])
 {
     s_snapshot.sequence++;
@@ -32,6 +39,11 @@ void boost_tpms_publish_raw(uint32_t now_ms, const uint16_t raw[4])
 
 void boost_tpms_age(uint32_t now_ms)
 {
+    if (s_snapshot.sequence == 0) {
+        /* Never received a sample: the link is down, not merely late. */
+        s_snapshot.status = BOOST_TPMS_STATUS_DISCONNECTED;
+        return;
+    }
     if (now_ms < s_snapshot.updated_at_ms) return;
     const uint32_t age = now_ms - s_snapshot.updated_at_ms;
     for (unsigned i = 0; i < 4; ++i) {
@@ -40,18 +52,6 @@ void boost_tpms_age(uint32_t now_ms)
     }
     s_snapshot.status = (age <= s_config.stale_after_ms) ? BOOST_TPMS_STATUS_NORMAL : BOOST_TPMS_STATUS_STALE;
 }
-
-#ifndef BOOST_TPMS_MOCK_DISABLED
-static uint32_t s_mock_now_ms;
-#endif
-
-
-static boost_tpms_snapshot_t s_snapshot;
-static boost_tpms_config_t s_config = {
-    .stale_after_ms = 5000,
-    .replacement_offset_kpa = 0.0f,
-    .enabled = true,
-};
 
 void boost_tpms_init(void)
 {
@@ -94,16 +94,7 @@ void boost_tpms_poll(void)
 
 void boost_tpms_mock_publish(uint32_t now_ms)
 {
-    static const uint16_t raw[4] = { 73, 74, 72, 75 };
-    s_snapshot.sequence++;
-    s_snapshot.updated_at_ms = now_ms;
-    s_snapshot.status = BOOST_TPMS_STATUS_NORMAL;
-    for (unsigned i = 0; i < 4; ++i) {
-        s_snapshot.wheel[i].raw = raw[i];
-        s_snapshot.wheel[i].did = boost_tpms_protocol_did_for_wheel((boost_tpms_protocol_wheel_t)i);
-        s_snapshot.wheel[i].kpa = boost_tpms_protocol_raw_to_kpa(raw[i], s_config.replacement_offset_kpa);
-        s_snapshot.wheel[i].psi = boost_tpms_protocol_kpa_to_psi(s_snapshot.wheel[i].kpa);
-        s_snapshot.wheel[i].age_ms = 0;
-        s_snapshot.wheel[i].valid = true;
-    }
+    /* Deterministic raw values near the ND placard band (~33 psi). */
+    static const uint16_t raw[4] = { 165, 167, 163, 168 };
+    publish_raw(now_ms, raw);
 }

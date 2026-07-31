@@ -12,6 +12,8 @@
 #include "boost_theme.h"
 #include "boost_sim.h"
 #include "boost_sensors.h"
+#include "boost_tpms.h"
+#include "boost_tpms_mock.h"
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
 #include "boost_web.h"
@@ -39,6 +41,20 @@ static void gauge_timer_cb(lv_timer_t *timer)
     const boost_sample_t sample = next_sample();
     boost_page_update(&sample);
     lv_timer_set_period(timer, 16U);
+}
+
+/* TPMS runs on its own slow cadence: tire pressures change in seconds, not
+ * milliseconds, so a 250 ms tick keeps the page fresh without sharing the
+ * 16 ms gauge path. The mock provider stands in for the BLE transport until
+ * the vLinker FD+ profile is verified; the service/snapshot contract is the
+ * same either way. */
+static void tpms_timer_cb(lv_timer_t *timer)
+{
+    LV_UNUSED(timer);
+    boost_tpms_mock_tick(lv_tick_get());
+    boost_tpms_snapshot_t snapshot;
+    boost_tpms_get_snapshot(&snapshot);
+    boost_page_update_tpms(&snapshot);
 }
 
 /* Web/model publication stays independent when a GIF occupies the LVGL worker. */
@@ -94,6 +110,11 @@ void app_main(void)
 
     boost_sim_init();
 
+    /* TPMS service: mock provider until the BLE adapter profile is verified. */
+    boost_tpms_init();
+    boost_tpms_start();
+    boost_tpms_mock_set_scenario(BOOST_TPMS_MOCK_NORMAL);
+
     /* Real-sensor path: I2C on GPIO18/17 (separate from the BSP touch bus on
      * GPIO14/15). Brings up the bus, probes ADS1115 (0x48) and BMP280 (0x76),
      * and starts the reader task. Runs regardless of the demo flag so a runtime
@@ -117,6 +138,7 @@ void app_main(void)
             return;
         }
         lv_timer_ready(gauge_timer);
+        lv_timer_create(tpms_timer_cb, 250, NULL);
         boost_display_unlock();
     } else {
         ESP_LOGE(TAG, "display lock failed during UI create");

@@ -45,6 +45,11 @@ add_executable(boost_gauge_sim
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/font_wide_32.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_sim.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_brightness.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_page.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_tpms_ui.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_tpms.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_tpms_mock.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_tpms_protocol.c
 )
 
 target_include_directories(boost_gauge_sim PRIVATE
@@ -71,6 +76,17 @@ endif()
 if(SDL2_FOUND AND TARGET SDL2::SDL2)
     target_link_libraries(boost_gauge_sim PRIVATE SDL2::SDL2)
 endif()
+
+# Host-side unit test for the pure-C TPMS protocol/conversion/ISO-TP layer.
+# No LVGL or IDF dependency — just the protocol source and the test harness.
+add_executable(test_tpms_protocol
+    ${CMAKE_CURRENT_SOURCE_DIR}/../tools/test_tpms_protocol.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_tpms_protocol.c
+)
+target_include_directories(test_tpms_protocol PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main
+)
+target_link_libraries(test_tpms_protocol PRIVATE m)
 
 add_custom_target(sim-screenshots
     COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_SOURCE_DIR}/../preview/sim

@@ -28,6 +28,9 @@ void boost_page_update_tpms(const boost_tpms_snapshot_t *snapshot);
 /** Return the active page. */
 boost_page_id_t boost_page_active(void);
 
+/** Force a page without a gesture (test/remote integration hook). */
+void boost_page_show(boost_page_id_t page);
+
 /** Process page gestures; call from LVGL input event context. */
 void boost_page_handle_event(lv_event_t *event);
 

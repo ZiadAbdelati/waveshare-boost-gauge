@@ -1,16 +1,14 @@
 #include "boost_tpms_mock.h"
 
-#include <string.h>
-
 #include "boost_tpms_protocol.h"
 
 static boost_tpms_mock_scenario_t s_scenario = BOOST_TPMS_MOCK_NORMAL;
-static uint32_t s_elapsed;
+static bool s_published;
 
 void boost_tpms_mock_set_scenario(boost_tpms_mock_scenario_t scenario)
 {
     s_scenario = scenario;
-    s_elapsed = 0;
+    s_published = false;
 }
 
 boost_tpms_mock_scenario_t boost_tpms_mock_get_scenario(void)
@@ -18,31 +16,32 @@ boost_tpms_mock_scenario_t boost_tpms_mock_get_scenario(void)
     return s_scenario;
 }
 
-void boost_tpms_mock_tick(uint32_t elapsed_ms)
+void boost_tpms_mock_tick(uint32_t now_ms)
 {
-    s_elapsed += elapsed_ms;
-    boost_tpms_snapshot_t snapshot;
-    boost_tpms_get_snapshot(&snapshot);
-    snapshot.updated_at_ms += elapsed_ms;
-    if (s_scenario == BOOST_TPMS_MOCK_DISCONNECTED) {
-        snapshot.status = BOOST_TPMS_STATUS_DISCONNECTED;
-        for (size_t i = 0; i < 4; ++i) {
-            snapshot.wheel[i].valid = false;
-            snapshot.wheel[i].age_ms = UINT32_MAX;
+    switch (s_scenario) {
+    case BOOST_TPMS_MOCK_NORMAL: {
+        /* Deterministic slow wobble around the placard band so the readouts
+         * visibly live: raw ~164-166 -> ~225-228 kPa -> ~32.6-33.1 psi. */
+        static const uint16_t base[4] = { 165, 167, 163, 168 };
+        uint16_t raw[4];
+        const uint32_t phase = now_ms / 1000u;
+        for (unsigned i = 0; i < 4; ++i) {
+            raw[i] = (uint16_t)(base[i] + (int)((phase + i) % 3u) - 1);
         }
-    } else if (s_scenario == BOOST_TPMS_MOCK_STALE) {
-        snapshot.status = BOOST_TPMS_STATUS_STALE;
-        for (size_t i = 0; i < 4; ++i) {
-            snapshot.wheel[i].age_ms += elapsed_ms;
-        }
-    } else {
-        snapshot.status = BOOST_TPMS_STATUS_NORMAL;
-        for (size_t i = 0; i < 4; ++i) {
-            snapshot.wheel[i].age_ms = 0;
-        }
+        boost_tpms_publish_raw(now_ms, raw);
+        break;
     }
-    (void)s_elapsed;
-    /* Mock is intentionally a deterministic input provider; the service owns
-     * publication in the default implementation, so this hook is a no-op
-     * unless a host test supplies its own service snapshot. */
+    case BOOST_TPMS_MOCK_STALE:
+        /* Publish once, then stop: aging flips the service STALE and the
+         * wheels invalid after the staleness window. */
+        if (!s_published) {
+            boost_tpms_mock_publish(now_ms);
+            s_published = true;
+        }
+        break;
+    case BOOST_TPMS_MOCK_DISCONNECTED:
+        /* Never publish; aging keeps the service DISCONNECTED. */
+        break;
+    }
+    boost_tpms_age(now_ms);
 }

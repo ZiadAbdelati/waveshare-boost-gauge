@@ -13,6 +13,10 @@ typedef enum {
     BOOST_TPMS_STATUS_DISCONNECTED,
 } boost_tpms_status_t;
 
+/* Low-pressure alert threshold in kPa (~32 psi). The ND placard calls for
+ * roughly 32-34 psi; the display flags anything clearly below that band. */
+#define BOOST_TPMS_LOW_PRESSURE_KPA 220.0f
+
 typedef struct {
     float kpa;
     float psi;
@@ -22,12 +26,17 @@ typedef struct {
     bool valid;
 } boost_tpms_wheel_snapshot_t;
 
+/* Canonical snapshot shared by the TPMS service, mock provider and UI. The
+ * guard lets display headers include this type without redefining it. */
+#ifndef BOOST_TPMS_SNAPSHOT_DEFINED
+#define BOOST_TPMS_SNAPSHOT_DEFINED 1
 typedef struct {
     uint64_t sequence;
     uint32_t updated_at_ms;
     boost_tpms_status_t status;
     boost_tpms_wheel_snapshot_t wheel[4];
 } boost_tpms_snapshot_t;
+#endif
 
 typedef struct {
     uint32_t stale_after_ms;
@@ -41,6 +50,12 @@ void boost_tpms_get_snapshot(boost_tpms_snapshot_t *out);
 void boost_tpms_get_config(boost_tpms_config_t *out);
 bool boost_tpms_set_config(const boost_tpms_config_t *config);
 void boost_tpms_poll(void);
+
+/* Transport/provider hooks. publish_raw records a fresh four-wheel sample
+ * (FL, FR, RL, RR order) through the conversion path; age recomputes per-wheel
+ * validity against the staleness window without touching the raw values. */
+void boost_tpms_publish_raw(uint32_t now_ms, const uint16_t raw[4]);
+void boost_tpms_age(uint32_t now_ms);
 
 #ifdef __cplusplus
 }

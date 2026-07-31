@@ -14,7 +14,10 @@ typedef enum {
 
 void boost_tpms_mock_set_scenario(boost_tpms_mock_scenario_t scenario);
 boost_tpms_mock_scenario_t boost_tpms_mock_get_scenario(void);
-void boost_tpms_mock_tick(uint32_t elapsed_ms);
+/* Drive the mock provider with the current tick (ms). NORMAL republishes a
+ * wobbling sample every tick; STALE publishes once and lets it age out;
+ * DISCONNECTED never publishes. */
+void boost_tpms_mock_tick(uint32_t now_ms);
 /* Test/provider hook: publish deterministic raw wheel values through the same
  * conversion and snapshot path as a transport-backed implementation. */
 void boost_tpms_mock_publish(uint32_t now_ms);

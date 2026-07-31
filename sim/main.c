@@ -22,8 +22,11 @@
 #endif
 
 #include "boost_gauge.h"
+#include "boost_page.h"
 #include "boost_sim.h"
 #include "boost_theme.h"
+#include "boost_tpms.h"
+#include "boost_tpms_mock.h"
 
 #ifdef _WIN32
 #include <direct.h>
@@ -122,13 +125,16 @@ static void apply_state(const shot_state_t *st)
     hold_state(&sample, 320);
 }
 
+static bool render_tpms_state(const char *out_dir, boost_tpms_mock_scenario_t scenario,
+                              const char *name);
+
 static int run_screenshots(const char *out_dir, const char *theme_id)
 {
     /* Portable: "mkdir -p" is not available on the Windows shell. */
     sim_mkdir(out_dir);
 
     boost_sim_init();
-    boost_gauge_create();
+    boost_page_create();
     if (theme_id != NULL) {
         const boost_theme_t *t = boost_theme_find(theme_id);
         if (t == NULL) {
@@ -166,7 +172,56 @@ static int run_screenshots(const char *out_dir, const char *theme_id)
         }
     }
     printf("wrote %s/frame_*.raw\n", anim_dir);
+
+    /* TPMS page, one shot per mock scenario. */
+    boost_tpms_init();
+    static const struct {
+        boost_tpms_mock_scenario_t scenario;
+        const char *name;
+    } tpms_states[] = {
+        { BOOST_TPMS_MOCK_NORMAL, "normal" },
+        { BOOST_TPMS_MOCK_STALE, "stale" },
+        { BOOST_TPMS_MOCK_DISCONNECTED, "disconnected" },
+    };
+    for (size_t i = 0; i < sizeof(tpms_states) / sizeof(tpms_states[0]); i++) {
+        if (!render_tpms_state(out_dir, tpms_states[i].scenario, tpms_states[i].name)) {
+            return 4;
+        }
+    }
+    boost_page_show(BOOST_PAGE_BOOST);
     return 0;
+}
+
+/*
+ * Drive the mock TPMS provider long enough for its scenario to settle, then
+ * snapshot the TPMS page. NORMAL needs a few ticks for the wobble to land;
+ * STALE publishes once and must age past the 5 s window; DISCONNECTED never
+ * publishes. The tick cadence matches the firmware's 250 ms TPMS timer.
+ */
+static bool render_tpms_state(const char *out_dir, boost_tpms_mock_scenario_t scenario,
+                              const char *name)
+{
+    boost_tpms_mock_set_scenario(scenario);
+    for (uint32_t t = 0; t < 7000; t += 250) {
+        boost_tpms_mock_tick(t);
+        lv_tick_inc(250);
+        lv_timer_handler();
+        usleep(1000);
+    }
+    boost_page_show(BOOST_PAGE_TPMS);
+    /* The page coordinator only forwards a snapshot while the TPMS page is
+     * active, so push the now-settled snapshot after switching to it. */
+    boost_tpms_snapshot_t snapshot;
+    boost_tpms_get_snapshot(&snapshot);
+    boost_page_update_tpms(&snapshot);
+    pump_lvgl(100);
+    char path[512];
+    snprintf(path, sizeof(path), "%s/tpms_%s.raw", out_dir, name);
+    if (!snapshot_screen(path)) {
+        return false;
+    }
+    printf("wrote %s (scenario=%s)\n", path, name);
+    return true;
 }
 
 #ifdef SIM_HAVE_SDL
@@ -182,13 +237,22 @@ static int run_window(void)
     (void)mouse;
 
     boost_sim_init();
-    boost_gauge_create();
+    boost_tpms_init();
+    boost_page_create();
 
+    uint32_t now = 0;
     while (1) {
         const boost_sample_t sample = boost_sim_tick();
-        boost_gauge_update(&sample);
+        boost_page_update(&sample);
+        if ((now % 250) == 0) {
+            boost_tpms_mock_tick(now);
+            boost_tpms_snapshot_t snapshot;
+            boost_tpms_get_snapshot(&snapshot);
+            boost_page_update_tpms(&snapshot);
+        }
         lv_timer_handler();
         lv_tick_inc(16);
+        now += 16;
         usleep(16000);
     }
     return 0;
@@ -244,7 +308,7 @@ static void setup_headless_display(void)
 static int run_audit(const char *theme_id, int seconds)
 {
     boost_sim_init();
-    boost_gauge_create();
+    boost_page_create();
     if (theme_id != NULL) {
         const boost_theme_t *t = boost_theme_find(theme_id);
         if (t == NULL) {
@@ -403,23 +467,55 @@ static void usage(const char *argv0)
             "  %s [--screenshot DIR]   headless snapshots (default DIR=preview/sim)\n"
             "  %s --window             SDL window (use xvfb-run if headless)\n"
             "  %s --audit [--seconds N] partial-refresh trail + cost audit\n"
+            "  %s --tpms [normal|stale|disconnected]\n"
+            "                          snapshot the TPMS page under a mock scenario\n"
             "  (all modes accept --theme ID)\n",
-            argv0, argv0, argv0);
+            argv0, argv0, argv0, argv0);
+}
+
+/* Standalone TPMS-page mode: build the pages, force page 1, drive the mock
+ * provider under the requested scenario and snapshot once settled. */
+static int run_tpms(const char *out_dir, const char *scenario_name)
+{
+    sim_mkdir(out_dir);
+    boost_sim_init();
+    boost_tpms_init();
+    boost_page_create();
+    pump_lvgl(50);
+
+    boost_tpms_mock_scenario_t scenario = BOOST_TPMS_MOCK_NORMAL;
+    if (scenario_name != NULL) {
+        if (strcmp(scenario_name, "stale") == 0) scenario = BOOST_TPMS_MOCK_STALE;
+        else if (strcmp(scenario_name, "disconnected") == 0) scenario = BOOST_TPMS_MOCK_DISCONNECTED;
+        else if (strcmp(scenario_name, "normal") != 0) {
+            fprintf(stderr, "unknown tpms scenario: %s\n", scenario_name);
+            return 1;
+        }
+    }
+    if (!render_tpms_state(out_dir, scenario, scenario_name ? scenario_name : "normal")) {
+        return 2;
+    }
+    return 0;
 }
 
 int main(int argc, char **argv)
 {
     bool window = false;
     bool audit = false;
+    bool tpms = false;
     int audit_seconds = 20;
     const char *shot_dir = "preview/sim";
     const char *theme_id = NULL;
+    const char *tpms_scenario = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--window") == 0) {
             window = true;
         } else if (strcmp(argv[i], "--audit") == 0) {
             audit = true;
+        } else if (strcmp(argv[i], "--tpms") == 0) {
+            tpms = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') tpms_scenario = argv[++i];
         } else if (strcmp(argv[i], "--seconds") == 0) {
             if (i + 1 < argc) audit_seconds = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--theme") == 0) {
@@ -452,6 +548,9 @@ int main(int argc, char **argv)
     setup_headless_display();
     if (audit) {
         return run_audit(theme_id, audit_seconds);
+    }
+    if (tpms) {
+        return run_tpms(shot_dir, tpms_scenario);
     }
     return run_screenshots(shot_dir, theme_id);
 }

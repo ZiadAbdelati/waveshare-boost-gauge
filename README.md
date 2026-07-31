@@ -549,6 +549,49 @@ xvfb-run -a ./sim/build/boost_gauge_sim --window
 
 See [`sim/README.md`](sim/README.md). Real LVGL screenshots live under [`preview/sim/`](preview/sim/).
 
+### Two-page layout and gestures
+
+`main/boost_page.c/.h` owns two persistent pages: page 0 is the boost gauge and
+page 1 is the TPMS view. On the boost page, swipe **LEFT** to TPMS; on TPMS,
+swipe **RIGHT** to return to boost. There is no wrap-around: outward swipes at
+either end are ignored. Vertical theme swipes work only on page 0, and a tap
+resets peak only on page 0. A hold of about 2 seconds toggles brightness on
+either page. The page coordinator forwards MAP samples only to the boost scene
+and TPMS snapshots only to the active TPMS scene.
+
+### TPMS
+
+`main/boost_tpms_ui.c/.h` renders a dark chassis silhouette with four corner
+cards (`FL`, `FR`, `RL`, `RR`). Each card shows PSI and a status word: green
+`OK`, amber `LOW` or `STALE`, or red `OFFLINE`. `STALE` retains the last pressure
+value in amber; a wheel that has never reported shows `--.- PSI` in red.
+
+The framework is split into `main/boost_tpms.c/.h` (service/model), the
+deterministic `main/boost_tpms_mock.c/.h` provider (`NORMAL`, `STALE`, and
+`DISCONNECTED` scenarios), and the pure `main/boost_tpms_protocol.c/.h`
+protocol/conversion/ISO-TP layer. For the 2019/2020 Mazda MX-5 ND, UDS
+`ReadDataByIdentifier` uses ECU/header `0x720`, with DIDs `FL=0x2A05`,
+`FR=0x2A07`, `RL=0x2A06`, and `RR=0x2A08`. Conversion is
+`pressure_kPa = raw * 1.373 + additive replacement-sensor offset`, then
+`pressure_psi = kPa * 0.145037738`.
+
+BLE central support is feature-flagged off by default (`BOOST_TPMS_BLE_ENABLED=0`)
+pending the vLinker FD+ adapter. ESP32-S3 is BLE-only, not Classic/SPP, so the
+adapter must expose a BLE GATT service. Its UUIDs are unpublished; firmware
+must discover services and characteristics at runtime and require a verified
+adapter profile before sending vehicle commands.
+
+The simulator snapshots one TPMS scenario with:
+
+```bash
+./sim/build/boost_gauge_sim.exe --tpms [normal|stale|disconnected]
+```
+
+The default `--screenshot` mode also emits `tpms_*.raw` for all three scenarios.
+On hardware, `main/main.c` calls `boost_tpms_init()` / `boost_tpms_start()`, sets
+the mock scenario, and runs a 250 ms LVGL timer that ticks the mock provider and
+feeds `boost_page_update_tpms()`.
+
 
 ## UI design tokens
 
@@ -578,6 +621,7 @@ not only its colors, and the selection persists in NVS across power cycles.
 | `vault-tec` | `vault` | Fallout-style phosphor **needle dial** with CRT scanlines/vignette, a peak tell-tale marker, and an overboost alert (warm numeral + blinking `OVER-PRESSURE`). |
 | `night-city` | `hud` | Cyberpunk **targeting HUD**: hazard chevrons, Kiroshi reticle around a big italic value, glitch-shear on fast spikes, MAP/PEAK telemetry. |
 | `big-digit` | `bigdigit` | A huge **Alvida Fatface** PSI number in white on a ground that sweeps cyan → lime → red with the reading. |
+| `sport-cluster` | `sport` (`BOOST_STYLE_SPORT`) | Black AMOLED sport-cluster face with luminous magenta/purple rings, a segmented center PSI readout, a raw `VACUUM` / `BOOST` / `OVERBOOST` zone label, and `PEAK x.x PSI`. |
 
 Shared rules across styles:
 
@@ -594,10 +638,14 @@ Shared rules across styles:
 ### Where it lives
 
 - **Web mirror:** `web/app.js` dispatches `drawGauge()` on `activeThemeStyle()`
-  to `drawArcGauge` / `drawVaultGauge` / `drawHudGauge` / `drawBigDigitGauge`.
-  `tools/mock_server.py` serves the four themes (each with a `style` field).
-  Regenerate embedded assets after any web edit. `setTheme()` drives only the
-  gauge palette, so the dashboard chrome keeps one fixed identity.
+  to `drawArcGauge` / `drawVaultGauge` / `drawHudGauge` / `drawBigDigitGauge` /
+  `drawSportGauge`. `tools/mock_server.py` serves the five themes (each with a
+  `style` field). Regenerate embedded assets after any web edit. `setTheme()`
+  drives only the gauge palette, so the dashboard chrome keeps one fixed identity.
+- **Sport Cluster cache:** `main/boost_gauge.c` paints the static ring and ticks
+  once into a PSRAM `lv_canvas`; each frame invalidates only the bounded readout
+  rectangle. The simulator audit is about **1.7e4 flushed px/cycle** rather than
+  a full-face **~2.17e5**, with **0 stale pixels**.
 - **Simulator:** `sim/` builds the same `boost_gauge.c` on the host and renders
   headless PNGs, including the generated fonts, so a face can be checked without
   flashing. SDL2 is optional (only `--window` needs it); `--theme <id>` selects

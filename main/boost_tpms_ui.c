@@ -32,9 +32,9 @@ static lv_obj_t *pill(lv_obj_t *parent, int x, int y)
 {
     lv_obj_t *obj = lv_obj_create(parent);
     lv_obj_remove_style_all(obj);
-    lv_obj_set_size(obj, 112, 58);
+    lv_obj_set_size(obj, 124, 78);
     lv_obj_set_pos(obj, x, y);
-    lv_obj_set_style_radius(obj, 29, 0);
+    lv_obj_set_style_radius(obj, 20, 0);
     lv_obj_set_style_bg_color(obj, rgb(TPMS_PANEL), 0);
     lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(obj, 1, 0);
@@ -62,22 +62,24 @@ void boost_tpms_ui_create(lv_obj_t *parent)
     label_style(subtitle, &lv_font_montserrat_12, TPMS_STEEL);
     lv_obj_align(subtitle, LV_ALIGN_TOP_MID, 0, 46);
 
-    /* Front and rear axles, with outside labels deliberately fixed. */
+    /* Front and rear axles, with outside labels deliberately fixed. The three
+     * fields stack vertically so the wide montserrat_20 pressure value never
+     * collides with the status word. */
     static const char *names[4] = { "FL", "FR", "RL", "RR" };
-    static const int xs[4] = { 35, 319, 35, 319 };
-    static const int ys[4] = { 118, 118, 290, 290 };
+    static const int xs[4] = { 28, 314, 28, 314 };
+    static const int ys[4] = { 112, 112, 286, 286 };
     for (int i = 0; i < 4; ++i) {
         lv_obj_t *p = pill(s_root, xs[i], ys[i]);
         lv_obj_t *name = lv_label_create(p);
         lv_label_set_text(name, names[i]);
         label_style(name, &lv_font_montserrat_12, TPMS_STEEL);
-        lv_obj_align(name, LV_ALIGN_TOP_LEFT, 14, 8);
+        lv_obj_align(name, LV_ALIGN_TOP_LEFT, 14, 10);
         s_psi[i] = lv_label_create(p);
         label_style(s_psi[i], &lv_font_montserrat_20, TPMS_TEXT);
-        lv_obj_align(s_psi[i], LV_ALIGN_BOTTOM_LEFT, 14, -7);
+        lv_obj_align(s_psi[i], LV_ALIGN_LEFT_MID, 14, 0);
         s_status[i] = lv_label_create(p);
         label_style(s_status[i], &lv_font_montserrat_12, TPMS_OK);
-        lv_obj_align(s_status[i], LV_ALIGN_BOTTOM_RIGHT, -10, -9);
+        lv_obj_align(s_status[i], LV_ALIGN_BOTTOM_LEFT, 14, -10);
     }
 
     /* Dark, deliberately simple chassis silhouette: a body, wheel arches and
@@ -124,17 +126,37 @@ void boost_tpms_ui_update(const boost_tpms_snapshot_t *snapshot)
 {
     if (s_root == NULL) return;
     for (int i = 0; i < 4; ++i) {
-        bool valid = snapshot != NULL && snapshot->valid[i];
+        /* Three visually distinct states. A wheel that never reported keeps the
+         * UINT32_MAX age sentinel from init -> red OFFLINE with no value. A
+         * wheel that reported but aged past the staleness window still holds its
+         * last pressure -> amber STALE with that value shown. A fresh wheel is
+         * green OK, or amber LOW when below the placard band. */
+        const bool received = snapshot != NULL && snapshot->wheel[i].age_ms != UINT32_MAX;
+        const bool fresh = received && snapshot->wheel[i].valid;
+        const bool low = fresh && snapshot->wheel[i].kpa < BOOST_TPMS_LOW_PRESSURE_KPA;
         char value[24];
         char state[12];
-        if (valid) snprintf(value, sizeof(value), "%4.1f PSI", (double)snapshot->psi[i]);
-        else snprintf(value, sizeof(value), "--.- PSI");
-        snprintf(state, sizeof(state), "%s", !valid ? "OFFLINE" :
-                 (snapshot->low_pressure[i] ? "LOW" : "OK"));
+        uint32_t color;
+        if (!received) {
+            snprintf(value, sizeof(value), "--.- PSI");
+            snprintf(state, sizeof(state), "OFFLINE");
+            color = TPMS_BAD;
+        } else if (!fresh) {
+            snprintf(value, sizeof(value), "%4.1f PSI", (double)snapshot->wheel[i].psi);
+            snprintf(state, sizeof(state), "STALE");
+            color = TPMS_LOW;
+        } else if (low) {
+            snprintf(value, sizeof(value), "%4.1f PSI", (double)snapshot->wheel[i].psi);
+            snprintf(state, sizeof(state), "LOW");
+            color = TPMS_LOW;
+        } else {
+            snprintf(value, sizeof(value), "%4.1f PSI", (double)snapshot->wheel[i].psi);
+            snprintf(state, sizeof(state), "OK");
+            color = TPMS_OK;
+        }
         lv_label_set_text(s_psi[i], value);
         lv_label_set_text(s_status[i], state);
-        lv_obj_set_style_text_color(s_status[i], rgb(!valid ? TPMS_BAD :
-            (snapshot->low_pressure[i] ? TPMS_LOW : TPMS_OK)), 0);
+        lv_obj_set_style_text_color(s_status[i], rgb(color), 0);
     }
 }
 
