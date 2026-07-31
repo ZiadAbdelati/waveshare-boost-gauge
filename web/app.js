@@ -93,6 +93,7 @@ const state = {
   demoMode: false,
   rotation: 0,
   vaultNeedleRed: false,
+  hudTrueBlack: false,
   /* Whole GET /sensors/calibration body, folded back in from every response so
    * the settings render never reads a half-updated mirror. Null until the first
    * poll lands. */
@@ -738,7 +739,7 @@ function drawHudGauge(sample, psi, g) {
 
   ctx.beginPath();
   ctx.arc(0, 0, 233, 0, Math.PI * 2);
-  ctx.fillStyle = p.face;
+  ctx.fillStyle = state.hudTrueBlack ? "#000000" : p.face;
   ctx.fill();
 
   /* hazard chevrons across the top */
@@ -777,8 +778,8 @@ function drawHudGauge(sample, psi, g) {
   for (let i = 0; i <= 20; i++) {
     const v = range.psiMin + ((range.psiMax - range.psiMin) * i) / 20;
     const a = hudAngle(v);
-    const [x0, y0] = polar(198, a);
-    const [x1, y1] = polar(214, a);
+    const [x0, y0] = polar(217, a);
+    const [x1, y1] = polar(233, a);
     ctx.beginPath();
     ctx.moveTo(x0, y0);
     ctx.lineTo(x1, y1);
@@ -789,24 +790,24 @@ function drawHudGauge(sample, psi, g) {
 
   /* track + fill (grows from the zero notch) */
   ctx.beginPath();
-  ctx.arc(0, 0, 206, canvasAngle(A0), canvasAngle(A1));
+  ctx.arc(0, 0, 225, canvasAngle(A0), canvasAngle(A1));
   ctx.strokeStyle = "#1a1c0a";
-  ctx.lineWidth = 10;
+  ctx.lineWidth = 15;
   ctx.stroke();
   const va = hudAngle(psi);
   const loA = Math.min(zeroHud, va);
   const hiA = Math.max(zeroHud, va);
   if (hiA - loA > 0.5) {
     ctx.beginPath();
-    ctx.arc(0, 0, 206, canvasAngle(loA), canvasAngle(hiA));
+    ctx.arc(0, 0, 225, canvasAngle(loA), canvasAngle(hiA));
     ctx.strokeStyle = over ? R : psi < 0 ? C : Y;
-    ctx.lineWidth = 10;
+    ctx.lineWidth = 15;
     ctx.stroke();
   }
 
   /* zero notch */
-  const [zx0, zy0] = polar(196, zeroHud);
-  const [zx1, zy1] = polar(217, zeroHud);
+  const [zx0, zy0] = polar(215, zeroHud);
+  const [zx1, zy1] = polar(233, zeroHud);
   ctx.strokeStyle = C;
   ctx.lineWidth = 5;
   ctx.lineCap = "round";
@@ -1394,6 +1395,7 @@ function queueThemeConfig(body, okMsg) {
       state.bigDigitTextColor = payload.bigDigitTextColor || state.bigDigitTextColor;
       state.arcGradient = !!payload.arcGradient;
       state.hudGradient = !!payload.hudGradient;
+      state.hudTrueBlack = !!payload.hudTrueBlack;
       state.teSync = !!payload.teSync;
       state.regionDBuf = !!payload.regionDBuf;
       state.rotation = Number(payload.rotation) || 0;
@@ -1513,6 +1515,8 @@ function themeEditor(theme) {
   if (theme.style === "hud") {
     addToggle("hudGradient", "Gradient fill (smooth colour transition)",
               "Gradient fill", "Zone colours");
+    addToggle("hudTrueBlack", "True black background (AMOLED pixels off)",
+              "True black background", "Night City background");
   }
   if (theme.style === "bigdigit") {
     addToggle("bigDigitStaticBg", "Static background (no colour sweep)",
@@ -1684,6 +1688,7 @@ function wireDisplayToggles() {
       state.demoMode = !!payload.demoMode;
       state.bigDigitStaticBg = !!payload.bigDigitStaticBg;
       state.bigDigitColorText = !!payload.bigDigitColorText;
+      state.hudTrueBlack = !!payload.hudTrueBlack;
       state.vaultNeedleRed = !!payload.vaultNeedleRed;
       state.themes = payload.themes || state.themes;
       syncDisplayToggles();
@@ -2186,6 +2191,7 @@ async function refreshAll(source = ERR_USER) {
     state.bigDigitTextColor = themes.bigDigitTextColor || "#ffffff";
     state.arcGradient = !!themes.arcGradient;
     state.hudGradient = !!themes.hudGradient;
+    state.hudTrueBlack = !!themes.hudTrueBlack;
     state.teSync = !!themes.teSync;
     state.regionDBuf = !!themes.regionDBuf;
     state.rotation = Number(themes.rotation) || 0;

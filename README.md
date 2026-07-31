@@ -795,6 +795,27 @@ had become visually negligible at **0.4 alpha / 3 px**; it now uses **0.7 / 6
 px**. The Big Digit renderer ignored `bigDigitStaticBg`, `staticColor`,
 `colorText`, and `textColor`; it now consumes all four settings.
 
+Night City's colour menu also offers a persisted **True black background**
+checkbox. It replaces the default `#080A08` face with `#000000`, turning unused
+AMOLED pixels fully off; the cached physical face, screen background, chromatic
+ghost pre-blend, and browser mirror all consume the same setting. Its gauge
+track and live fill are **15 px** thick, up from 10 px (1.5x), with the wider
+physical invalidation bounds kept in lockstep so arc edges clear correctly.
+The ring is also pushed outward from radius 206 to 225; its unchanged 16 px
+ticks move from radii 198-214 to 217-233 so their outer ends meet the panel
+edge. The physical renderer, invalidation bounds, zero notch, and web mirror
+share that geometry. A 60-second-per-arm hardware run with demo mode, pixel
+shift off, TE sync and region double-buffering measured gradient off at
+**min 30 / median 41 FPS**, median `worstRenderUs` **19,187.5 us**, and median
+`pixelsPerSecond` **762,064**; gradient on measured **min 29 / median 39 FPS**,
+**19,889.5 us**, and **808,324 pixels/s**. Both arms had zero TE timeouts. The
+outward ring therefore adds some pixel throughput without a material latency
+regression against the prior full-cache result (gradient-off aggregate median
+42 FPS / 19,378.25 us / 741,639 pixels/s).
+The host Night City audit retained **517 comparisons / 0 stale mismatches**;
+the firmware build was flashed to COM3, the setting survived a hardware restart,
+and the standard Dyno Cell cadence guard remained **min 58 / median 60 FPS**.
+
 Night City's first sample is the exception to endpoint-only invalidation: after
 a scene switch it invalidates the complete zero-to-current span. Without that
 one-time dirty region, a rebuild rendered before the first vacuum sample left

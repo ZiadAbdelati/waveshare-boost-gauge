@@ -2054,6 +2054,18 @@ static void update_vault(const boost_sample_t *sample, const boost_theme_t *them
 /*  Style: hud  (Night City targeting HUD)                                    */
 /* ========================================================================== */
 
+#define HUD_ARC_WIDTH 15
+#define HUD_ARC_RADIUS 225
+#define HUD_TICK_INNER_RADIUS 217.0f
+#define HUD_TICK_OUTER_RADIUS 233.0f
+#define HUD_NOTCH_INNER_RADIUS 215.0f
+#define HUD_NOTCH_OUTER_RADIUS 233.0f
+
+static lv_color_t hud_face_color(const boost_theme_t *theme)
+{
+    return boost_theme_hud_true_black() ? lv_color_black() : c(theme->face);
+}
+
 /* Static face art. `cached` is set when painting into the background canvas at
  * build time: the clip early-out is meaningless there and everything must be
  * drawn once, in full.
@@ -2139,7 +2151,7 @@ static void paint_hud_face(lv_layer_t *layer, const boost_theme_t *theme, bool c
         lv_draw_line(layer, &ln);
     }
 
-    /* Outer ring art (ticks, track, notch) lives at r >= 196. A digit update
+    /* Outer ring art (ticks, track, notch) lives at r >= 215. A digit update
      * dirties only the centre, so skip all of it in that common case. */
     if (!cached && !clip_reaches_radius(layer, cx, cy, 190.0f)) return;
 
@@ -2150,22 +2162,22 @@ static void paint_hud_face(lv_layer_t *layer, const boost_theme_t *theme, bool c
         ln.color = (v >= s_psi_overboost) ? c(theme->overboost) : c(theme->vacuum);
         ln.width = (i % 2 == 0) ? 4 : 2;
         ln.opa = LV_OPA_COVER;
-        ln.p1.x = cx + 198.0f * cosf(rad);
-        ln.p1.y = cy + 198.0f * sinf(rad);
-        ln.p2.x = cx + 214.0f * cosf(rad);
-        ln.p2.y = cy + 214.0f * sinf(rad);
+        ln.p1.x = cx + HUD_TICK_INNER_RADIUS * cosf(rad);
+        ln.p1.y = cy + HUD_TICK_INNER_RADIUS * sinf(rad);
+        ln.p2.x = cx + HUD_TICK_OUTER_RADIUS * cosf(rad);
+        ln.p2.y = cy + HUD_TICK_OUTER_RADIUS * sinf(rad);
         lv_draw_line(layer, &ln);
     }
 
     lv_draw_arc_dsc_t arc;
     lv_draw_arc_dsc_init(&arc);
     arc.color = c(theme->track);
-    arc.width = 10;
+    arc.width = HUD_ARC_WIDTH;
     arc.start_angle = HUD_A0;
     arc.end_angle = HUD_A1;
     arc.center.x = icx;
     arc.center.y = icy;
-    arc.radius = 206;
+    arc.radius = HUD_ARC_RADIUS;
     arc.opa = LV_OPA_COVER;
     lv_draw_arc(layer, &arc);
 
@@ -2176,10 +2188,10 @@ static void paint_hud_face(lv_layer_t *layer, const boost_theme_t *theme, bool c
     ln.opa = LV_OPA_COVER;
     ln.round_start = true;
     ln.round_end = true;
-    ln.p1.x = cx + 196.0f * cosf(zrad);
-    ln.p1.y = cy + 196.0f * sinf(zrad);
-    ln.p2.x = cx + 217.0f * cosf(zrad);
-    ln.p2.y = cy + 217.0f * sinf(zrad);
+    ln.p1.x = cx + HUD_NOTCH_INNER_RADIUS * cosf(zrad);
+    ln.p1.y = cy + HUD_NOTCH_INNER_RADIUS * sinf(zrad);
+    ln.p2.x = cx + HUD_NOTCH_OUTER_RADIUS * cosf(zrad);
+    ln.p2.y = cy + HUD_NOTCH_OUTER_RADIUS * sinf(zrad);
     lv_draw_line(layer, &ln);
 }
 
@@ -2215,13 +2227,13 @@ static void draw_hud_glitch(lv_event_t *e)
     lv_area_t a1 = area;
     a1.x1 -= HUD_GLITCH_DX;
     a1.x2 -= HUD_GLITCH_DX;
-    d.color = lv_color_mix(c(theme->overboost), c(theme->face), LV_OPA_70);
+    d.color = lv_color_mix(c(theme->overboost), hud_face_color(theme), LV_OPA_70);
     lv_draw_label(layer, &d, &a1);
 
     lv_area_t a2 = area;
     a2.x1 += HUD_GLITCH_DX;
     a2.x2 += HUD_GLITCH_DX;
-    d.color = lv_color_mix(c(theme->vacuum), c(theme->face), LV_OPA_70);
+    d.color = lv_color_mix(c(theme->vacuum), hud_face_color(theme), LV_OPA_70);
     lv_draw_label(layer, &d, &a2);
 }
 
@@ -2242,12 +2254,12 @@ static void draw_hud_fill(lv_event_t *e)
     else if (drawn_psi >= s_psi_overboost) arc.color = c(theme->overboost);
     else if (drawn_psi < 0.0f) arc.color = c(theme->vacuum);
     else arc.color = c(theme->boost);
-    arc.width = 10;
+    arc.width = HUD_ARC_WIDTH;
     arc.start_angle = lo;
     arc.end_angle = hi;
     arc.center.x = px_icx();
     arc.center.y = px_icy();
-    arc.radius = 206;
+    arc.radius = HUD_ARC_RADIUS;
     arc.opa = LV_OPA_COVER;
     lv_draw_arc(layer, &arc);
 }
@@ -2261,7 +2273,8 @@ static void invalidate_hud_fill(float a, float b)
         const float boundary = (floorf(seg / 90.0f) + 1.0f) * 90.0f;
         const float seg_end = fminf(hi, boundary);
         lv_area_t area;
-        lv_draw_arc_get_area(px_icx(), px_icy(), 206, seg, seg_end, 10, true, &area);
+        lv_draw_arc_get_area(px_icx(), px_icy(), HUD_ARC_RADIUS, seg, seg_end,
+                             HUD_ARC_WIDTH, true, &area);
         lv_obj_invalidate_area(s_hud_fill, &area);
         seg = seg_end;
     }
@@ -2287,7 +2300,7 @@ static void build_hud(lv_obj_t *scr)
         lv_canvas_init_layer(s_hud_bg, &layer);
         lv_draw_rect_dsc_t bg;
         lv_draw_rect_dsc_init(&bg);
-        bg.bg_color = c(theme->face);
+        bg.bg_color = hud_face_color(theme);
         bg.bg_opa = LV_OPA_COVER;
         lv_area_t full = { 0, 0, DISP_SIZE - 1, DISP_SIZE - 1 };
         lv_draw_rect(&layer, &bg, &full);
@@ -2889,7 +2902,9 @@ static void build_scene(boost_gauge_style_t style)
     /* The screen's own opaque background is the face. A second full-screen
      * "well" object used to sit on top of it, which meant every dirty region
      * was filled twice per frame — pure cost on the needle sweep. */
-    lv_obj_set_style_bg_color(scr, c(theme->face), 0);
+    lv_obj_set_style_bg_color(scr,
+                              style == BOOST_STYLE_HUD ? hud_face_color(theme) : c(theme->face),
+                              0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
 
     /* One styleless, screen-sized container that every style builds into, so

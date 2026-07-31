@@ -109,6 +109,11 @@ void boost_theme_set_arc_gradient(bool enabled);
 bool boost_theme_hud_gradient(void);
 void boost_theme_set_hud_gradient(bool enabled);
 
+/* Replace Night City's dark face with true black so unused AMOLED pixels are
+ * physically off. The setting is persisted and affects only the HUD style. */
+bool boost_theme_hud_true_black(void);
+void boost_theme_set_hud_true_black(bool enabled);
+
 /* Tearing-effect sync preference, persisted. Applied to the display at boot and
  * whenever changed. */
 bool boost_theme_te_sync(void);

@@ -408,6 +408,7 @@ def themes_payload() -> dict:
         "bigDigitTextColor": str(CONFIG.get("bigDigitTextColor", "#ffffff")),
         "arcGradient": bool(CONFIG.get("arcGradient", False)),
         "hudGradient": bool(CONFIG.get("hudGradient", False)),
+        "hudTrueBlack": bool(CONFIG.get("hudTrueBlack", False)),
         "teSync": bool(CONFIG.get("teSync", False)),
         "rotation": int(CONFIG.get("rotation", 0)),
         "demoMode": bool(CONFIG.get("demoMode", False)),
@@ -603,6 +604,8 @@ class Handler(BaseHTTPRequestHandler):
                 CONFIG["arcGradient"] = bool(payload["arcGradient"])
             if "hudGradient" in payload:
                 CONFIG["hudGradient"] = bool(payload["hudGradient"])
+            if "hudTrueBlack" in payload:
+                CONFIG["hudTrueBlack"] = bool(payload["hudTrueBlack"])
             if "teSync" in payload:
                 CONFIG["teSync"] = bool(payload["teSync"])
             if "rotation" in payload:

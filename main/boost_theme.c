@@ -22,6 +22,7 @@
 #define NVS_KEY_BIGTXC  "bigdigit_txc"
 #define NVS_KEY_ARCGRAD "arc_gradient"
 #define NVS_KEY_HUDGRAD "hud_gradient"
+#define NVS_KEY_HUDBLACK "hud_black"
 #define NVS_KEY_TESYNC  "te_sync"
 #define NVS_KEY_REGDBUF "region_dbuf"
 #define NVS_KEY_ROT     "rotation"
@@ -100,6 +101,7 @@ static uint32_t s_bigdigit_static_color = 0x000000u;
 static uint32_t s_bigdigit_text_color = 0xFFFFFFu;
 static bool s_arc_gradient;
 static bool s_hud_gradient;
+static bool s_hud_true_black;
 static bool s_te_sync;
 static bool s_region_dbuf;
 /* Panel rotation in degrees. The LVGL adapter accepts only quarter turns and
@@ -171,6 +173,7 @@ static void persist(void)
     nvs_set_u32(h, NVS_KEY_BIGTXC, s_bigdigit_text_color);
     nvs_set_u8(h, NVS_KEY_ARCGRAD, s_arc_gradient ? 1 : 0);
     nvs_set_u8(h, NVS_KEY_HUDGRAD, s_hud_gradient ? 1 : 0);
+    nvs_set_u8(h, NVS_KEY_HUDBLACK, s_hud_true_black ? 1 : 0);
     nvs_set_u8(h, NVS_KEY_TESYNC, s_te_sync ? 1 : 0);
     nvs_set_u8(h, NVS_KEY_REGDBUF, s_region_dbuf ? 1 : 0);
     nvs_set_u16(h, NVS_KEY_ROT, s_rotation);
@@ -246,6 +249,10 @@ void boost_theme_init(void)
     uint8_t hg = 0;
     if (nvs_get_u8(h, NVS_KEY_HUDGRAD, &hg) == ESP_OK) {
         s_hud_gradient = (hg != 0);
+    }
+    uint8_t hb = 0;
+    if (nvs_get_u8(h, NVS_KEY_HUDBLACK, &hb) == ESP_OK) {
+        s_hud_true_black = (hb != 0);
     }
     uint8_t te = 0;
     if (nvs_get_u8(h, NVS_KEY_TESYNC, &te) == ESP_OK) {
@@ -436,6 +443,18 @@ void boost_theme_set_hud_gradient(bool enabled)
 {
     ensure_loaded();
     s_hud_gradient = enabled;
+    persist();
+}
+
+bool boost_theme_hud_true_black(void)
+{
+    return s_hud_true_black;
+}
+
+void boost_theme_set_hud_true_black(bool enabled)
+{
+    ensure_loaded();
+    s_hud_true_black = enabled;
     persist();
 }
 
