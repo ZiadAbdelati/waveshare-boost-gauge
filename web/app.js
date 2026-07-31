@@ -902,59 +902,132 @@ function drawHudGauge(sample, psi, g) {
 /* ── Style: sport — magenta/purple segmented circular cluster ─────────────── */
 function drawSportGauge(sample, psi, g) {
   const range = psiRange();
-  const p = state.palette;
   const { cx, cy, scale } = g;
   const over = psi >= range.psiOverboost;
-  const accent = over ? p.overboost : psi < 0 ? p.vacuum : p.boost;
-  const dim = p.muted || "#9e5cb5";
-  const ring = p.boost || "#ff4fd8";
-  const polarXY = (r, a) => [r * Math.cos(a * DEG), r * Math.sin(a * DEG)];
+  const zone = over ? "OVERBOOST" : psi >= 0 ? "BOOST" : "VACUUM";
+  const magenta = "#FF36C0";
+  const green = "#39FF8B";
+  const stars = [
+    [-184, -191, 1], [-131, -177, 1], [-69, -194, 1], [-12, -166, 1],
+    [48, -188, 1], [112, -171, 1], [174, -183, 1], [-208, -126, 1],
+    [-157, -111, 1], [-102, -139, 1], [-37, -119, 1], [26, -143, 1],
+    [88, -112, 1], [143, -130, 1], [201, -91, 1], [-185, -57, 1],
+    [-121, -73, 1], [-57, -83, 1], [7, -66, 1], [69, -86, 1],
+    [131, -61, 1], [190, -48, 1],
+  ];
   const segLine = (color, x0, y0, x1, y1, width, alpha = 1) => {
     ctx.globalAlpha = alpha;
     ctx.strokeStyle = color;
     ctx.lineWidth = width;
     ctx.lineCap = "round";
-    ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
+    ctx.stroke();
     ctx.globalAlpha = 1;
   };
   ctx.save();
-  ctx.translate(cx, cy); ctx.scale(scale, scale);
-  ctx.fillStyle = "#000000";
-  ctx.beginPath(); ctx.arc(0, 0, 233, 0, Math.PI * 2); ctx.fill();
-  for (const [r, width, color, alpha] of [[226, 3, ring, .25], [222, 6, ring, .8], [215, 2, p.overboost, .65], [151, 3, p.vacuum, .75], [143, 2, ring, .32]]) {
-    ctx.strokeStyle = color; ctx.globalAlpha = alpha; ctx.lineWidth = width;
-    ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.stroke(); ctx.globalAlpha = 1;
-  }
-  for (let i = 0; i < 32; i++) {
-    const a = i * 360 / 32 - 90;
-    const [x0, y0] = polarXY(i % 4 === 0 ? 198 : 204, a);
-    const [x1, y1] = polarXY(211, a);
-    segLine(i % 4 === 0 ? ring : dim, x0, y0, x1, y1, 8, i % 4 === 0 ? .8 : .4);
-  }
-  ctx.textAlign = "center"; ctx.textBaseline = "middle";
-  ctx.fillStyle = accent;
-  ctx.font = `700 ${Math.max(18, 28 * scale)}px Consolas, monospace`;
-  ctx.letterSpacing = "3px";
-  ctx.fillText(sample.zone === "OVER" ? "OVERBOOST" : (psi >= 0 ? "BOOST" : "VACUUM"), 0, -118);
-  ctx.letterSpacing = "0px";
+  ctx.translate(cx, cy);
+  ctx.scale(scale, scale);
 
+  /* AMOLED-black circular field, with a restrained starfield and horizon haze. */
+  ctx.beginPath();
+  ctx.arc(0, 0, 233, 0, Math.PI * 2);
+  ctx.clip();
+  const field = ctx.createRadialGradient(0, -40, 30, 0, 0, 245);
+  field.addColorStop(0, "#090613");
+  field.addColorStop(0.72, "#030308");
+  field.addColorStop(1, "#000000");
+  ctx.fillStyle = field;
+  ctx.fillRect(-233, -233, 466, 466);
+  for (const [x, y, r] of stars) {
+    ctx.globalAlpha = 0.22;
+    ctx.fillStyle = "#B9D7D8";
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  const horizon = ctx.createLinearGradient(0, 78, 0, 233);
+  horizon.addColorStop(0, "rgba(47,224,208,0)");
+  horizon.addColorStop(0.62, "rgba(47,224,208,0.08)");
+  horizon.addColorStop(1, "rgba(47,224,208,0.42)");
+  ctx.fillStyle = horizon;
+  ctx.fillRect(-233, 78, 466, 155);
+  ctx.strokeStyle = "rgba(47,224,208,0.16)";
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(-233, 190); ctx.lineTo(233, 190); ctx.stroke();
+
+  /* One thick continuous ring: magenta at the crown, purple at the sides,
+   * and cyan at the bottom, with the glow kept underneath the main stroke. */
+  const ringGradient = ctx.createConicGradient(-Math.PI / 2, 0, 0);
+  ringGradient.addColorStop(0, "#FF2D9B");
+  ringGradient.addColorStop(0.25, "#A735D2");
+  ringGradient.addColorStop(0.5, "#2FE0D0");
+  ringGradient.addColorStop(0.75, "#A735D2");
+  ringGradient.addColorStop(1, "#FF2D9B");
+  ctx.lineCap = "round";
+  ctx.strokeStyle = ringGradient;
+  ctx.globalAlpha = 0.26;
+  ctx.lineWidth = 30;
+  ctx.shadowColor = "#FF2D9B";
+  ctx.shadowBlur = 24;
+  ctx.beginPath(); ctx.arc(0, 0, 208, 0, Math.PI * 2); ctx.stroke();
+  ctx.globalAlpha = 1;
+  ctx.lineWidth = 20;
+  ctx.shadowColor = "rgba(255,45,155,0.9)";
+  ctx.shadowBlur = 14;
+  ctx.beginPath(); ctx.arc(0, 0, 208, 0, Math.PI * 2); ctx.stroke();
+  ctx.shadowColor = "transparent";
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = "rgba(255,120,220,0.26)";
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(0, 0, 185, 0, Math.PI * 2); ctx.stroke();
+
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = green;
+  ctx.shadowColor = "rgba(57,255,139,0.8)";
+  ctx.shadowBlur = 8;
+  ctx.font = '700 17px "Bahnschrift", system-ui, sans-serif';
+  ctx.fillText(zone.split("").join(" "), 0, -139);
+  ctx.shadowColor = "transparent";
+  ctx.shadowBlur = 0;
+
+  /* Fixed-slot, bright segmented readout matching the physical cluster. */
   const masks = [0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x07, 0x7f, 0x6f];
   const drawDigit = (digit, x, y) => {
-    const mask = masks[digit]; const w = 31, h = 56, k = 5;
-    const points = [[k,0,w-k,0],[w,k,w,h/2-3],[w,h/2+3,w,h-k],[k,h,w-k,h],[0,h/2+3,0,h-k],[0,k,0,h/2-3],[k,h/2,w-k,h/2]];
+    if (digit < 0 || digit > 9) return;
+    const mask = masks[digit];
+    const w = 45, h = 102, k = 8, midGap = 6;
+    const points = [
+      [k, 0, w - k, 0], [w, k, w, h / 2 - midGap],
+      [w, h / 2 + midGap, w, h - k], [k, h, w - k, h],
+      [0, h / 2 + midGap, 0, h - k], [0, k, 0, h / 2 - midGap],
+      [k, h / 2, w - k, h / 2],
+    ];
     for (let i = 0; i < 7; i++) if (mask & (1 << i)) {
-      segLine(accent, x - w/2 + points[i][0], y - h/2 + points[i][1], x - w/2 + points[i][2], y - h/2 + points[i][3], 8, .9);
+      const [x0, y0, x1, y1] = points[i];
+      segLine(magenta, x - w / 2 + x0, y - h / 2 + y0,
+              x - w / 2 + x1, y - h / 2 + y1, 22, 0.18);
+      segLine(magenta, x - w / 2 + x0, y - h / 2 + y0,
+              x - w / 2 + x1, y - h / 2 + y1, 14, 1);
     }
   };
-  const tenths = Math.round(Math.abs(psi) * 10); const whole = Math.floor(tenths / 10);
-  if (psi < -0.05) segLine(accent, -128, -2, -104, -2, 8);
-  if (whole >= 10) drawDigit(Math.floor(whole / 10) % 10, -78, -2);
-  drawDigit(whole % 10, -23, -2);
-  ctx.fillStyle = accent; ctx.beginPath(); ctx.arc(13, 29, 5, 0, Math.PI * 2); ctx.fill();
-  drawDigit(tenths % 10, 66, -2);
-  ctx.strokeStyle = p.text; ctx.lineWidth = 2; ctx.globalAlpha = .8;
-  ctx.beginPath(); ctx.arc(0, 0, 5, 0, Math.PI * 2); ctx.stroke(); ctx.globalAlpha = 1;
-  ctx.fillStyle = dim; ctx.font = `600 ${Math.max(12, 16 * scale)}px Consolas, monospace`;
+  const absoluteTenths = Math.round(Math.abs(Number(psi) || 0) * 10);
+  const whole = Math.floor(absoluteTenths / 10);
+  if (psi < -0.05) segLine(magenta, -116, -3, -94, -3, 14, 1);
+  if (whole >= 10) drawDigit(Math.floor(whole / 10) % 10, -77, -3);
+  drawDigit(whole % 10, -25, -3);
+  ctx.fillStyle = magenta;
+  ctx.shadowColor = "rgba(255,54,192,0.9)";
+  ctx.shadowBlur = 14;
+  ctx.beginPath(); ctx.arc(3, 42, 7, 0, Math.PI * 2); ctx.fill();
+  ctx.shadowColor = "transparent";
+  ctx.shadowBlur = 0;
+  drawDigit(absoluteTenths % 10, 31, -3);
+
+  ctx.fillStyle = "rgba(255,54,192,0.58)";
+  ctx.font = '600 13px Consolas, monospace';
   ctx.fillText(`PEAK ${Math.max(0, Number(sample.peakPsi || 0)).toFixed(1)} PSI`, 0, 174);
   ctx.restore();
 }
@@ -1093,39 +1166,127 @@ function drawTpmsFace(sample, g) {
   const { cx, cy, scale } = g;
   const wheels = state.tpms?.wheels || [];
   const status = Number(state.tpms?.status ?? 2);
-  const S = (v) => v * scale;
+  const panel = { x: 18, y: 18, w: 430, h: 430, r: 40 };
+  const rr = (x, y, w, h, r) => { roundRectPath(x, y, w, h, r); };
   ctx.save();
-  ctx.translate(cx - S(233), cy - S(233));
+  ctx.translate(cx - 233 * scale, cy - 233 * scale);
   ctx.scale(scale, scale);
-  ctx.fillStyle = "#080B10";
+  ctx.fillStyle = "#050608";
   ctx.fillRect(0, 0, 466, 466);
-  const vignette = ctx.createRadialGradient(233, 222, 30, 233, 222, 265);
-  vignette.addColorStop(0, "rgba(29,39,51,0.14)");
-  vignette.addColorStop(1, "rgba(0,0,0,0)");
-  ctx.fillStyle = vignette; ctx.fillRect(0, 0, 466, 466);
-  ctx.textAlign = "center"; ctx.textBaseline = "middle";
-  ctx.fillStyle = "#E7EDF4"; ctx.font = '700 20px system-ui, sans-serif'; ctx.fillText("TIRE PRESSURE", 233, 28);
-  ctx.fillStyle = "#667383"; ctx.font = '600 12px system-ui, sans-serif'; ctx.fillText("LIVE SENSOR STATUS", 233, 52);
-  const rr = (x, y, w, h, r) => { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); };
-  rr(162, 96, 142, 274, 54); ctx.fillStyle = "#1D2733"; ctx.fill(); ctx.strokeStyle = "#667383"; ctx.lineWidth = 2; ctx.stroke();
-  rr(186, 130, 94, 76, 24); ctx.fillStyle = "#101923"; ctx.fill(); ctx.strokeStyle = "#667383"; ctx.lineWidth = 1; ctx.stroke();
-  ctx.strokeStyle = "rgba(102,115,131,0.4)"; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(233, 214); ctx.lineTo(233, 358); ctx.stroke();
-  const names = ["FL", "FR", "RL", "RR"], xs = [28, 314, 28, 314], ys = [112, 112, 286, 286];
-  const pulse = 0.72 + 0.28 * (0.5 + 0.5 * Math.sin(performance.now() / 260));
+
+  /* Glossy black instrument panel and its raised outer bezel. */
+  rr(10, 10, 446, 446, 45);
+  ctx.fillStyle = "#020304";
+  ctx.shadowColor = "rgba(0,0,0,0.85)";
+  ctx.shadowBlur = 18;
+  ctx.fill();
+  ctx.shadowColor = "transparent";
+  ctx.shadowBlur = 0;
+  rr(panel.x, panel.y, panel.w, panel.h, panel.r);
+  const face = ctx.createLinearGradient(0, 18, 0, 448);
+  face.addColorStop(0, "#111214");
+  face.addColorStop(0.42, "#090A0C");
+  face.addColorStop(1, "#151719");
+  ctx.fillStyle = face;
+  ctx.fill();
+  ctx.strokeStyle = "rgba(138,151,164,0.48)";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  rr(22, 22, 422, 422, 31);
+  const gloss = ctx.createLinearGradient(0, 25, 0, 118);
+  gloss.addColorStop(0, "rgba(242,247,250,0.28)");
+  gloss.addColorStop(0.22, "rgba(170,184,193,0.10)");
+  gloss.addColorStop(0.7, "rgba(255,255,255,0)");
+  ctx.strokeStyle = gloss;
+  ctx.lineWidth = 4;
+  ctx.stroke();
+
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = "#F2F5F8";
+  ctx.font = '700 34px system-ui, -apple-system, "Segoe UI", sans-serif';
+  ctx.fillText("TPMS", 233, 60);
+
+  /* White driveline: two axles and the central shaft. */
+  ctx.strokeStyle = "#F2F5F8";
+  ctx.lineWidth = 9;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(91, 150); ctx.lineTo(375, 150);
+  ctx.moveTo(91, 330); ctx.lineTo(375, 330);
+  ctx.moveTo(233, 150); ctx.lineTo(233, 330);
+  ctx.stroke();
+  ctx.lineWidth = 14;
+  ctx.beginPath();
+  ctx.moveTo(208, 150); ctx.lineTo(258, 150);
+  ctx.moveTo(208, 330); ctx.lineTo(258, 330);
+  ctx.stroke();
+
+  /* Center warning icon: tyre cross-sections around an exclamation mark. */
+  ctx.lineWidth = 7;
+  ctx.strokeStyle = "#F2F5F8";
+  ctx.beginPath(); ctx.arc(233, 240, 27, 0, Math.PI * 2); ctx.stroke();
+  ctx.lineWidth = 5;
+  ctx.beginPath();
+  ctx.arc(225, 240, 14, -2.35, 2.35);
+  ctx.arc(241, 240, 14, Math.PI - 0.79, Math.PI + 0.79);
+  ctx.stroke();
+  ctx.lineWidth = 7;
+  ctx.beginPath(); ctx.moveTo(233, 225); ctx.lineTo(233, 245); ctx.stroke();
+  ctx.fillStyle = "#F2F5F8";
+  ctx.beginPath(); ctx.arc(233, 253, 3.5, 0, Math.PI * 2); ctx.fill();
+
+  const pulse = 0.66 + 0.34 * (0.5 + 0.5 * Math.sin(performance.now() / 260));
+  const tireXs = [82, 350];
+  const tireYs = [113, 293];
   for (let i = 0; i < 4; i++) {
-    const w = wheels[i] || {}; const valid = Boolean(w.valid); const psi = Number(w.psi);
-    const stale = status === 1; const offline = status === 2 || !valid;
-    const low = !offline && !stale && psi < 31.9;
-    let label = "OFFLINE", value = "--.- PSI", color = "#FF4D5A";
-    if (stale) { label = "STALE"; value = Number.isFinite(psi) ? `${psi.toFixed(1)} PSI` : "--.- PSI"; color = "#FFB020"; }
-    else if (!offline && low) { label = "LOW"; value = `${psi.toFixed(1)} PSI`; color = "#FFB020"; }
-    else if (!offline) { label = "OK"; value = `${psi.toFixed(1)} PSI`; color = "#62D6A5"; }
-    rr(xs[i], ys[i], 124, 78, 20); ctx.fillStyle = "#121923"; ctx.fill(); ctx.strokeStyle = "#667383"; ctx.lineWidth = 1; ctx.stroke();
-    ctx.textAlign = "left"; ctx.fillStyle = "#667383"; ctx.font = '600 12px system-ui, sans-serif'; ctx.fillText(names[i], xs[i] + 14, ys[i] + 16);
-    ctx.fillStyle = "#E7EDF4"; ctx.font = '700 20px system-ui, sans-serif'; ctx.fillText(value, xs[i] + 14, ys[i] + 43);
-    ctx.globalAlpha = (stale || low) ? pulse : 1; ctx.fillStyle = color; ctx.font = '700 12px system-ui, sans-serif'; ctx.fillText(label, xs[i] + 14, ys[i] + 67); ctx.globalAlpha = 1;
+    const wheel = wheels[i] || {};
+    const wheelPsi = Number(wheel.psi);
+    const valid = Boolean(wheel.valid) && Number.isFinite(wheelPsi);
+    const stale = status === 1;
+    let color = "#5A6573";
+    let value = "--.-";
+    let label = "OFFLINE";
+    let active = true;
+    if (status === 1) {
+      color = "#FFB020";
+      value = Number.isFinite(wheelPsi) ? wheelPsi.toFixed(1) : "--.-";
+      label = "STALE";
+    } else if (status === 0 && valid) {
+      value = wheelPsi.toFixed(1);
+      if (wheelPsi < 31.9) { color = "#E8362E"; label = "LOW"; }
+      else { color = "#62D6A5"; label = "OK"; active = false; }
+    } else if (status === 0 && !valid) {
+      active = false;
+    } else if (status === 2) {
+      active = false;
+    }
+    const x = tireXs[i % 2];
+    const y = tireYs[Math.floor(i / 2)];
+    ctx.save();
+    ctx.globalAlpha = active ? pulse : 1;
+    ctx.fillStyle = color;
+    ctx.shadowColor = color;
+    ctx.shadowBlur = active ? 12 : 5;
+    rr(x, y, 34, 74, 17);
+    ctx.fill();
+    ctx.restore();
+
+    const isLeft = i % 2 === 0;
+    const tx = isLeft ? x - 10 : x + 44;
+    ctx.textAlign = isLeft ? "right" : "left";
+    ctx.fillStyle = "#F2F5F8";
+    ctx.font = '700 19px system-ui, -apple-system, "Segoe UI", sans-serif';
+    ctx.fillText(value, tx, y + 31);
+    ctx.fillStyle = "#AEB7C1";
+    ctx.font = '600 11px system-ui, -apple-system, "Segoe UI", sans-serif';
+    ctx.globalAlpha = active ? pulse : 0.82;
+    ctx.fillText("PSI", tx, y + 49);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = color;
+    ctx.font = '700 9px system-ui, -apple-system, "Segoe UI", sans-serif';
+    ctx.fillText(label, tx, y + 65);
   }
-  ctx.textAlign = "center"; ctx.fillStyle = "#667383"; ctx.font = '600 12px system-ui, sans-serif'; ctx.fillText("TPMS  /  FOUR-WHEEL MONITOR", 233, 442);
   ctx.restore();
 }
 

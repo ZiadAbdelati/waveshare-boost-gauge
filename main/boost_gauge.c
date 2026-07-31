@@ -3048,13 +3048,14 @@ static const char *sport_zone_for(float psi)
     return "VACUUM";
 }
 
-static void sport_segment(lv_layer_t *layer, lv_color_t color,
-                          float x1, float y1, float x2, float y2, lv_opa_t opa)
+static void sport_segment_w(lv_layer_t *layer, lv_color_t color,
+                            float x1, float y1, float x2, float y2,
+                            lv_opa_t opa, int width)
 {
     lv_draw_line_dsc_t line;
     lv_draw_line_dsc_init(&line);
     line.color = color;
-    line.width = 8;
+    line.width = width;
     line.opa = opa;
     line.round_start = true;
     line.round_end = true;
@@ -3071,27 +3072,41 @@ static void sport_digit(lv_layer_t *layer, lv_color_t color, int cx, int cy, int
     };
     if (digit < 0 || digit > 9) return;
     const uint8_t m = mask[digit];
-    const int w = 31, h = 56, k = 5;
+    /* Big luminous digits: 44x80 with 14px-wide segments and a 16px glow
+     * under-stroke, matching the reference's bold retrowave readout. */
+    const int w = 44, h = 80, k = 7;
     const int x = cx - w / 2, y = cy - h / 2;
     static const int8_t seg[7][4] = {
-        { k, 0, w - k, 0 }, { w, k, w, h / 2 - 3 },
-        { w, h / 2 + 3, w, h - k }, { k, h, w - k, h },
-        { 0, h / 2 + 3, 0, h - k }, { 0, k, 0, h / 2 - 3 },
+        { k, 0, w - k, 0 }, { w, k, w, h / 2 - 4 },
+        { w, h / 2 + 4, w, h - k }, { k, h, w - k, h },
+        { 0, h / 2 + 4, 0, h - k }, { 0, k, 0, h / 2 - 4 },
         { k, h / 2, w - k, h / 2 },
     };
     for (int i = 0; i < 7; ++i) {
         if ((m & (1u << i)) == 0) continue;
-        /* A dim under-stroke gives the segment its luminous halo without
-         * turning the black AMOLED well into a filled rectangle. */
-        sport_segment(layer, color, x + seg[i][0], y + seg[i][1],
-                      x + seg[i][2], y + seg[i][3], LV_OPA_20);
-        sport_segment(layer, color, x + seg[i][0], y + seg[i][1],
-                      x + seg[i][2], y + seg[i][3], LV_OPA_COVER);
+        sport_segment_w(layer, color, x + seg[i][0], y + seg[i][1],
+                        x + seg[i][2], y + seg[i][3], LV_OPA_20, 16);
+        sport_segment_w(layer, color, x + seg[i][0], y + seg[i][1],
+                        x + seg[i][2], y + seg[i][3], LV_OPA_COVER, 14);
     }
+}
+
+static uint32_t sport_ring_rgb(float angle)
+{
+    const uint32_t magenta = 0xFF2D9Bu;
+    const uint32_t purple = 0x8D4DFFu;
+    const uint32_t teal = 0x2FE0D0u;
+    float a = fmodf(angle, 360.0f);
+    if (a < 0.0f) a += 360.0f;
+    if (a >= 270.0f) return lerp_rgb(magenta, purple, (a - 270.0f) / 90.0f);
+    if (a < 90.0f) return lerp_rgb(purple, teal, a / 90.0f);
+    if (a < 180.0f) return lerp_rgb(teal, purple, (a - 90.0f) / 90.0f);
+    return lerp_rgb(purple, magenta, (a - 180.0f) / 90.0f);
 }
 
 static void paint_sport_background(lv_obj_t *canvas, const boost_theme_t *theme)
 {
+    (void)theme;
     lv_layer_t layer;
     lv_canvas_init_layer(canvas, &layer);
 
@@ -3102,33 +3117,79 @@ static void paint_sport_background(lv_obj_t *canvas, const boost_theme_t *theme)
     lv_area_t full = { 0, 0, DISP_SIZE - 1, DISP_SIZE - 1 };
     lv_draw_rect(&layer, &bg, &full);
 
-    const int cx = DISP_SIZE / 2;
-    const int cy = DISP_SIZE / 2;
-    const lv_color_t ring = c(theme->boost);
+    /* Sparse, deterministic stars keep the AMOLED ground atmospheric without
+     * adding a per-frame draw cost. Keep them above the horizon band. */
+    static const uint32_t star_colors[] = { 0xFFFFFFu, 0xD946EFu, 0xBCA6FFu };
+    for (int i = 0; i < 40; ++i) {
+        const int x = (i * 7 + 13) % DISP_SIZE;
+        const int y = (i * 11 + 29) % 310;
+        const int size = (i % 7 == 0) ? 2 : 1;
+        lv_draw_rect_dsc_t star;
+        lv_draw_rect_dsc_init(&star);
+        star.bg_color = c(star_colors[i % 3]);
+        star.bg_opa = (lv_opa_t)(10 + (i % 3) * 10);
+        lv_area_t a = { x, y, x + size - 1, y + size - 1 };
+        lv_draw_rect(&layer, &star, &a);
+    }
+
+    /* Low synthwave horizon: broad translucent bands are intentionally soft and
+     * avoid a full-screen gradient or any live work after the cache is built. */
+    const lv_color_t horizon = c(0x19C6C6u);
+    const int bands_y[] = { 370, 390, 415, 440 };
+    const lv_opa_t bands_opa[] = { 3, 8, 15, 30 };
+    for (int i = 0; i < 4; ++i) {
+        lv_draw_rect_dsc_t band;
+        lv_draw_rect_dsc_init(&band);
+        band.bg_color = horizon;
+        band.bg_opa = bands_opa[i];
+        lv_area_t a = { 0, bands_y[i], DISP_SIZE - 1,
+                        (i == 3) ? DISP_SIZE - 1 : bands_y[i + 1] - 1 };
+        lv_draw_rect(&layer, &band, &a);
+    }
+
+    const int cx = px_icx() - s_px_dx;
+    const int cy = px_icy() - s_px_dy;
     lv_draw_arc_dsc_t arc;
     lv_draw_arc_dsc_init(&arc);
-    arc.center.x = cx; arc.center.y = cy;
-    arc.start_angle = 0; arc.end_angle = 360;
-    arc.radius = 226; arc.width = 3; arc.color = ring; arc.opa = LV_OPA_20;
-    lv_draw_arc(&layer, &arc);
-    arc.radius = 222; arc.width = 6; arc.color = ring; arc.opa = LV_OPA_70;
-    lv_draw_arc(&layer, &arc);
-    arc.radius = 215; arc.width = 2; arc.color = c(theme->overboost); arc.opa = LV_OPA_60;
-    lv_draw_arc(&layer, &arc);
-    arc.radius = 151; arc.width = 3; arc.color = c(theme->vacuum); arc.opa = LV_OPA_70;
-    lv_draw_arc(&layer, &arc);
-    arc.radius = 143; arc.width = 2; arc.color = ring; arc.opa = LV_OPA_30;
+    arc.center.x = cx;
+    arc.center.y = cy;
+    arc.radius = 205;
+    arc.rounded = true;
+
+    /* Halo first, then the crisp 18 px luminous ring. Each 5 degree tile gets
+     * its own colour so the gradient follows the circle rather than the canvas. */
+    for (int i = 0; i < 72; ++i) {
+        const float start = (float)i * 5.0f;
+        const float end = start + 5.0f;
+        const lv_color_t color = c(sport_ring_rgb(start + 2.5f));
+        arc.start_angle = start;
+        arc.end_angle = end;
+        arc.color = color;
+        arc.width = 30;
+        arc.opa = LV_OPA_20;
+        lv_draw_arc(&layer, &arc);
+    }
+    for (int i = 0; i < 72; ++i) {
+        const float start = (float)i * 5.0f;
+        const float end = start + 5.0f;
+        arc.start_angle = start;
+        arc.end_angle = end;
+        arc.color = c(sport_ring_rgb(start + 2.5f));
+        arc.width = 18;
+        arc.opa = LV_OPA_COVER;
+        lv_draw_arc(&layer, &arc);
+    }
+
+    /* A quiet inner line gives the dark centre a little depth without recreating
+     * the old multi-ring speedometer. */
+    arc.radius = 150;
+    arc.width = 2;
+    arc.color = c(0x8D4DFFu);
+    arc.opa = LV_OPA_30;
+    arc.start_angle = 0;
+    arc.end_angle = 360;
     lv_draw_arc(&layer, &arc);
 
-    for (int i = 0; i < 32; ++i) {
-        const float a = ((float)i * 360.0f / 32.0f - 90.0f) * (float)M_PI / 180.0f;
-        const float r0 = (i % 4 == 0) ? 198.0f : 204.0f;
-        const float r1 = 211.0f;
-        sport_segment(&layer, (i % 4 == 0) ? ring : c(theme->muted),
-                      cx + r0 * cosf(a), cy + r0 * sinf(a),
-                      cx + r1 * cosf(a), cy + r1 * sinf(a),
-                      (i % 4 == 0) ? LV_OPA_80 : LV_OPA_40);
-    }
     lv_canvas_finish_layer(canvas, &layer);
 }
 
@@ -3146,15 +3207,19 @@ static void draw_sport_segments(lv_event_t *e)
      * the PSRAM canvas below, so a digit update no longer repaints 217k pixels. */
     const int tenths = (int)lroundf(fabsf(psi) * 10.0f);
     const int whole = tenths / 10;
-    if (psi < -0.05f) sport_segment(layer, accent, cx - 128, cy - 2, cx - 104, cy - 2, LV_OPA_COVER);
-    if (whole >= 10) sport_digit(layer, accent, cx - 78, cy - 2, (whole / 10) % 10);
-    sport_digit(layer, accent, cx - 23, cy - 2, whole % 10);
+    const int digit_y = cy - 2;
+    if (psi < -0.05f) {
+        sport_segment_w(layer, accent, cx - 122, digit_y, cx - 98, digit_y,
+                        LV_OPA_COVER, 14);
+    }
+    if (whole >= 10) sport_digit(layer, accent, cx - 60, digit_y, (whole / 10) % 10);
+    sport_digit(layer, accent, cx - 10, digit_y, whole % 10);
     lv_draw_rect_dsc_t dot;
     lv_draw_rect_dsc_init(&dot);
     dot.bg_color = accent; dot.bg_opa = LV_OPA_COVER; dot.radius = LV_RADIUS_CIRCLE;
-    lv_area_t da = { cx + 8, cy + 24, cx + 18, cy + 34 };
+    lv_area_t da = { cx + 15, cy + 24, cx + 25, cy + 34 };
     lv_draw_rect(layer, &dot, &da);
-    sport_digit(layer, accent, cx + 66, cy - 2, tenths % 10);
+    sport_digit(layer, accent, cx + 55, digit_y, tenths % 10);
 }
 
 static void build_sport(lv_obj_t *scr)
@@ -3183,7 +3248,7 @@ static void build_sport(lv_obj_t *scr)
     lv_label_set_text(s_sport_zone, "VACUUM");
     lv_obj_set_style_text_font(s_sport_zone, F_COND32, 0);
     lv_obj_set_style_text_letter_space(s_sport_zone, 3, 0);
-    lv_obj_set_style_text_color(s_sport_zone, c(theme->boost), 0);
+    lv_obj_set_style_text_color(s_sport_zone, c(0x39FF8Bu), 0);
     lv_obj_set_style_text_align(s_sport_zone, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_size(s_sport_zone, 300, 38);
     lv_obj_align(s_sport_zone, LV_ALIGN_CENTER, 0, -118);
@@ -3202,11 +3267,11 @@ static void build_sport(lv_obj_t *scr)
 
 static void update_sport(const boost_sample_t *sample, const boost_theme_t *theme)
 {
+    (void)theme;
     s_sport_psi = isfinite(sample->psi) ? sample->psi : 0.0f;
     s_sport_peak_value = fmaxf(s_peak_psi, 0.0f);
     const char *zone = sport_zone_for(s_sport_psi);
-    const lv_color_t zone_color = c(s_sport_psi >= s_psi_overboost ? theme->overboost :
-                                    s_sport_psi < 0.0f ? theme->vacuum : theme->boost);
+    const lv_color_t zone_color = c(0x39FF8Bu);
     if (strcmp(lv_label_get_text(s_sport_zone), zone) != 0) lv_label_set_text(s_sport_zone, zone);
     if (!lv_color_eq(lv_obj_get_style_text_color(s_sport_zone, 0), zone_color))
         lv_obj_set_style_text_color(s_sport_zone, zone_color, 0);
@@ -3214,8 +3279,8 @@ static void update_sport(const boost_sample_t *sample, const boost_theme_t *them
     snprintf(buf, sizeof(buf), "PEAK %.1f PSI", (double)s_sport_peak_value);
     if (strcmp(lv_label_get_text(s_sport_peak), buf) != 0) lv_label_set_text(s_sport_peak, buf);
     lv_area_t value_area = {
-        px_icx() - 136, px_icy() - 38,
-        px_icx() + 86, px_icy() + 38,
+        px_icx() - 140, px_icy() - 50,
+        px_icx() + 100, px_icy() + 50,
     };
     lv_obj_invalidate_area(s_sport_face, &value_area);
 }
