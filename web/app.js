@@ -1343,6 +1343,27 @@ function renderState(sample) {
     if (el.uptime) el.uptime.textContent = formatDuration(sample.uptimeMs || 0);
     if (el.deviceClock) el.deviceClock.textContent = formatClock(sample.epochMs, sample.timezoneOffsetMinutes || 0);
     if (sample.brightness != null && el.brightnessNow) el.brightnessNow.textContent = `${sample.brightness}%`;
+    if (sample.tpms) {
+      const wheels = ["FL", "FR", "RL", "RR"];
+      const statusLabels = ["OK", "STALE", "OFFLINE"];
+      const statusClasses = ["tpms-ok", "tpms-stale", "tpms-offline"];
+      for (let i = 0; i < 4; i++) {
+        const cell = document.getElementById("tpms" + wheels[i]);
+        if (!cell) continue;
+        const w = sample.tpms.wheels && sample.tpms.wheels[i];
+        const psiEl = cell.querySelector(".tpms-psi");
+        const statusEl = cell.querySelector(".tpms-status");
+        if (w && w.valid) {
+          psiEl.textContent = Number(w.psi).toFixed(1);
+        } else {
+          psiEl.textContent = "--.-";
+        }
+        const si = sample.tpms.status != null ? Number(sample.tpms.status) : 2;
+        const safeSi = si >= 0 && si < statusLabels.length ? si : 2;
+        statusEl.textContent = w && w.valid ? statusLabels[safeSi] : "OFFLINE";
+        statusEl.className = "tpms-status " + (w && w.valid ? statusClasses[safeSi] : statusClasses[2]);
+      }
+    }
   }
   if (sample.activeThemeId && sample.activeThemeId !== state.activeThemeId) {
     state.activeThemeId = sample.activeThemeId;

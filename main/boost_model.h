@@ -56,6 +56,12 @@ typedef struct {
     bool ads_present;
     bool bmp_present;
     bool sensor_fault;
+    /* TPMS snapshot mirrored from the mock/BLE provider. Four wheels in
+     * FL/FR/RL/RR order; psi and valid per wheel; status is the service-level
+     * enum (0=normal, 1=stale, 2=disconnected). */
+    float tpms_psi[4];
+    bool tpms_valid[4];
+    int tpms_status;
 } boost_state_t;
 
 typedef struct {
@@ -76,6 +82,7 @@ typedef struct {
 
 esp_err_t boost_model_init(void);
 void boost_model_publish_sample(const boost_sample_t *sample);
+void boost_model_publish_tpms(const float psi[4], const bool valid[4], int status);
 void boost_model_get_state(boost_state_t *out);
 /** Refresh web-visible clocks/brightness; call outside the LVGL worker. */
 void boost_model_refresh_status(void);

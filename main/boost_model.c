@@ -354,6 +354,18 @@ void boost_model_publish_sample(const boost_sample_t *sample)
     xSemaphoreGive(s_lock);
 }
 
+void boost_model_publish_tpms(const float psi[4], const bool valid[4], int status)
+{
+    if (s_lock == NULL) return;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    for (int i = 0; i < 4; ++i) {
+        s_state.tpms_psi[i] = psi ? psi[i] : 0.0f;
+        s_state.tpms_valid[i] = valid ? valid[i] : false;
+    }
+    s_state.tpms_status = status;
+    xSemaphoreGive(s_lock);
+}
+
 void boost_model_set_display_metrics(const boost_display_metrics_t *metrics)
 {
     if (metrics == NULL || s_lock == NULL) {

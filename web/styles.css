@@ -404,6 +404,51 @@ h1 {
   word-break: break-word;
 }
 
+.tpms-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+
+.tpms-cell {
+  display: grid;
+  gap: 0.18rem;
+  padding: 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(32, 36, 44, 0.44);
+  min-width: 0;
+}
+
+.tpms-name {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.tpms-psi {
+  color: var(--text);
+  font-family: "Barlow Condensed", "Aptos Narrow", "Arial Narrow", system-ui, sans-serif;
+  font-size: 1.45rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.tpms-status {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.tpms-ok { color: var(--boost); }
+.tpms-stale { color: #f3b548; }
+.tpms-offline { color: var(--overboost); }
+
+@media (max-width: 700px) {
+  .tpms-grid { gap: 0.5rem; }
+  .tpms-cell { padding: 0.55rem; }
+}
+
 /* Status spans the full console width; settings hosts network + range */
 .service-rail > .status-panel,
 .service-rail > .view-settings {

@@ -187,7 +187,8 @@ static int state_json(char *json, size_t len)
                      * (atmospheric ~101.3 kPa, gauge ~0 psi engine-off) is
                      * possible without the display. */
                     "\"sensors\":{\"adsPresent\":%s,\"bmpPresent\":%s,\"fault\":%s,"
-                    "\"mapVolts\":%.4f,\"mapAbsKpa\":%.2f,\"ambientKpa\":%.2f}}",
+                    "\"mapVolts\":%.4f,\"mapAbsKpa\":%.2f,\"ambientKpa\":%.2f},"
+                    "\"tpms\":{\"status\":%d,\"wheels\":[{\"psi\":%.1f,\"valid\":%s},{\"psi\":%.1f,\"valid\":%s},{\"psi\":%.1f,\"valid\":%s},{\"psi\":%.1f,\"valid\":%s}]}}",
                     (double)st.psi, (double)st.peak_psi, st.zone, st.demo ? "true" : "false",
                     st.brightness, st.firmware_version, (unsigned long long)st.uptime_ms,
                     (long long)st.epoch_ms, st.timezone_offset_minutes, st.active_theme_id,
@@ -204,12 +205,17 @@ static int state_json(char *json, size_t len)
                     st.ads_present ? "true" : "false",
                     st.bmp_present ? "true" : "false",
                     st.sensor_fault ? "true" : "false",
-                    (double)st.map_volts, (double)st.map_abs_kpa, (double)st.ambient_kpa);
+                    (double)st.map_volts, (double)st.map_abs_kpa, (double)st.ambient_kpa,
+                    st.tpms_status,
+                    (double)st.tpms_psi[0], st.tpms_valid[0] ? "true" : "false",
+                    (double)st.tpms_psi[1], st.tpms_valid[1] ? "true" : "false",
+                    (double)st.tpms_psi[2], st.tpms_valid[2] ? "true" : "false",
+                    (double)st.tpms_psi[3], st.tpms_valid[3] ? "true" : "false");
 }
 
 static esp_err_t state_get(httpd_req_t *req)
 {
-    char json[896];
+    char json[1024];
     const int n = state_json(json, sizeof(json));
     return n > 0 && n < (int)sizeof(json) ? send_json(req, json) : ESP_FAIL;
 }
@@ -392,7 +398,7 @@ static void state_ws_send_done(esp_err_t err, int socket, void *arg)
 static void state_ws_push(void *arg)
 {
     (void)arg;
-    char current[768];
+    char current[1024];
     const int n = state_json(current, sizeof(current));
     if (n <= 0 || n >= (int)sizeof(current)) return;
     for (int slot = 0; slot < STATE_WS_MAX_CLIENTS; ++slot) {

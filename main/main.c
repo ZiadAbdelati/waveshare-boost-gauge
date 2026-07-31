@@ -55,6 +55,13 @@ static void tpms_timer_cb(lv_timer_t *timer)
     boost_tpms_snapshot_t snapshot;
     boost_tpms_get_snapshot(&snapshot);
     boost_page_update_tpms(&snapshot);
+    float psi[4];
+    bool valid[4];
+    for (int i = 0; i < 4; ++i) {
+        psi[i] = snapshot.wheel[i].psi;
+        valid[i] = snapshot.wheel[i].valid;
+    }
+    boost_model_publish_tpms(psi, valid, (int)snapshot.status);
 }
 
 /* Web/model publication stays independent when a GIF occupies the LVGL worker. */
