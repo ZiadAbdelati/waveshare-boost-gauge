@@ -2,6 +2,7 @@
 
 #include <math.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -255,6 +256,15 @@ LV_FONT_DECLARE(font_wide_32);
 #define HUD_VALUE_FONT F_COND96
 #define HUD_READOUT_GLYPH_COUNT 12
 
+/* Production uses the immutable glyph cache. Set to 0 only for a matched,
+ * compile-time source-font A/B; there is deliberately no runtime switch. */
+#ifndef BOOST_HUD_READOUT_CACHE
+#define BOOST_HUD_READOUT_CACHE 1
+#endif
+#if BOOST_HUD_READOUT_CACHE != 0 && BOOST_HUD_READOUT_CACHE != 1
+#error "BOOST_HUD_READOUT_CACHE must be 0 or 1"
+#endif
+
 static const char *TAG = "boost_gauge";
 
 /* ---- shared scene state -------------------------------------------------- */
@@ -365,10 +375,15 @@ static lv_obj_t *s_hud_face;
 static lv_obj_t *s_hud_bg;
 static uint8_t *s_hud_bg_buf;
 static lv_obj_t *s_hud_fill;
-static lv_obj_t *s_hud_slot[HUD_SLOT_COUNT];
-static lv_obj_t *s_hud_sign;
+/* The complete 96 px readout is one styleless draw object. Keeping the ghosts
+ * and primary glyphs in one callback makes their order explicit while the
+ * object's invalidation remains one exact old/new union. */
+static lv_obj_t *s_hud_readout;
+static char s_hud_slot_text[HUD_SLOT_COUNT][2];
+static char s_hud_sign_text[2];
 static int s_hud_sign_x = HUD_SIGN_ONES_X;
-static lv_obj_t *s_hud_glitch;
+static lv_color_t s_hud_readout_color;
+static bool s_hud_readout_color_valid;
 /* The Night City readout uses a scene-owned immutable font. Its ten digits,
  * decimal point and minus sign are expanded once from the packed source font,
  * then read concurrently by LVGL's software draw units without changing image
@@ -385,9 +400,9 @@ static hud_readout_font_t s_hud_readout_font;
  * agree: a skipped invalidation with a moved draw leaves stale pixels. */
 static float s_hud_fill_deg;
 static float s_hud_fill_psi;
+static float s_hud_fill_color_psi;
 static bool s_hud_fill_valid;
 static char s_hud_val_str[12];
-static float s_hud_prev_psi;
 static lv_obj_t *s_hud_map;
 static lv_obj_t *s_hud_pk;
 static lv_obj_t *s_hud_sys;
@@ -419,6 +434,20 @@ static lv_image_dsc_t s_media_dsc;
 
 static float s_display_psi;
 static float s_peak_psi;
+
+/* Shared visual-only arc animation. Raw samples remain authoritative for
+ * readouts, peaks, zones, and model/API state; this state drives only the
+ * Dyno Cell and Night City moving arcs. */
+#define ARC_ANIM_GAP_RESET_MS 1000u
+#define ARC_ANIM_DURATION_MS   40u
+static uint32_t s_arc_anim_start_ms;
+static bool s_arc_anim_valid;
+static float s_arc_anim_from_psi;
+static float s_arc_anim_target_psi;
+static float s_arc_anim_display_psi;
+static float s_arc_drawn_psi;
+static float s_arc_color_psi;
+
 static bool s_ui_ready;
 static bool s_hold_dim_fired;
 typedef enum {
@@ -483,6 +512,48 @@ static float clampf(float v, float lo, float hi)
     if (v < lo) return lo;
     if (v > hi) return hi;
     return v;
+}
+
+static void reset_visual_arc_animation(float psi)
+{
+    const float seed = isfinite(psi) ? psi : 0.0f;
+    s_arc_anim_start_ms = lv_tick_get();
+    s_arc_anim_valid = false;
+    s_arc_anim_from_psi = seed;
+    s_arc_anim_target_psi = seed;
+    s_arc_anim_display_psi = seed;
+}
+
+/* Linear, target-directed interpolation for moving arc geometry only. Raw
+ * pressure remains the newest target and all numeric/color state; the visual
+ * endpoint eases from its currently displayed value toward that target. This
+ * removes pacing steps without averaging away small measured changes. */
+static float update_visual_arc_animation(float target)
+{
+    const uint32_t now = lv_tick_get();
+    if (!isfinite(target)) {
+        reset_visual_arc_animation(0.0f);
+        return 0.0f;
+    }
+    if (!s_arc_anim_valid || lv_tick_elaps(s_arc_anim_start_ms) > ARC_ANIM_GAP_RESET_MS) {
+        s_arc_anim_valid = true;
+        s_arc_anim_start_ms = now;
+        s_arc_anim_from_psi = target;
+        s_arc_anim_target_psi = target;
+        s_arc_anim_display_psi = target;
+        return target;
+    }
+
+    const float progress = clampf((float)lv_tick_elaps(s_arc_anim_start_ms) /
+                                  (float)ARC_ANIM_DURATION_MS, 0.0f, 1.0f);
+    s_arc_anim_display_psi = s_arc_anim_from_psi +
+        (s_arc_anim_target_psi - s_arc_anim_from_psi) * progress;
+    if (target != s_arc_anim_target_psi) {
+        s_arc_anim_from_psi = s_arc_anim_display_psi;
+        s_arc_anim_target_psi = target;
+        s_arc_anim_start_ms = now;
+    }
+    return s_arc_anim_display_psi;
 }
 
 /*
@@ -639,9 +710,10 @@ static bool hud_readout_get_glyph_dsc(const lv_font_t *font, lv_font_glyph_dsc_t
                                       uint32_t letter, uint32_t letter_next)
 {
     (void)letter_next;
+    if (font == NULL || dsc == NULL || font->dsc == NULL) return false;
     const hud_readout_font_t *cache = font->dsc;
     const int index = hud_readout_glyph_index(letter);
-    if (index < 0) return false;
+    if (index < 0 || (uint32_t)index >= HUD_READOUT_GLYPH_COUNT) return false;
     *dsc = cache->glyph[index];
     return true;
 }
@@ -650,8 +722,54 @@ static const void *hud_readout_get_glyph_bitmap(lv_font_glyph_dsc_t *dsc,
                                                 lv_draw_buf_t *draw_buf)
 {
     (void)draw_buf;
+    if (dsc == NULL || dsc->resolved_font == NULL || dsc->resolved_font->dsc == NULL) return NULL;
     const hud_readout_font_t *cache = dsc->resolved_font->dsc;
-    return cache->pixels + cache->offset[dsc->gid.index];
+    if (dsc->resolved_font != &cache->font || dsc->gid.index >= HUD_READOUT_GLYPH_COUNT ||
+        cache->pixels == NULL || dsc->format != LV_FONT_GLYPH_FORMAT_A8 ||
+        dsc->box_w != cache->glyph[dsc->gid.index].box_w ||
+        dsc->box_h != cache->glyph[dsc->gid.index].box_h ||
+        dsc->stride == 0 || dsc->stride != cache->glyph[dsc->gid.index].stride) return NULL;
+    const size_t offset = cache->offset[dsc->gid.index];
+    const size_t bytes = (size_t)dsc->stride * (size_t)dsc->box_h;
+    if (offset > cache->pixels_size || bytes > cache->pixels_size - offset) return NULL;
+    return cache->pixels + offset;
+}
+
+static bool hud_readout_size_mul(size_t a, size_t b, size_t *out)
+{
+    if (out == NULL || (b != 0 && a > SIZE_MAX / b)) return false;
+    *out = a * b;
+    return true;
+}
+
+static bool hud_readout_round_up(size_t value, size_t alignment, size_t *out)
+{
+    if (out == NULL || alignment == 0) return false;
+    const size_t remainder = value % alignment;
+    const size_t add = remainder == 0 ? 0 : alignment - remainder;
+    if (value > SIZE_MAX - add) return false;
+    *out = value + add;
+    return true;
+}
+
+static bool hud_readout_glyph_consistent(const lv_font_glyph_dsc_t *a,
+                                         const lv_font_glyph_dsc_t *b)
+{
+    if (a == NULL || b == NULL) return false;
+    return a->adv_w == b->adv_w && a->box_w == b->box_w && a->box_h == b->box_h &&
+           a->ofs_x == b->ofs_x && a->ofs_y == b->ofs_y && a->stride == b->stride &&
+           a->format == b->format && a->is_placeholder == b->is_placeholder &&
+           a->req_raw_bitmap == b->req_raw_bitmap &&
+           a->outline_stroke_width == b->outline_stroke_width &&
+           a->resolved_font == b->resolved_font;
+}
+
+static bool hud_readout_source_glyph_valid(const lv_font_glyph_dsc_t *source)
+{
+    if (source == NULL || source->resolved_font == NULL || source->is_placeholder ||
+        source->box_w == 0 || source->box_h == 0) return false;
+    const uint32_t expected_stride = lv_draw_buf_width_to_stride(source->box_w, LV_COLOR_FORMAT_A8);
+    return expected_stride != 0;
 }
 
 static void destroy_hud_readout_font(void)
@@ -662,17 +780,27 @@ static void destroy_hud_readout_font(void)
 
 static bool build_hud_readout_font(void)
 {
+#if !BOOST_HUD_READOUT_CACHE
+    return false;
+#else
     destroy_hud_readout_font();
 
     size_t total = 0;
     for (uint32_t index = 0; index < HUD_READOUT_GLYPH_COUNT; ++index) {
         const uint32_t letter = index < 10 ? '0' + index : index == 10 ? '.' : '-';
         lv_font_glyph_dsc_t *g = &s_hud_readout_font.glyph[index];
-        if (!lv_font_get_glyph_dsc(HUD_VALUE_FONT, g, letter, 0)) goto fail;
+        if (!lv_font_get_glyph_dsc(HUD_VALUE_FONT, g, letter, 0) ||
+            !hud_readout_source_glyph_valid(g)) goto fail;
         g->gid.index = index;
-        total = LV_ROUND_UP(total, LV_DRAW_BUF_ALIGN);
-        total += (size_t)lv_draw_buf_width_to_stride(g->box_w, LV_COLOR_FORMAT_A8) * g->box_h;
+        size_t aligned = 0;
+        size_t bytes = 0;
+        if (!hud_readout_round_up(total, LV_DRAW_BUF_ALIGN, &aligned) ||
+            !hud_readout_size_mul((size_t)lv_draw_buf_width_to_stride(g->box_w, LV_COLOR_FORMAT_A8),
+                                  (size_t)g->box_h, &bytes) ||
+            aligned > SIZE_MAX - bytes) goto fail;
+        total = aligned + bytes;
     }
+    if (total == 0 || total > UINT32_MAX) goto fail;
 
     s_hud_readout_font.pixels = BG_ALLOC(total);
     if (s_hud_readout_font.pixels == NULL) goto fail;
@@ -680,26 +808,41 @@ static bool build_hud_readout_font(void)
 
     size_t offset = 0;
     for (uint32_t index = 0; index < HUD_READOUT_GLYPH_COUNT; ++index) {
-        offset = LV_ROUND_UP(offset, LV_DRAW_BUF_ALIGN);
+        size_t aligned = 0;
+        if (!hud_readout_round_up(offset, LV_DRAW_BUF_ALIGN, &aligned) || aligned > total) goto fail;
+        offset = aligned;
         const uint32_t letter = index < 10 ? '0' + index : index == 10 ? '.' : '-';
         lv_font_glyph_dsc_t source;
-        lv_font_get_glyph_dsc(HUD_VALUE_FONT, &source, letter, 0);
+        lv_font_glyph_dsc_t verify;
+        memset(&source, 0, sizeof(source));
+        memset(&verify, 0, sizeof(verify));
+        if (!lv_font_get_glyph_dsc(HUD_VALUE_FONT, &source, letter, 0) ||
+            !lv_font_get_glyph_dsc(HUD_VALUE_FONT, &verify, letter, 0) ||
+            !hud_readout_source_glyph_valid(&source) ||
+            !hud_readout_glyph_consistent(&source, &verify)) goto fail;
         const uint32_t stride = lv_draw_buf_width_to_stride(source.box_w, LV_COLOR_FORMAT_A8);
-        const size_t bytes = (size_t)stride * source.box_h;
+        size_t bytes = 0;
+        if (!hud_readout_size_mul((size_t)stride, (size_t)source.box_h, &bytes) ||
+            stride == 0 || bytes > total - offset) goto fail;
         lv_draw_buf_t draw_buf;
         if (lv_draw_buf_init(&draw_buf, source.box_w, source.box_h, LV_COLOR_FORMAT_A8,
                              stride, s_hud_readout_font.pixels + offset, bytes) != LV_RESULT_OK) goto fail;
         const lv_draw_buf_t *bitmap = lv_font_get_glyph_bitmap(&source, &draw_buf);
-        const bool valid = bitmap != NULL && bitmap->data == draw_buf.data;
+        const bool valid = bitmap != NULL && bitmap->data == draw_buf.data &&
+                           bitmap->header.cf == LV_COLOR_FORMAT_A8 && bitmap->header.w == source.box_w &&
+                           bitmap->header.h == source.box_h && bitmap->header.stride == stride &&
+                           bitmap->data_size >= bytes;
         lv_font_glyph_release_draw_data(&source);
         if (!valid) goto fail;
 
+        if (offset > UINT32_MAX) goto fail;
         s_hud_readout_font.offset[index] = (uint32_t)offset;
         s_hud_readout_font.glyph[index].resolved_font = &s_hud_readout_font.font;
         s_hud_readout_font.glyph[index].format = LV_FONT_GLYPH_FORMAT_A8;
         s_hud_readout_font.glyph[index].stride = stride;
         offset += bytes;
     }
+    if (offset > total) goto fail;
 
     s_hud_readout_font.font.get_glyph_dsc = hud_readout_get_glyph_dsc;
     s_hud_readout_font.font.get_glyph_bitmap = hud_readout_get_glyph_bitmap;
@@ -714,6 +857,7 @@ fail:
     ESP_LOGW(TAG, "hud readout font cache unavailable; using source font");
     destroy_hud_readout_font();
     return false;
+#endif
 }
 
 static const lv_font_t *hud_readout_font(bool cached)
@@ -992,7 +1136,7 @@ static void draw_value_arc(lv_event_t *event)
     value_arc_angles(psi, &start, &end);
     lv_draw_arc_dsc_t dsc;
     lv_draw_arc_dsc_init(&dsc);
-    dsc.color = color_for_psi(active_theme(), psi);
+    dsc.color = color_for_psi(active_theme(), s_arc_color_psi);
     dsc.width = ARC_WIDTH;
     dsc.start_angle = start;
     dsc.end_angle = end;
@@ -1017,14 +1161,19 @@ static void invalidate_value_arc(float start, float end)
     }
 }
 
-static void set_value_arc(float psi)
+static void set_value_arc(float psi, float raw_color_psi)
 {
     float old_start, old_end, new_start, new_end;
-    value_arc_angles(s_display_psi, &old_start, &old_end);
+    value_arc_angles(s_arc_drawn_psi, &old_start, &old_end);
     value_arc_angles(psi, &new_start, &new_end);
+    const float color_psi = isfinite(raw_color_psi) ? raw_color_psi : 0.0f;
+    const bool color_flip = !lv_color_eq(color_for_psi(active_theme(), s_arc_color_psi),
+                                         color_for_psi(active_theme(), color_psi));
+    const bool side_flip = (s_arc_drawn_psi < 0.0f) != (psi < 0.0f);
 
-    if ((s_display_psi < 0.0f) != (psi < 0.0f) ||
-        !lv_color_eq(color_for_psi(active_theme(), s_display_psi), color_for_psi(active_theme(), psi))) {
+    if (side_flip || color_flip) {
+        /* Color is raw-sample authoritative: repaint the complete currently
+         * drawn and newly drawn spans, even while geometry is smoothing. */
         invalidate_value_arc(old_start, old_end);
         invalidate_value_arc(new_start, new_end);
     } else if (psi >= 0.0f) {
@@ -1032,6 +1181,7 @@ static void set_value_arc(float psi)
     } else {
         invalidate_value_arc(fminf(old_start, new_start), fmaxf(old_start, new_start));
     }
+    s_arc_color_psi = color_psi;
 }
 
 /* Paint the static arc face — unfilled track, scale numerals and the "PSI"
@@ -1191,7 +1341,7 @@ static void build_arc(lv_obj_t *scr)
     lv_obj_set_size(s_arc_value_canvas, DISP_SIZE, DISP_SIZE);
     lv_obj_center(s_arc_value_canvas);
     lv_obj_clear_flag(s_arc_value_canvas, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_event_cb(s_arc_value_canvas, draw_value_arc, LV_EVENT_DRAW_MAIN, &s_display_psi);
+    lv_obj_add_event_cb(s_arc_value_canvas, draw_value_arc, LV_EVENT_DRAW_MAIN, &s_arc_drawn_psi);
 
     /* Created after the value arc so the zero reference remains visible over
      * both vacuum and boost fills, matching the original verified layering. */
@@ -1232,7 +1382,9 @@ static void build_arc(lv_obj_t *scr)
 
 static void update_arc(const boost_sample_t *sample, const boost_theme_t *theme)
 {
-    set_value_arc(sample->psi);
+    const float visual_psi = update_visual_arc_animation(sample->psi);
+    set_value_arc(visual_psi, sample->psi);
+    s_arc_drawn_psi = visual_psi;
 
     const lv_color_t col = color_for_psi(theme, sample->psi);
     const char *zone = zone_for_psi(sample->psi);
@@ -2200,41 +2352,90 @@ static void draw_hud_face(lv_event_t *e)
     paint_hud_face(lv_event_get_layer(e), active_theme(), false, px_cx(), px_cy());
 }
 
-/* Tech-noir glitch: on a fast spike, ghost the value in red/cyan either side of
- * the real digits for a beat. Drawn directly, so it needs no extra objects. */
-static void draw_hud_glitch(lv_event_t *e)
+/* One styleless readout object owns the complete draw order: chromatic ghosts
+ * first, then the 96 px primary slots/sign. All sources are immutable for the
+ * duration of the callback, so async software draw units never race label text
+ * or image-source publication. */
+static void draw_hud_readout(lv_event_t *e)
 {
     if (s_hud_val_str[0] == '\0') return;
-    const boost_theme_t *theme = active_theme();
     lv_layer_t *layer = lv_event_get_layer(e);
+    lv_area_t ghost_area = {
+        px_icx() - 156,
+        px_icy() + HUD_VALUE_Y - 39,
+        px_icx() + 105,
+        px_icy() + HUD_VALUE_Y + 39,
+    };
+    lv_area_t readout_area = {
+        ghost_area.x1 - HUD_GLITCH_DX,
+        ghost_area.y1,
+        ghost_area.x2 + HUD_GLITCH_DX,
+        ghost_area.y2,
+    };
+    const lv_area_t *clip = &layer->_clip_area;
+    if (clip->x2 < readout_area.x1 || clip->x1 > readout_area.x2 ||
+        clip->y2 < readout_area.y1 || clip->y1 > readout_area.y2) {
+        return;
+    }
 
-    lv_area_t area;
-    area.x1 = px_icx() - 156;
-    area.x2 = px_icx() + 105;
-    area.y1 = px_icy() + HUD_VALUE_Y - 39;
-    area.y2 = px_icy() + HUD_VALUE_Y + 39;
+    const lv_font_t *font = hud_readout_font(s_hud_readout_font.pixels != NULL);
 
     lv_draw_label_dsc_t d;
     lv_draw_label_dsc_init(&d);
-    d.font = hud_readout_font(s_hud_readout_font.pixels != NULL);
+    d.font = font;
     d.text = s_hud_val_str;
     d.align = LV_TEXT_ALIGN_RIGHT;
-    /* The face beneath the shifted glyph edges is static and known. Pre-blend
-     * once instead of making the software renderer read and alpha-blend every
-     * covered destination pixel in both chromatic passes. */
+    d.text_local = 1;
+    /* Ghost colours are pre-blended against the known true-black/dark face. */
     d.opa = LV_OPA_COVER;
+    lv_area_t left = ghost_area;
+    left.x1 -= HUD_GLITCH_DX;
+    left.x2 -= HUD_GLITCH_DX;
+    d.color = lv_color_mix(c(active_theme()->overboost), hud_face_color(active_theme()), LV_OPA_70);
+    lv_draw_label(layer, &d, &left);
+    lv_area_t right = ghost_area;
+    right.x1 += HUD_GLITCH_DX;
+    right.x2 += HUD_GLITCH_DX;
+    d.color = lv_color_mix(c(active_theme()->vacuum), hud_face_color(active_theme()), LV_OPA_70);
+    lv_draw_label(layer, &d, &right);
 
-    lv_area_t a1 = area;
-    a1.x1 -= HUD_GLITCH_DX;
-    a1.x2 -= HUD_GLITCH_DX;
-    d.color = lv_color_mix(c(theme->overboost), hud_face_color(theme), LV_OPA_70);
-    lv_draw_label(layer, &d, &a1);
+    /* Match the former label objects' fixed boxes and centred text exactly. */
+    d.align = LV_TEXT_ALIGN_CENTER;
+    d.color = s_hud_readout_color_valid ? s_hud_readout_color : c(active_theme()->boost);
+    for (int i = 0; i < HUD_SLOT_COUNT; ++i) {
+        d.text = s_hud_slot_text[i];
+        lv_area_t a = {
+            px_icx() + k_hud_slot_x[i] - 28,
+            px_icy() + HUD_VALUE_Y - 35,
+            px_icx() + k_hud_slot_x[i] + 27,
+            px_icy() + HUD_VALUE_Y + 34,
+        };
+        lv_draw_label(layer, &d, &a);
+    }
+    d.text = s_hud_sign_text;
+    lv_area_t sign = {
+        px_icx() + s_hud_sign_x - 19,
+        px_icy() + HUD_VALUE_Y - 35,
+        px_icx() + s_hud_sign_x + 18,
+        px_icy() + HUD_VALUE_Y + 34,
+    };
+    lv_draw_label(layer, &d, &sign);
+}
 
-    lv_area_t a2 = area;
-    a2.x1 += HUD_GLITCH_DX;
-    a2.x2 += HUD_GLITCH_DX;
-    d.color = lv_color_mix(c(theme->vacuum), hud_face_color(theme), LV_OPA_70);
-    lv_draw_label(layer, &d, &a2);
+static void invalidate_hud_readout(lv_area_t *area)
+{
+    if (s_hud_readout != NULL && area != NULL) lv_obj_invalidate_area(s_hud_readout, area);
+}
+
+static void invalidate_hud_readout_full(void)
+{
+    lv_area_t area = {
+        px_icx() - 156,
+        px_icy() + HUD_VALUE_Y - 42,
+        px_icx() + 105,
+        px_icy() + HUD_VALUE_Y + 42,
+    };
+    invalidate_hud_readout(&area);
 }
 
 static void draw_hud_fill(lv_event_t *e)
@@ -2249,10 +2450,10 @@ static void draw_hud_fill(lv_event_t *e)
 
     lv_draw_arc_dsc_t arc;
     lv_draw_arc_dsc_init(&arc);
-    const float drawn_psi = s_hud_fill_valid ? s_hud_fill_psi : 0.0f;
-    if (boost_theme_hud_gradient()) arc.color = c(gradient_rgb_for_psi(theme, drawn_psi));
-    else if (drawn_psi >= s_psi_overboost) arc.color = c(theme->overboost);
-    else if (drawn_psi < 0.0f) arc.color = c(theme->vacuum);
+    const float color_psi = s_hud_fill_valid ? s_hud_fill_color_psi : 0.0f;
+    if (boost_theme_hud_gradient()) arc.color = c(gradient_rgb_for_psi(theme, color_psi));
+    else if (color_psi >= s_psi_overboost) arc.color = c(theme->overboost);
+    else if (color_psi < 0.0f) arc.color = c(theme->vacuum);
     else arc.color = c(theme->boost);
     arc.width = HUD_ARC_WIDTH;
     arc.start_angle = lo;
@@ -2330,35 +2531,26 @@ static void build_hud(lv_obj_t *scr)
     lv_obj_set_style_text_color(hdr, c(theme->vacuum), 0);
     lv_obj_align(hdr, LV_ALIGN_CENTER, 0, -108);
 
-    /* Created before the digits so the red/cyan ghosts paint behind them. */
-    s_hud_glitch = lv_obj_create(scr);
-    lv_obj_remove_style_all(s_hud_glitch);
-    lv_obj_set_size(s_hud_glitch, DISP_SIZE, DISP_SIZE);
-    lv_obj_center(s_hud_glitch);
-    lv_obj_clear_flag(s_hud_glitch, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_event_cb(s_hud_glitch, draw_hud_glitch, LV_EVENT_DRAW_MAIN, NULL);
-
-    for (int i = 0; i < HUD_SLOT_COUNT; ++i) {
-        s_hud_slot[i] = lv_label_create(scr);
-        lv_label_set_text(s_hud_slot[i], i == HUD_SLOT_DOT ? "." : (i == HUD_SLOT_ONES ? "0" : ""));
-        lv_obj_set_style_text_font(s_hud_slot[i],
-                                   hud_readout_font(readout_cached),
-                                   0);
-        lv_obj_set_style_text_color(s_hud_slot[i], c(theme->boost), 0);
-        lv_obj_set_size(s_hud_slot[i], 56, 70);
-        lv_obj_set_style_text_align(s_hud_slot[i], LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_align(s_hud_slot[i], LV_ALIGN_CENTER, k_hud_slot_x[i], HUD_VALUE_Y);
-        lv_obj_clear_flag(s_hud_slot[i], LV_OBJ_FLAG_CLICKABLE);
-    }
-    s_hud_sign = lv_label_create(scr);
-    lv_label_set_text(s_hud_sign, "");
-    lv_obj_set_style_text_font(s_hud_sign, hud_readout_font(readout_cached), 0);
-    lv_obj_set_style_text_color(s_hud_sign, c(theme->boost), 0);
-    lv_obj_set_size(s_hud_sign, 38, 70);
-    lv_obj_set_style_text_align(s_hud_sign, LV_TEXT_ALIGN_CENTER, 0);
+    /* One styleless object owns ghosts and primary digits. It is created after
+     * the fill and before the lower labels, with ghosts drawn first inside the
+     * callback and the primary readout second. */
+    s_hud_readout = lv_obj_create(scr);
+    lv_obj_remove_style_all(s_hud_readout);
+    lv_obj_set_size(s_hud_readout, DISP_SIZE, DISP_SIZE);
+    lv_obj_center(s_hud_readout);
+    lv_obj_clear_flag(s_hud_readout, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(s_hud_readout, draw_hud_readout, LV_EVENT_DRAW_MAIN, NULL);
+    memset(s_hud_slot_text, 0, sizeof(s_hud_slot_text));
+    s_hud_slot_text[HUD_SLOT_ONES][0] = '0';
+    s_hud_slot_text[HUD_SLOT_DOT][0] = '.';
+    memset(s_hud_sign_text, 0, sizeof(s_hud_sign_text));
     s_hud_sign_x = HUD_SIGN_ONES_X;
-    lv_obj_align(s_hud_sign, LV_ALIGN_CENTER, s_hud_sign_x, HUD_VALUE_Y);
-    lv_obj_clear_flag(s_hud_sign, LV_OBJ_FLAG_CLICKABLE);
+    s_hud_readout_color = c(theme->boost);
+    s_hud_readout_color_valid = true;
+    (void)readout_cached;
+
+    /* The remaining labels are not part of the primary 96 px readout. */
+
 
     lv_obj_t *unit = lv_label_create(scr);
     lv_label_set_text(unit, "PSI // FORCED INDUCTION");
@@ -2396,14 +2588,17 @@ static void build_hud(lv_obj_t *scr)
     lv_obj_set_style_text_font(s_hud_tag, F_MONO16, 0);
     lv_obj_set_style_text_color(s_hud_tag, c(theme->muted), 0);
     lv_obj_align(s_hud_tag, LV_ALIGN_CENTER, 100, 152);
+
 }
 
 static void update_hud(const boost_sample_t *sample, const boost_theme_t *theme)
 {
+    const float visual_psi = update_visual_arc_animation(sample->psi);
     if (!s_hud_fill_valid) {
         const float zero_a = psi_to_sweep(0.0f, HUD_A0, HUD_A1);
-        s_hud_fill_deg = psi_to_sweep(sample->psi, HUD_A0, HUD_A1);
-        s_hud_fill_psi = sample->psi;
+        s_hud_fill_deg = psi_to_sweep(visual_psi, HUD_A0, HUD_A1);
+        s_hud_fill_psi = visual_psi;
+        s_hud_fill_color_psi = isfinite(sample->psi) ? sample->psi : 0.0f;
         s_hud_fill_valid = true;
         /* The scene-build repaint can finish before this first sample. Request
          * the complete zero-to-value span; otherwise later endpoint-only dirty
@@ -2411,29 +2606,35 @@ static void update_hud(const boost_sample_t *sample, const boost_theme_t *theme)
         invalidate_hud_fill(zero_a, s_hud_fill_deg);
     }
     const float old_a = s_hud_fill_deg;
-    const float new_a = psi_to_sweep(sample->psi, HUD_A0, HUD_A1);
+    const float new_a = psi_to_sweep(visual_psi, HUD_A0, HUD_A1);
     const float zero_a = psi_to_sweep(0.0f, HUD_A0, HUD_A1);
     /* In gradient mode the whole fill recolours whenever the quantised step
      * changes, not only at the vacuum/boost/overboost boundaries. */
+    const float raw_color_psi = isfinite(sample->psi) ? sample->psi : 0.0f;
     const bool grad_flip = boost_theme_hud_gradient() &&
-        !lv_color_eq(c(gradient_rgb_for_psi(theme, s_hud_fill_psi)),
-                     c(gradient_rgb_for_psi(theme, sample->psi)));
+        !lv_color_eq(c(gradient_rgb_for_psi(theme, s_hud_fill_color_psi)),
+                     c(gradient_rgb_for_psi(theme, raw_color_psi)));
     const bool zone_flip = grad_flip ||
-                           (s_hud_fill_psi < 0.0f) != (sample->psi < 0.0f) ||
-                           (s_hud_fill_psi >= s_psi_overboost) != (sample->psi >= s_psi_overboost);
+                           (s_hud_fill_color_psi < 0.0f) != (raw_color_psi < 0.0f) ||
+                           (s_hud_fill_color_psi >= s_psi_overboost) != (raw_color_psi >= s_psi_overboost);
     if (zone_flip) {
         /* Colour of the whole fill changes: both spans must be repainted. */
         s_hud_fill_deg = new_a;
-        s_hud_fill_psi = sample->psi;
+        s_hud_fill_psi = visual_psi;
+        s_hud_fill_color_psi = raw_color_psi;
         invalidate_hud_fill(fminf(old_a, zero_a), fmaxf(old_a, zero_a));
         invalidate_hud_fill(fminf(new_a, zero_a), fmaxf(new_a, zero_a));
-    } else if (fabsf(new_a - old_a) > 0.30f) {
+    } else if (new_a != old_a) {
         s_hud_fill_deg = new_a;
-        s_hud_fill_psi = sample->psi;
+        s_hud_fill_psi = visual_psi;
         /* Otherwise only the wedge between the old and new ends changed —
          * repainting the full arc every frame is what was costing cadence. */
         invalidate_hud_fill(old_a, new_a);
     }
+    /* Commit the raw color source even when its current bucket did not change;
+     * the next bucket/zone transition must compare against the immediately
+     * previous raw sample, never against delayed geometry. */
+    s_hud_fill_color_psi = raw_color_psi;
 
     /* One decimal, fixed slots: decimal + tenths pinned, integer grows left. */
     const int tenths_total = (int)lroundf(fabsf(sample->psi) * 10.0f);
@@ -2446,59 +2647,49 @@ static void update_hud(const boost_sample_t *sample, const boost_theme_t *theme)
         { (char)('0' + tenths_total % 10), 0 },
     };
     const lv_color_t vc = sample->psi >= s_psi_overboost ? c(theme->overboost) : c(theme->boost);
-    /* Track which slots actually moved: the ghost pass only has to repaint the
-     * glyphs that changed, and in the common case that is the tenths alone. */
+    /* Track which slots actually moved so the common tenths-only update keeps
+     * both the primary and ghost dirty union narrow. */
     int dirty_lo = HUD_SLOT_COUNT;
     int dirty_hi = -1;
     for (int i = 0; i < HUD_SLOT_COUNT; ++i) {
-        bool changed = false;
-        if (strcmp(lv_label_get_text(s_hud_slot[i]), slot_txt[i]) != 0) {
-            lv_label_set_text(s_hud_slot[i], slot_txt[i]);
-            changed = true;
-        }
-        if (!lv_color_eq(lv_obj_get_style_text_color(s_hud_slot[i], 0), vc)) {
-            lv_obj_set_style_text_color(s_hud_slot[i], vc, 0);
-            changed = true;
-        }
+        bool changed = strcmp(s_hud_slot_text[i], slot_txt[i]) != 0;
         if (changed) {
+            memcpy(s_hud_slot_text[i], slot_txt[i], sizeof(s_hud_slot_text[i]));
             if (i < dirty_lo) dirty_lo = i;
             if (i > dirty_hi) dirty_hi = i;
         }
     }
-    /* Keep the flat string for the ghost pass, and arm the glitch on a spike. */
+    bool readout_color_changed = false;
+    if (!s_hud_readout_color_valid || !lv_color_eq(s_hud_readout_color, vc)) {
+        s_hud_readout_color = vc;
+        s_hud_readout_color_valid = true;
+        readout_color_changed = true;
+        if (dirty_lo > 0) dirty_lo = 0;
+        if (dirty_hi < HUD_SLOT_COUNT - 1) dirty_hi = HUD_SLOT_COUNT - 1;
+    }
+    /* Keep the flat string used by both chromatic ghost passes. */
     char prev_val[sizeof(s_hud_val_str)];
     snprintf(prev_val, sizeof(prev_val), "%s", s_hud_val_str);
     snprintf(s_hud_val_str, sizeof(s_hud_val_str), "%s%d.%d",
              sample->psi < -0.05f ? "-" : "", whole, tenths_total % 10);
     const bool value_changed = strcmp(prev_val, s_hud_val_str) != 0;
-    /* Always on: the ghosts repaint together with the digits, so there is no
-     * transition left to clear and no chance of a stranded frame. */
-    s_hud_prev_psi = sample->psi;
-
     /* Sign is resolved before the ghost invalidation so a sign flip or a slide
      * between the ones/tens anchors can widen the dirty box. */
     const char *sign = sample->psi < -0.05f ? "-" : "";
     bool sign_changed = false;
-    if (strcmp(lv_label_get_text(s_hud_sign), sign) != 0) {
-        lv_label_set_text(s_hud_sign, sign);
-        sign_changed = true;
-    }
-    if (!lv_color_eq(lv_obj_get_style_text_color(s_hud_sign, 0), vc)) {
-        lv_obj_set_style_text_color(s_hud_sign, vc, 0);
+    if (strcmp(s_hud_sign_text, sign) != 0) {
+        snprintf(s_hud_sign_text, sizeof(s_hud_sign_text), "%s", sign);
         sign_changed = true;
     }
     const int sign_x = has_tens ? HUD_SIGN_TENS_X : HUD_SIGN_ONES_X;
     if (sign_x != s_hud_sign_x) {
         s_hud_sign_x = sign_x;
-        lv_obj_align(s_hud_sign, LV_ALIGN_CENTER, sign_x, HUD_VALUE_Y);
         sign_changed = true;
     }
 
-    if (value_changed && s_hud_glitch != NULL) {
-        /* Repainting the whole 310x100 value box on every tenth was the single
-         * biggest cost in this style. Bound it to the slots that changed, grown
-         * by the ghost offset plus a pixel of AA. A sign flip is folded in via
-         * dirty_lo, since the sign sits left of the leftmost digit. */
+    if ((value_changed || readout_color_changed) && s_hud_readout != NULL) {
+        /* Preserve the old exact dirty union: changed primary slots/sign, grown
+         * by the shared ghost offset and AA margin. */
         const int grow = HUD_GLITCH_DX + 1;
         int lo = dirty_lo, hi = dirty_hi;
         if (sign_changed) lo = 0;
@@ -2509,7 +2700,9 @@ static void update_hud(const boost_sample_t *sample, const boost_theme_t *theme)
         ga.y1 = px_icy() + HUD_VALUE_Y - 42;
         ga.y2 = px_icy() + HUD_VALUE_Y + 42;
         if (sign_changed) ga.x1 = px_icx() + HUD_SIGN_TENS_X - 24 - grow;
-        lv_obj_invalidate_area(s_hud_glitch, &ga);
+        invalidate_hud_readout(&ga);
+    } else if (sign_changed) {
+        invalidate_hud_readout_full();
     }
 
     char buf[24];
@@ -2832,6 +3025,12 @@ static void update_bigdigit(const boost_sample_t *sample, const boost_theme_t *t
 
 static void destroy_scene(void)
 {
+    /* A scene rebuild/style switch is a visual discontinuity: discard filter
+     * history so the next sample seeds the new arc exactly once. */
+    reset_visual_arc_animation(s_display_psi);
+    s_arc_drawn_psi = isfinite(s_display_psi) ? s_display_psi : 0.0f;
+    s_arc_color_psi = s_arc_drawn_psi;
+
     /* Draw tasks retain object styles and font bitmap pointers. Drain both
      * software draw units before deleting the objects or their PSRAM caches. */
     lv_draw_wait_for_finish();
@@ -2875,13 +3074,16 @@ static void destroy_scene(void)
         s_hud_bg_buf = NULL;
     }
     s_hud_bg = NULL;
-    s_hud_face = s_hud_fill = s_hud_glitch = NULL;
-    s_hud_sign = NULL;
+    s_hud_face = s_hud_fill = NULL;
+    s_hud_readout = NULL;
+    memset(s_hud_slot_text, 0, sizeof(s_hud_slot_text));
+    memset(s_hud_sign_text, 0, sizeof(s_hud_sign_text));
+    s_hud_readout_color_valid = false;
     s_hud_val_str[0] = '\0';
     s_hud_fill_valid = false;
     s_hud_fill_deg = 0.0f;
     s_hud_fill_psi = 0.0f;
-    for (int k = 0; k < HUD_SLOT_COUNT; ++k) s_hud_slot[k] = NULL;
+    s_hud_fill_color_psi = 0.0f;
     s_hud_sign_x = HUD_SIGN_ONES_X;
     s_hud_map = s_hud_pk = s_hud_sys = s_hud_tag = NULL;
     destroy_hud_readout_font();
@@ -2958,6 +3160,9 @@ void boost_gauge_create(void)
 
     s_display_psi = 0.0f;
     s_peak_psi = 0.0f;
+    reset_visual_arc_animation(s_display_psi);
+    s_arc_drawn_psi = s_display_psi;
+    s_arc_color_psi = s_display_psi;
     s_px_step_ms = lv_tick_get();
     s_px_settled_ms = s_px_step_ms;
     s_px_ref_psi = 0.0f;

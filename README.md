@@ -662,8 +662,9 @@ in `destroy_scene()`.
 Dyno Cell's cache covers the unfilled track ring, the zero notch, the five
 scale numerals and the static "PSI" mark — the value wedge
 (`s_arc_value_canvas`/`draw_value_arc`), the readout digits, peak and zone
-label stay live above it, and their invalidation is byte-for-byte unchanged
-(this is the face the 60 FPS guard was established against). Because range
+label stay live above it. The value wedge now invalidates from its committed
+smoothed geometry while raw pressure still controls the numeric/color state;
+this remains the face the 60 FPS guard was established against. Because range
 and zero-angle move the numerals and notch, `boost_gauge_apply_config()` no
 longer special-cases arc with an incremental `refresh_zero_notch()`/
 `refresh_tick_labels()` patch — those live objects no longer exist — and
@@ -711,10 +712,10 @@ their dirty regions are far too small for the link to be the constraint. See
 `#02100a`, whose green sits at **level 4 of 63** in RGB565. Darkening it toward
 black therefore has only four values to land on, so a mathematically exact
 vignette still resolves to four flat rings on the panel. The web mirror looks
-smooth only because canvas is 8-bit (green 16 -> 6). The fix is **ordered
-dithering** — an 8x8 Bayer threshold added before truncation in
-`paint_vault_background`, trading spatial noise for tonal resolution. Because
-the pattern is baked into the cache it never shimmers, and at native panel gamma
+smooth only because canvas is 8-bit (green 16 -> 6). The fix is a serpentine
+Floyd-Steinberg-style **error-diffusion** pass in `paint_vault_background`, with
+two error rows carrying RGB565 quantisation error into neighbouring pixels. The
+pattern is baked into the cache so it never shimmers, and at native panel gamma
 it reads as phosphor grain. Any future smooth ramp over a near-black colour
 needs the same treatment; check the source channel's 565 level before assuming
 a banding report means the gradient maths is wrong.
@@ -768,15 +769,49 @@ The tenths-only glyph-cache prototype exposed two independent LVGL contract
 violations: `lv_font_get_glyph_bitmap()` returns an `lv_draw_buf_t *`, not raw
 pixel bytes, and mutable PSRAM-backed A8 image sources outlived their draw-task
 assumptions. The completed readout cache is one scene-owned, immutable PSRAM
-block of **34,786 B** containing digits 0-9, decimal, minus, every main label,
-and the ghost pass. Draw callbacks publish stable descriptors only; the block
+block of **34,786 B** containing only digits 0-9, decimal, and minus, reused by
+the primary readout and ghost pass; surrounding HUD labels keep their source
+fonts. Draw callbacks publish stable descriptors only; the block
 is never mutated or republished. The lifecycle is draw-unit safe: drain with
 `lv_draw_wait_for_finish()` before scene teardown or cache release, and keep the
 cache alive until all draw units finish. Allocation failure retains the source
 font fallback. Host Night City audit: **517 comparisons / 0 mismatches**.
 Hardware confirmation: 60 rapid four-theme cycles plus a 60-second Night City
 soak completed with live rendering, no freeze, panic, `ESP_ERR_NO_MEM`,
-send-color error, or TE timeout.
+send-color error, or TE timeout. `BOOST_HUD_READOUT_CACHE=0` now provides a
+compile-time source-font A/B/fallback guard; cache-on and source-font host audits
+both completed with zero stale or severe mismatches. Cache construction also
+checks the second glyph lookup, descriptor consistency, integer overflow,
+stride/format/index identity, and every packed-buffer bound before publication.
+
+The consolidated-readout trial removes four large slot labels, the separate sign
+label, and the full-screen ghost object. One styleless LVGL object submits the two
+pre-blended ghost passes and then the authoritative primary glyphs, with an early
+clip rejection for outer-ring-only dirty regions. Its changed-slot union reduced
+the 30-second host audit from **11,254 to 7,297 flushed pixels/cycle** and **0.635
+to 0.445 Mpx/s**, while both Night City and Dyno Cell completed **620 snapshot
+comparisons with zero stale or severe mismatches**. On COM3, three interleaved
+60-second rounds measured Night City gradient-off median `worstRenderUs`
+**17,063.5-17,117 us** after the clip guard (down from **18,938-19,077.5 us** in
+the matched pre-change baseline) and cut median panel work from roughly
+**0.75-0.78 to 0.47-0.50 Mpx/s**. Gradient-on arms measured **17,398.5-17,628 us**
+and **0.52-0.54 Mpx/s**. Median `renderFps` remained **41-44.5**, so this is a
+real raster/traffic reduction but not a 60 FPS result. The remaining render tail
+is still just over the 16 ms budget; disabling region DBUF or TE did not improve
+it, and the 276x79 precomposed RGB565 tile prototype increased host flush work to
+**21,175 pixels/cycle**, so it was rejected rather than flashed.
+
+Both physical arcs now animate geometry through one shared latest-target linear
+interpolator. Each new sample remains the exact target immediately; the visible
+endpoint retargets from its currently displayed position over a fixed 40 ms
+animation, cannot overshoot, and snaps on initialization, scene rebuild,
+non-finite input, or a gap over one second. There is no adaptive EMA, alpha cap,
+or small-change suppression. Only geometry is animated: raw pressure still
+drives numeric readouts, peak/model/API state, and immediate Dyno/Night City
+colour and threshold transitions. Draw and invalidation use the same committed
+visual state. The Dyno Cell hardware cadence regression guard remained **min 58 /
+median 61 FPS** over 103 post-warmup samples; 30-second host audits for both faces
+completed 620 comparisons with zero stale or severe mismatches.
 
 The full-cache hardware benchmark is **3 interleaved rounds** (6 arms, 336
 samples total), versus **1 prior round** for the tenths-only benchmark (2 arms,
