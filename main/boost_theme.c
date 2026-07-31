@@ -86,6 +86,19 @@ static const boost_theme_t s_defaults[] = {
         .overboost = 0xFF4F6D,
         .zero = 0xFFFFFF,
     },
+    {
+        .id = "sport-cluster",
+        .name = "Sport Cluster",
+        .style = BOOST_STYLE_SPORT,
+        .face = 0x000000,
+        .track = 0x24102F,
+        .text = 0xFFD8FF,
+        .muted = 0x9E5CB5,
+        .vacuum = 0xD946EF,
+        .boost = 0xFF4FD8,
+        .overboost = 0xFF8AE8,
+        .zero = 0xF8B4FF,
+    },
 };
 
 #define THEME_COUNT (sizeof(s_defaults) / sizeof(s_defaults[0]))
@@ -587,6 +600,8 @@ const char *boost_style_name(boost_gauge_style_t style)
             return "hud";
         case BOOST_STYLE_BIGDIGIT:
             return "bigdigit";
+        case BOOST_STYLE_SPORT:
+            return "sport";
         case BOOST_STYLE_ARC:
         default:
             return "arc";

@@ -15,8 +15,12 @@ The live MAP path reads a GM 3-bar sensor through an ADS1115, with an optional B
   red changes only the needle body and leaves the green hub unchanged.
 - A deliberate vertical swipe cycles themes in dashboard order. Swipe up
   advances (`Dyno Cell` -> `Vault-Tec` -> `Night City` -> `Big Digit` ->
-  `Dyno Cell`); swipe down moves backward. Taps and the existing brightness
+  `Sport Cluster` -> `Dyno Cell`); swipe down moves backward. Taps and the existing brightness
   hold retain their behavior.
+- **Sport Cluster** is a black AMOLED circular face with luminous magenta/purple
+  outer and inner rings, a centered segmented PSI readout, raw `VACUUM` /
+  `BOOST` / `OVERBOOST` header, and a bottom `PEAK %.1f PSI` line. Its `sport-cluster`
+  id is part of the persisted theme order and the host dashboard mirror.
 - Top chip reads `DEMO` until a live sensor path sets `sample.demo = false`
 - Samples, the unified-color filled arc, center PSI, and peak hold update every 16 ms (~60 Hz). The physical gauge remains on that cadence while network telemetry is intentionally decoupled from the display loop.
 

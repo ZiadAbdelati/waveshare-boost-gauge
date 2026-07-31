@@ -417,6 +417,8 @@ function drawGauge(sample) {
       return drawHudGauge(sample, psi, g);
     case "bigdigit":
       return drawBigDigitGauge(sample, psi, g);
+    case "sport":
+      return drawSportGauge(sample, psi, g);
     default:
       return drawArcGauge(sample, psi, g);
   }
@@ -884,6 +886,66 @@ function drawHudGauge(sample, psi, g) {
   ctx.fillText(sample.demo ? "SYS DEMO" : "SYS LIVE", -138, 150);
   ctx.textAlign = "right";
   ctx.fillText("NC-2077", 138, 150);
+  ctx.restore();
+}
+
+/* ── Style: sport — magenta/purple segmented circular cluster ─────────────── */
+function drawSportGauge(sample, psi, g) {
+  const range = psiRange();
+  const p = state.palette;
+  const { cx, cy, scale } = g;
+  const over = psi >= range.psiOverboost;
+  const accent = over ? p.overboost : psi < 0 ? p.vacuum : p.boost;
+  const dim = p.muted || "#9e5cb5";
+  const ring = p.boost || "#ff4fd8";
+  const polarXY = (r, a) => [r * Math.cos(a * DEG), r * Math.sin(a * DEG)];
+  const segLine = (color, x0, y0, x1, y1, width, alpha = 1) => {
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.lineCap = "round";
+    ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+    ctx.globalAlpha = 1;
+  };
+  ctx.save();
+  ctx.translate(cx, cy); ctx.scale(scale, scale);
+  ctx.fillStyle = "#000000";
+  ctx.beginPath(); ctx.arc(0, 0, 233, 0, Math.PI * 2); ctx.fill();
+  for (const [r, width, color, alpha] of [[226, 3, ring, .25], [222, 6, ring, .8], [215, 2, p.overboost, .65], [151, 3, p.vacuum, .75], [143, 2, ring, .32]]) {
+    ctx.strokeStyle = color; ctx.globalAlpha = alpha; ctx.lineWidth = width;
+    ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.stroke(); ctx.globalAlpha = 1;
+  }
+  for (let i = 0; i < 32; i++) {
+    const a = i * 360 / 32 - 90;
+    const [x0, y0] = polarXY(i % 4 === 0 ? 198 : 204, a);
+    const [x1, y1] = polarXY(211, a);
+    segLine(i % 4 === 0 ? ring : dim, x0, y0, x1, y1, 8, i % 4 === 0 ? .8 : .4);
+  }
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillStyle = accent;
+  ctx.font = `700 ${Math.max(18, 28 * scale)}px Consolas, monospace`;
+  ctx.letterSpacing = "3px";
+  ctx.fillText(sample.zone === "OVER" ? "OVERBOOST" : (psi >= 0 ? "BOOST" : "VACUUM"), 0, -118);
+  ctx.letterSpacing = "0px";
+
+  const masks = [0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x07, 0x7f, 0x6f];
+  const drawDigit = (digit, x, y) => {
+    const mask = masks[digit]; const w = 31, h = 56, k = 5;
+    const points = [[k,0,w-k,0],[w,k,w,h/2-3],[w,h/2+3,w,h-k],[k,h,w-k,h],[0,h/2+3,0,h-k],[0,k,0,h/2-3],[k,h/2,w-k,h/2]];
+    for (let i = 0; i < 7; i++) if (mask & (1 << i)) {
+      segLine(accent, x - w/2 + points[i][0], y - h/2 + points[i][1], x - w/2 + points[i][2], y - h/2 + points[i][3], 8, .9);
+    }
+  };
+  const tenths = Math.round(Math.abs(psi) * 10); const whole = Math.floor(tenths / 10);
+  if (psi < -0.05) segLine(accent, -128, -2, -104, -2, 8);
+  if (whole >= 10) drawDigit(Math.floor(whole / 10) % 10, -78, -2);
+  drawDigit(whole % 10, -23, -2);
+  ctx.fillStyle = accent; ctx.beginPath(); ctx.arc(13, 29, 5, 0, Math.PI * 2); ctx.fill();
+  drawDigit(tenths % 10, 66, -2);
+  ctx.strokeStyle = p.text; ctx.lineWidth = 2; ctx.globalAlpha = .8;
+  ctx.beginPath(); ctx.arc(0, 0, 5, 0, Math.PI * 2); ctx.stroke(); ctx.globalAlpha = 1;
+  ctx.fillStyle = dim; ctx.font = `600 ${Math.max(12, 16 * scale)}px Consolas, monospace`;
+  ctx.fillText(`PEAK ${Math.max(0, Number(sample.peakPsi || 0)).toFixed(1)} PSI`, 0, 174);
   ctx.restore();
 }
 

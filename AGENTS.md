@@ -25,7 +25,10 @@ Verified release baseline is firmware `0.3.0-web`; preserve that identity in har
 
 `boost_theme.c:s_defaults[]` is the single authoritative theme order. The web
 picker and physical swipes consume that order through `/api/v1/themes` and
-`boost_theme_at()`. A vertical swipe up advances to the next entry; swipe down
+`boost_theme_at()`. The current order includes `sport-cluster` after `big-digit`;
+its `BOOST_STYLE_SPORT` renderer is mirrored by the `sport` web style and mock
+server entry. The Sport Cluster uses black AMOLED, magenta/purple rings,
+segmented PSI slots, raw zone label, and `PEAK %.1f PSI` status. A vertical swipe up advances to the next entry; swipe down
 moves to the previous entry. The screen requires 48 px of predominantly
 vertical travel, preserving short-tap peak reset and the two-second brightness
 hold. Theme changes rebuild one LVGL scene under the existing display lock; no

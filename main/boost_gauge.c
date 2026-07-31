@@ -427,6 +427,20 @@ static lv_obj_t *s_big_band[BIG_BANDS];
 static int s_big_band_next = BIG_BANDS;
 static uint32_t s_big_band_color;
 
+/* ---- sport cluster style -------------------------------------------------- */
+static lv_obj_t *s_sport_face;
+static lv_obj_t *s_sport_zone;
+static lv_obj_t *s_sport_peak;
+static float s_sport_psi;
+static float s_sport_peak_value;
+
+/* Sport Cluster is deliberately a small, self-contained renderer: static
+ * circular furniture and the segmented readout share one callback, while the
+ * two textual status lines remain ordinary LVGL labels. */
+static void draw_sport_segments(lv_event_t *e);
+static void build_sport(lv_obj_t *scr);
+static void update_sport(const boost_sample_t *sample, const boost_theme_t *theme);
+
 #if LV_USE_GIF
 static lv_obj_t *s_media_gif;
 static lv_image_dsc_t s_media_dsc;
@@ -3020,6 +3034,167 @@ static void update_bigdigit(const boost_sample_t *sample, const boost_theme_t *t
 }
 
 /* ========================================================================== */
+/*  Style: sport cluster (magenta/purple AMOLED circular cluster)             */
+/* ========================================================================== */
+
+static const char *sport_zone_for(float psi)
+{
+    if (psi >= s_psi_overboost) return "OVERBOOST";
+    if (psi >= 0.0f) return "BOOST";
+    return "VACUUM";
+}
+
+static void sport_segment(lv_layer_t *layer, lv_color_t color,
+                          float x1, float y1, float x2, float y2, lv_opa_t opa)
+{
+    lv_draw_line_dsc_t line;
+    lv_draw_line_dsc_init(&line);
+    line.color = color;
+    line.width = 8;
+    line.opa = opa;
+    line.round_start = true;
+    line.round_end = true;
+    line.p1.x = x1; line.p1.y = y1;
+    line.p2.x = x2; line.p2.y = y2;
+    lv_draw_line(layer, &line);
+}
+
+static void sport_digit(lv_layer_t *layer, lv_color_t color, int cx, int cy, int digit)
+{
+    static const uint8_t mask[10] = {
+        0x3F, 0x06, 0x5B, 0x4F, 0x66,
+        0x6D, 0x7D, 0x07, 0x7F, 0x6F,
+    };
+    if (digit < 0 || digit > 9) return;
+    const uint8_t m = mask[digit];
+    const int w = 31, h = 56, k = 5;
+    const int x = cx - w / 2, y = cy - h / 2;
+    static const int8_t seg[7][4] = {
+        { k, 0, w - k, 0 }, { w, k, w, h / 2 - 3 },
+        { w, h / 2 + 3, w, h - k }, { k, h, w - k, h },
+        { 0, h / 2 + 3, 0, h - k }, { 0, k, 0, h / 2 - 3 },
+        { k, h / 2, w - k, h / 2 },
+    };
+    for (int i = 0; i < 7; ++i) {
+        if ((m & (1u << i)) == 0) continue;
+        /* A dim under-stroke gives the segment its luminous halo without
+         * turning the black AMOLED well into a filled rectangle. */
+        sport_segment(layer, color, x + seg[i][0], y + seg[i][1],
+                      x + seg[i][2], y + seg[i][3], LV_OPA_20);
+        sport_segment(layer, color, x + seg[i][0], y + seg[i][1],
+                      x + seg[i][2], y + seg[i][3], LV_OPA_COVER);
+    }
+}
+
+static void draw_sport_segments(lv_event_t *e)
+{
+    const boost_theme_t *theme = active_theme();
+    lv_layer_t *layer = lv_event_get_layer(e);
+    const int cx = px_icx();
+    const int cy = px_icy();
+    const float psi = s_sport_psi;
+    const float peak = s_sport_peak_value;
+    const bool over = psi >= s_psi_overboost;
+    const lv_color_t accent = c(over ? theme->overboost : (psi < 0.0f ? theme->vacuum : theme->boost));
+    const lv_color_t ring = c(theme->boost);
+
+    /* AMOLED black face, luminous outer bezel and an inset well/ring. */
+    lv_draw_arc_dsc_t arc;
+    lv_draw_arc_dsc_init(&arc);
+    arc.center.x = cx; arc.center.y = cy;
+    arc.start_angle = 0; arc.end_angle = 360;
+    arc.radius = 226; arc.width = 3; arc.color = ring; arc.opa = LV_OPA_20;
+    lv_draw_arc(layer, &arc);
+    arc.radius = 222; arc.width = 6; arc.color = ring; arc.opa = LV_OPA_70;
+    lv_draw_arc(layer, &arc);
+    arc.radius = 215; arc.width = 2; arc.color = c(theme->overboost); arc.opa = LV_OPA_60;
+    lv_draw_arc(layer, &arc);
+    arc.radius = 151; arc.width = 3; arc.color = c(theme->vacuum); arc.opa = LV_OPA_70;
+    lv_draw_arc(layer, &arc);
+    arc.radius = 143; arc.width = 2; arc.color = ring; arc.opa = LV_OPA_30;
+    lv_draw_arc(layer, &arc);
+
+    /* Small segmented index marks make the outer ring read as a sport cluster,
+     * rather than a recoloured copy of the arc theme. */
+    for (int i = 0; i < 32; ++i) {
+        const float a = ((float)i * 360.0f / 32.0f - 90.0f) * (float)M_PI / 180.0f;
+        const float r0 = (i % 4 == 0) ? 198.0f : 204.0f;
+        const float r1 = 211.0f;
+        sport_segment(layer, (i % 4 == 0) ? ring : c(theme->muted),
+                      cx + r0 * cosf(a), cy + r0 * sinf(a),
+                      cx + r1 * cosf(a), cy + r1 * sinf(a),
+                      (i % 4 == 0) ? LV_OPA_80 : LV_OPA_40);
+    }
+
+    /* Fixed slots: sign, tens, ones, decimal, tenths. The decimal and tenths
+     * never slide, so the PSI readout remains centred as pressure changes. */
+    const int tenths = (int)lroundf(fabsf(psi) * 10.0f);
+    const int whole = tenths / 10;
+    if (psi < -0.05f) sport_segment(layer, accent, cx - 128, cy - 2, cx - 104, cy - 2, LV_OPA_COVER);
+    if (whole >= 10) sport_digit(layer, accent, cx - 78, cy - 2, (whole / 10) % 10);
+    sport_digit(layer, accent, cx - 23, cy - 2, whole % 10);
+    /* Decimal point and tenth are deliberately simple lit blocks. */
+    lv_draw_rect_dsc_t dot;
+    lv_draw_rect_dsc_init(&dot);
+    dot.bg_color = accent; dot.bg_opa = LV_OPA_COVER; dot.radius = LV_RADIUS_CIRCLE;
+    lv_area_t da = { cx + 8, cy + 24, cx + 18, cy + 34 };
+    lv_draw_rect(layer, &dot, &da);
+    sport_digit(layer, accent, cx + 66, cy - 2, tenths % 10);
+
+    /* A small centre marker separates the segmented value from the well. */
+    arc.radius = 5; arc.width = 2; arc.color = c(theme->text); arc.opa = LV_OPA_80;
+    lv_draw_arc(layer, &arc);
+    (void)peak;
+}
+
+static void build_sport(lv_obj_t *scr)
+{
+    const boost_theme_t *theme = active_theme();
+    s_sport_face = lv_obj_create(scr);
+    lv_obj_remove_style_all(s_sport_face);
+    lv_obj_set_size(s_sport_face, DISP_SIZE, DISP_SIZE);
+    lv_obj_center(s_sport_face);
+    lv_obj_clear_flag(s_sport_face, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(s_sport_face, draw_sport_segments, LV_EVENT_DRAW_MAIN, NULL);
+
+    s_sport_zone = lv_label_create(scr);
+    lv_label_set_text(s_sport_zone, "VACUUM");
+    lv_obj_set_style_text_font(s_sport_zone, F_COND32, 0);
+    lv_obj_set_style_text_letter_space(s_sport_zone, 3, 0);
+    lv_obj_set_style_text_color(s_sport_zone, c(theme->boost), 0);
+    lv_obj_set_style_text_align(s_sport_zone, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_size(s_sport_zone, 300, 38);
+    lv_obj_align(s_sport_zone, LV_ALIGN_CENTER, 0, -118);
+
+    s_sport_peak = lv_label_create(scr);
+    lv_label_set_text(s_sport_peak, "PEAK 0.0 PSI");
+    lv_obj_set_style_text_font(s_sport_peak, F_MONO16, 0);
+    lv_obj_set_style_text_letter_space(s_sport_peak, 1, 0);
+    lv_obj_set_style_text_color(s_sport_peak, c(theme->muted), 0);
+    lv_obj_set_style_text_align(s_sport_peak, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_size(s_sport_peak, 260, 24);
+    lv_obj_align(s_sport_peak, LV_ALIGN_CENTER, 0, 174);
+    s_sport_psi = isfinite(s_display_psi) ? s_display_psi : 0.0f;
+    s_sport_peak_value = fmaxf(s_peak_psi, 0.0f);
+}
+
+static void update_sport(const boost_sample_t *sample, const boost_theme_t *theme)
+{
+    s_sport_psi = isfinite(sample->psi) ? sample->psi : 0.0f;
+    s_sport_peak_value = fmaxf(s_peak_psi, 0.0f);
+    const char *zone = sport_zone_for(s_sport_psi);
+    const lv_color_t zone_color = c(s_sport_psi >= s_psi_overboost ? theme->overboost :
+                                    s_sport_psi < 0.0f ? theme->vacuum : theme->boost);
+    if (strcmp(lv_label_get_text(s_sport_zone), zone) != 0) lv_label_set_text(s_sport_zone, zone);
+    if (!lv_color_eq(lv_obj_get_style_text_color(s_sport_zone, 0), zone_color))
+        lv_obj_set_style_text_color(s_sport_zone, zone_color, 0);
+    char buf[32];
+    snprintf(buf, sizeof(buf), "PEAK %.1f PSI", (double)s_sport_peak_value);
+    if (strcmp(lv_label_get_text(s_sport_peak), buf) != 0) lv_label_set_text(s_sport_peak, buf);
+    lv_obj_invalidate(s_sport_face);
+}
+
+/* ========================================================================== */
 /*  Scene lifecycle                                                           */
 /* ========================================================================== */
 
@@ -3090,6 +3265,7 @@ static void destroy_scene(void)
 
     s_big_bg = s_big_minus = s_big_tens = s_big_ones = NULL;
     s_big_dot = s_big_tenths = s_big_unit = s_big_zone = s_big_peak = NULL;
+    s_sport_face = s_sport_zone = s_sport_peak = NULL;
     s_big_bg_step = -1;
     s_big_text_step = -1;
     for (int k = 0; k < BIG_BANDS; ++k) s_big_band[k] = NULL;
@@ -3126,6 +3302,7 @@ static void build_scene(boost_gauge_style_t style)
         case BOOST_STYLE_VAULT:    build_vault(s_root); break;
         case BOOST_STYLE_HUD:      build_hud(s_root); break;
         case BOOST_STYLE_BIGDIGIT: build_bigdigit(s_root); break;
+        case BOOST_STYLE_SPORT:    build_sport(s_root); break;
         case BOOST_STYLE_ARC:
         default:                   build_arc(s_root); break;
     }
@@ -3299,6 +3476,7 @@ void boost_gauge_update(const boost_sample_t *sample)
         case BOOST_STYLE_VAULT:    update_vault(sample, theme); break;
         case BOOST_STYLE_HUD:      update_hud(sample, theme); break;
         case BOOST_STYLE_BIGDIGIT: update_bigdigit(sample, theme); break;
+        case BOOST_STYLE_SPORT:    update_sport(sample, theme); break;
         case BOOST_STYLE_ARC:
         default:                   update_arc(sample, theme); break;
     }

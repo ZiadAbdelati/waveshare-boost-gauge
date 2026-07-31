@@ -18,6 +18,7 @@ typedef enum {
     BOOST_STYLE_VAULT,     /* phosphor needle dial (Vault-Tec) */
     BOOST_STYLE_HUD,       /* cyberpunk targeting HUD (Night City) */
     BOOST_STYLE_BIGDIGIT,  /* huge Alvida numeral on a color-sweep ground */
+    BOOST_STYLE_SPORT,     /* magenta segmented circular sport cluster */
 } boost_gauge_style_t;
 
 typedef struct {

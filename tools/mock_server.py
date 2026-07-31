@@ -82,6 +82,21 @@ THEMES = [
             "zero": "#FFFFFF",
         },
     },
+    {
+        "id": "sport-cluster",
+        "name": "Sport Cluster",
+        "style": "sport",
+        "colors": {
+            "face": "#000000",
+            "track": "#24102F",
+            "text": "#FFD8FF",
+            "muted": "#9E5CB5",
+            "vacuum": "#D946EF",
+            "boost": "#FF4FD8",
+            "overboost": "#FF8AE8",
+            "zero": "#F8B4FF",
+        },
+    },
 ]
 
 # Keep in step with BOOST_PXSHIFT_SEC_* in main/boost_theme.h.
