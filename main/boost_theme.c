@@ -86,19 +86,9 @@ static const boost_theme_t s_defaults[] = {
         .overboost = 0xFF4F6D,
         .zero = 0xFFFFFF,
     },
-    {
-        .id = "sport-cluster",
-        .name = "Sport Cluster",
-        .style = BOOST_STYLE_SPORT,
-        .face = 0x000000,
-        .track = 0x24102F,
-        .text = 0xFFD8FF,
-        .muted = 0x9E5CB5,
-        .vacuum = 0xD946EF,
-        .boost = 0xFF4FD8,
-        .overboost = 0xFF8AE8,
-        .zero = 0xF8B4FF,
-    },
+    /* Sport Cluster theme removed from the selectable list per user request.
+     * The BOOST_STYLE_SPORT enum + renderer remain in boost_gauge.c for
+     * potential future use, but the theme is no longer user-selectable. */
 };
 
 #define THEME_COUNT (sizeof(s_defaults) / sizeof(s_defaults[0]))

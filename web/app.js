@@ -64,6 +64,8 @@ const PAGE = document.body.dataset.page || "cockpit";
 const IS_COCKPIT = PAGE === "cockpit";
 const IS_SETTINGS = PAGE === "settings";
 const CANVAS_DPR_MAX = 2;
+const tpmsPowertrainImg = new Image();
+tpmsPowertrainImg.src = "/tpms_powertrain.png";
 
 const state = {
   activeThemeId: "dyno-cell",
@@ -1166,126 +1168,53 @@ function drawTpmsFace(sample, g) {
   const { cx, cy, scale } = g;
   const wheels = state.tpms?.wheels || [];
   const status = Number(state.tpms?.status ?? 2);
-  const panel = { x: 18, y: 18, w: 430, h: 430, r: 40 };
-  const rr = (x, y, w, h, r) => { roundRectPath(x, y, w, h, r); };
+  const capsules = [
+    [170, 125, 36, 63, 162, 160, "right"],
+    [260, 125, 36, 63, 302, 160, "left"],
+    [160, 245, 37, 67, 152, 282, "right"],
+    [268, 245, 37, 67, 310, 282, "left"],
+  ];
   ctx.save();
   ctx.translate(cx - 233 * scale, cy - 233 * scale);
   ctx.scale(scale, scale);
-  ctx.fillStyle = "#050608";
+  ctx.fillStyle = "#000000";
   ctx.fillRect(0, 0, 466, 466);
-
-  /* Glossy black instrument panel and its raised outer bezel. */
-  rr(10, 10, 446, 446, 45);
-  ctx.fillStyle = "#020304";
-  ctx.shadowColor = "rgba(0,0,0,0.85)";
-  ctx.shadowBlur = 18;
-  ctx.fill();
-  ctx.shadowColor = "transparent";
-  ctx.shadowBlur = 0;
-  rr(panel.x, panel.y, panel.w, panel.h, panel.r);
-  const face = ctx.createLinearGradient(0, 18, 0, 448);
-  face.addColorStop(0, "#111214");
-  face.addColorStop(0.42, "#090A0C");
-  face.addColorStop(1, "#151719");
-  ctx.fillStyle = face;
-  ctx.fill();
-  ctx.strokeStyle = "rgba(138,151,164,0.48)";
-  ctx.lineWidth = 2;
-  ctx.stroke();
-  rr(22, 22, 422, 422, 31);
-  const gloss = ctx.createLinearGradient(0, 25, 0, 118);
-  gloss.addColorStop(0, "rgba(242,247,250,0.28)");
-  gloss.addColorStop(0.22, "rgba(170,184,193,0.10)");
-  gloss.addColorStop(0.7, "rgba(255,255,255,0)");
-  ctx.strokeStyle = gloss;
-  ctx.lineWidth = 4;
-  ctx.stroke();
-
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillStyle = "#F2F5F8";
-  ctx.font = '700 34px system-ui, -apple-system, "Segoe UI", sans-serif';
-  ctx.fillText("TPMS", 233, 60);
-
-  /* White driveline: two axles and the central shaft. */
-  ctx.strokeStyle = "#F2F5F8";
-  ctx.lineWidth = 9;
-  ctx.lineCap = "round";
-  ctx.beginPath();
-  ctx.moveTo(91, 150); ctx.lineTo(375, 150);
-  ctx.moveTo(91, 330); ctx.lineTo(375, 330);
-  ctx.moveTo(233, 150); ctx.lineTo(233, 330);
-  ctx.stroke();
-  ctx.lineWidth = 14;
-  ctx.beginPath();
-  ctx.moveTo(208, 150); ctx.lineTo(258, 150);
-  ctx.moveTo(208, 330); ctx.lineTo(258, 330);
-  ctx.stroke();
-
-  /* Center warning icon: tyre cross-sections around an exclamation mark. */
-  ctx.lineWidth = 7;
-  ctx.strokeStyle = "#F2F5F8";
-  ctx.beginPath(); ctx.arc(233, 240, 27, 0, Math.PI * 2); ctx.stroke();
-  ctx.lineWidth = 5;
-  ctx.beginPath();
-  ctx.arc(225, 240, 14, -2.35, 2.35);
-  ctx.arc(241, 240, 14, Math.PI - 0.79, Math.PI + 0.79);
-  ctx.stroke();
-  ctx.lineWidth = 7;
-  ctx.beginPath(); ctx.moveTo(233, 225); ctx.lineTo(233, 245); ctx.stroke();
-  ctx.fillStyle = "#F2F5F8";
-  ctx.beginPath(); ctx.arc(233, 253, 3.5, 0, Math.PI * 2); ctx.fill();
+  if (!tpmsPowertrainImg.complete || !tpmsPowertrainImg.naturalWidth) {
+    ctx.restore();
+    return;
+  }
+  ctx.drawImage(tpmsPowertrainImg, 0, 0, 466, 466);
 
   const pulse = 0.66 + 0.34 * (0.5 + 0.5 * Math.sin(performance.now() / 260));
-  const tireXs = [82, 350];
-  const tireYs = [113, 293];
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < capsules.length; i++) {
     const wheel = wheels[i] || {};
-    const wheelPsi = Number(wheel.psi);
-    const valid = Boolean(wheel.valid) && Number.isFinite(wheelPsi);
-    const stale = status === 1;
+    const psi = Number(wheel.psi);
+    const valid = Boolean(wheel.valid) && Number.isFinite(psi);
     let color = "#5A6573";
     let value = "--.-";
-    let label = "OFFLINE";
-    let active = true;
+    const pulsing = status !== 0 || !valid || (status === 0 && psi < 31.9);
     if (status === 1) {
       color = "#FFB020";
-      value = Number.isFinite(wheelPsi) ? wheelPsi.toFixed(1) : "--.-";
-      label = "STALE";
+      value = valid ? psi.toFixed(1) : "--.-";
     } else if (status === 0 && valid) {
-      value = wheelPsi.toFixed(1);
-      if (wheelPsi < 31.9) { color = "#E8362E"; label = "LOW"; }
-      else { color = "#62D6A5"; label = "OK"; active = false; }
-    } else if (status === 0 && !valid) {
-      active = false;
-    } else if (status === 2) {
-      active = false;
+      value = psi.toFixed(1);
+      color = psi < 31.9 ? "#E8362E" : "#62D6A5";
     }
-    const x = tireXs[i % 2];
-    const y = tireYs[Math.floor(i / 2)];
+    const [x, y, w, h, tx, ty, align] = capsules[i];
     ctx.save();
-    ctx.globalAlpha = active ? pulse : 1;
+    ctx.globalAlpha = pulsing ? pulse : 1;
     ctx.fillStyle = color;
     ctx.shadowColor = color;
-    ctx.shadowBlur = active ? 12 : 5;
-    rr(x, y, 34, 74, 17);
+    ctx.shadowBlur = 8;
+    roundRectPath(x, y, w, h, 18);
     ctx.fill();
     ctx.restore();
 
-    const isLeft = i % 2 === 0;
-    const tx = isLeft ? x - 10 : x + 44;
-    ctx.textAlign = isLeft ? "right" : "left";
+    ctx.textAlign = align;
+    ctx.textBaseline = "middle";
     ctx.fillStyle = "#F2F5F8";
-    ctx.font = '700 19px system-ui, -apple-system, "Segoe UI", sans-serif';
-    ctx.fillText(value, tx, y + 31);
-    ctx.fillStyle = "#AEB7C1";
-    ctx.font = '600 11px system-ui, -apple-system, "Segoe UI", sans-serif';
-    ctx.globalAlpha = active ? pulse : 0.82;
-    ctx.fillText("PSI", tx, y + 49);
-    ctx.globalAlpha = 1;
-    ctx.fillStyle = color;
-    ctx.font = '700 9px system-ui, -apple-system, "Segoe UI", sans-serif';
-    ctx.fillText(label, tx, y + 65);
+    ctx.font = '700 16px sans-serif';
+    ctx.fillText(value, tx, ty);
   }
   ctx.restore();
 }

@@ -25,6 +25,7 @@ static int32_t s_max_dy;
 static uint32_t s_start_ms;
 static bool s_press_active;
 static bool s_hold_fired;
+static bool s_tpms_built;
 
 static int32_t abs_i32(int32_t x) { return x < 0 ? -x : x; }
 
@@ -35,6 +36,10 @@ static bool media_active(void)
 
 static void show_page(boost_page_id_t page)
 {
+    if (page == BOOST_PAGE_TPMS && !s_tpms_built && s_page_root[BOOST_PAGE_TPMS] != NULL) {
+        boost_tpms_ui_create(s_page_root[BOOST_PAGE_TPMS]);
+        s_tpms_built = true;
+    }
     s_active = page;
     for (int i = 0; i < 2; ++i) {
         if (s_page_root[i] != NULL) {
@@ -126,6 +131,11 @@ void boost_page_create(void)
     lv_obj_remove_style_all(s_screen);
     lv_obj_set_size(s_screen, PAGE_SIZE, PAGE_SIZE);
     lv_obj_add_flag(s_screen, LV_OBJ_FLAG_CLICKABLE);
+    /* The screen must NOT be scrollable: the page coordinator owns every
+     * gesture itself, and a scrollable screen lets the indev switch into
+     * scroll mode on touch jitter during a long press - which steals the
+     * PRESSING stream the 2 s hold-to-dim timer depends on. */
+    lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(s_screen, boost_page_handle_event, LV_EVENT_PRESSED, NULL);
     lv_obj_add_event_cb(s_screen, boost_page_handle_event, LV_EVENT_PRESSING, NULL);
     lv_obj_add_event_cb(s_screen, boost_page_handle_event, LV_EVENT_RELEASED, NULL);
@@ -139,7 +149,10 @@ void boost_page_create(void)
         lv_obj_clear_flag(s_page_root[i], LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
     }
     boost_gauge_create_in(s_page_root[BOOST_PAGE_BOOST]);
-    boost_tpms_ui_create(s_page_root[BOOST_PAGE_TPMS]);
+    /* TPMS page is lazy-built on first show: its ~30-object tree would
+     * otherwise be traversed every LVGL tick even while hidden, adding
+     * measurable overhead to the 16 ms gauge path. */
+    s_tpms_built = false;
     show_page(BOOST_PAGE_BOOST);
 }
 
