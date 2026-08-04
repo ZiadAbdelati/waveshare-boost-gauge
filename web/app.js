@@ -64,8 +64,21 @@ const PAGE = document.body.dataset.page || "cockpit";
 const IS_COCKPIT = PAGE === "cockpit";
 const IS_SETTINGS = PAGE === "settings";
 const CANVAS_DPR_MAX = 2;
+/* TPMS art and overlays use the device 466 px face coordinate system. Keep
+ * geometry centralized here; the PNG is currently drawn 1:1. */
+const TPMS_FACE_SIZE = 466;
+const TPMS_FACE_CENTER = TPMS_FACE_SIZE / 2;
+const TPMS_POWERTRAIN_SRC = "/tpms_powertrain.png";
+const TPMS_CAPSULES = [
+  { x: 129, y: 80, w: 52, h: 104, radius: 26, textX: 121, textY: 132, align: "right" }, // FL
+  { x: 284, y: 80, w: 53, h: 104, radius: 26, textX: 345, textY: 132, align: "left" },  // FR
+  { x: 114, y: 277, w: 54, h: 109, radius: 27, textX: 106, textY: 332, align: "right" }, // RL
+  { x: 297, y: 277, w: 54, h: 109, radius: 27, textX: 359, textY: 332, align: "left" }, // RR
+];
 const tpmsPowertrainImg = new Image();
-tpmsPowertrainImg.src = "/tpms_powertrain.png";
+tpmsPowertrainImg.onload = () => scheduleGaugeRender();
+tpmsPowertrainImg.onerror = () => scheduleGaugeRender();
+tpmsPowertrainImg.src = TPMS_POWERTRAIN_SRC;
 
 const state = {
   activeThemeId: "dyno-cell",
@@ -89,6 +102,7 @@ const state = {
   gaugePsi: 0,
   gaugeRaf: null,
   gaugeLastAt: 0,
+  sparklineRaf: null,
   sparklineLastAt: 0,
   /* Mirrors the firmware defaults so the picker shows something honest in the
    * gap before the first /themes response lands. */
@@ -97,6 +111,7 @@ const state = {
   demoMode: false,
   rotation: 0,
   vaultNeedleRed: false,
+  vaultNeedleTail: false,
   hudTrueBlack: false,
   /* Whole GET /sensors/calibration body, folded back in from every response so
    * the settings render never reads a half-updated mirror. Null until the first
@@ -120,7 +135,6 @@ const el = {
   gaugeMirror: document.getElementById("gaugeMirror"),
   pageToggle: document.getElementById("pageToggle"),
   pageSegments: [...document.querySelectorAll(".page-segment")],
-  pageDots: [...document.querySelectorAll(".page-dot")],
   sampleCount: document.getElementById("sampleCount"),
   emptyState: document.getElementById("emptyState"),
   firmwareVersion: document.getElementById("firmwareVersion"),
@@ -308,7 +322,7 @@ function setTheme(theme) {
   state.activeThemeId = theme.id;
   if (IS_COCKPIT) {
     scheduleGaugeRender();
-    drawSparkline();
+    scheduleSparklineRender();
   }
 }
 
@@ -320,6 +334,26 @@ function zoneFor(psi) {
   return "VAC";
 }
 
+const GRADIENT_POSITIVE_STEPS = 24;
+
+/* Match firmware gradient_rgb_for_psi()/big_color_for_step(): vacuum is one
+ * sentinel color, while every quantized bucket is reserved for positive boost. */
+function gradientColorFor(psi) {
+  const palette = state.palette;
+  const { psiMax, psiOverboost } = psiRange();
+  if (!Number.isFinite(psi) || psi <= 0 || !(psiMax > 0)) return palette.vacuum;
+  const positive = clamp(psi, 0, psiMax);
+  const step = Math.min(GRADIENT_POSITIVE_STEPS, Math.max(1,
+    Math.ceil((positive / psiMax) * GRADIENT_POSITIVE_STEPS)));
+  const stepPsi = psiMax * step / GRADIENT_POSITIVE_STEPS;
+  const redStart = psiOverboost * 0.55;
+  if (stepPsi <= redStart) {
+    return lerpColor(palette.vacuum, palette.boost, stepPsi / Math.max(0.001, redStart));
+  }
+  return lerpColor(palette.boost, palette.overboost,
+    (stepPsi - redStart) / Math.max(0.001, psiMax - redStart));
+}
+
 function colorFor(psi) {
   const palette = state.palette;
   const { psiOverboost } = psiRange();
@@ -327,6 +361,18 @@ function colorFor(psi) {
   if (psi >= 0.35) return palette.boost;
   if (psi > -0.35) return palette.text;
   return palette.vacuum;
+}
+
+function arcColorFor(psi) {
+  return state.arcGradient ? gradientColorFor(psi) : colorFor(psi);
+}
+
+function hudColorFor(psi) {
+  if (state.hudGradient) return gradientColorFor(psi);
+  const palette = state.palette;
+  const { psiOverboost } = psiRange();
+  if (psi >= psiOverboost) return palette.overboost;
+  return psi < 0 ? palette.vacuum : palette.boost;
 }
 
 function psiToAngle(psi, range = psiRange()) {
@@ -462,7 +508,7 @@ function drawArcGauge(sample, psi, g) {
 
   /* Value arc from zero toward psi */
   if (Math.abs(end - start) >= 0.4) {
-    ctx.strokeStyle = colorFor(psi);
+    ctx.strokeStyle = arcColorFor(psi);
     ctx.beginPath();
     ctx.arc(cx, cy, radius, degToRad(start), degToRad(end));
     ctx.stroke();
@@ -695,9 +741,10 @@ function drawVaultGauge(sample, psi, g) {
   /* needle at the mapped angle (0° = east; up-pointing art rotated by a+90) */
   ctx.save();
   ctx.rotate((psiToAngle(psi, range) + 90) * DEG);
+  const needleTail = state.vaultNeedleTail ? 26 : 0;
   ctx.beginPath();
-  ctx.moveTo(-6, 26);
-  ctx.lineTo(6, 26);
+  ctx.moveTo(-6, needleTail);
+  ctx.lineTo(6, needleTail);
   ctx.lineTo(2, -150);
   ctx.lineTo(-2, -150);
   ctx.closePath();
@@ -814,7 +861,7 @@ function drawHudGauge(sample, psi, g) {
   if (hiA - loA > 0.5) {
     ctx.beginPath();
     ctx.arc(0, 0, 225, canvasAngle(loA), canvasAngle(hiA));
-    ctx.strokeStyle = over ? R : psi < 0 ? C : Y;
+    ctx.strokeStyle = hudColorFor(psi);
     ctx.lineWidth = 15;
     ctx.stroke();
   }
@@ -1035,15 +1082,10 @@ function drawSportGauge(sample, psi, g) {
 }
 
 /* ── Style: bigdigit — huge Alvida number on a color-sweeping ground ──────── */
-function bigDigitBackground(psi, range) {
-  const p = state.palette;
-  if (psi <= 0) return p.vacuum;
-  /* Start the red ramp before the overboost threshold: squeezing it into
-   * overboost..max made the transition snap rather than sweep. */
-  const redStart = range.psiOverboost * 0.55;
-  if (psi <= redStart) return lerpColor(p.vacuum, p.boost, psi / Math.max(0.001, redStart));
-  const span = Math.max(0.001, range.psiMax - redStart);
-  return lerpColor(p.boost, p.overboost, (psi - redStart) / span);
+function bigDigitBackground(psi) {
+  /* The physical Big Digit face uses the shared 24-bucket ramp. Reuse it here
+   * so the browser changes color on the same boundaries. */
+  return gradientColorFor(psi);
 }
 
 function drawBigDigitGauge(sample, psi, g) {
@@ -1055,7 +1097,7 @@ function drawBigDigitGauge(sample, psi, g) {
    * ground follows the live sweep. */
   ctx.fillStyle = state.bigDigitStaticBg
     ? (state.bigDigitStaticColor || "#000000")
-    : bigDigitBackground(psi, range);
+    : bigDigitBackground(psi);
   ctx.beginPath();
   ctx.arc(cx, cy, size / 2, 0, Math.PI * 2);
   ctx.fill();
@@ -1114,7 +1156,7 @@ function drawBigDigitGauge(sample, psi, g) {
   ctx.shadowBlur = 22;
   ctx.shadowOffsetY = 6;
   const readoutColor = state.bigDigitColorText
-    ? bigDigitBackground(psi, range)
+    ? bigDigitBackground(psi)
     : (state.bigDigitTextColor || p.text || "#ffffff");
   ctx.fillStyle = readoutColor;
   ctx.textAlign = "center";
@@ -1168,53 +1210,41 @@ function drawTpmsFace(sample, g) {
   const { cx, cy, scale } = g;
   const wheels = state.tpms?.wheels || [];
   const status = Number(state.tpms?.status ?? 2);
-  const capsules = [
-    [170, 125, 36, 63, 162, 160, "right"],
-    [260, 125, 36, 63, 302, 160, "left"],
-    [160, 245, 37, 67, 152, 282, "right"],
-    [268, 245, 37, 67, 310, 282, "left"],
-  ];
   ctx.save();
-  ctx.translate(cx - 233 * scale, cy - 233 * scale);
+  ctx.translate(cx - TPMS_FACE_CENTER * scale, cy - TPMS_FACE_CENTER * scale);
   ctx.scale(scale, scale);
   ctx.fillStyle = "#000000";
-  ctx.fillRect(0, 0, 466, 466);
-  if (!tpmsPowertrainImg.complete || !tpmsPowertrainImg.naturalWidth) {
-    ctx.restore();
-    return;
+  ctx.fillRect(0, 0, TPMS_FACE_SIZE, TPMS_FACE_SIZE);
+  /* Keep live wheel state usable even if the decorative art is unavailable,
+   * matching the device's black-root fallback when its canvas allocation fails. */
+  if (tpmsPowertrainImg.complete && tpmsPowertrainImg.naturalWidth) {
+    ctx.drawImage(tpmsPowertrainImg, 0, 0, TPMS_FACE_SIZE, TPMS_FACE_SIZE);
   }
-  ctx.drawImage(tpmsPowertrainImg, 0, 0, 466, 466);
 
-  const pulse = 0.66 + 0.34 * (0.5 + 0.5 * Math.sin(performance.now() / 260));
-  for (let i = 0; i < capsules.length; i++) {
+  for (let i = 0; i < TPMS_CAPSULES.length; i++) {
     const wheel = wheels[i] || {};
     const psi = Number(wheel.psi);
     const valid = Boolean(wheel.valid) && Number.isFinite(psi);
     let color = "#5A6573";
     let value = "--.-";
-    const pulsing = status !== 0 || !valid || (status === 0 && psi < 31.9);
     if (status === 1) {
       color = "#FFB020";
-      value = valid ? psi.toFixed(1) : "--.-";
+      /* Stale data retains the last received PSI, matching the physical face. */
+      value = Number.isFinite(psi) ? psi.toFixed(1) : "--.-";
     } else if (status === 0 && valid) {
       value = psi.toFixed(1);
       color = psi < 31.9 ? "#E8362E" : "#62D6A5";
     }
-    const [x, y, w, h, tx, ty, align] = capsules[i];
-    ctx.save();
-    ctx.globalAlpha = pulsing ? pulse : 1;
+    const capsule = TPMS_CAPSULES[i];
     ctx.fillStyle = color;
-    ctx.shadowColor = color;
-    ctx.shadowBlur = 8;
-    roundRectPath(x, y, w, h, 18);
+    roundRectPath(capsule.x, capsule.y, capsule.w, capsule.h, capsule.radius);
     ctx.fill();
-    ctx.restore();
 
-    ctx.textAlign = align;
+    ctx.textAlign = capsule.align;
     ctx.textBaseline = "middle";
     ctx.fillStyle = "#F2F5F8";
-    ctx.font = '700 16px sans-serif';
-    ctx.fillText(value, tx, ty);
+    ctx.font = '700 22px sans-serif';
+    ctx.fillText(value, capsule.textX, capsule.textY);
   }
   ctx.restore();
 }
@@ -1224,11 +1254,10 @@ function syncPageUI() {
   state.activePage = page;
   if (el.pageToggle) el.pageToggle.dataset.page = String(page);
   el.pageSegments.forEach((button) => { const active = Number(button.dataset.page) === page; button.classList.toggle("active", active); button.setAttribute("aria-pressed", String(active)); });
-  el.pageDots.forEach((button) => button.classList.toggle("active", Number(button.dataset.page) === page));
   const sparkWrap = el.sparkline?.closest(".sparkline-wrap");
   if (sparkWrap) sparkWrap.hidden = page === 1;
-  if (el.gaugeMirror) { el.gaugeMirror.classList.remove("page-fade"); void el.gaugeMirror.offsetWidth; el.gaugeMirror.classList.add("page-fade"); window.setTimeout(() => el.gaugeMirror?.classList.remove("page-fade"), 170); }
   scheduleGaugeRender();
+  if (page === 0) scheduleSparklineRender();
 }
 
 function setPage(page) {
@@ -1240,7 +1269,7 @@ function setPage(page) {
 }
 
 function wirePageControls() {
-  [...el.pageSegments, ...el.pageDots].forEach((button) => button.addEventListener("click", () => setPage(button.dataset.page)));
+  el.pageSegments.forEach((button) => button.addEventListener("click", () => setPage(button.dataset.page)));
   let startX = 0, startY = 0;
   on(el.gaugeDevice, "pointerdown", (event) => { startX = event.clientX; startY = event.clientY; el.gaugeDevice.setPointerCapture?.(event.pointerId); });
   on(el.gaugeDevice, "pointerup", (event) => { const dx = event.clientX - startX; const dy = event.clientY - startY; if (Math.abs(dx) >= 48 && Math.abs(dx) > Math.abs(dy) * 1.2 && ((state.activePage === 0 && dx < 0) || (state.activePage === 1 && dx > 0))) setPage(state.activePage === 0 ? 1 : 0); });
@@ -1271,10 +1300,24 @@ function renderGaugeFrame(at) {
   }
 }
 
+function scheduleSparklineRender() {
+  if (!IS_COCKPIT || !el.sparkline || state.sparklineRaf !== null) return;
+  const wrap = el.sparkline.closest(".sparkline-wrap");
+  if (document.hidden || wrap?.hidden) return;
+  state.sparklineRaf = requestAnimationFrame(() => {
+    state.sparklineRaf = null;
+    drawSparkline();
+  });
+}
+
 function drawSparkline() {
   if (!sparkCtx || !el.sparkline) return;
-  const dpr = Math.min(window.devicePixelRatio || 1, CANVAS_DPR_MAX);
+  const wrap = el.sparkline.closest(".sparkline-wrap");
   const rect = el.sparkline.getBoundingClientRect();
+  /* display:none reports a zero-width box. Resizing in that state produced a
+   * 1px backing store which CSS stretched bright green when Boost returned. */
+  if (document.hidden || wrap?.hidden || rect.width <= 0 || rect.height <= 0) return;
+  const dpr = Math.min(window.devicePixelRatio || 1, CANVAS_DPR_MAX);
   el.sparkline.width = Math.max(1, Math.round(rect.width * dpr));
   el.sparkline.height = Math.max(1, Math.round(rect.height * dpr));
   const w = el.sparkline.width;
@@ -1342,7 +1385,7 @@ function pushSample(sample) {
   const now = performance.now();
   if (now - state.sparklineLastAt >= SPARKLINE_FRAME_MS) {
     state.sparklineLastAt = now;
-    drawSparkline();
+    scheduleSparklineRender();
   }
   return true;
 }
@@ -1554,7 +1597,7 @@ function renderConfig(config) {
   }
   if (IS_COCKPIT) {
     scheduleGaugeRender();
-    drawSparkline();
+    scheduleSparklineRender();
   }
 }
 
@@ -1640,6 +1683,7 @@ function queueThemeConfig(body, okMsg) {
       state.vaultFace = payload.vaultFace || state.vaultFace;
       if (payload.vaultVignette !== undefined) state.vaultVignette = payload.vaultVignette;
       if (payload.vaultNeedleRed !== undefined) state.vaultNeedleRed = !!payload.vaultNeedleRed;
+      if (payload.vaultNeedleTail !== undefined) state.vaultNeedleTail = !!payload.vaultNeedleTail;
       const active = state.themes.find((t) => t.id === state.activeThemeId);
       if (active) setTheme(active);
       renderThemes();
@@ -1744,6 +1788,22 @@ function themeEditor(theme) {
     nname.textContent = "Needle colour";
     nrow.append(nname, nselect);
     wrap.append(nrow);
+
+    const trow = document.createElement("label");
+    trow.className = "theme-toggle-row";
+    const tbox = document.createElement("input");
+    tbox.type = "checkbox";
+    tbox.checked = !!state.vaultNeedleTail;
+    tbox.addEventListener("change", () => {
+      state.vaultNeedleTail = tbox.checked;
+      scheduleGaugeRender();
+      queueThemeConfig({ vaultNeedleTail: tbox.checked },
+        tbox.checked ? "Vault needle tail enabled" : "Vault needle tail disabled");
+    });
+    const tname = document.createElement("span");
+    tname.textContent = "Needle counterweight tail";
+    trow.append(tbox, tname);
+    wrap.append(trow);
   }
 
   if (theme.style === "arc") {
@@ -1928,6 +1988,7 @@ function wireDisplayToggles() {
       state.bigDigitColorText = !!payload.bigDigitColorText;
       state.hudTrueBlack = !!payload.hudTrueBlack;
       state.vaultNeedleRed = !!payload.vaultNeedleRed;
+      state.vaultNeedleTail = !!payload.vaultNeedleTail;
       state.themes = payload.themes || state.themes;
       syncDisplayToggles();
       showOk(label);
@@ -2437,6 +2498,7 @@ async function refreshAll(source = ERR_USER) {
     state.vaultFace = themes.vaultFace || "#05281a";
     state.vaultVignette = themes.vaultVignette ?? 60;
     state.vaultNeedleRed = !!themes.vaultNeedleRed;
+    state.vaultNeedleTail = !!themes.vaultNeedleTail;
     state.pixelShift = !!themes.pixelShift;
     state.pixelShiftSec = Number(themes.pixelShiftSec) || state.pixelShiftSec;
     syncDisplayToggles();
@@ -2855,7 +2917,7 @@ function wireControls() {
   window.addEventListener("resize", () => {
     if (!IS_COCKPIT) return;
     scheduleGaugeRender();
-    drawSparkline();
+    scheduleSparklineRender();
   });
 }
 
@@ -2870,10 +2932,16 @@ wirePageControls();
 wireControls();
 wireDisplayToggles();
 wireCalibration();
-document.addEventListener("visibilitychange", syncSensorPolling);
+document.addEventListener("visibilitychange", () => {
+  syncSensorPolling();
+  if (!document.hidden) {
+    scheduleGaugeRender();
+    scheduleSparklineRender();
+  }
+});
 syncSensorPolling();
 if (IS_COCKPIT) {
   scheduleGaugeRender();
-  drawSparkline();
+  scheduleSparklineRender();
 }
 refreshAll(ERR_LIVE).finally(connectEvents);

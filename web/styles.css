@@ -253,9 +253,7 @@ h1 {
   place-items: center;
   padding: 0.5rem 0;
   gap: 0.8rem;
-  transition: opacity 170ms ease;
 }
-.gauge-wrap.page-fade { opacity: 0.58; }
 
 .page-toggle {
   position: relative;
@@ -270,43 +268,48 @@ h1 {
 }
 .page-toggle-indicator {
   position: absolute;
-  inset: 0.2rem auto 0.2rem 0.2rem;
-  width: calc(50% - 0.2rem);
+  top: 0.2rem;
+  bottom: 0.2rem;
+  left: 0.2rem;
+  right: calc(50% + 0.1rem);
   border-radius: 999px;
   background: var(--track);
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.42);
-  transition: transform 170ms ease;
+  transition: left 170ms ease, right 170ms ease;
 }
-.page-toggle[data-page="1"] .page-toggle-indicator { transform: translateX(100%); }
+.page-toggle[data-page="1"] .page-toggle-indicator {
+  left: calc(50% + 0.1rem);
+  right: 0.2rem;
+}
 .page-segment {
   position: relative;
   z-index: 1;
   min-height: 2rem;
   padding: 0.3rem 0.8rem;
   border: 0;
+  border-radius: 999px;
   background: transparent;
   color: var(--muted);
   font-size: 0.7rem;
-  font-weight: 600;
+  font-weight: 800;
   letter-spacing: 0.1em;
-  transition: color 170ms ease, transform 170ms ease;
+  transition: color 170ms ease;
 }
-.page-segment:hover { transform: translateY(-1px); color: var(--text); }
-.page-segment.active { color: var(--text); font-weight: 800; }
-.page-dots { display: flex; gap: 0.42rem; align-items: center; min-height: 0.6rem; }
-.page-dot {
-  width: 0.42rem;
-  height: 0.42rem;
-  padding: 0;
-  border: 0;
-  border-radius: 999px;
-  background: var(--muted);
-  opacity: 0.45;
-  transition: width 170ms ease, opacity 170ms ease, background 170ms ease;
+/* The global button hover/active rules use an 8px dark rectangle and a 1px
+ * translation. Explicitly cancel that chrome inside this pill control. */
+.page-segment:hover,
+.page-segment:active,
+.page-segment:focus-visible {
+  border-color: transparent;
+  background: transparent;
+  transform: none;
 }
-.page-dot.active { width: 1.1rem; background: var(--text); opacity: 1; }
-
-.gauge-device { transition: opacity 170ms ease; }
+.page-segment:hover { color: var(--text); }
+.page-segment:focus-visible {
+  outline: 1px solid var(--vacuum);
+  outline-offset: -0.25rem;
+}
+.page-segment.active { color: var(--text); }
 
 /* Recessed instrument pod: machined bezel via layered box-shadow (drawn
    outside the overflow clip). Static, dark — the canvas carries live color. */

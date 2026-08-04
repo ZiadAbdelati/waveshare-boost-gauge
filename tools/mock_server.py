@@ -82,21 +82,6 @@ THEMES = [
             "zero": "#FFFFFF",
         },
     },
-    {
-        "id": "sport-cluster",
-        "name": "Sport Cluster",
-        "style": "sport",
-        "colors": {
-            "face": "#000000",
-            "track": "#24102F",
-            "text": "#FFD8FF",
-            "muted": "#9E5CB5",
-            "vacuum": "#D946EF",
-            "boost": "#FF4FD8",
-            "overboost": "#FF8AE8",
-            "zero": "#F8B4FF",
-        },
-    },
 ]
 
 # Keep in step with BOOST_PXSHIFT_SEC_* in main/boost_theme.h.
@@ -111,6 +96,7 @@ CONFIG = {
     "timezoneOffsetMinutes": 0,
     "activeThemeId": "dyno-cell",
     "vaultNeedleRed": False,
+    "vaultNeedleTail": False,
     "psiMin": -15.0,
     "psiMax": 10.0,
     "psiOverboost": 8.0,
@@ -430,6 +416,7 @@ def themes_payload() -> dict:
         "vaultFace": str(CONFIG.get("vaultFace", "#05281a")),
         "vaultVignette": int(CONFIG.get("vaultVignette", 60)),
         "vaultNeedleRed": bool(CONFIG.get("vaultNeedleRed", False)),
+        "vaultNeedleTail": bool(CONFIG.get("vaultNeedleTail", False)),
         "themes": out,
     }
 
@@ -637,6 +624,8 @@ class Handler(BaseHTTPRequestHandler):
                 CONFIG["vaultVignette"] = int(payload["vaultVignette"])
             if "vaultNeedleRed" in payload and isinstance(payload["vaultNeedleRed"], bool):
                 CONFIG["vaultNeedleRed"] = payload["vaultNeedleRed"]
+            if "vaultNeedleTail" in payload and isinstance(payload["vaultNeedleTail"], bool):
+                CONFIG["vaultNeedleTail"] = payload["vaultNeedleTail"]
             theme_id = payload.get("id")
             if theme_id:
                 theme = next((t for t in THEMES if t["id"] == theme_id), None)

@@ -154,6 +154,11 @@ static lv_indev_t *s_indev;
 static esp_lcd_panel_handle_t s_panel;
 static esp_lcd_panel_io_handle_t s_panel_io;
 static esp_lcd_touch_handle_t s_touch;
+/* ISR writes only the IRQ sequence/timestamp; the LVGL task records reads and
+ * contact transitions. Word-sized fields keep the diagnostic snapshot simple. */
+static volatile uint32_t s_touch_irq_sequence;
+static volatile int64_t s_touch_irq_us;
+static boost_touch_timing_t s_touch_timing;
 static boost_display_metrics_t s_metrics;
 static uint32_t s_render_count;
 static uint32_t s_flush_count;
@@ -726,11 +731,17 @@ static void te_wait_for_region_spans(const region_span_t *spans, int count)
     ++s_te_waits;
 
     if (s_te_edges != 0 && s_te_row_time_ns > 0) {
-        /* age is bounded to roughly one TE period (~16.75 ms) in normal
-         * operation; *1000 keeps this comfortably inside uint32_t even with
-         * an order of magnitude of slack, same as Fix 2. */
+        /* The projection is meaningful only during the frame that began at the
+         * last TE edge. If TE stops, age keeps increasing; never let a projected
+         * row below the panel prove every span LATE and bypass the timeout/give-up
+         * path indefinitely. */
         const uint32_t age = (uint32_t)esp_timer_get_time() - s_te_last_edge_us;
-        const int32_t scan_row_now = (int32_t)((age * 1000u) / s_te_row_time_ns);
+        const uint64_t scan_age_ns = (uint64_t)age * 1000u;
+        const bool edge_in_current_frame =
+            scan_age_ns < (uint64_t)s_te_row_time_ns * BSP_LCD_V_RES;
+        const int32_t scan_row_now = edge_in_current_frame
+                                         ? (int32_t)(scan_age_ns / s_te_row_time_ns)
+                                         : BSP_LCD_V_RES;
 
         uint32_t rows_before = 0;   /* pessimistic elapsed-time-so-far, in SCAN-row units */
         bool all_provable = true;
@@ -765,7 +776,7 @@ static void te_wait_for_region_spans(const region_span_t *spans, int count)
             rows_before += rows_for_height + rows_for_chunks;
         }
 
-        if (all_provable) {
+        if (edge_in_current_frame && all_provable) {
             s_te_miss_streak = 0;
             ++s_te_skips;
             return;
@@ -1271,6 +1282,46 @@ static lv_display_t *register_display(void)
     return disp;
 }
 
+static void IRAM_ATTR touch_irq_cb(esp_lcd_touch_handle_t tp, void *user_ctx)
+{
+    (void)tp;
+    (void)user_ctx;
+    s_touch_irq_us = esp_timer_get_time();
+    ++s_touch_irq_sequence;
+}
+
+static esp_err_t touch_read_cb(esp_lcd_touch_handle_t tp,
+                               esp_lcd_touch_point_data_t *points,
+                               uint8_t *count, uint8_t max_count,
+                               void *user_ctx)
+{
+    (void)user_ctx;
+    const int64_t start_us = esp_timer_get_time();
+    esp_err_t err = esp_lcd_touch_read_data(tp);
+    if (err == ESP_OK) err = esp_lcd_touch_get_data(tp, points, count, max_count);
+    const int64_t done_us = esp_timer_get_time();
+    const bool active = err == ESP_OK && count != NULL && *count > 0;
+
+    s_touch_timing.irq_sequence = s_touch_irq_sequence;
+    s_touch_timing.irq_us = s_touch_irq_us;
+    s_touch_timing.read_start_us = start_us;
+    s_touch_timing.read_done_us = done_us;
+    if (active && !s_touch_timing.contact_active) {
+        s_touch_timing.contact_down_us = done_us;
+        ESP_LOGI(TAG, "touch contact down irq=%lu irq_to_read=%lldus read=%lldus",
+                 (unsigned long)s_touch_timing.irq_sequence,
+                 (long long)(start_us - s_touch_timing.irq_us),
+                 (long long)(done_us - start_us));
+    } else if (!active && s_touch_timing.contact_active) {
+        s_touch_timing.contact_up_us = done_us;
+        ESP_LOGI(TAG, "touch contact up irq=%lu held=%lldus",
+                 (unsigned long)s_touch_timing.irq_sequence,
+                 (long long)(done_us - s_touch_timing.contact_down_us));
+    }
+    s_touch_timing.contact_active = active;
+    return err;
+}
+
 static lv_indev_t *register_touch(lv_display_t *disp)
 {
     bsp_display_cfg_t touch_cfg = {
@@ -1290,8 +1341,11 @@ static lv_indev_t *register_touch(lv_display_t *disp)
         return NULL;
     }
 
-    const esp_lv_adapter_touch_config_t touch_indev =
+    esp_lv_adapter_touch_config_t touch_indev =
         ESP_LV_ADAPTER_TOUCH_DEFAULT_CONFIG(disp, s_touch);
+    touch_indev.callbacks.on_interrupt = touch_irq_cb;
+    touch_indev.callbacks.custom_touch_read = touch_read_cb;
+    touch_indev.callbacks.user_ctx = NULL;
     lv_indev_t *indev = esp_lv_adapter_register_touch(&touch_indev);
     if (indev == NULL) {
         ESP_LOGE(TAG, "esp_lv_adapter_register_touch failed");
@@ -1352,5 +1406,14 @@ void boost_display_get_metrics(boost_display_metrics_t *out)
 {
     if (out != NULL) {
         *out = s_metrics;
+    }
+}
+
+void boost_display_get_touch_timing(boost_touch_timing_t *out)
+{
+    if (out != NULL) {
+        *out = s_touch_timing;
+        out->irq_sequence = s_touch_irq_sequence;
+        out->irq_us = s_touch_irq_us;
     }
 }

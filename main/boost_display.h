@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "esp_err.h"
 #include "lvgl.h"
@@ -18,6 +19,16 @@ extern "C" {
  * panel seen on hardware. This path keeps draw buffers in internal RAM and
  * caps transfer size to one strip.
  */
+typedef struct {
+    uint32_t irq_sequence;
+    int64_t irq_us;
+    int64_t read_start_us;
+    int64_t read_done_us;
+    int64_t contact_down_us;
+    int64_t contact_up_us;
+    bool contact_active;
+} boost_touch_timing_t;
+
 typedef struct {
     uint32_t render_fps;
     uint32_t flushes_per_second;
@@ -93,6 +104,9 @@ bool boost_display_region_dbuf(void);
 esp_err_t boost_display_lock(uint32_t timeout_ms);
 void boost_display_unlock(void);
 void boost_display_get_metrics(boost_display_metrics_t *out);
+
+/** Snapshot the raw CST9217 IRQ/read/contact timing captured by the adapter callbacks. */
+void boost_display_get_touch_timing(boost_touch_timing_t *out);
 
 #ifdef __cplusplus
 }

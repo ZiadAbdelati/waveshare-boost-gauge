@@ -29,6 +29,7 @@
 #define NVS_KEY_VFACE   "vault_face"
 #define NVS_KEY_VVIG    "vault_vig"
 #define NVS_KEY_VRED    "vault_red"
+#define NVS_KEY_VTAIL   "vault_tail"
 #define NVS_KEY_DEMO    "demo_mode"
 
 /* Palettes/styles here MUST match tools/mock_server.py and the web renderers so
@@ -115,6 +116,7 @@ static uint16_t s_rotation;
 static uint32_t s_vault_face = 0x05281Au;
 static uint8_t s_vault_vig_pct = 60u;
 static bool s_vault_needle_red;
+static bool s_vault_needle_tail;
 /* Burn-in protection is on unless it was explicitly switched off, so a panel
  * that never sees the settings page is still protected. */
 static bool s_pixel_shift = true;
@@ -183,6 +185,7 @@ static void persist(void)
     nvs_set_u32(h, NVS_KEY_VFACE, s_vault_face);
     nvs_set_u8(h, NVS_KEY_VVIG, s_vault_vig_pct);
     nvs_set_u8(h, NVS_KEY_VRED, s_vault_needle_red ? 1 : 0);
+    nvs_set_u8(h, NVS_KEY_VTAIL, s_vault_needle_tail ? 1 : 0);
     nvs_set_u8(h, NVS_KEY_DEMO, s_demo_mode ? 1 : 0);
     nvs_commit(h);
     nvs_close(h);
@@ -282,6 +285,10 @@ void boost_theme_init(void)
     uint8_t vr = 0;
     if (nvs_get_u8(h, NVS_KEY_VRED, &vr) == ESP_OK) {
         s_vault_needle_red = (vr != 0);
+    }
+    uint8_t vt = 0;
+    if (nvs_get_u8(h, NVS_KEY_VTAIL, &vt) == ESP_OK) {
+        s_vault_needle_tail = (vt != 0);
     }
 
     /* Absent key keeps the default (off = real sensors). */
@@ -549,6 +556,18 @@ void boost_theme_set_vault_needle_red(bool enabled)
 {
     ensure_loaded();
     s_vault_needle_red = enabled;
+    persist();
+}
+
+bool boost_theme_vault_needle_tail(void)
+{
+    return s_vault_needle_tail;
+}
+
+void boost_theme_set_vault_needle_tail(bool enabled)
+{
+    ensure_loaded();
+    s_vault_needle_tail = enabled;
     persist();
 }
 

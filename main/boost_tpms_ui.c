@@ -6,6 +6,10 @@
 
 #include "tpms_powertrain_rgb565.h"
 
+/* This module owns its local declaration for the compiled Saira
+ * SemiCondensed-Bold physical readout font. */
+LV_FONT_DECLARE(font_wide_22);
+
 #ifdef ESP_PLATFORM
 #include "esp_heap_caps.h"
 #define BG_ALLOC(n) heap_caps_malloc((n), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
@@ -36,11 +40,13 @@ typedef struct {
     int16_t radius;
 } tpms_capsule_t;
 
+/* Final tire bounds after the source art is alpha-composited, sharpened and
+ * scaled to 80% around the 466-space centre by process_tpms_powertrain.py. */
 static const tpms_capsule_t s_capsule[4] = {
-    { 170, 125, 36, 63, 18 }, /* FL */
-    { 260, 125, 36, 63, 18 }, /* FR */
-    { 160, 245, 37, 67, 18 }, /* RL */
-    { 268, 245, 37, 67, 18 }, /* RR */
+    { 129, 80, 52, 104, 26 }, /* FL */
+    { 284, 80, 53, 104, 26 }, /* FR */
+    { 114, 277, 54, 109, 27 }, /* RL */
+    { 297, 277, 54, 109, 27 }, /* RR */
 };
 
 static lv_obj_t *s_root;
@@ -94,9 +100,9 @@ static lv_obj_t *make_psi_label(lv_obj_t *parent, int x, int y, bool right_align
 {
     lv_obj_t *label = lv_label_create(parent);
     lv_label_set_text(label, "--.-");
-    lv_obj_set_width(label, right_aligned ? 48 : 52);
+    lv_obj_set_width(label, 66);
     lv_obj_set_pos(label, x, y);
-    lv_obj_set_style_text_font(label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(label, &font_wide_22, 0);
     lv_obj_set_style_text_color(label, tpms_color(TPMS_WHITE), 0);
     lv_obj_set_style_text_align(label,
                                 right_aligned ? LV_TEXT_ALIGN_RIGHT : LV_TEXT_ALIGN_LEFT,
@@ -134,10 +140,20 @@ void boost_tpms_ui_create(lv_obj_t *parent)
         lv_obj_set_pos(s_canvas, 0, 0);
         lv_obj_clear_flag(s_canvas, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
 
-        /* The source is a complete RGB565 frame. The clear makes the canvas
-         * black even if a future source is smaller than the allocated stride. */
+        /* The source is a complete packed RGB565 frame. Copy it into the canvas
+         * row by row using the draw-buffer stride so the art stays un-sheared
+         * even if the stride is padded beyond 466*2 (the gauge caches address
+         * their rows via header.stride the same way). The leading clear keeps
+         * the canvas black in any stride padding / overscan. */
         memset(s_canvas_buf, 0, canvas_bytes);
-        memcpy(s_canvas_buf, tpms_powertrain_rgb565, sizeof(tpms_powertrain_rgb565));
+        const uint32_t row_bytes = (uint32_t)TPMS_SIZE * 2u;
+        lv_draw_buf_t *tpms_db = lv_canvas_get_draw_buf(s_canvas);
+        const uint32_t stride = (tpms_db != NULL && tpms_db->header.stride >= row_bytes)
+                                ? tpms_db->header.stride : row_bytes;
+        for (uint32_t y = 0; y < TPMS_SIZE; ++y) {
+            memcpy((uint8_t *)s_canvas_buf + (size_t)y * stride,
+                   tpms_powertrain_rgb565 + (size_t)y * row_bytes, row_bytes);
+        }
     }
 
     /* The face is transparent and draws only the four live capsules. It is
@@ -149,11 +165,13 @@ void boost_tpms_ui_create(lv_obj_t *parent)
     make_passive(s_face);
     lv_obj_add_event_cb(s_face, draw_tpms_capsules, LV_EVENT_DRAW_MAIN, NULL);
 
-    /* FL, FR, RL, RR. Left labels are right-aligned toward their capsule. */
-    s_psi[0] = make_psi_label(s_root, 120, 145, true);
-    s_psi[1] = make_psi_label(s_root, 302, 145, false);
-    s_psi[2] = make_psi_label(s_root, 110, 265, true);
-    s_psi[3] = make_psi_label(s_root, 310, 265, false);
+    /* FL, FR, RL, RR. A 66 px box gives "--.-" and 2-digit PSI values room at
+     * Saira SemiCondensed Bold 22. Left boxes end 8 px before the tire; right boxes begin 8 px
+     * after it, matching the browser's native-466 geometry. */
+    s_psi[0] = make_psi_label(s_root, 55, 119, true);
+    s_psi[1] = make_psi_label(s_root, 345, 119, false);
+    s_psi[2] = make_psi_label(s_root, 40, 318, true);
+    s_psi[3] = make_psi_label(s_root, 359, 318, false);
 
     boost_tpms_ui_update(NULL);
 }
@@ -197,12 +215,16 @@ void boost_tpms_ui_update(const boost_tpms_snapshot_t *snapshot)
             lv_area_t a = { c->x - 8, c->y - 8,
                             c->x + c->w + 8, c->y + c->h + 8 };
             lv_obj_invalidate_area(s_face, &a);
+            if (s_psi[i] != NULL) lv_obj_invalidate(s_psi[i]);
         }
     }
 }
 
 void boost_tpms_ui_delete(void)
 {
+    /* Canvas pixels live outside the object. Drain queued software draw units
+     * before deleting the canvas and releasing that PSRAM allocation. */
+    lv_draw_wait_for_finish();
     if (s_root != NULL) {
         lv_obj_delete(s_root);
         s_root = NULL;

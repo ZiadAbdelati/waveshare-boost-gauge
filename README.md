@@ -10,17 +10,15 @@ The live MAP path reads a GM 3-bar sensor through an ADS1115, with an optional B
 - Dual-climate arc: **teal** vacuum · **amber** boost · **flare red** overboost (default ≥ **8 psi**, configurable)
 - Big signed PSI, zone label (`VAC` / `ATMO` / `BOOST` / `OVER`)
 - Peak hold; **short tap** resets peak
-- **Hold ~2s** toggles max/min brightness (100% ↔ 12%)
-- Vault-Tec supports a persisted phosphor-green or signal-red needle selection;
-  red changes only the needle body and leaves the green hub unchanged.
+- **Hold ~1s** toggles the configured max/min brightness levels.
+- Vault-Tec supports persisted needle color and counterweight-tail options; red
+  changes only the needle body, and the green hub remains unchanged.
 - A deliberate vertical swipe cycles themes in dashboard order. Swipe up
   advances (`Dyno Cell` -> `Vault-Tec` -> `Night City` -> `Big Digit` ->
-  `Sport Cluster` -> `Dyno Cell`); swipe down moves backward. Taps and the existing brightness
-  hold retain their behavior.
-- **Sport Cluster** is a black AMOLED circular face with luminous magenta/purple
-  outer and inner rings, a centered segmented PSI readout, raw `VACUUM` /
-  `BOOST` / `OVERBOOST` header, and a bottom `PEAK %.1f PSI` line. Its `sport-cluster`
-  id is part of the persisted theme order and the host dashboard mirror.
+  `Dyno Cell`); swipe down moves backward. Taps and the brightness hold retain
+  their behavior.
+- The Sport Cluster renderer remains in the source for possible future use but
+  is intentionally absent from the selectable theme order.
 - Top chip reads `DEMO` until a live sensor path sets `sample.demo = false`
 - Samples, the unified-color filled arc, center PSI, and peak hold update every 16 ms (~60 Hz). The physical gauge remains on that cadence while network telemetry is intentionally decoupled from the display loop.
 
@@ -555,16 +553,21 @@ See [`sim/README.md`](sim/README.md). Real LVGL screenshots live under [`preview
 page 1 is the TPMS view. On the boost page, swipe **LEFT** to TPMS; on TPMS,
 swipe **RIGHT** to return to boost. There is no wrap-around: outward swipes at
 either end are ignored. Vertical theme swipes work only on page 0, and a tap
-resets peak only on page 0. A hold of about 2 seconds toggles brightness on
-either page. The page coordinator forwards MAP samples only to the boost scene
+resets peak only on page 0. A one-second hold toggles brightness on either
+page. Pointer-device events own the hold deadline independently of target jitter,
+and the brightness state is committed only after the panel command succeeds. The
+page coordinator forwards MAP samples only to the boost scene
 and TPMS snapshots only to the active TPMS scene.
 
 ### TPMS
 
-`main/boost_tpms_ui.c/.h` renders a dark chassis silhouette with four corner
-cards (`FL`, `FR`, `RL`, `RR`). Each card shows PSI and a status word: green
-`OK`, amber `LOW` or `STALE`, or red `OFFLINE`. `STALE` retains the last pressure
-value in amber; a wheel that has never reported shows `--.- PSI` in red.
+`main/boost_tpms_ui.c/.h` renders the processed 466x466 powertrain art on black,
+with four tire-shaped status capsules (`FL`, `FR`, `RL`, `RR`) aligned to the
+80%-scale chassis. The physical readouts use the compiled Saira SemiCondensed
+Bold face and show number-only PSI values: green is normal, red is low, amber is
+stale, and gray is offline. `STALE` retains its last number; a wheel that has
+never reported shows `--.-`. The browser uses the same native-466 geometry and
+redraws when the image finishes loading.
 
 The framework is split into `main/boost_tpms.c/.h` (service/model), the
 deterministic `main/boost_tpms_mock.c/.h` provider (`NORMAL`, `STALE`, and
@@ -621,7 +624,6 @@ not only its colors, and the selection persists in NVS across power cycles.
 | `vault-tec` | `vault` | Fallout-style phosphor **needle dial** with CRT scanlines/vignette, a peak tell-tale marker, and an overboost alert (warm numeral + blinking `OVER-PRESSURE`). |
 | `night-city` | `hud` | Cyberpunk **targeting HUD**: hazard chevrons, Kiroshi reticle around a big italic value, glitch-shear on fast spikes, MAP/PEAK telemetry. |
 | `big-digit` | `bigdigit` | A huge **Alvida Fatface** PSI number in white on a ground that sweeps cyan → lime → red with the reading. |
-| `sport-cluster` | `sport` (`BOOST_STYLE_SPORT`) | Black AMOLED sport-cluster face with luminous magenta/purple rings, a segmented center PSI readout, a raw `VACUUM` / `BOOST` / `OVERBOOST` zone label, and `PEAK x.x PSI`. |
 
 Shared rules across styles:
 
@@ -638,14 +640,13 @@ Shared rules across styles:
 ### Where it lives
 
 - **Web mirror:** `web/app.js` dispatches `drawGauge()` on `activeThemeStyle()`
-  to `drawArcGauge` / `drawVaultGauge` / `drawHudGauge` / `drawBigDigitGauge` /
-  `drawSportGauge`. `tools/mock_server.py` serves the five themes (each with a
-  `style` field). Regenerate embedded assets after any web edit. `setTheme()`
+  to the active renderer. `tools/mock_server.py` serves the four selectable
+  themes (each with a `style` field); the dormant Sport renderer is retained but
+  not advertised. Regenerate embedded assets after any web edit. `setTheme()`
   drives only the gauge palette, so the dashboard chrome keeps one fixed identity.
-- **Sport Cluster cache:** `main/boost_gauge.c` paints the static ring and ticks
-  once into a PSRAM `lv_canvas`; each frame invalidates only the bounded readout
-  rectangle. The simulator audit is about **1.7e4 flushed px/cycle** rather than
-  a full-face **~2.17e5**, with **0 stale pixels**.
+- **Dormant Sport renderer:** if it is restored to `s_defaults[]`, its static
+  ring/ticks remain cached in a PSRAM `lv_canvas` and its live readout remains
+  bounded rather than repainting the full face.
 - **Simulator:** `sim/` builds the same `boost_gauge.c` on the host and renders
   headless PNGs, including the generated fonts, so a face can be checked without
   flashing. SDL2 is optional (only `--window` needs it); `--theme <id>` selects
@@ -796,8 +797,16 @@ three-round fresh-boot hardware A/B (`night-city`, demo mode, pixel shift off,
 at **29/39, 29/39, and 29/38 FPS**. Across-round medians were **31.8 vs 32.0 ms**
 `worstRenderUs`, **11 vs 13** over-budget frames/s, and **0.688 vs 0.735 Mpx/s**.
 The implementation explains the extra work: the fill is one quantized solid
-colour, and each of its 24 colour-step crossings invalidates and recolours the
-complete zero-to-value arc. Endpoint movement between crossings already uses a
+colour, and each colour-step crossing invalidates and recolours the complete
+zero-to-value arc. The original `BIG_STEPS=24` covered the whole -15..+10 psi
+range, but every non-positive sample intentionally maps to the same vacuum color;
+there were therefore only **11 effective RGB565 colors** on the visible ramp (10
+above zero), which explains why the transition looked much coarser than “24
+steps.” A 48-slot full-range trial produced 20 effective colors, but still wasted
+29 slots on identical vacuum. The retained mapping instead uses one fixed vacuum
+sentinel plus **24 buckets devoted exclusively to positive pressure**. Bucket 1
+starts immediately above zero and bucket 24 lands exactly at configured max;
+firmware, Big Digit, and the web mirror share the same ceiling-based mapping. Endpoint movement between crossings already uses a
 tight wedge. Reproduce the comparison with `tools/bench_hud_gradient.py`; judge
 an optimization on render time, pacing, and pixels/s rather than FPS alone.
 
@@ -852,6 +861,35 @@ real raster/traffic reduction but not a 60 FPS result. The remaining render tail
 is still just over the 16 ms budget; disabling region DBUF or TE did not improve
 it, and the 276x79 precomposed RGB565 tile prototype increased host flush work to
 **21,175 pixels/cycle**, so it was rejected rather than flashed.
+
+Vault-Tec now deliberately keeps the same consolidation pattern in a bounded
+**146x34** six-slot readout object together with `VAULT_NEEDLE_SEGS=3` and the
+hardware-proven two-triangle needle raster. The controlled consolidated-readout
+comparison separated host correctness from panel cadence: 3 segments averaged
+**11,460 px/cycle** with 3 severe / 8 total isolated needle-edge audit pixels;
+2 segments averaged **12,858 px/cycle** with 0 severe / 1 total. On hardware the
+best matched 3-segment fast-sweep round held **60/60 min/median FPS**, **17.162 ms**
+median / **20.194 ms** maximum render time, and **1** over-budget frame. The
+2-segment arm measured **58/60 FPS**, **18.222/33.558 ms**, and **9** over-budget
+frames. A later 3-segment confirmation was noisy (**55/59 FPS**, **19.564/33.623
+ms**, 28 over-budget), so it is recorded as run-to-run spread rather than proof of
+a regression. Two segments clean up host antialiasing seams but enlarge the dirty
+regions and worsened the matched hardware tail; the kept production choice is
+the bounded consolidated readout plus **three** invalidation segments. Future
+Vault changes must rerun both the RGB565 stale-pixel audit and interleaved hardware
+cadence measurements.
+
+The retained Vault renderer removes the **26 px counterweight tail** behind the
+pivot by default. A persisted `vaultNeedleTail` option in the Vault theme editor
+and `/themes/config` API restores it when desired. The wedge tip length, 15 px
+hub, two-triangle raster, three invalidation segments, AA padding, CRT overlay,
+and 146x34 readout remain unchanged. Draw and both invalidation paths resolve the
+same runtime tail length; applying the setting rebuilds the scene, so old
+foreground pixels cannot remain. The browser mirror follows the same geometry.
+The final 25-second Vault audit rendered 1,517 cycles at **10,786 mean / 30,114
+max flushed pixels per cycle** and **0.660 Mpx/s**. It found **zero severe RGB565
+mismatches** and six isolated one-channel, one-step AA seams across 517
+comparisons (worst one pixel), with no broad stale trail.
 
 Both physical arcs now animate geometry through one shared latest-target linear
 interpolator. Each new sample remains the exact target immediately; the visible

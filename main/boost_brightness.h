@@ -28,6 +28,13 @@ void boost_brightness_set_levels(int high, int low);
 /** Toggle between the configured high and low brightness levels. */
 void boost_brightness_toggle_max_min(void);
 
+/**
+ * Toggle while the caller already owns the LVGL/display lock. Gesture callbacks
+ * run in that context, so taking the lock again can add its full timeout before
+ * the panel receives the brightness command.
+ */
+void boost_brightness_toggle_max_min_locked(void);
+
 #ifdef __cplusplus
 }
 #endif

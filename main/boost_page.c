@@ -8,24 +8,39 @@
 #include "boost_theme.h"
 
 #ifdef ESP_PLATFORM
+#include "boost_display.h"
 #include "boost_model.h"
+#include "esp_log.h"
+#include "esp_timer.h"
+#else
+#include <stdio.h>
+#define ESP_LOGI(tag, fmt, ...) printf("[I][%s] " fmt "\n", tag, ##__VA_ARGS__)
+#define ESP_LOGW(tag, fmt, ...) printf("[W][%s] " fmt "\n", tag, ##__VA_ARGS__)
 #endif
 
 #define PAGE_SIZE 466
 #define TAP_SLOP_PX 12
 #define SWIPE_MIN_PX 48
-#define HOLD_DIM_MS 2000
+/* Calibrated from repeated on-glass tests rather than inferred from the panel
+ * command timestamp. Keep this explicit so the physical feel stays intentional. */
+#define HOLD_DIM_MS 1000
 
+static const char *TAG = "boost_page";
 static lv_obj_t *s_page_root[2];
 static boost_page_id_t s_active = BOOST_PAGE_BOOST;
 static lv_obj_t *s_screen;
+static lv_indev_t *s_press_indev;
 static lv_point_t s_start;
 static int32_t s_max_dx;
 static int32_t s_max_dy;
-static uint32_t s_start_ms;
 static bool s_press_active;
 static bool s_hold_fired;
+#ifdef ESP_PLATFORM
+static int64_t s_lvgl_press_us;
+#endif
 static bool s_tpms_built;
+
+static bool media_active(void);
 
 static int32_t abs_i32(int32_t x) { return x < 0 ? -x : x; }
 
@@ -46,6 +61,10 @@ static void show_page(boost_page_id_t page)
             lv_obj_set_flag(s_page_root[i], LV_OBJ_FLAG_HIDDEN, i != (int)page);
         }
     }
+    /* Page replacement is a full-face operation. Make that contract explicit
+     * for the partial-refresh adapter so no pixels from the hidden page survive
+     * until one of the destination page's narrow live regions changes. */
+    if (s_screen != NULL) lv_obj_invalidate(s_screen);
 }
 
 static void apply_theme_delta(int direction)
@@ -73,73 +92,132 @@ static void apply_theme_delta(int direction)
 #endif
 }
 
-void boost_page_handle_event(lv_event_t *event)
+static void update_press_motion(lv_indev_t *indev)
 {
-    if (event == NULL || media_active()) return;
-    lv_event_code_t code = lv_event_get_code(event);
+    if (!s_press_active || indev == NULL || indev != s_press_indev) return;
+    lv_point_t point;
+    lv_indev_get_point(indev, &point);
+    const int32_t dx = point.x - s_start.x;
+    const int32_t dy = point.y - s_start.y;
+    if (abs_i32(dx) > abs_i32(s_max_dx)) s_max_dx = dx;
+    if (abs_i32(dy) > abs_i32(s_max_dy)) s_max_dy = dy;
+}
+
+static void finish_press(bool released)
+{
+    const int32_t ax = abs_i32(s_max_dx);
+    const int32_t ay = abs_i32(s_max_dy);
+    const bool act = released && !s_hold_fired && !media_active();
+
+    if (act && ax < TAP_SLOP_PX && ay < TAP_SLOP_PX) {
+        if (s_active == BOOST_PAGE_BOOST) boost_gauge_reset_peak();
+    } else if (act && ax >= SWIPE_MIN_PX && (int64_t)ax * 4 >= (int64_t)ay * 5) {
+        if (s_active == BOOST_PAGE_BOOST && s_max_dx < 0) {
+            show_page(BOOST_PAGE_TPMS);
+        } else if (s_active == BOOST_PAGE_TPMS && s_max_dx > 0) {
+            show_page(BOOST_PAGE_BOOST);
+        }
+    } else if (act && s_active == BOOST_PAGE_BOOST &&
+               ay >= SWIPE_MIN_PX && (int64_t)ay * 4 >= (int64_t)ax * 5) {
+        apply_theme_delta(s_max_dy < 0 ? 1 : -1);
+    }
+
+    ESP_LOGI(TAG, "%s dx=%ld dy=%ld hold=%d page=%d",
+             released ? "released" : "press_lost",
+             (long)s_max_dx, (long)s_max_dy, s_hold_fired, (int)s_active);
+    s_press_active = false;
+    s_hold_fired = false;
+    s_press_indev = NULL;
+}
+
+/* Pointer-device events are independent of the hit-tested object. A new gauge
+ * child or a transient target change can therefore no longer prevent the 1 s
+ * hold from starting or firing. */
+static void boost_page_indev_event(lv_event_t *event)
+{
+    if (event == NULL) return;
+    lv_indev_t *indev = (lv_indev_t *)lv_event_get_target(event);
+    const lv_event_code_t code = lv_event_get_code(event);
+
     if (code == LV_EVENT_PRESSED) {
-        lv_indev_t *indev = lv_indev_get_act();
-        if (indev == NULL) return;
+        if (media_active()) return;
+        s_press_indev = indev;
         lv_indev_get_point(indev, &s_start);
         s_max_dx = s_max_dy = 0;
-        s_start_ms = lv_tick_get();
         s_press_active = true;
         s_hold_fired = false;
-    } else if (code == LV_EVENT_PRESSING && s_press_active) {
-        lv_indev_t *indev = lv_indev_get_act();
-        if (indev != NULL) {
-            lv_point_t point;
-            lv_indev_get_point(indev, &point);
-            int32_t dx = point.x - s_start.x;
-            int32_t dy = point.y - s_start.y;
-            if (abs_i32(dx) > abs_i32(s_max_dx)) s_max_dx = dx;
-            if (abs_i32(dy) > abs_i32(s_max_dy)) s_max_dy = dy;
-        }
-        if (!s_hold_fired && lv_tick_elaps(s_start_ms) >= HOLD_DIM_MS) {
-            boost_brightness_toggle_max_min();
-            s_hold_fired = true;
-        }
-    } else if ((code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) && s_press_active) {
-        bool released = code == LV_EVENT_RELEASED;
-        if (released && !s_hold_fired) {
-            int32_t ax = abs_i32(s_max_dx), ay = abs_i32(s_max_dy);
-            if (ax < TAP_SLOP_PX && ay < TAP_SLOP_PX) {
-                if (s_active == BOOST_PAGE_BOOST) boost_gauge_reset_peak();
-            } else if (ax >= SWIPE_MIN_PX && (int64_t)ax * 4 >= (int64_t)ay * 5) {
-                /* Finger travel follows the page motion: swipe left from the
-                 * boost page advances to TPMS; swipe right returns. Outward
-                 * swipes at either end are deliberately ignored (no wrap). */
-                if (s_active == BOOST_PAGE_BOOST && s_max_dx < 0) {
-                    show_page(BOOST_PAGE_TPMS);
-                } else if (s_active == BOOST_PAGE_TPMS && s_max_dx > 0) {
-                    show_page(BOOST_PAGE_BOOST);
-                }
-            } else if (s_active == BOOST_PAGE_BOOST &&
-                       ay >= SWIPE_MIN_PX && (int64_t)ay * 4 >= (int64_t)ax * 5) {
-                /* Theme gestures remain vertical and are legal only on page 0. */
-                apply_theme_delta(s_max_dy < 0 ? 1 : -1);
-            }
-        }
-        s_press_active = false;
-        s_hold_fired = false;
+#ifdef ESP_PLATFORM
+        s_lvgl_press_us = esp_timer_get_time();
+        boost_touch_timing_t touch;
+        boost_display_get_touch_timing(&touch);
+        ESP_LOGI(TAG, "pressed x=%ld y=%ld hold=%dms contact_to_lvgl=%lldus irq_to_lvgl=%lldus",
+                 (long)s_start.x, (long)s_start.y, HOLD_DIM_MS,
+                 (long long)(s_lvgl_press_us - touch.contact_down_us),
+                 (long long)(s_lvgl_press_us - touch.irq_us));
+#else
+        ESP_LOGI(TAG, "pressed x=%ld y=%ld hold=%dms",
+                 (long)s_start.x, (long)s_start.y, HOLD_DIM_MS);
+#endif
+    } else if (code == LV_EVENT_LONG_PRESSED && s_press_active &&
+               indev == s_press_indev && !s_hold_fired && !media_active()) {
+        update_press_motion(indev);
+        s_hold_fired = true;
+        boost_brightness_toggle_max_min_locked();
+#ifdef ESP_PLATFORM
+        boost_touch_timing_t touch;
+        boost_display_get_touch_timing(&touch);
+        const int64_t now_us = esp_timer_get_time();
+        ESP_LOGI(TAG, "hold fired threshold=%dms lvgl_elapsed=%lldus contact_elapsed=%lldus irq_elapsed=%lldus",
+                 HOLD_DIM_MS, (long long)(now_us - s_lvgl_press_us),
+                 (long long)(now_us - touch.contact_down_us),
+                 (long long)(now_us - touch.irq_us));
+#else
+        ESP_LOGI(TAG, "hold fired at %dms", HOLD_DIM_MS);
+#endif
+    } else if (code == LV_EVENT_RELEASED && s_press_active && indev == s_press_indev) {
+        update_press_motion(indev);
+        finish_press(true);
+    }
+}
+
+void boost_page_handle_event(lv_event_t *event)
+{
+    if (event == NULL) return;
+    const lv_event_code_t code = lv_event_get_code(event);
+    if (code == LV_EVENT_PRESSING) {
+        update_press_motion(lv_event_get_indev(event));
+    } else if (code == LV_EVENT_PRESS_LOST && s_press_active) {
+        finish_press(false);
     }
 }
 
 void boost_page_create(void)
 {
+    s_press_active = false;
+    s_hold_fired = false;
+    s_press_indev = NULL;
     s_screen = lv_screen_active();
     lv_obj_remove_style_all(s_screen);
     lv_obj_set_size(s_screen, PAGE_SIZE, PAGE_SIZE);
     lv_obj_add_flag(s_screen, LV_OBJ_FLAG_CLICKABLE);
-    /* The screen must NOT be scrollable: the page coordinator owns every
-     * gesture itself, and a scrollable screen lets the indev switch into
-     * scroll mode on touch jitter during a long press - which steals the
-     * PRESSING stream the 2 s hold-to-dim timer depends on. */
+    /* The coordinator owns gesture classification; no object may start an LVGL
+     * scroll that suppresses the pointer indev's long-press event. */
     lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_event_cb(s_screen, boost_page_handle_event, LV_EVENT_PRESSED, NULL);
     lv_obj_add_event_cb(s_screen, boost_page_handle_event, LV_EVENT_PRESSING, NULL);
-    lv_obj_add_event_cb(s_screen, boost_page_handle_event, LV_EVENT_RELEASED, NULL);
     lv_obj_add_event_cb(s_screen, boost_page_handle_event, LV_EVENT_PRESS_LOST, NULL);
+
+    int pointer_count = 0;
+    for (lv_indev_t *indev = lv_indev_get_next(NULL); indev != NULL;
+         indev = lv_indev_get_next(indev)) {
+        if (lv_indev_get_type(indev) != LV_INDEV_TYPE_POINTER) continue;
+        lv_indev_set_long_press_time(indev, HOLD_DIM_MS);
+        lv_indev_add_event_cb(indev, boost_page_indev_event, LV_EVENT_PRESSED, NULL);
+        lv_indev_add_event_cb(indev, boost_page_indev_event, LV_EVENT_LONG_PRESSED, NULL);
+        lv_indev_add_event_cb(indev, boost_page_indev_event, LV_EVENT_RELEASED, NULL);
+        pointer_count++;
+    }
+    if (pointer_count == 0) ESP_LOGW(TAG, "no pointer indev; hold-to-dim unavailable");
+    else ESP_LOGI(TAG, "registered %d pointer indev, hold=%dms", pointer_count, HOLD_DIM_MS);
 
     for (int i = 0; i < 2; ++i) {
         s_page_root[i] = lv_obj_create(s_screen);

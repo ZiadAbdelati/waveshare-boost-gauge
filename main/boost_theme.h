@@ -166,6 +166,9 @@ uint8_t boost_theme_vault_vignette_pct(void);
 void boost_theme_set_vault_vignette_pct(uint8_t pct);
 bool boost_theme_vault_needle_red(void);
 void boost_theme_set_vault_needle_red(bool enabled);
+/* Optional 26 px counterweight behind the Vault needle hub. Default off. */
+bool boost_theme_vault_needle_tail(void);
+void boost_theme_set_vault_needle_tail(bool enabled);
 
 /*
  * AMOLED burn-in countermeasure. The gauge shows one static-heavy face for

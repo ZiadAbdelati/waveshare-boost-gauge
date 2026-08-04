@@ -360,11 +360,20 @@ void boost_model_publish_tpms(const float psi[4], const bool valid[4], int statu
 {
     if (s_lock == NULL) return;
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    for (int i = 0; i < 4; ++i) {
-        s_state.tpms_psi[i] = psi ? psi[i] : 0.0f;
-        s_state.tpms_valid[i] = valid ? valid[i] : false;
+    bool unchanged = s_state.tpms_status == status;
+    for (int i = 0; i < 4 && unchanged; ++i) {
+        const float next_psi = psi ? psi[i] : 0.0f;
+        const bool next_valid = valid ? valid[i] : false;
+        unchanged = s_state.tpms_psi[i] == next_psi &&
+                    s_state.tpms_valid[i] == next_valid;
     }
-    s_state.tpms_status = status;
+    if (!unchanged) {
+        for (int i = 0; i < 4; ++i) {
+            s_state.tpms_psi[i] = psi ? psi[i] : 0.0f;
+            s_state.tpms_valid[i] = valid ? valid[i] : false;
+        }
+        s_state.tpms_status = status;
+    }
     xSemaphoreGive(s_lock);
 }
 
@@ -503,8 +512,9 @@ esp_err_t boost_model_update_config(const boost_config_t *patch, uint32_t fields
             /* Defer SPI brightness to control task — never block httpd. */
             s_pending_brightness = -2; /* re-evaluate schedule */
         } else if (fields & (BOOST_CONFIG_DIM_ENABLED | BOOST_CONFIG_BRIGHTNESS_HIGH |
-                             BOOST_CONFIG_THEME)) {
-            /* Leaving schedule (or explicit high/theme) restores daytime level. */
+                             BOOST_CONFIG_BRIGHTNESS_LOW | BOOST_CONFIG_THEME)) {
+            /* With the schedule off, either level changing re-applies the daytime
+             * target so the hardware and persisted pair cannot drift apart. */
             s_pending_brightness = high;
         }
     }
@@ -528,13 +538,14 @@ esp_err_t boost_model_set_active_theme(const char *id)
     return boost_model_update_config(&patch, BOOST_CONFIG_THEME);
 }
 
-void boost_model_set_active_page(int page)
+esp_err_t boost_model_set_active_page(int page)
 {
-    if (page < 0 || page > 1) return;
-    if (boost_display_lock(-1) == ESP_OK) {
-        boost_page_show((boost_page_id_t)page);
-        boost_display_unlock();
-    }
+    if (page < 0 || page > 1) return ESP_ERR_INVALID_ARG;
+    esp_err_t err = boost_display_lock(-1);
+    if (err != ESP_OK) return err;
+    boost_page_show((boost_page_id_t)page);
+    boost_display_unlock();
+    return ESP_OK;
 }
 
 const boost_theme_t *boost_model_active_theme(void)

@@ -81,7 +81,7 @@
 #define VALUE_ONES_X       (-17)
 #define VALUE_DECIMAL_X    8
 #define VALUE_TENTHS_X     30
-#define HOLD_DIM_MS   2000
+#define HOLD_DIM_MS   1000
 #define WELL_SIZE     DISP_SIZE
 #define TAP_SLOP_PX 12
 #define THEME_SWIPE_MIN_PX 48
@@ -160,7 +160,9 @@ static const int8_t k_pxshift[][2] = {
 #define VAULT_TICK_MINOR_IN  206
 #define VAULT_NUM_R          170.0f
 #define VAULT_NEEDLE_LEN     168
-#define VAULT_NEEDLE_TAIL    26
+/* Optional counterweight geometry. The persisted theme preference resolves this
+ * to either 0 or 26 px; draw and invalidation must always use the same value. */
+#define VAULT_NEEDLE_TAIL_LEN 26
 #define VAULT_NEEDLE_HALFW   7
 #define VAULT_HUB_R          15
 /* Sits just inside the bezel ring (r=231, width 3, so its inner edge is at
@@ -228,6 +230,17 @@ static const int8_t k_pxshift[][2] = {
 /* Chromatic split of the ghost pass. Shared with the invalidation so the dirty
  * box can never be narrower than the pixels the ghosts actually touch. */
 #define HUD_GLITCH_DX 6
+/* The readout callback is clipped to this object. Keep the bounds in face-local
+ * coordinates: draw_hud_readout() still emits absolute screen coordinates via
+ * px_icx()/px_icy(), while the parent scene can move for burn-in protection. The
+ * extra invalidation margin is included so lv_obj_invalidate_area() does not
+ * silently clip the old/new union at the object edge. */
+#define HUD_READOUT_OBJ_X1 (-162) /* left ghost edge: -156 - HUD_GLITCH_DX */
+#define HUD_READOUT_OBJ_X2 (117)  /* right slot invalidation edge: 82 + 28 + 7 */
+#define HUD_READOUT_OBJ_Y1 (HUD_VALUE_Y - 42)
+#define HUD_READOUT_OBJ_Y2 (HUD_VALUE_Y + 42)
+#define HUD_READOUT_OBJ_W  (HUD_READOUT_OBJ_X2 - HUD_READOUT_OBJ_X1 + 1)
+#define HUD_READOUT_OBJ_H  (HUD_READOUT_OBJ_Y2 - HUD_READOUT_OBJ_Y1 + 1)
 
 /* Share Tech Mono (readouts) and Saira Condensed (labels) stand in for the
  * Consolas/Bahnschrift pairing used by the web mirror; both are OFL, so they
@@ -341,7 +354,13 @@ static lv_obj_t *s_vault_peak_mark;
 static float s_vault_peak_deg;
 static lv_obj_t *s_vault_needle;
 static lv_obj_t *s_vault_window;
-static lv_obj_t *s_vault_slot[VAULT_SLOT_COUNT];
+/* The six fixed readout labels share one draw object. This keeps LVGL from
+ * walking six independent label objects on every needle dirty region while
+ * retaining each slot's exact area and text alignment. */
+static lv_obj_t *s_vault_readout;
+static char s_vault_slot_text[VAULT_SLOT_COUNT][2];
+static lv_color_t s_vault_readout_color;
+static bool s_vault_readout_color_valid;
 static lv_obj_t *s_vault_peak;
 static lv_obj_t *s_vault_alert;
 static lv_obj_t *s_vault_alert_marks;
@@ -673,25 +692,26 @@ static float psi_to_sweep(float psi, float a0, float a1)
     return zero_at + t * (a1 - zero_at);
 }
 
-/* Colour-sweep quantisation, shared by big-digit and the arc/hud gradients. */
-#define BIG_STEPS 24
+/* One fixed vacuum sentinel plus 24 buckets devoted exclusively to positive
+ * pressure. The old full-range quantizer spent most slots on identical vacuum
+ * colors, so its nominal step count overstated the visible ramp. */
+#define BIG_POSITIVE_STEPS 24
+static int big_step_for(float psi);
 static uint32_t big_color_for_step(const boost_theme_t *theme, int step);
+static lv_color_t gradient_lut_color(const boost_theme_t *theme, int step);
+static lv_color_t gradient_color_for_psi(const boost_theme_t *theme, float psi);
 
-/* The vacuum->boost->overboost ramp Big Digit sweeps, quantised to BIG_STEPS so
- * a fill only recolours at a step boundary rather than every frame. Shared by
- * the arc and hud gradient-fill modes. */
-static uint32_t gradient_rgb_for_psi(const boost_theme_t *theme, float psi)
+/* The vacuum->boost->overboost ramp Big Digit sweeps, quantised so a fill only
+ * recolours at a positive-pressure bucket boundary rather than every frame.
+ * Shared by the arc and hud gradient-fill modes. */
+static lv_color_t gradient_color_for_psi(const boost_theme_t *theme, float psi)
 {
-    const float lo = s_psi_min;
-    const float hi = s_psi_max;
-    const float t = (hi > lo) ? (clampf(psi, lo, hi) - lo) / (hi - lo) : 0.0f;
-    const int step = (int)lroundf(t * (float)(BIG_STEPS - 1));
-    return big_color_for_step(theme, step);
+    return gradient_lut_color(theme, big_step_for(psi));
 }
 
 static lv_color_t color_for_psi(const boost_theme_t *theme, float psi)
 {
-    if (boost_theme_arc_gradient()) return c(gradient_rgb_for_psi(theme, psi));
+    if (boost_theme_arc_gradient()) return gradient_color_for_psi(theme, psi);
     if (psi >= s_psi_overboost) return c(theme->overboost);
     if (psi >= 0.35f) return c(theme->boost);
     if (psi > -0.35f) return c(theme->text);
@@ -704,6 +724,14 @@ static const char *zone_for_psi(float psi)
     if (psi >= 0.35f) return "BOOST";
     if (psi > -0.35f) return "ATMO";
     return "VAC";
+}
+
+static lv_color_t zone_color_for_psi(const boost_theme_t *theme, float psi)
+{
+    if (psi >= s_psi_overboost) return c(theme->overboost);
+    if (psi >= 0.35f) return c(theme->boost);
+    if (psi > -0.35f) return c(theme->text);
+    return c(theme->vacuum);
 }
 
 static void format_value_slots(char *sign, char *tens, char *ones, char *tenths, float psi)
@@ -1189,11 +1217,14 @@ static void set_value_arc(float psi, float raw_color_psi)
                                          color_for_psi(active_theme(), color_psi));
     const bool side_flip = (s_arc_drawn_psi < 0.0f) != (psi < 0.0f);
 
-    if (side_flip || color_flip) {
-        /* Color is raw-sample authoritative: repaint the complete currently
-         * drawn and newly drawn spans, even while geometry is smoothing. */
+    if (side_flip) {
+        /* Opposite sides of the zero gap are disjoint. */
         invalidate_value_arc(old_start, old_end);
         invalidate_value_arc(new_start, new_end);
+    } else if (color_flip) {
+        /* Same-side full spans overlap from zero to the endpoint. Repaint their
+         * union once instead of submitting the shared pixels twice. */
+        invalidate_value_arc(fminf(old_start, new_start), fmaxf(old_end, new_end));
     } else if (psi >= 0.0f) {
         invalidate_value_arc(fminf(old_end, new_end), fmaxf(old_end, new_end));
     } else {
@@ -1404,10 +1435,12 @@ static void update_arc(const boost_sample_t *sample, const boost_theme_t *theme)
     set_value_arc(visual_psi, sample->psi);
     s_arc_drawn_psi = visual_psi;
 
-    const lv_color_t col = color_for_psi(theme, sample->psi);
+    const lv_color_t zone_color = zone_color_for_psi(theme, sample->psi);
     const char *zone = zone_for_psi(sample->psi);
+    if (!lv_color_eq(lv_obj_get_style_text_color(s_zone_label, 0), zone_color)) {
+        lv_obj_set_style_text_color(s_zone_label, zone_color, 0);
+    }
     if (strcmp(lv_label_get_text(s_zone_label), zone) != 0) {
-        lv_obj_set_style_text_color(s_zone_label, col, 0);
         lv_label_set_text(s_zone_label, zone);
     }
     const lv_color_t value_color = sample->psi >= s_psi_overboost ? c(theme->overboost) : c(theme->text);
@@ -1775,6 +1808,11 @@ static void draw_vault_peak_mark(lv_event_t *e)
     lv_draw_triangle(layer, &t);
 }
 
+static float vault_needle_tail_px(void)
+{
+    return boost_theme_vault_needle_tail() ? (float)VAULT_NEEDLE_TAIL_LEN : 0.0f;
+}
+
 static void draw_vault_needle(lv_event_t *e)
 {
     const boost_theme_t *theme = active_theme();
@@ -1795,8 +1833,9 @@ static void draw_vault_needle(lv_event_t *e)
 
     /* Tapered wedge: wide at the hub, a point at the tip. Two triangles form
      * the quad, and triangles are cheaper than a wide rounded line. */
-    const float bx = cx - (float)VAULT_NEEDLE_TAIL * nx;
-    const float by = cy - (float)VAULT_NEEDLE_TAIL * ny;
+    const float tail = vault_needle_tail_px();
+    const float bx = cx - tail * nx;
+    const float by = cy - tail * ny;
     const float tx = cx + (float)VAULT_NEEDLE_LEN * nx;
     const float ty = cy + (float)VAULT_NEEDLE_LEN * ny;
 
@@ -1861,9 +1900,9 @@ static void invalidate_vault_needle_fan(float old_deg, float new_deg, int sample
         const float f = samples < 2 ? 0.0f : (float)i / (float)(samples - 1);
         const float rad = (old_deg + (new_deg - old_deg) * f) * (float)M_PI / 180.0f;
         const float ct = cosf(rad), st = sinf(rad);
-        /* Both ends: the counterweight tail reaches VAULT_NEEDLE_TAIL past the
-         * pivot, which is further than the hub-sized pad below allows for. */
-        const float rs[2] = { -(float)VAULT_NEEDLE_TAIL, (float)VAULT_NEEDLE_LEN };
+        /* Both configured radial ends; the trial uses a zero-length tail while
+         * the baseline override restores the 26 px counterweight. */
+        const float rs[2] = { -vault_needle_tail_px(), (float)VAULT_NEEDLE_LEN };
         for (int k = 0; k < 2; ++k) {
             const float x = cx + rs[k] * ct;
             const float y = cy + rs[k] * st;
@@ -1908,7 +1947,7 @@ static void invalidate_vault_needle(float old_deg, float new_deg)
     const float s0 = sinf(old_deg * (float)M_PI / 180.0f);
     const float c1 = cosf(new_deg * (float)M_PI / 180.0f);
     const float s1 = sinf(new_deg * (float)M_PI / 180.0f);
-    const float r_lo = -(float)VAULT_NEEDLE_TAIL;
+    const float r_lo = -vault_needle_tail_px();
     const float r_hi = (float)VAULT_NEEDLE_LEN;
     /* A slice box is built from its four corners, so the arc swept between the
      * two angles bulges outside it by r * (1 - cos(sweep/2)). Charge that to
@@ -1935,7 +1974,8 @@ static void invalidate_vault_needle(float old_deg, float new_deg)
             if (ys[k] > maxy) maxy = ys[k];
         }
         if (i == 0) {
-            /* r_lo is negative, so slice 0 already straddles the pivot. */
+            /* Fold the hub into slice 0 whether the configured tail is zero or
+             * extends behind the pivot. */
             if (cx - hub < minx) minx = cx - hub;
             if (cx + hub > maxx) maxx = cx + hub;
             if (cy - hub < miny) miny = cy - hub;
@@ -1967,6 +2007,36 @@ static void draw_vault_alert_marks(lv_event_t *e)
         t.p[1].x = x - half; t.p[1].y = cy + h * 0.5f;
         t.p[2].x = x + half; t.p[2].y = cy + h * 0.5f;
         lv_draw_triangle(layer, &t);
+    }
+}
+
+static void vault_readout_area(int index, lv_area_t *area)
+{
+    if (area == NULL || index < 0 || index >= VAULT_SLOT_COUNT) return;
+    const int32_t x = px_icx() + k_vault_slot_x[index];
+    const int32_t y = px_icy() + 130;
+    area->x1 = x - 13;
+    area->y1 = y - 17;
+    area->x2 = x + 12;
+    area->y2 = y + 16;
+}
+
+static void draw_vault_readout(lv_event_t *e)
+{
+    if (s_vault_readout == NULL) return;
+    lv_layer_t *layer = lv_event_get_layer(e);
+    lv_draw_label_dsc_t d;
+    lv_draw_label_dsc_init(&d);
+    d.font = F_MONO40;
+    d.color = s_vault_readout_color_valid ? s_vault_readout_color : c(active_theme()->text);
+    d.align = LV_TEXT_ALIGN_CENTER;
+    d.text_local = 1;
+    for (int i = 0; i < VAULT_SLOT_COUNT; ++i) {
+        if (s_vault_slot_text[i][0] == '\0') continue;
+        lv_area_t area;
+        vault_readout_area(i, &area);
+        d.text = s_vault_slot_text[i];
+        lv_draw_label(layer, &d, &area);
     }
 }
 
@@ -2092,19 +2162,22 @@ static void build_vault(lv_obj_t *scr)
     lv_obj_set_style_radius(s_vault_window, 5, 0);
     lv_obj_clear_flag(s_vault_window, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Fixed slots so digits never slide left/right as the value changes. */
-    for (int i = 0; i < VAULT_SLOT_COUNT; ++i) {
-        s_vault_slot[i] = lv_label_create(scr);
-        lv_label_set_text(s_vault_slot[i], i == VAULT_SLOT_DOT ? "." : "");
-        lv_obj_set_style_text_font(s_vault_slot[i], F_MONO40, 0);
-        lv_obj_set_style_text_color(s_vault_slot[i], c(theme->text), 0);
-        lv_obj_set_size(s_vault_slot[i], 26, 34);
-        lv_obj_set_style_text_align(s_vault_slot[i], LV_TEXT_ALIGN_CENTER, 0);
-        /* Nudged below the window centre: the 40 px mono face carries more ascent
-         * than descent, so a box-centred label reads a few pixels high. */
-        lv_obj_align(s_vault_slot[i], LV_ALIGN_CENTER, k_vault_slot_x[i], 130);
-        lv_obj_clear_flag(s_vault_slot[i], LV_OBJ_FLAG_CLICKABLE);
-    }
+    /* Fixed slots so digits never slide left/right as the value changes. One
+     * draw object owns the same six 26x34 label boxes; unlike six separate
+     * labels, it is visited once per dirty region. */
+    s_vault_readout = lv_obj_create(scr);
+    lv_obj_remove_style_all(s_vault_readout);
+    /* Bound the object to the union of the six old 26x34 slots rather than
+     * making a full-screen draw object: needle dirties outside this band must
+     * not even enter the readout callback. */
+    lv_obj_set_size(s_vault_readout, 146, 34);
+    lv_obj_align(s_vault_readout, LV_ALIGN_CENTER, 0, 130);
+    lv_obj_clear_flag(s_vault_readout, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(s_vault_readout, draw_vault_readout, LV_EVENT_DRAW_MAIN, NULL);
+    memset(s_vault_slot_text, 0, sizeof(s_vault_slot_text));
+    s_vault_slot_text[VAULT_SLOT_DOT][0] = '.';
+    s_vault_readout_color = c(theme->text);
+    s_vault_readout_color_valid = true;
 
     /* Restored: this label was dropped in the slot rework. */
     lv_obj_t *manifold = lv_label_create(scr);
@@ -2191,13 +2264,33 @@ static void update_vault(const boost_sample_t *sample, const boost_theme_t *them
         { (char)('0' + frac % 10), 0 },
     };
     const lv_color_t vc = over ? c(theme->overboost) : c(theme->text);
+    int dirty_lo = VAULT_SLOT_COUNT;
+    int dirty_hi = -1;
     for (int i = 0; i < VAULT_SLOT_COUNT; ++i) {
-        if (strcmp(lv_label_get_text(s_vault_slot[i]), slot_txt[i]) != 0) {
-            lv_label_set_text(s_vault_slot[i], slot_txt[i]);
+        if (memcmp(s_vault_slot_text[i], slot_txt[i], sizeof(slot_txt[i])) != 0) {
+            memcpy(s_vault_slot_text[i], slot_txt[i], sizeof(s_vault_slot_text[i]));
+            if (i < dirty_lo) dirty_lo = i;
+            if (i > dirty_hi) dirty_hi = i;
         }
-        if (!lv_color_eq(lv_obj_get_style_text_color(s_vault_slot[i], 0), vc)) {
-            lv_obj_set_style_text_color(s_vault_slot[i], vc, 0);
-        }
+    }
+    const bool readout_color_changed = !s_vault_readout_color_valid ||
+                                       !lv_color_eq(s_vault_readout_color, vc);
+    if (readout_color_changed) {
+        s_vault_readout_color = vc;
+        s_vault_readout_color_valid = true;
+        dirty_lo = 0;
+        dirty_hi = VAULT_SLOT_COUNT - 1;
+    }
+    if (dirty_hi >= 0 && s_vault_readout != NULL) {
+        lv_area_t dirty;
+        vault_readout_area(dirty_lo, &dirty);
+        lv_area_t last = { 0 };
+        vault_readout_area(dirty_hi, &last);
+        dirty.x1 -= 2;
+        dirty.y1 -= 2;
+        dirty.x2 = last.x2 + 2;
+        dirty.y2 = last.y2 + 2;
+        lv_obj_invalidate_area(s_vault_readout, &dirty);
     }
     if (!lv_color_eq(lv_obj_get_style_border_color(s_vault_window, 0),
                      over ? c(theme->overboost) : c(theme->muted))) {
@@ -2469,7 +2562,7 @@ static void draw_hud_fill(lv_event_t *e)
     lv_draw_arc_dsc_t arc;
     lv_draw_arc_dsc_init(&arc);
     const float color_psi = s_hud_fill_valid ? s_hud_fill_color_psi : 0.0f;
-    if (boost_theme_hud_gradient()) arc.color = c(gradient_rgb_for_psi(theme, color_psi));
+    if (boost_theme_hud_gradient()) arc.color = gradient_color_for_psi(theme, color_psi);
     else if (color_psi >= s_psi_overboost) arc.color = c(theme->overboost);
     else if (color_psi < 0.0f) arc.color = c(theme->vacuum);
     else arc.color = c(theme->boost);
@@ -2554,8 +2647,12 @@ static void build_hud(lv_obj_t *scr)
      * callback and the primary readout second. */
     s_hud_readout = lv_obj_create(scr);
     lv_obj_remove_style_all(s_hud_readout);
-    lv_obj_set_size(s_hud_readout, DISP_SIZE, DISP_SIZE);
-    lv_obj_center(s_hud_readout);
+    /* Unlike the old full-screen draw object, this bounds object traversal and
+     * invalidation to the actual ghosts/primary glyphs. Coordinates are parent
+     * relative; draw_hud_readout() remains absolute and keeps px offsets. */
+    lv_obj_set_size(s_hud_readout, HUD_READOUT_OBJ_W, HUD_READOUT_OBJ_H);
+    lv_obj_set_pos(s_hud_readout, DISP_SIZE / 2 + HUD_READOUT_OBJ_X1,
+                   DISP_SIZE / 2 + HUD_READOUT_OBJ_Y1);
     lv_obj_clear_flag(s_hud_readout, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(s_hud_readout, draw_hud_readout, LV_EVENT_DRAW_MAIN, NULL);
     memset(s_hud_slot_text, 0, sizeof(s_hud_slot_text));
@@ -2630,18 +2727,25 @@ static void update_hud(const boost_sample_t *sample, const boost_theme_t *theme)
      * changes, not only at the vacuum/boost/overboost boundaries. */
     const float raw_color_psi = isfinite(sample->psi) ? sample->psi : 0.0f;
     const bool grad_flip = boost_theme_hud_gradient() &&
-        !lv_color_eq(c(gradient_rgb_for_psi(theme, s_hud_fill_color_psi)),
-                     c(gradient_rgb_for_psi(theme, raw_color_psi)));
+        !lv_color_eq(gradient_color_for_psi(theme, s_hud_fill_color_psi),
+                     gradient_color_for_psi(theme, raw_color_psi));
     const bool zone_flip = grad_flip ||
                            (s_hud_fill_color_psi < 0.0f) != (raw_color_psi < 0.0f) ||
                            (s_hud_fill_color_psi >= s_psi_overboost) != (raw_color_psi >= s_psi_overboost);
     if (zone_flip) {
-        /* Colour of the whole fill changes: both spans must be repainted. */
+        const bool side_flip = (old_a < zero_a) != (new_a < zero_a);
         s_hud_fill_deg = new_a;
         s_hud_fill_psi = visual_psi;
         s_hud_fill_color_psi = raw_color_psi;
-        invalidate_hud_fill(fminf(old_a, zero_a), fmaxf(old_a, zero_a));
-        invalidate_hud_fill(fminf(new_a, zero_a), fmaxf(new_a, zero_a));
+        if (side_flip) {
+            /* Opposite sides of the zero gap are disjoint. */
+            invalidate_hud_fill(fminf(old_a, zero_a), fmaxf(old_a, zero_a));
+            invalidate_hud_fill(fminf(new_a, zero_a), fmaxf(new_a, zero_a));
+        } else {
+            /* Same-side full spans overlap from zero to the endpoint. */
+            invalidate_hud_fill(fminf(fminf(old_a, new_a), zero_a),
+                                fmaxf(fmaxf(old_a, new_a), zero_a));
+        }
     } else if (new_a != old_a) {
         s_hud_fill_deg = new_a;
         s_hud_fill_psi = visual_psi;
@@ -2750,7 +2854,7 @@ static void update_hud(const boost_sample_t *sample, const boost_theme_t *theme)
 /*  Style: bigdigit  (Alvida numeral on a color-sweeping ground)              */
 /* ========================================================================== */
 
-/* BIG_STEPS defined near the top so the shared gradient helper can use it. */
+/* Positive gradient step count is defined near the shared helper above. */
 
 /* Slot geometry from the generated Alvida metrics: widest digit advance 81 px,
  * '.' 34 px. Centre of the face falls halfway between the ones digit and the
@@ -2783,17 +2887,19 @@ static uint32_t lerp_rgb(uint32_t a, uint32_t b, float t)
 
 static int big_step_for(float psi)
 {
-    const float lo = s_psi_min;
-    const float hi = s_psi_max;
-    const float t = (hi > lo) ? (clampf(psi, lo, hi) - lo) / (hi - lo) : 0.0f;
-    return (int)lroundf(t * (float)(BIG_STEPS - 1));
+    if (!isfinite(psi) || psi <= 0.0f || !(s_psi_max > 0.0f)) return 0;
+    const float positive = clampf(psi, 0.0f, s_psi_max);
+    int step = (int)ceilf((positive / s_psi_max) * (float)BIG_POSITIVE_STEPS);
+    if (step < 1) step = 1;
+    if (step > BIG_POSITIVE_STEPS) step = BIG_POSITIVE_STEPS;
+    return step;
 }
 
-static uint32_t big_color_for_step(const boost_theme_t *theme, int step)
+static uint32_t big_color_uncached(const boost_theme_t *theme, int step)
 {
-    const float t = (float)step / (float)(BIG_STEPS - 1);
-    const float psi = s_psi_min + (s_psi_max - s_psi_min) * t;
-    if (psi <= 0.0f) return theme->vacuum;
+    if (step <= 0 || !(s_psi_max > 0.0f)) return theme->vacuum;
+    if (step > BIG_POSITIVE_STEPS) step = BIG_POSITIVE_STEPS;
+    const float psi = s_psi_max * (float)step / (float)BIG_POSITIVE_STEPS;
     /* The red ramp used to be squeezed into overboost..max (about 2 psi), so it
      * snapped. Start blending earlier so the approach is gradual. */
     const float red_start = s_psi_overboost * 0.55f;
@@ -2802,6 +2908,37 @@ static uint32_t big_color_for_step(const boost_theme_t *theme, int step)
     }
     const float span = fmaxf(0.001f, s_psi_max - red_start);
     return lerp_rgb(theme->boost, theme->overboost, (psi - red_start) / span);
+}
+
+static lv_color_t gradient_lut_color(const boost_theme_t *theme, int step)
+{
+    static lv_color_t lut[BIG_POSITIVE_STEPS + 1];
+    static uint32_t vacuum, boost, overboost;
+    static float psi_max, psi_overboost;
+    static bool valid;
+    if (!valid || vacuum != theme->vacuum || boost != theme->boost ||
+        overboost != theme->overboost || psi_max != s_psi_max ||
+        psi_overboost != s_psi_overboost) {
+        vacuum = theme->vacuum;
+        boost = theme->boost;
+        overboost = theme->overboost;
+        psi_max = s_psi_max;
+        psi_overboost = s_psi_overboost;
+        for (int i = 0; i <= BIG_POSITIVE_STEPS; ++i) {
+            /* Cache the panel-effective value so equality checks and drawing use
+             * the exact same RGB565 result. */
+            lut[i] = c(big_color_uncached(theme, i));
+        }
+        valid = true;
+    }
+    if (step < 0) step = 0;
+    if (step > BIG_POSITIVE_STEPS) step = BIG_POSITIVE_STEPS;
+    return lut[step];
+}
+
+static uint32_t big_color_for_step(const boost_theme_t *theme, int step)
+{
+    return lv_color_to_u32(gradient_lut_color(theme, step));
 }
 
 /* Trapezoid sign: a straight bar read as too plain beside the fatface digits. */
@@ -2956,10 +3093,13 @@ static void update_bigdigit(const boost_sample_t *sample, const boost_theme_t *t
         const int step = big_step_for(sample->psi);
         if (step != s_big_bg_step) {
             s_big_bg_step = step;
-            /* Retarget: a step arriving mid-wipe simply restarts it at the
-             * newest colour, so the ground can never settle on a stale one. */
-            s_big_band_color = big_color_for_step(theme, step);
-            s_big_band_next = 0;
+            const uint32_t next_color = big_color_for_step(theme, step);
+            /* Custom palettes can collapse adjacent logical buckets to the same
+             * RGB565 value. Do not restart a full-screen wipe in that case. */
+            if (!lv_color_eq(c(s_big_band_color), c(next_color))) {
+                s_big_band_color = next_color;
+                s_big_band_next = 0;
+            }
         }
         if (s_big_band_next < BIG_BANDS) {
             lv_obj_set_style_bg_color(s_big_band[s_big_band_next], c(s_big_band_color), 0);
@@ -2983,14 +3123,20 @@ static void update_bigdigit(const boost_sample_t *sample, const boost_theme_t *t
         const int tstep = big_step_for(sample->psi);
         if (tstep != s_big_text_step) {
             s_big_text_step = tstep;
-            s_big_text_color = big_color_for_step(theme, tstep);
-            const lv_color_t tc = c(s_big_text_color);
-            lv_obj_t *const slots[4] = { s_big_tens, s_big_ones, s_big_dot, s_big_tenths };
-            for (int i = 0; i < 4; ++i) {
-                if (slots[i] != NULL) lv_obj_set_style_text_color(slots[i], tc, 0);
+            const uint32_t next_color = big_color_for_step(theme, tstep);
+            const lv_color_t tc = c(next_color);
+            if (!lv_color_eq(c(s_big_text_color), tc)) {
+                s_big_text_color = next_color;
+                lv_obj_t *const slots[4] = { s_big_tens, s_big_ones, s_big_dot, s_big_tenths };
+                for (int i = 0; i < 4; ++i) {
+                    if (slots[i] != NULL &&
+                        !lv_color_eq(lv_obj_get_style_text_color(slots[i], 0), tc)) {
+                        lv_obj_set_style_text_color(slots[i], tc, 0);
+                    }
+                }
+                /* The sign is drawn, not a label, so it needs an explicit repaint. */
+                if (s_big_minus != NULL) lv_obj_invalidate(s_big_minus);
             }
-            /* The sign is drawn, not a label, so it needs an explicit repaint. */
-            if (s_big_minus != NULL) lv_obj_invalidate(s_big_minus);
         }
     }
 
@@ -3331,9 +3477,10 @@ static void destroy_scene(void)
     /* s_vault_bg_buf is a memoized static face. Keep it across scene switches;
      * build_vault() repaints it when any static-art input changes. */
     s_vault_bg = s_vault_peak_mark = s_vault_crt = NULL;
-    s_vault_needle = s_vault_window = NULL;
+    s_vault_needle = s_vault_window = s_vault_readout = NULL;
     s_vault_peak = s_vault_alert = s_vault_alert_marks = NULL;
-    for (int k = 0; k < VAULT_SLOT_COUNT; ++k) s_vault_slot[k] = NULL;
+    memset(s_vault_slot_text, 0, sizeof(s_vault_slot_text));
+    s_vault_readout_color_valid = false;
 
     if (s_hud_bg_buf != NULL) {
         BG_FREE(s_hud_bg_buf);

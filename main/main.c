@@ -184,5 +184,5 @@ void app_main(void)
         ESP_LOGW(TAG, "control plane down; leaving OTA image unconfirmed for rollback");
     }
 
-    ESP_LOGI(TAG, "tap=reset peak · hold 2s=brightness toggle · AP password boost1234");
+    ESP_LOGI(TAG, "tap=reset peak · hold 1s=brightness toggle · AP password boost1234");
 }

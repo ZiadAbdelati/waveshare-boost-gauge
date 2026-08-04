@@ -716,7 +716,7 @@ static esp_err_t themes_get(httpd_req_t *req)
              "\"teSync\":%s,\"regionDBuf\":%s,"
              "\"rotation\":%u,"
              "\"vaultFace\":\"#%06lx\",\"vaultVignette\":%u,\"vaultNeedleRed\":%s,"
-             "\"demoMode\":%s,\"demoFastSweep\":%s,"
+             "\"vaultNeedleTail\":%s,\"demoMode\":%s,\"demoFastSweep\":%s,"
              "\"pixelShift\":%s,\"pixelShiftSec\":%u,\"themes\":[",
              cfg.active_theme_id,
              boost_theme_bigdigit_static_bg() ? "true" : "false",
@@ -732,6 +732,7 @@ static esp_err_t themes_get(httpd_req_t *req)
              (unsigned long)boost_theme_vault_face(),
              (unsigned)boost_theme_vault_vignette_pct(),
               boost_theme_vault_needle_red() ? "true" : "false",
+             boost_theme_vault_needle_tail() ? "true" : "false",
              boost_theme_demo_mode() ? "true" : "false",
              boost_sim_fast_sweep() ? "true" : "false",
              boost_theme_pixel_shift() ? "true" : "false",
@@ -911,6 +912,10 @@ static esp_err_t themes_config_put(httpd_req_t *req)
     if (cJSON_IsBool(vred)) {
         boost_theme_set_vault_needle_red(cJSON_IsTrue(vred));
     }
+    const cJSON *vtail = cJSON_GetObjectItemCaseSensitive(root, "vaultNeedleTail");
+    if (cJSON_IsBool(vtail)) {
+        boost_theme_set_vault_needle_tail(cJSON_IsTrue(vtail));
+    }
 
     const cJSON *id = cJSON_GetObjectItemCaseSensitive(root, "id");
     if (cJSON_IsString(id)) {
@@ -970,7 +975,8 @@ static esp_err_t page_put(httpd_req_t *req)
     if (!json_int(root, "page", &page)) json_int(root, "activePage", &page);
     cJSON_Delete(root);
     if (page < 0 || page > 1) return send_err(req, HTTPD_400, "invalid_page");
-    boost_model_set_active_page(page);
+    esp_err_t err = boost_model_set_active_page(page);
+    if (err != ESP_OK) return send_err(req, "503 Service Unavailable", "display_unavailable");
     char json[64];
     snprintf(json, sizeof(json), "{\"ok\":true,\"activePage\":%d}", page);
     return send_json(req, json);
