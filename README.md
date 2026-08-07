@@ -641,7 +641,9 @@ than several theme entries. Both persist in NVS and both are exposed on
   scaling; see below). Each ring's bulb count is chosen for UNIFORM chord
   spacing — inner 54, middle 66, outer 72 (`NEON_BULB_N_INNER/MID/OUTER`, all
   divisible by 6 so the 2-lit/4-dark accent pattern wraps seamlessly). The border is a **cumulative stage ladder**: ring z's
-  accent bulbs (staggered per ring, `(i + 2z) % 6 < 2`) light once the
+  accent bulbs (anchored per ring, `(i + offset(z)) % 6 < 2` with offset
+  0/4/0: inner and outer pairs share the top centre, the middle ring's pair
+  sits at the bottom centre) light once the
   reading has REACHED that zone (vacuum → inner only, boost → inner+middle,
   overboost → all three); dead bulbs stay dim `track`, so the two-tone look
   survives even fully lit. `neonMarqueeSpin` (persisted) makes the accent
