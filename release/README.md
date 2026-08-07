@@ -1,35 +1,41 @@
-# Prebuilt firmware v0.6.0 — physical theme swipes and Vault needle colors
+# Prebuilt firmware v0.7.0 — neon gauge theme
 
-Firmware **`v0.6.0`**, built with **ESP-IDF 5.5.1** for **ESP32-S3**, 16 MB
-flash. Includes physical up/down theme swipes with wraparound, the persisted
-green/red Vault-Tec needle choice, the embedded Wi-Fi dashboard, the DMA-safe
-AMOLED display path (`main/boost_display.c`), and the calibrated GM 12223861 MAP
-path. The same files are
-published on the [latest GitHub release](https://github.com/ZiadAbdelati/waveshare-boost-gauge/releases/latest).
+Firmware **`v0.7.0`**, built with **ESP-IDF 5.5.1** for **ESP32-S3**, 16 MB
+flash. Adds the `neon` gauge theme: three selectable faces (tube, segments,
+marquee) and four colourways (Violet, Miami, Toxic, Blood Moon), with a
+glow-baked readout in SF Alien Encounters. Also carries everything from
+v0.6.0 — physical theme swipes, the persisted Vault-Tec needle choice, the
+embedded Wi-Fi dashboard, the DMA-safe AMOLED display path
+(`main/boost_display.c`), and the calibrated GM 12223861 MAP path. The same
+files are published on the
+[latest GitHub release](https://github.com/ZiadAbdelati/waveshare-boost-gauge/releases/latest).
 
 The image reports its own version on `/api/v1/state` (`firmwareVersion`), taken
-from `git describe` at build time rather than a literal — the previous releases
-all shipped reporting a stale hard-coded `0.3.0-web`.
+from `git describe` at build time rather than a literal. Note that this value is
+captured at CMake **configure** time, not build time: a tree that was dirty when
+`idf.py` last configured will keep reporting `-dirty` through subsequent clean
+builds until `idf.py reconfigure` runs. This release was rebuilt and reflashed
+until the board reported a clean `v0.7.0`.
 
 ## Verified on hardware for this release
 
-Measured on the board at `192.168.50.102`, running the release source before the
-final clean rebuild:
+Measured on the board at `192.168.50.102`, running the exact image published
+here (clean tree, tagged `v0.7.0`, reconfigured, rebuilt, reflashed).
 
 | Gate | Result |
 |---|---|
 | Boot and network after serial flash | control plane reachable at `192.168.50.102` |
-| Physical cadence, 30 s (Dyno Cell, demo mode) | **min 58, median 61 FPS** over 104 samples |
-| Theme order | Dyno Cell → Vault-Tec → Night City → Big Digit, wrapping both ways |
-| Vault needle setting | green → red → green API round trip; persisted setting exposed by `/themes` |
-| Dyno Cell zero notch | restored as a live overlay above the colored value arc |
-| Release identity | published app image reports **`firmwareVersion v0.6.0`** |
-| Display synchronization | `teSync` and `regionDBuf` enabled; `teTimeouts 0` after flashing the release image |
+| Release identity | published app image reports **`firmwareVersion v0.7.0`** (asserted, not eyeballed) |
+| Neon cadence, `tools/check_neon_hw.py` | **segments 56, tube 59, marquee 60 FPS median**; counters live, no watchdog output |
+| Neon theme entry time | ~2 ms warm (background and glyph tiles memoized), against ~350 ms before that work |
+| Neon palettes | all four presets applied and read back over the API, including Blood Moon |
+| Reset / `customized` semantics | reset returns to the *selected* preset with the selector unmoved; verified for two presets over HTTP |
+| Serial error absence | no `task_wdt`, panic, or reset markers while the face was driven |
 
-The user verified the physical swipe behavior and needle appearance on glass.
-**Not re-verified this cycle**, and not claimed: serial-log error absence, the
-media upload/abort/delete cycle, sensor calibration/soak, and WebSocket pool or
-transport badge behavior. Those paths are unchanged by this release.
+**Not verified this cycle, and not claimed:** the media upload/abort/delete
+cycle, WebSocket pool and transport badge behavior, sensor calibration/soak, and
+the physical swipe/needle appearance on glass. Those paths are unchanged by this
+release, but they were not re-exercised for it.
 
 ## Display path (do not regress)
 
