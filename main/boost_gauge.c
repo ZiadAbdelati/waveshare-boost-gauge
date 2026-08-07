@@ -890,6 +890,21 @@ static int s_neon_spr_dx, s_neon_spr_dy;
  * already painted (nothing outside the glyph's own ink/glow). */
 static int16_t s_neon_glyph_bbox[NEON_SPRITE_COUNT][4]; /* x0,y0,x1,y1 inclusive */
 
+/* Marquee-only pre-scaled copies of the tiles above. The shared 118 px set is
+ * drawn at NEON_MARQUEE_CENTER_SCALE through LVGL's per-frame transform, which
+ * host A/B measured at ~35-40% of every readout repaint (plain blit p50
+ * 0.09 ms vs transform p50 0.14 ms on the same dirty regions, max 0.45 vs
+ * 2.15 ms). So the marquee bake produces a second 0.87-size A8 set ONCE per
+ * scene build and the live blits become plain stride-copy blends. The scaled
+ * pixels are captured by running the SAME lv_draw_image transform into a
+ * scratch canvas, so they are identical to what the per-frame transform used
+ * to paint; each slot's bbox_s is the tile's screen-space offset from the
+ * blit anchor (anchor + bbox_s), pre-baked so the blit carries no transform
+ * machinery. NULL set = allocation failed, keep the per-frame transform. */
+static void *s_neon_glyph_buf_s;
+static lv_image_dsc_t s_neon_glyph_img_s[NEON_SPRITE_COUNT];
+static int16_t s_neon_glyph_bbox_s[NEON_SPRITE_COUNT][4];
+
 /* The zone word (VACUUM / BOOST / OVERBOOST) gets the same treatment.
  *
  * It was a plain lv_label, so it was the one lit element on the face with no
@@ -1322,6 +1337,12 @@ static void neon_free_glyph_sprites(void)
         s_neon_glyph_buf = NULL;
     }
     memset(s_neon_glyph_img, 0, sizeof(s_neon_glyph_img));
+    if (s_neon_glyph_buf_s != NULL) {
+        BG_FREE(s_neon_glyph_buf_s);
+        s_neon_glyph_buf_s = NULL;
+    }
+    memset(s_neon_glyph_img_s, 0, sizeof(s_neon_glyph_img_s));
+    memset(s_neon_glyph_bbox_s, 0, sizeof(s_neon_glyph_bbox_s));
     s_neon_glyph_sprites_ready = false;
     s_neon_sprite_layout = (boost_neon_layout_t)0xFF;
 }
@@ -1488,6 +1509,29 @@ static bool neon_blit_sprite_scaled(lv_layer_t *layer, int slot,
                                     int anchor_x, int anchor_y, uint32_t ink,
                                     float scale)
 {
+    /* Pre-scaled marquee set: a plain blit of the baked 0.87-size tile at
+     * anchor + bbox_s. The pixels are identical to what the per-frame
+     * transform used to paint (same lv_draw_image call, once at bake), so
+     * this is a pure cost win with no visual change. */
+    if (scale != 1.0f && s_neon_glyph_buf_s != NULL) {
+        const lv_image_dsc_t *img = &s_neon_glyph_img_s[slot];
+        if (img->data == NULL) return false;
+        const int16_t *bb = s_neon_glyph_bbox_s[slot];
+        const int bw = (int)img->header.w;
+        const int bh = (int)img->header.h;
+        lv_area_t a = { anchor_x + bb[0], anchor_y + bb[1],
+                        anchor_x + bb[0] + bw - 1, anchor_y + bb[1] + bh - 1 };
+        if (!neon_area_overlaps(&a, &layer->_clip_area)) return true;
+        NEON_STAT_SPRITE();
+        lv_draw_image_dsc_t idsc; lv_draw_image_dsc_init(&idsc);
+        idsc.src = img;
+        idsc.opa = LV_OPA_COVER;
+        /* A8 source: LVGL blends `recolor` through the plane as the ink. */
+        idsc.recolor = c(ink);
+        idsc.recolor_opa = LV_OPA_COVER;
+        lv_draw_image(layer, &idsc, &a);
+        return true;
+    }
     const lv_image_dsc_t *img = &s_neon_glyph_img[slot];
     if (img->data == NULL) return false;
     const int16_t *bb = s_neon_glyph_bbox[slot];
@@ -1750,6 +1794,139 @@ static void neon_bake_zone_words(lv_obj_t *scr)
  * max(core, glow * gain) as the tile. No colour enters the bake at all - it is
  * applied per blit as the A8 recolor.
  */
+
+/* Marquee readout performance: bake the shared 118 px tiles at the marquee's
+ * 0.87 scale ONCE per scene build so draw time never pays LVGL's per-frame
+ * transform (host A/B: ~35-40% of every readout repaint). The scaled pixels
+ * are produced by the SAME lv_draw_image call the old per-frame blit made
+ * (A8 source, scale NEON_MARQUEE_CENTER_SCALE, pivot at the image centre,
+ * recolor white) into a scratch RGB565 canvas, then the exact transformed
+ * area - computed with the same integer corner math
+ * lv_image_buf_get_transformed_area() uses - is copied out as a compact A8
+ * tile. The destination offset uses the same expression the old blit used for
+ * its coords origin, plus LVGL's own x1/y1 of the transformed area, so the
+ * tile lands on exactly the pixels the per-frame transform used to paint.
+ * Slot's whose crop is empty (no source ink) get no tile. */
+static void neon_bake_scaled_sprites(lv_obj_t *scr, float scale)
+{
+    if (s_neon_glyph_buf_s != NULL) {
+        BG_FREE(s_neon_glyph_buf_s);
+        s_neon_glyph_buf_s = NULL;
+    }
+    memset(s_neon_glyph_img_s, 0, sizeof(s_neon_glyph_img_s));
+    memset(s_neon_glyph_bbox_s, 0, sizeof(s_neon_glyph_bbox_s));
+
+    const int scale_i = (int)lroundf(256.0f * scale);
+    if (scale_i <= 0) return;
+
+    /* Pass 1: per-slot tile dims (the transformed area of that slot's crop)
+     * and packed buffer size. x1/y1 are LVGL's own integer corner mapping of
+     * the crop corners through the pivot, exactly as
+     * lv_image_buf_get_transformed_area() computes them. */
+    int sw[NEON_SPRITE_COUNT], sh[NEON_SPRITE_COUNT];
+    uint32_t stride[NEON_SPRITE_COUNT];
+    size_t total = 0;
+    int max_bw = 0, max_bh = 0;
+    for (int slot = 0; slot < NEON_SPRITE_COUNT; ++slot) {
+        const lv_image_dsc_t *src = &s_neon_glyph_img[slot];
+        if (src->data == NULL) { sw[slot] = 0; sh[slot] = 0; stride[slot] = 0; continue; }
+        const int bw = (int)src->header.w, bh = (int)src->header.h;
+        const int x1 = (bw / 2) + (((0 - (bw / 2)) * scale_i) >> 8);
+        const int x2 = (bw / 2) + (((bw - (bw / 2)) * scale_i) >> 8) - 1;
+        const int y1 = (bh / 2) + (((0 - (bh / 2)) * scale_i) >> 8);
+        const int y2 = (bh / 2) + (((bh - (bh / 2)) * scale_i) >> 8) - 1;
+        sw[slot] = x2 - x1 + 1;
+        sh[slot] = y2 - y1 + 1;
+        stride[slot] = lv_draw_buf_width_to_stride((uint32_t)sw[slot], LV_COLOR_FORMAT_A8);
+        if (sw[slot] > 0 && sh[slot] > 0) {
+            total += (size_t)stride[slot] * (size_t)sh[slot];
+            if (bw > max_bw) max_bw = bw;
+            if (bh > max_bh) max_bh = bh;
+        }
+    }
+    if (total == 0 || max_bw == 0 || max_bh == 0) return;
+    s_neon_glyph_buf_s = BG_ALLOC(total);
+    if (s_neon_glyph_buf_s == NULL) {
+        ESP_LOGW(TAG, "neon scaled sprite alloc failed (%u B); keeping per-frame transform",
+                 (unsigned)total);
+        return;
+    }
+
+    /* Pass 2: transform each crop into one reused scratch canvas and copy the
+     * exact transformed area into its packed tile. */
+    const size_t canvas_bytes =
+        LV_CANVAS_BUF_SIZE((uint32_t)max_bw, (uint32_t)max_bh, 16, LV_DRAW_BUF_STRIDE_ALIGN);
+    void *canvas_buf = BG_ALLOC(canvas_bytes);
+    if (canvas_buf == NULL) {
+        ESP_LOGW(TAG, "neon scaled sprite canvas alloc failed (%u B); keeping per-frame transform",
+                 (unsigned)canvas_bytes);
+        BG_FREE(s_neon_glyph_buf_s);
+        s_neon_glyph_buf_s = NULL;
+        return;
+    }
+
+    uint8_t *out = (uint8_t *)s_neon_glyph_buf_s;
+    for (int slot = 0; slot < NEON_SPRITE_COUNT; ++slot) {
+        const lv_image_dsc_t *src = &s_neon_glyph_img[slot];
+        if (src->data == NULL || sw[slot] <= 0) continue;
+        const int bw = (int)src->header.w, bh = (int)src->header.h;
+        const int x1 = (bw / 2) + (((0 - (bw / 2)) * scale_i) >> 8);
+        const int x2 = (bw / 2) + (((bw - (bw / 2)) * scale_i) >> 8) - 1;
+        const int y1 = (bh / 2) + (((0 - (bh / 2)) * scale_i) >> 8);
+        const int y2 = (bh / 2) + (((bh - (bh / 2)) * scale_i) >> 8) - 1;
+
+        lv_obj_t *cv = lv_canvas_create(scr);
+        lv_canvas_set_buffer(cv, canvas_buf, bw, bh, LV_COLOR_FORMAT_RGB565);
+        lv_obj_add_flag(cv, LV_OBJ_FLAG_HIDDEN);
+        lv_draw_buf_t *db = lv_canvas_get_draw_buf(cv);
+        for (int y = 0; y < bh; ++y)
+            memset(db->data + (size_t)y * db->header.stride, 0, (size_t)bw * 2u);
+        lv_layer_t layer;
+        lv_canvas_init_layer(cv, &layer);
+        lv_area_t full = { 0, 0, bw - 1, bh - 1 };
+        lv_draw_image_dsc_t idsc; lv_draw_image_dsc_init(&idsc);
+        idsc.src = src;
+        idsc.opa = LV_OPA_COVER;
+        idsc.recolor = lv_color_white();
+        idsc.recolor_opa = LV_OPA_COVER;
+        idsc.scale_x = idsc.scale_y = (uint16_t)scale_i;
+        idsc.pivot.x = bw / 2;
+        idsc.pivot.y = bh / 2;
+        lv_draw_image(&layer, &idsc, &full);
+        lv_canvas_finish_layer(cv, &layer);
+
+        const lv_draw_buf_t *db2 = lv_canvas_get_draw_buf(cv);
+        for (int y = y1; y <= y2; ++y) {
+            const lv_color16_t *row =
+                (const lv_color16_t *)(db2->data + (size_t)y * db2->header.stride);
+            uint8_t *dst = out + (size_t)(y - y1) * stride[slot];
+            for (int x = x1; x <= x2; ++x)
+                dst[x - x1] = (uint8_t)(row[x].red * 255 / 31);
+        }
+        lv_obj_delete(cv);
+
+        /* Destination offset from the blit anchor: the old per-frame coords
+         * origin expression plus LVGL's transformed-area x1/y1, so the tile's
+         * pixel 0 lands where the transformed crop used to start. */
+        const int16_t *bb = s_neon_glyph_bbox[slot];
+        s_neon_glyph_bbox_s[slot][0] =
+            (int16_t)(lroundf(scale * (float)bb[0] + (scale - 1.0f) * (float)bw / 2.0f) + x1);
+        s_neon_glyph_bbox_s[slot][1] =
+            (int16_t)(lroundf(scale * (float)bb[1] + (scale - 1.0f) * (float)bh / 2.0f) + y1);
+
+        lv_image_dsc_t *img = &s_neon_glyph_img_s[slot];
+        memset(img, 0, sizeof(*img));
+        img->header.magic = LV_IMAGE_HEADER_MAGIC;
+        img->header.cf = LV_COLOR_FORMAT_A8;
+        img->header.w = (uint32_t)sw[slot];
+        img->header.h = (uint32_t)sh[slot];
+        img->header.stride = stride[slot];
+        img->data_size = (uint32_t)((size_t)stride[slot] * (size_t)sh[slot]);
+        img->data = out;
+        out += (size_t)stride[slot] * (size_t)sh[slot];
+    }
+    BG_FREE(canvas_buf);
+}
 static void neon_bake_glyph_sprites(lv_obj_t *scr)
 {
     /* Already baked for this layout - reuse. See s_neon_sprite_layout for why
@@ -1997,6 +2174,10 @@ static void neon_bake_glyph_sprites(lv_obj_t *scr)
                           NEON_SIGN_W,
                           core, glow, cov_w, cov_h, pad,
                           spr_w, spr_h, spr_stride, glyph_bytes);
+
+    if (marquee) {
+        neon_bake_scaled_sprites(scr, NEON_MARQUEE_CENTER_SCALE);
+    }
 
     BG_FREE(core);
     BG_FREE(glow);

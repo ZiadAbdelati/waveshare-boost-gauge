@@ -638,7 +638,12 @@ than several theme entries. Both persist in NVS and both are exposed on
   middle boost, outermost overboost — and no value ring). The three rings sit
   at 176/200/224 (`NEON_BULB_RING_STEP` 24, 1.5x the first spread) so the
   shared 118 px readout draws scaled to 0.87 (one sprite set, `neon_mq()`
-  scaling; see below). Each ring's bulb count is chosen for UNIFORM chord
+  scaling; see below). The marquee bakes that 0.87-size A8 sprite set ONCE at
+  scene build (`neon_bake_scaled_sprites`, through the same LVGL transform
+  the per-frame draw used, so the pixels are identical), and the live blits
+  are plain - host A/B measured the per-frame transform at ~35-40% of every
+  readout repaint, and the marquee audit is now fully clean (0 severe,
+  0 stale px). Each ring's bulb count is chosen for UNIFORM chord
   spacing — inner 54, middle 66, outer 72 (`NEON_BULB_N_INNER/MID/OUTER`, all
   divisible by 6 so the 2-lit/4-dark accent pattern wraps seamlessly). The border is a **cumulative stage ladder**: ring z's
   accent bulbs (anchored per ring, `(i + offset(z)) % 6 < 2` with offset

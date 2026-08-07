@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "lvgl.h"
@@ -259,6 +260,15 @@ static int run_window(void)
 }
 #endif /* SIM_HAVE_SDL */
 
+/* Wall-clock helper for per-render-cycle cost in --audit (host raster speed,
+ * used for RELATIVE A/B comparisons, not as device milliseconds). */
+static double sim_now_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
+}
+
 /**
  * Headless path: custom memory display, no SDL window.
  */
@@ -354,6 +364,14 @@ static int run_audit(const char *theme_id, int seconds)
     uint64_t px_total = 0;
     uint64_t px_max = 0;
     uint32_t rendered = 0;
+    /* Per-cycle (ms, px) pairs for render-cost A/B. Host raster speed is not
+     * device speed, but the RELATIVE mix (which cycles are expensive) and the
+     * delta when a draw path changes are meaningful. */
+    typedef struct { double ms; uint64_t px; } cycle_t;
+    cycle_t *cycles = NULL;
+    size_t cycles_cap = 0, cycles_n = 0;
+    uint32_t over16 = 0;
+    double ms_total = 0.0, ms_max = 0.0;
     uint64_t stale_px_total = 0;
     uint32_t stale_frames = 0;
     uint64_t stale_worst = 0;
@@ -394,7 +412,21 @@ static int run_audit(const char *theme_id, int seconds)
         g_neon_sign_bars = 0; g_neon_sprite_blits = 0;
 #endif
         lv_tick_inc(16);
+        const double t0 = sim_now_ms();
         lv_timer_handler();
+        const double dt = sim_now_ms() - t0;
+        if (s_flush_px > 0) {
+            if (cycles_n == cycles_cap) {
+                cycles_cap = cycles_cap ? cycles_cap * 2 : 1024;
+                cycles = (cycle_t *)realloc(cycles, cycles_cap * sizeof(cycle_t));
+            }
+            cycles[cycles_n].ms = dt;
+            cycles[cycles_n].px = s_flush_px;
+            cycles_n++;
+            ms_total += dt;
+            if (dt > ms_max) ms_max = dt;
+            if (dt > 16.0) over16++;
+        }
 #if BOOST_NEON_DRAW_STATS
         if (s_flush_px > 0) {
             cb_total += g_neon_cb_calls;
@@ -475,6 +507,34 @@ static int run_audit(const char *theme_id, int seconds)
 
     printf("audit theme=%s seconds=%d\n", theme_id ? theme_id : "(default)", seconds);
     printf("  render cycles      : %u of %d samples\n", rendered, frames);
+    if (cycles_n > 0) {
+        /* percentile sort on ms */
+        cycle_t *tmp = (cycle_t *)malloc(cycles_n * sizeof(cycle_t));
+        memcpy(tmp, cycles, cycles_n * sizeof(cycle_t));
+        for (size_t a = 1; a < cycles_n; a++) {
+            cycle_t k = tmp[a]; size_t b = a;
+            while (b > 0 && tmp[b - 1].ms > k.ms) { tmp[b] = tmp[b - 1]; b--; }
+            tmp[b] = k;
+        }
+        printf("  cycle ms           : p50 %.2f  p90 %.2f  max %.2f  over-16ms %u\n",
+               tmp[cycles_n / 2].ms, tmp[cycles_n * 9 / 10].ms, ms_max, over16);
+        printf("  cost rate          : %.1f us/kpx (host, A/B only)\n",
+               ms_total / (double)px_total * 1000.0);
+        /* top-5 cycles by flushed pixels with their time */
+        cycle_t *bp = (cycle_t *)malloc(cycles_n * sizeof(cycle_t));
+        memcpy(bp, cycles, cycles_n * sizeof(cycle_t));
+        for (size_t a = 1; a < cycles_n; a++) {
+            cycle_t k = bp[a]; size_t b = a;
+            while (b > 0 && bp[b - 1].px < k.px) { bp[b] = bp[b - 1]; b--; }
+            bp[b] = k;
+        }
+        printf("  top-5 px cycles    : ");
+        for (size_t i = 0; i < (cycles_n < 5 ? cycles_n : 5); i++)
+            printf("(px=%llu ms=%.2f) ", (unsigned long long)bp[i].px, bp[i].ms);
+        printf("\n");
+        free(tmp); free(bp);
+    }
+    free(cycles);
     printf("  flushed px/cycle   : mean %.0f  max %llu\n",
            rendered ? (double)px_total / (double)rendered : 0.0,
            (unsigned long long)px_max);
