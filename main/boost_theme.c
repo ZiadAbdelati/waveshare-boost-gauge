@@ -30,6 +30,8 @@
 #define NVS_KEY_VVIG    "vault_vig"
 #define NVS_KEY_VRED    "vault_red"
 #define NVS_KEY_VTAIL   "vault_tail"
+#define NVS_KEY_NEONLAY "neon_layout"
+#define NVS_KEY_NEONPRE "neon_preset"
 #define NVS_KEY_DEMO    "demo_mode"
 
 /* Palettes/styles here MUST match tools/mock_server.py and the web renderers so
@@ -87,6 +89,24 @@ static const boost_theme_t s_defaults[] = {
         .overboost = 0xFF4F6D,
         .zero = 0xFFFFFF,
     },
+    {
+        .id = "neon",
+        .name = "Neon",
+        .style = BOOST_STYLE_NEON,
+        .face = 0x000000,
+        .track = 0x241038,
+        .text = 0xFFFFFF,
+        .muted = 0x5A3A7A,
+        /* Must mirror the Violet entry in s_neon_palettes[] below. This is
+         * only the pre-init state - boost_theme_init() applies the selected
+         * preset over it - but anything reading a theme before that (the
+         * simulator used to) sees these values, so a drift here shows up as a
+         * screenshot that disagrees with the device. */
+        .vacuum = 0x7B00FF,
+        .boost = 0xFF2BD6,
+        .overboost = 0xFF1500,
+        .zero = 0xFFFFFF,
+    },
     /* Sport Cluster theme removed from the selectable list per user request.
      * The BOOST_STYLE_SPORT enum + renderer remain in boost_gauge.c for
      * potential future use, but the theme is no longer user-selectable. */
@@ -117,6 +137,83 @@ static uint32_t s_vault_face = 0x05281Au;
 static uint8_t s_vault_vig_pct = 60u;
 static bool s_vault_needle_red;
 static bool s_vault_needle_tail;
+static uint8_t s_neon_layout = (uint8_t)BOOST_NEON_LAYOUT_DEFAULT;
+static uint8_t s_neon_preset = (uint8_t)BOOST_NEON_PRESET_VIOLET;
+
+typedef struct {
+    uint32_t track;
+    uint32_t muted;
+    boost_theme_colors_t zones;
+} neon_palette_t;
+
+/* Violet's vacuum has moved twice, and the reason it can move back now is that
+ * the constraint that pushed it away is gone.
+ *
+ * It started at 0x8B3DFF. Under neon_lit()'s original PER-CHANNEL clamp that
+ * pinned both R and B to 255, landing on the same (255,x,255) corner boost's
+ * 0xFF2BD6 lands on - both zones read as magenta differing only in G, the
+ * "two shades of pink". The fix then was to darken the base to 0x4A1FFF so
+ * post-bloom R stayed off the ceiling.
+ *
+ * neon_lit() no longer clamps per channel (it normalises and lifts toward
+ * white, see NEON_WHITE_LIFT), so a bright base no longer collapses onto that
+ * corner - and 0x4A1FFF's real cost became visible: at only 74 of red against
+ * 255 of blue it blooms to (101,64,255), which reads as indigo, not violet.
+ * The palette is called Violet.
+ *
+ * 0x7B00FF blooms to (143,51,255) - almost exactly the (145,37,255) the old
+ * per-channel clamp used to produce, which is the look this palette was always
+ * meant to have, but arrived at honestly rather than by clipping. Zero green in
+ * the base keeps it from drifting toward lavender. Separation from boost's
+ * bloomed (255,62,218) is 118 units, against 158 for the indigo it replaces -
+ * a real cost, paid deliberately for a violet that is actually violet, and
+ * still far from the ~0 of the original convergence. */
+static const neon_palette_t s_neon_palettes[] = {
+    /* Overboost is red rather than the orange it started as. Against a magenta
+     * boost that keeps the same 168-unit post-bloom gap the orange had (the
+     * palette's limiting pair is vacuum-to-boost at 118 either way), so the
+     * change costs nothing in separation - it is purely the requested look. */
+    { .track = 0x241038, .muted = 0x5A3A7A,
+      .zones = { .vacuum = 0x7B00FF, .boost = 0xFF2BD6, .overboost = 0xFF1500 } },
+    /* Orange-red, not pink: pink against the boost magenta could not be
+     * told apart at a glance, and overboost is the one cue that has to
+     * survive peripheral vision. */
+    { .track = 0x10222E, .muted = 0x3F6E80,
+      .zones = { .vacuum = 0x00E5FF, .boost = 0xFF2BD6, .overboost = 0xFF2A00 } },
+    { .track = 0x12300A, .muted = 0x4C7A2E,
+      .zones = { .vacuum = 0x39FF14, .boost = 0xFFF000, .overboost = 0xFF00A0 } },
+    /* Blood Moon: brighter electric blue on vacuum, crimson boost, orange
+     * overboost - all three specified directly.
+     *
+     * Worth knowing rather than discovering later: this is the pairing the
+     * previous note here warned against. Boost and overboost are now adjacent
+     * warm hues, and the bloom lifts the crimson to (255,44,72) against the
+     * orange's (255,117,48) - 77 units apart, where the yellow overboost this
+     * replaces sat 176 away. They are still tellable apart by hue (red vs
+     * orange) and the G channel differs by 73, but overboost is the one cue
+     * that has to survive peripheral vision, and this is the palette where it
+     * has the least margin to do it. Kept as asked; if it ever reads
+     * ambiguous on the glass, overboost is the knob. */
+    { .track = 0x0C1440, .muted = 0x35509E,
+      .zones = { .vacuum = 0x0064FF, .boost = 0xC4172E, .overboost = 0xFF6A00 } },
+};
+
+static boost_neon_preset_t boost_neon_preset_clamp(uint8_t preset)
+{
+    return preset <= BOOST_NEON_PRESET_BLOODMOON ? (boost_neon_preset_t)preset
+                                                  : BOOST_NEON_PRESET_VIOLET;
+}
+
+static void apply_neon_preset(void)
+{
+    boost_theme_t *neon = &s_themes[THEME_COUNT - 1];
+    const neon_palette_t *palette = &s_neon_palettes[boost_neon_preset_clamp(s_neon_preset)];
+    neon->track = palette->track;
+    neon->muted = palette->muted;
+    neon->vacuum = palette->zones.vacuum;
+    neon->boost = palette->zones.boost;
+    neon->overboost = palette->zones.overboost;
+}
 /* Burn-in protection is on unless it was explicitly switched off, so a panel
  * that never sees the settings page is still protected. */
 static bool s_pixel_shift = true;
@@ -186,6 +283,8 @@ static void persist(void)
     nvs_set_u8(h, NVS_KEY_VVIG, s_vault_vig_pct);
     nvs_set_u8(h, NVS_KEY_VRED, s_vault_needle_red ? 1 : 0);
     nvs_set_u8(h, NVS_KEY_VTAIL, s_vault_needle_tail ? 1 : 0);
+    nvs_set_u8(h, NVS_KEY_NEONLAY, s_neon_layout);
+    nvs_set_u8(h, NVS_KEY_NEONPRE, s_neon_preset);
     nvs_set_u8(h, NVS_KEY_DEMO, s_demo_mode ? 1 : 0);
     nvs_commit(h);
     nvs_close(h);
@@ -230,6 +329,15 @@ void boost_theme_init(void)
     uint8_t px = 0;
     if (nvs_get_u8(h, NVS_KEY_PXSHIFT, &px) == ESP_OK) {
         s_pixel_shift = (px != 0);
+    }
+
+    uint8_t nl = 0;
+    if (nvs_get_u8(h, NVS_KEY_NEONLAY, &nl) == ESP_OK) {
+        s_neon_layout = (uint8_t)boost_neon_layout_clamp(nl);
+    }
+    uint8_t np = 0;
+    if (nvs_get_u8(h, NVS_KEY_NEONPRE, &np) == ESP_OK) {
+        s_neon_preset = (uint8_t)boost_neon_preset_clamp(np);
     }
 
     /* Clamped on the way in as well as the way out: the range can narrow in a
@@ -321,6 +429,7 @@ void boost_theme_init(void)
     }
     nvs_close(h);
 #endif /* ESP_PLATFORM */
+    apply_neon_preset();
 }
 
 static boost_theme_t *find_mutable(const char *id)
@@ -356,6 +465,18 @@ bool boost_theme_reset_colors(const char *id)
     if (t == NULL) {
         return false;
     }
+    /* Neon's "default" is not the entry in s_defaults[] - that entry holds the
+     * Violet preset, because some palette had to be compiled in as the initial
+     * one. Resetting through it therefore painted Violet's colours over
+     * whatever preset was selected while leaving the selector pointing at the
+     * old preset, so the two disagreed until the user cycled the selector away
+     * and back. The default for this theme IS the selected preset, so reset
+     * re-applies that instead. */
+    if (strcmp(id, "neon") == 0) {
+        apply_neon_preset();
+        persist();
+        return true;
+    }
     for (size_t i = 0; i < THEME_COUNT; ++i) {
         if (strcmp(s_defaults[i].id, id) == 0) {
             t->vacuum = s_defaults[i].vacuum;
@@ -373,6 +494,20 @@ bool boost_theme_is_customized(const char *id)
     const boost_theme_t *t = find_mutable(id);
     if (t == NULL) {
         return false;
+    }
+    /* Same reasoning as boost_theme_reset_colors(): neon's baseline is the
+     * SELECTED preset, not the Violet entry that happens to sit in
+     * s_defaults[]. Comparing against s_defaults reported every non-Violet
+     * preset as "customized" the moment it was selected, without the user
+     * having edited a single colour - and that flag is what the dashboard
+     * offers a reset for, so it was inviting exactly the reset that then
+     * behaved surprisingly. */
+    if (strcmp(id, "neon") == 0) {
+        const neon_palette_t *p =
+            &s_neon_palettes[boost_neon_preset_clamp(s_neon_preset)];
+        return t->vacuum != p->zones.vacuum ||
+               t->boost != p->zones.boost ||
+               t->overboost != p->zones.overboost;
     }
     for (size_t i = 0; i < THEME_COUNT; ++i) {
         if (strcmp(s_defaults[i].id, id) == 0) {
@@ -611,10 +746,37 @@ const char *boost_style_name(boost_gauge_style_t style)
             return "bigdigit";
         case BOOST_STYLE_SPORT:
             return "sport";
+        case BOOST_STYLE_NEON:
+            return "neon";
         case BOOST_STYLE_ARC:
         default:
             return "arc";
     }
+}
+
+boost_neon_layout_t boost_theme_neon_layout(void)
+{
+    return boost_neon_layout_clamp(s_neon_layout);
+}
+
+void boost_theme_set_neon_layout(boost_neon_layout_t layout)
+{
+    ensure_loaded();
+    s_neon_layout = (uint8_t)boost_neon_layout_clamp((uint8_t)layout);
+    persist();
+}
+
+boost_neon_preset_t boost_theme_neon_preset(void)
+{
+    return boost_neon_preset_clamp(s_neon_preset);
+}
+
+void boost_theme_set_neon_preset(boost_neon_preset_t preset)
+{
+    ensure_loaded();
+    s_neon_preset = (uint8_t)boost_neon_preset_clamp((uint8_t)preset);
+    apply_neon_preset();
+    persist();
 }
 
 const boost_theme_t *boost_theme_default(void)

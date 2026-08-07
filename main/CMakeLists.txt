@@ -13,6 +13,7 @@ idf_component_register(
         "boost_sensors.c"
         "boost_brightness.c"
         "boost_theme.c"
+        "boost_neon_geom.c"
         "boost_web.c"
         "boost_media_store.c"
         "boost_network.c"
@@ -30,6 +31,9 @@ idf_component_register(
         "fonts/font_cond_22.c"
         "fonts/font_cond_32.c"
         "fonts/font_cond_96.c"
+        "fonts/neon_big.c"
+        "fonts/neon_huge.c"
+        "fonts/neon_label.c"
         "fonts/font_wide_22.c"
         "fonts/font_wide_32.c"
     INCLUDE_DIRS

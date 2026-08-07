@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "boost_neon_geom.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -19,6 +21,7 @@ typedef enum {
     BOOST_STYLE_HUD,       /* cyberpunk targeting HUD (Night City) */
     BOOST_STYLE_BIGDIGIT,  /* huge Alvida numeral on a color-sweep ground */
     BOOST_STYLE_SPORT,     /* magenta segmented circular sport cluster */
+    BOOST_STYLE_NEON,      /* neon sign face, three layouts (Neon) */
 } boost_gauge_style_t;
 
 typedef struct {
@@ -169,6 +172,23 @@ void boost_theme_set_vault_needle_red(bool enabled);
 /* Optional 26 px counterweight behind the Vault needle hub. Default off. */
 bool boost_theme_vault_needle_tail(void);
 void boost_theme_set_vault_needle_tail(bool enabled);
+
+/*
+ * Which neon layout the Neon theme renders.
+ */
+boost_neon_layout_t boost_theme_neon_layout(void);
+void boost_theme_set_neon_layout(boost_neon_layout_t layout);
+
+typedef enum {
+    BOOST_NEON_PRESET_VIOLET = 0,
+    BOOST_NEON_PRESET_MIAMI = 1,
+    BOOST_NEON_PRESET_TOXIC = 2,
+    BOOST_NEON_PRESET_BLOODMOON = 3, /* deep blue vacuum, maroon-red boost,
+                                       * unmistakable yellow overboost */
+} boost_neon_preset_t;
+
+boost_neon_preset_t boost_theme_neon_preset(void);
+void boost_theme_set_neon_preset(boost_neon_preset_t preset);
 
 /*
  * AMOLED burn-in countermeasure. The gauge shows one static-heavy face for

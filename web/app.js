@@ -112,6 +112,8 @@ const state = {
   rotation: 0,
   vaultNeedleRed: false,
   vaultNeedleTail: false,
+  neonLayout: 1,
+  neonPreset: 0,
   hudTrueBlack: false,
   /* Whole GET /sensors/calibration body, folded back in from every response so
    * the settings render never reads a half-updated mirror. Null until the first
@@ -297,6 +299,11 @@ function lerpColor(a, b, t) {
 /* Point on a circle, angle in degrees measured clockwise from 12 o'clock,
  * in the centered 466-space the themed renderers draw in. */
 const DEG = Math.PI / 180;
+/* SF Alien Encounters glyphs run from the baseline up 0.70 em, and the
+ * generated fonts carry base_line 0 - so with an alphabetic baseline the y
+ * coordinate IS the ink bottom, and ink top is y - 0.70 em. Both neon readout
+ * sizes measure the same ratio (76/108 and 108/154). */
+const NEON_INK_EM = 0.70;
 function polar(r, aDeg) {
   const t = aDeg * DEG;
   return [r * Math.sin(t), -r * Math.cos(t)];
@@ -387,6 +394,16 @@ function psiToAngle(psi, range = psiRange()) {
   return zeroAngle + t * (ARC_START + ARC_RANGE - zeroAngle);
 }
 
+function psiToSweep(psi, a0, a1, range = psiRange()) {
+  const zeroAt = a0 + ((range.zeroAngle - ARC_START) / ARC_RANGE) * (a1 - a0);
+  const value = clamp(psi, range.psiMin, range.psiMax);
+  if (value < 0) {
+    const span = -range.psiMin;
+    return a0 + (span > 0 ? (value - range.psiMin) / span : 1) * (zeroAt - a0);
+  }
+  return zeroAt + (range.psiMax > 0 ? value / range.psiMax : 0) * (a1 - zeroAt);
+}
+
 function degToRad(deg) {
   return (deg * Math.PI) / 180;
 }
@@ -475,6 +492,8 @@ function drawGauge(sample) {
       return drawHudGauge(sample, psi, g);
     case "bigdigit":
       return drawBigDigitGauge(sample, psi, g);
+    case "neon":
+      return drawNeonGauge(sample, psi, g);
     case "sport":
       return drawSportGauge(sample, psi, g);
     default:
@@ -566,6 +585,254 @@ function drawArcGauge(sample, psi, g) {
     ctx.font = `700 ${Math.max(11, 12 * scale)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
     ctx.fillText("DEMO", cx, cy + 84 * scale);
   }
+}
+
+/* ── Style: neon — fixed-cell bloom ring / tube / marquee mirror ─────────── */
+function drawNeonGauge(sample, psi, g) {
+  const p = state.palette;
+  const range = psiRange();
+  const layout = Number.isInteger(Number(state.neonLayout)) ? Number(state.neonLayout) : 1;
+  const S = g.scale;
+  const nseg = 54;
+  const ringR = 228;
+  const segmentW = 30;
+  const halo = 12;
+  const start = ARC_START;
+  const sweep = ARC_RANGE;
+  const zero = psiToSweep(0, start, start + sweep, range);
+  const value = psiToSweep(psi, start, start + sweep, range);
+  const zone = psi >= range.psiOverboost ? "OVERBOOST" : psi > 0.05 ? "BOOST" : "VACUUM";
+  const accent = psi >= range.psiOverboost ? p.overboost : psi > 0.05 ? p.boost : p.vacuum;
+  const lit = neonLitColor(accent);
+  const marquee = layout === 2;
+  const tube = layout === 0;
+  const stackDy = marquee ? 20 : 0;
+  /* Canvas CAN blur, unlike the panel's draw path, so the mirror reproduces
+   * the baked glow with a shadow rather than approximating it. The firmware
+   * bakes a box blur of radius 5 applied twice at 115% gain; a shadowBlur of
+   * 14 matches its visible reach closely enough to be a fair mirror. */
+  const GLOW = 14;
+  const withGlow = (color, draw) => {
+    ctx.save();
+    ctx.shadowColor = color;
+    ctx.shadowBlur = GLOW;
+    draw();
+    ctx.restore();
+  };
+
+  ctx.save();
+  ctx.translate(g.cx, g.cy);
+  ctx.scale(S, S);
+  ctx.fillStyle = "#000000";
+  ctx.beginPath(); ctx.arc(0, 0, 233, 0, Math.PI * 2); ctx.fill();
+
+  /* LVGL's arc radius is the stroke's OUTER EDGE. Canvas centres a stroke on
+   * the path it is given. Passing ringR straight through therefore centred all
+   * three bands on the same circle, which put the 6 px white cap in the MIDDLE
+   * of the 42 px band and made the segment read as a symmetrical stripe. The
+   * panel stacks them inward from a shared outer edge: white cap outermost,
+   * then the bloomed body, then the raw palette colour on the inside. */
+  const arc = (a0, a1, width, color) => {
+    ctx.strokeStyle = color; ctx.lineWidth = width; ctx.lineCap = "butt";
+    ctx.beginPath();
+    ctx.arc(0, 0, ringR - width / 2, degToRad(a0), degToRad(a1));
+    ctx.stroke();
+  };
+  const step = sweep / nseg;
+  if (marquee) {
+    ctx.fillStyle = p.track; roundRectPath(-150, 68, 300, 16, 8); ctx.fill();
+    /* Both kinds of bulb. Every sixth PAIR is an accent carrying the zone
+     * colour; the rest are dead track. Drawing only the accents left the border
+     * as twelve floating dots instead of a marquee. */
+    for (let i = 0; i < 72; i++) {
+      const a = i * 360 / 72 * DEG;
+      ctx.fillStyle = i % 6 < 2 ? neonLitColor(accent, 0.55) : p.track;
+      ctx.beginPath(); ctx.arc(Math.cos(a) * 224, Math.sin(a) * 224, 4, 0, Math.PI * 2); ctx.fill();
+    }
+    const x0 = -150 + (psiToSweep(0, 0, 300, range));
+    const xv = -150 + (psiToSweep(psi, 0, 300, range));
+    const lo = Math.min(x0, xv), hi = Math.max(x0, xv);
+    if (hi - lo > 2) {
+      ctx.fillStyle = lit; roundRectPath(lo, 68, hi - lo, 16, 8); ctx.fill();
+    }
+    ctx.fillStyle = "#ffffff"; roundRectPath(x0 - 3.5, 62.5, 7, 27, 3.5); ctx.fill();
+  } else {
+    /* The unlit track shares the same outer edge as the lit bands. */
+    arc(start, start + sweep, tube ? 26 : 30, p.track);
+    const lo = Math.min(zero, value), hi = Math.max(zero, value);
+    const zeroSeg = Math.floor((zero - start) / step);
+    if (tube) {
+      if (hi - lo > 2) { arc(lo, hi, 38, neonDim(accent)); arc(lo, hi, 26, lit); arc(lo, hi, 6, "#ffffff"); }
+      /* After the run, and +-3 degrees: the panel's run starts exactly at zero
+       * and sweeps outward at this same radius and width, so drawing the
+       * marker first would leave only half of it - which is what used to
+       * happen on the panel itself (NEON_TUBE_ZERO_DEG). */
+      arc(zero - 3, zero + 3, 38, "#ffffff");
+    } else {
+      /* Index by floor at BOTH ends, exactly as boost_neon_lit_span() does, so
+       * a value landing mid-segment lights that segment whole. Testing each
+       * segment's START angle against the span instead dropped the segment
+       * containing zero, because zero sits at 101.25 degrees and the step is 5. */
+      const litRun = hi - lo >= step * 0.5;
+      const first = Math.max(0, Math.floor((lo - start) / step));
+      const last = Math.min(nseg - 1, Math.floor((hi - start) / step));
+      for (let i = 0; i < nseg; i++) {
+        const a0 = start + i * step + 1;
+        const a1 = a0 + step - 2;
+        if (i === zeroSeg) { arc(a0, a1, segmentW + halo, "#ffffff"); continue; }
+        if (!litRun || i < first || i > last) continue;
+        arc(a0, a1, segmentW + halo, neonDim(accent));
+        arc(a0, a1, segmentW, lit);
+        arc(a0, a1, 6, "#ffffff");
+      }
+    }
+  }
+
+  const tenthsTotal = Math.round(Math.abs(psi) * 10);
+  const whole = Math.floor(tenthsTotal / 10);
+  const chars = `${whole >= 10 ? Math.floor(whole / 10) : ""}${whole % 10}.${tenthsTotal % 10}`;
+  /* These are NEON_SLOT_W / NEON_DOT_W and their marquee twins, verbatim. They
+   * had drifted badly - 64/33 against the panel's 88/34 - which made the mirror
+   * draw a visibly tighter readout than the panel ever showed, and sent the
+   * spacing work chasing a difference that was in this file, not on the glass. */
+  const widths = [...chars].map((ch) => ch === "." ? (marquee ? 37 : 34) : (marquee ? 96 : 88));
+  const total = widths.reduce((a, b) => a + b, 0);
+  let x = -total / 2;
+  const readoutTop = marquee ? -71 : -42;
+  const fontPx = marquee ? 130 : 118;
+  /* Weight 400, matching what styles.css actually declares for this face. It
+   * asked for 700, which the family does not provide - the browser then shapes
+   * the SYSTEM fallback instead, silently, and canvas never corrects itself
+   * because it does not watch for webfont swaps. That is why the readout lost
+   * its typeface. */
+  ctx.font = `italic ${fontPx}px "SF Alien Encounters", sans-serif`;
+  /* Alphabetic, not "top". lv_draw_label anchors to the TOP OF ITS BOX and this
+   * font has base_line 0, so its ink runs from the box top down 0.70 em. Canvas
+   * "top" anchors to the font's ASCENT metric, which sits above the ink here -
+   * so the same y drew the readout low. Placing the baseline at
+   * readoutTop + 0.70 em puts the INK top where the panel puts it. */
+  ctx.textAlign = "center"; ctx.textBaseline = "alphabetic";
+  const readoutBaseline = readoutTop + fontPx * NEON_INK_EM;
+  ctx.fillStyle = lit;
+  withGlow(lit, () => {
+    let gx = x;
+    for (let i = 0; i < chars.length; i++) { const w = widths[i]; ctx.fillText(chars[i], gx + w / 2, readoutBaseline); gx += w; }
+  });
+  if (psi < 0 && tenthsTotal !== 0) {
+    const adv = [780, 409, 767, 753, 673, 767, 762, 677, 770, 763];
+    const lsb = [133, 133, 113, 92, 99, 107, 133, 126, 128, 147];
+    const first = Number(chars[0]);
+    const font = fontPx;
+    const sw = marquee ? 44 : 42;
+    const gap = 8;
+    const firstCell = marquee ? 96 : 88;
+    const glyphLeft = -total / 2 + firstCell / 2 - (adv[first] * font / 1000) / 2 + lsb[first] * font / 1000;
+    const sx = glyphLeft - gap - sw / 2;
+    const skew = 0.2126;                       /* tan(12 deg), the italic angle */
+    const barH = font * 8 / 128, period = font * 10.4 / 128, lean = barH * skew;
+    ctx.fillStyle = lit;
+    /* Centre the mark on the digits' line box, not on the face - and derive
+     * that centre the way the panel does, as top + line_h/2 with line_h the
+     * generated font's own integer line height, rather than from a hand-fitted
+     * em fraction that has to be re-fitted every time the font changes. Both
+     * generated fonts measure exactly NEON_INK_EM of the em (83 at 118 px,
+     * 91 at 130 px), so rounding that product reproduces line_h. */
+    const lineH = Math.round(fontPx * NEON_INK_EM);
+    const inkMid = readoutTop + Math.floor(lineH / 2);
+    const top = inkMid - (period + barH) / 2;
+    const bars = [];
+    for (let i = 0; i < 2; i++) {
+      const y0 = top + i * period, y1 = y0 + barH;
+      /* Shear the WHOLE mark about its centre line, not just each bar's own
+       * edges. Without this both bars sat at the same x, so the upper bar did
+       * not step right and the mark leaned backwards against the italic digits
+       * next to it. Matches boost_neon_sign_bars(). */
+      const dx = Math.round((inkMid - (y0 + y1) / 2) * skew);
+      const xb0 = sx - sw / 2 + dx, xb1 = sx + sw / 2 + dx;
+      bars.push({ y0, y1, xb0, xb1 });
+    }
+    /* One glow over BOTH bars, not one per bar. Drawing them separately would
+     * let each bar's shadow fall across the other, filling the gap between
+     * them - which is exactly the failure the panel's own first sign glow had
+     * when it inflated the bars instead of blurring them. */
+    withGlow(lit, () => {
+      ctx.beginPath();
+      for (const b of bars) {
+        ctx.moveTo(b.xb0 + lean, b.y0); ctx.lineTo(b.xb1 + lean, b.y0);
+        ctx.lineTo(b.xb1, b.y1); ctx.lineTo(b.xb0, b.y1);
+        ctx.closePath();
+      }
+      ctx.fill();
+    });
+  }
+  /* The zone word and the unit mark share the firmware's 24 px neon_label, not
+   * a system font - they are set in the same typeface as the readout.
+   *
+   * Alphabetic again, for the same reason as the readout. The firmware puts
+   * "P S I" in a 200x30 box top-anchored at NEON_UNIT_Y - 15, and neon_label
+   * has base_line 0 with a 17 px line height, so its ink runs 81..98 and the
+   * ink BOTTOM sits at NEON_UNIT_Y + 2 - not at NEON_UNIT_Y. Drawing it
+   * centred on NEON_UNIT_Y pushed the ink down far enough for its antialiasing
+   * to touch the rule 10 px below, which is the reported collision. With
+   * base_line 0 an alphabetic baseline IS the ink bottom, so the y here is the
+   * measured 98 and the rule at 106 clears it by 8. */
+  ctx.textBaseline = "alphabetic";
+  /* Upright, not italic. The zone word and the unit mark are set in the
+   * typeface's regular face while the readout stays italic - styles.css inlines
+   * both faces under one family, so dropping the `italic` keyword is what picks
+   * the upright one. Leaving the keyword in would silently keep the italic
+   * face, since a family with only one face serves it for any style asked. */
+  ctx.font = `24px "SF Alien Encounters", sans-serif`;
+  /* The zone word glows too now - it is baked through the same blur as the
+   * readout on the panel, having been the one lit element there with no glow
+   * at all. */
+  ctx.fillStyle = lit;
+  withGlow(lit, () => ctx.fillText(zone, 0, marquee ? -132 : -95));
+  /* NEON_UNIT_Y / NEON_RULE_Y / NEON_PEAK_Y, which moved down 40 as a unit.
+   * The unit mark's y is UNIT_Y + 2 because neon_label has base_line 0 and an
+   * alphabetic baseline IS the ink bottom - see the note above. */
+  ctx.fillStyle = p.muted; ctx.fillText("P S I", 0, 138 + stackDy);
+  ctx.strokeStyle = p.muted; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(-62, 146 + stackDy); ctx.lineTo(62, 146 + stackDy); ctx.stroke();
+  /* Peak is clamped at zero on the panel, as on every other face here. */
+  ctx.textBaseline = "middle";
+  ctx.font = `700 16px monospace`;
+  ctx.fillText(`PEAK ${Math.max(0, Number(sample.peakPsi) || 0).toFixed(1)}`, 0, 166 + stackDy);
+  ctx.restore();
+}
+
+/* Mirrors neon_lit() in main/boost_gauge.c, including its overflow handling -
+ * which this function never had. It clamped each channel independently, so
+ * every saturated palette entry pinned to the same corner of the colour cube
+ * and the three zones converged on nearly the same post-bloom colour. That is
+ * why the zones still looked indistinguishable HERE after the panel had been
+ * fixed twice: the fix had only ever been applied on the firmware side.
+ *
+ * Overflow past full scale desaturates toward white rather than being clipped
+ * or scaled away - see the long note on NEON_WHITE_LIFT in boost_gauge.c for
+ * why both of those failed. */
+const NEON_BLOOM = 1.92, NEON_SAT = 1.30, NEON_WHITE_LIFT = 0.35;
+/* NEON_HALO_DIM: the ring's inner band is a dimmed zone colour, not the raw
+ * palette entry, so the three bands read dark -> bright -> white outward. */
+const NEON_HALO_DIM = 0.55;
+function neonDim(hex, k = NEON_HALO_DIM) {
+  const [r, g, b] = hexToRgb(hex);
+  return `rgb(${Math.round(r * k)}, ${Math.round(g * k)}, ${Math.round(b * k)})`;
+}
+function neonLitColor(hex, factor = 1) {
+  const [r0, g0, b0] = hexToRgb(hex);
+  const luma = 0.299 * r0 + 0.587 * g0 + 0.114 * b0;
+  const gain = NEON_BLOOM * factor;
+  let r = Math.max(0, (luma + (r0 - luma) * NEON_SAT) * gain);
+  let g = Math.max(0, (luma + (g0 - luma) * NEON_SAT) * gain);
+  let b = Math.max(0, (luma + (b0 - luma) * NEON_SAT) * gain);
+  const peak = Math.max(r, g, b);
+  if (peak > 255) {
+    const scale = 255 / peak;
+    r *= scale; g *= scale; b *= scale;
+    const w = (1 - scale) * NEON_WHITE_LIFT;
+    r += (255 - r) * w; g += (255 - g) * w; b += (255 - b) * w;
+  }
+  return `rgb(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)})`;
 }
 
 /* Rounded-rect path helper for the themed faces (466-space). */
@@ -1281,6 +1548,20 @@ function scheduleGaugeRender() {
   state.gaugeRaf = requestAnimationFrame(renderGaugeFrame);
 }
 
+/* Canvas does not participate in webfont swapping: whatever face ctx.font
+ * resolved to when a frame was drawn is what that frame keeps. With
+ * font-display:swap and a base64 face this large, the first frames can land
+ * before the font is usable and simply stay wrong. Ask for both neon sizes
+ * explicitly and repaint once they report ready. */
+if (typeof document !== "undefined" && document.fonts) {
+  Promise.all([
+    document.fonts.load('italic 108px "SF Alien Encounters"'),
+    document.fonts.load('italic 154px "SF Alien Encounters"'),
+    document.fonts.load('italic 24px "SF Alien Encounters"'),
+    document.fonts.load('24px "SF Alien Encounters"'),
+  ]).then(() => scheduleGaugeRender()).catch(() => { /* fallback face is fine */ });
+}
+
 function renderGaugeFrame(at) {
   state.gaugeRaf = null;
   const target = state.gaugeTarget;
@@ -1684,6 +1965,8 @@ function queueThemeConfig(body, okMsg) {
       if (payload.vaultVignette !== undefined) state.vaultVignette = payload.vaultVignette;
       if (payload.vaultNeedleRed !== undefined) state.vaultNeedleRed = !!payload.vaultNeedleRed;
       if (payload.vaultNeedleTail !== undefined) state.vaultNeedleTail = !!payload.vaultNeedleTail;
+      if (payload.neonLayout !== undefined) state.neonLayout = [0, 1, 2].includes(Number(payload.neonLayout)) ? Number(payload.neonLayout) : 1;
+      if (payload.neonPreset !== undefined) state.neonPreset = [0, 1, 2, 3].includes(Number(payload.neonPreset)) ? Number(payload.neonPreset) : 0;
       const active = state.themes.find((t) => t.id === state.activeThemeId);
       if (active) setTheme(active);
       renderThemes();
@@ -1692,6 +1975,39 @@ function queueThemeConfig(body, okMsg) {
       showError(error.message);
     }
   }, 250);
+}
+
+/* renderThemes() rebuilds the whole theme list with replaceChildren(), which
+ * destroys and recreates every <input type="color"> in it. Destroying an input
+ * whose native picker is open closes that picker - and the picker's own edits
+ * are what schedule the rebuild: dragging a slider or typing a hex value fires
+ * `input`, queueThemeConfig debounces 250 ms, the PUT resolves, and the
+ * response handler calls renderThemes(). So the picker reliably closed a
+ * fraction of a second after the user paused, which reads as "it closes while
+ * I'm using it".
+ *
+ * Hold off the rebuild while a colour input is being edited, and run the
+ * pending one when it closes. The gauge canvas still repaints live from the
+ * `input` handler, so the preview stays immediate - only the list rebuild
+ * waits. */
+let colorEditActive = false;
+let themesRenderPending = false;
+
+function trackColorEditing(input) {
+  input.addEventListener("focus", () => { colorEditActive = true; });
+  const release = () => {
+    if (!colorEditActive) return;
+    colorEditActive = false;
+    if (themesRenderPending) {
+      themesRenderPending = false;
+      renderThemes();
+    }
+  };
+  /* blur covers dismissing the dialog; change covers committing it. Both are
+   * wired because which one a browser fires (and in what order) varies, and
+   * leaving the flag stuck would freeze the list until the next interaction. */
+  input.addEventListener("blur", release);
+  input.addEventListener("change", release);
 }
 
 function themeEditor(theme) {
@@ -1709,6 +2025,7 @@ function themeEditor(theme) {
     const input = document.createElement("input");
     input.type = "color";
     input.value = theme.colors[key];
+    trackColorEditing(input);
     input.addEventListener("input", () => {
       /* Repaint the local canvas immediately; the device catches up on the
        * debounced PUT. Waiting for the round trip makes the picker feel dead. */
@@ -1749,7 +2066,7 @@ function themeEditor(theme) {
       queueThemeConfig({ vaultFace: cin.value });
     });
     const cname = document.createElement("span");
-    cname.textContent = "Dial glow colour";
+    cname.textContent = "Dial glow color";
     crow.append(cin, cname);
     wrap.append(crow);
 
@@ -1785,7 +2102,7 @@ function themeEditor(theme) {
       queueThemeConfig({ vaultNeedleRed: state.vaultNeedleRed });
     });
     const nname = document.createElement("span");
-    nname.textContent = "Needle colour";
+    nname.textContent = "Needle color";
     nrow.append(nname, nselect);
     wrap.append(nrow);
 
@@ -1806,21 +2123,55 @@ function themeEditor(theme) {
     wrap.append(trow);
   }
 
+  if (theme.style === "neon") {
+    const row = document.createElement("label");
+    row.className = "theme-select-row";
+    const select = document.createElement("select");
+       select.innerHTML = `
+       <option value="0">Neon tube</option>
+       <option value="1">Neon segments</option>
+       <option value="2">Neon marquee</option>
+       `;
+     select.value = String([0, 1, 2].includes(Number(state.neonLayout)) ? Number(state.neonLayout) : 1);
+     select.addEventListener("change", () => {
+       state.neonLayout = Number(select.value);
+      scheduleGaugeRender();
+      queueThemeConfig({ neonLayout: state.neonLayout }, `Neon ${select.options[select.selectedIndex].text.toLowerCase()}`);
+    });
+    const name = document.createElement("span");
+    name.textContent = "Neon layout";
+    row.append(name, select);
+    wrap.append(row);
+    const presetRow = document.createElement("label");
+    presetRow.className = "theme-select-row";
+    const preset = document.createElement("select");
+  preset.innerHTML = `<option value="0">Violet</option><option value="1">Miami</option><option value="2">Toxic</option><option value="3">Blood Moon</option>`;
+  preset.value = String([0, 1, 2, 3].includes(Number(state.neonPreset)) ? Number(state.neonPreset) : 0);
+    preset.addEventListener("change", () => {
+      state.neonPreset = Number(preset.value);
+      queueThemeConfig({ neonPreset: state.neonPreset }, `Neon ${preset.options[preset.selectedIndex].text} preset`);
+    });
+    const presetName = document.createElement("span");
+    presetName.textContent = "Color preset";
+    presetRow.append(presetName, preset);
+    wrap.append(presetRow);
+  }
+
   if (theme.style === "arc") {
-    addToggle("arcGradient", "Gradient fill (smooth colour transition)",
-              "Gradient fill", "Zone colours");
+    addToggle("arcGradient", "Gradient fill (smooth color transition)",
+              "Gradient fill", "Zone colors");
   }
   if (theme.style === "hud") {
-    addToggle("hudGradient", "Gradient fill (smooth colour transition)",
-              "Gradient fill", "Zone colours");
+    addToggle("hudGradient", "Gradient fill (smooth color transition)",
+              "Gradient fill", "Zone colors");
     addToggle("hudTrueBlack", "True black background (AMOLED pixels off)",
               "True black background", "Night City background");
   }
   if (theme.style === "bigdigit") {
-    addToggle("bigDigitStaticBg", "Static background (no colour sweep)",
-              "Static background", "Colour sweep");
-    addToggle("bigDigitColorText", "Colour the readout instead of the background",
-              "Readout colour", "White readout");
+    addToggle("bigDigitStaticBg", "Static background (no color sweep)",
+              "Static background", "Color sweep");
+    addToggle("bigDigitColorText", "Color the readout instead of the background",
+              "Readout color", "White readout");
 
     if (!state.bigDigitColorText) {
       const row = document.createElement("label");
@@ -1828,12 +2179,13 @@ function themeEditor(theme) {
       const input = document.createElement("input");
       input.type = "color";
       input.value = state.bigDigitTextColor || "#ffffff";
+      trackColorEditing(input);
       input.addEventListener("input", () => {
         state.bigDigitTextColor = input.value;
         queueThemeConfig({ bigDigitTextColor: input.value });
       });
       const name = document.createElement("span");
-      name.textContent = "Readout text colour";
+      name.textContent = "Readout text color";
       row.append(input, name);
       wrap.append(row);
     }
@@ -1844,12 +2196,13 @@ function themeEditor(theme) {
       const input = document.createElement("input");
       input.type = "color";
       input.value = state.bigDigitStaticColor || "#000000";
+      trackColorEditing(input);
       input.addEventListener("input", () => {
         state.bigDigitStaticColor = input.value;
         queueThemeConfig({ bigDigitStaticColor: input.value });
       });
       const name = document.createElement("span");
-      name.textContent = "Background colour (black = pixels off)";
+      name.textContent = "Background color (black = pixels off)";
       row.append(input, name);
       wrap.append(row);
     }
@@ -1859,7 +2212,7 @@ function themeEditor(theme) {
     const reset = document.createElement("button");
     reset.type = "button";
     reset.className = "theme-reset";
-    reset.textContent = "Reset to default colours";
+    reset.textContent = "Reset to default colors";
     reset.addEventListener("click", () =>
       queueThemeConfig({ id: theme.id, reset: true }, `${theme.name} reset`),
     );
@@ -1869,6 +2222,8 @@ function themeEditor(theme) {
 }
 
 function renderThemes() {
+  /* Deferred while a colour picker is open - see trackColorEditing(). */
+  if (colorEditActive) { themesRenderPending = true; return; }
   el.themeList.replaceChildren();
   for (const theme of state.themes) {
     const row = document.createElement("div");
@@ -1910,8 +2265,8 @@ function renderThemes() {
     const edit = document.createElement("button");
     edit.type = "button";
     edit.className = "theme-edit";
-    edit.title = `Edit ${theme.name} colours`;
-    edit.textContent = openThemeEditor === theme.id ? "Close" : "Colours";
+    edit.title = `Edit ${theme.name} colors`;
+    edit.textContent = openThemeEditor === theme.id ? "Close" : "Colors";
     edit.addEventListener("click", () => {
       openThemeEditor = openThemeEditor === theme.id ? null : theme.id;
       renderThemes();
@@ -1989,6 +2344,8 @@ function wireDisplayToggles() {
       state.hudTrueBlack = !!payload.hudTrueBlack;
       state.vaultNeedleRed = !!payload.vaultNeedleRed;
       state.vaultNeedleTail = !!payload.vaultNeedleTail;
+       state.neonLayout = [0, 1, 2].includes(Number(payload.neonLayout))
+         ? Number(payload.neonLayout) : state.neonLayout;
       state.themes = payload.themes || state.themes;
       syncDisplayToggles();
       showOk(label);
@@ -2499,6 +2856,8 @@ async function refreshAll(source = ERR_USER) {
     state.vaultVignette = themes.vaultVignette ?? 60;
     state.vaultNeedleRed = !!themes.vaultNeedleRed;
     state.vaultNeedleTail = !!themes.vaultNeedleTail;
+    state.neonLayout = [0, 1, 2].includes(Number(themes.neonLayout)) ? Number(themes.neonLayout) : 1;
+    state.neonPreset = [0, 1, 2, 3].includes(Number(themes.neonPreset)) ? Number(themes.neonPreset) : 0;
     state.pixelShift = !!themes.pixelShift;
     state.pixelShiftSec = Number(themes.pixelShiftSec) || state.pixelShiftSec;
     syncDisplayToggles();

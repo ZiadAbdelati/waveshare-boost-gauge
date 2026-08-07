@@ -624,6 +624,52 @@ not only its colors, and the selection persists in NVS across power cycles.
 | `vault-tec` | `vault` | Fallout-style phosphor **needle dial** with CRT scanlines/vignette, a peak tell-tale marker, and an overboost alert (warm numeral + blinking `OVER-PRESSURE`). |
 | `night-city` | `hud` | Cyberpunk **targeting HUD**: hazard chevrons, Kiroshi reticle around a big italic value, glitch-shear on fast spikes, MAP/PEAK telemetry. |
 | `big-digit` | `bigdigit` | A huge **Alvida Fatface** PSI number in white on a ground that sweeps cyan → lime → red with the reading. |
+| `neon` | `neon` | Neon-tube face in **SF Alien Encounters**: a glowing readout over one of three selectable layouts, in one of four colour presets. |
+
+### Neon: layouts and presets
+
+Unlike the other themes, `neon` is one theme with two extra settings rather
+than several theme entries. Both persist in NVS and both are exposed on
+`PUT /api/v1/themes/config`.
+
+- **`neonLayout`** (0–2) picks the face: `0` tube (one continuous arc), `1`
+  segments (54 discrete segments, the default — smallest dirty region), `2`
+  marquee (linear bar with a 72-bulb border, no ring).
+- **`neonPreset`** (0–3) picks the colourway: `0` Violet, `1` Miami, `2` Toxic,
+  `3` Blood Moon. Presets set `track`/`muted` as well as the three zone
+  colours, so changing one repaints the cached background.
+
+| Preset | vacuum | boost | overboost |
+|---|---|---|---|
+| Violet | `#7B00FF` | `#FF2BD6` | `#FF1500` |
+| Miami | `#00E5FF` | `#FF2BD6` | `#FF2A00` |
+| Toxic | `#39FF14` | `#FFF000` | `#FF00A0` |
+| Blood Moon | `#0064FF` | `#C4172E` | `#FF6A00` |
+
+Blood Moon deliberately pairs a crimson boost with an orange overboost —
+adjacent warm hues, and the narrowest post-bloom separation of any preset here
+(77 units, against 176 for the yellow overboost it replaced). Still separable
+by hue, but it is the one preset where overboost has little peripheral-vision
+margin; overboost is the knob if it ever reads ambiguous.
+
+**Palette entries are the base the bloom is derived from, not what you see.**
+Everything lit goes through `neon_lit()`: saturate ×1.30 about luma, gain
+×1.92, then overflow past full scale desaturates toward white
+(`NEON_WHITE_LIFT`). Two earlier overflow rules each failed in a way worth not
+repeating — clamping per channel pinned every saturated entry to the same
+corner of the colour cube and made the three zones converge; scaling the whole
+vector back to peak 255 preserved hue but handed back all the gain, so the
+bloomed body came out *darker* than the raw palette behind it and the ring's
+band structure inverted in 11 of 12 zones. The ring's inner band is a *dimmed*
+zone colour (`NEON_HALO_DIM`), which is what guarantees the bands read
+dark → bright → white outward regardless of palette.
+
+Readout glyphs, the minus mark and the zone word are baked once at scene build
+as **A8 coverage tiles** with a box-blurred glow, then blitted with a recolor.
+Because coverage carries no colour, one set of tiles serves every zone and
+every preset, and both those tiles and the painted background survive theme
+switches (keyed on layout, and on `neon_bg_key_t` respectively) — without that
+memoisation, entering `neon` cost ~350 ms against 45–100 ms for other themes.
 
 Shared rules across styles:
 
@@ -650,7 +696,14 @@ Shared rules across styles:
 - **Simulator:** `sim/` builds the same `boost_gauge.c` on the host and renders
   headless PNGs, including the generated fonts, so a face can be checked without
   flashing. SDL2 is optional (only `--window` needs it); `--theme <id>` selects
-  the style. This is the fastest verification loop — use it before burning a
+  the style, `--neon-layout tube|segments|marquee` and `--neon-preset 0..3` the
+  neon face and colourway. Both of those exist because the sim does **not**
+  inherit the device's persisted settings: it calls `boost_theme_init()` at
+  startup, and without these flags it renders whatever the defaults say. Before
+  `--neon-preset` existed the sim never applied a preset at all
+  (`apply_neon_preset()` runs from `boost_theme_init()`, which the sim did not
+  call), so every screenshot showed the compiled-in palette regardless of which
+  preset was selected — screenshots agreed with the device only by coincidence. This is the fastest verification loop — use it before burning a
   flash cycle.
 - **Font:** `main/fonts/alvidafatface-regular.otf` (OTF kept over the TTF — CFF
   master, ~4× smaller, converts cleanly with `lv_font_conv`). The dashboard loads
@@ -989,6 +1042,22 @@ Bahnschrift/Consolas are Microsoft fonts and cannot be embedded):
 | `font_cond_14/18/22/32` | Saira Condensed SemiBold | labels |
 | `font_cond_96` | IBM Plex Sans Condensed BoldItalic | Night City readout |
 | `font_wide_22/32` | Saira SemiCondensed Bold | Big Digit labels |
+| `neon_big` (118 px) | SF Alien Encounters Italic (user supplied) | neon readout, tube/segments |
+| `neon_huge` (130 px) | SF Alien Encounters Italic | neon readout, marquee |
+| `neon_label` (24 px) | SF Alien Encounters **regular** | neon zone word and `P S I` |
+
+The readout is italic; the zone word and `P S I` are the **upright** face, so
+`main/fonts/` carries both `SFAlienEncounters-Italic.ttf` and
+`SFAlienEncounters.ttf`. The web mirror inlines both under one family name, and
+selects between them purely by the presence of the `italic` keyword — a family
+with a single face would silently serve that face for either request.
+
+The three neon fonts carry only `0x30-0x39,0x2E` (plus `0x20,0x41-0x5A` for
+`neon_label`); the face has no `-` contour, so the minus mark is drawn from
+bar geometry rather than a glyph. Their sizes are not free parameters — the
+readout cell pitch, the sprite tile size and the invalidation bounds are all
+derived from the generated `line_height` and widest glyph ink, so changing a
+size means re-deriving those (see the block comments around `NEON_SLOT_W`).
 
 Regenerate with `lv_font_conv`, always passing `--lv-include lvgl.h` (the
 default `lvgl/lvgl.h` does not resolve against the managed component). Glyphs
@@ -1003,8 +1072,20 @@ shapes instead; escaped UTF-8 has repeatedly been mangled a layer early.
 than table index so a firmware update that adds or removes a theme cannot paint
 one theme with another's colours. Face, track, text, muted and zero stay fixed:
 a theme whose face and text are both user-settable is a theme that can be made
-unreadable. `{"id":"...","reset":true}` restores the built-in palette, and each
+unreadable. Note for `neon`: its cached background is painted from `track`,
+which is *not* user-editable but *is* changed by `neonPreset` — so a preset
+change repaints it and a zone-colour edit correctly does not. If `track` ever
+becomes editable, `neon_bg_key_t` already covers it, but that pairing is worth
+re-checking rather than assuming. `{"id":"...","reset":true}` restores the built-in palette, and each
 theme reports `customized` in `GET /themes`.
+
+For `neon` both of those follow the **selected preset**, not the compiled-in
+entry. The table has to hold one palette as the initial one (Violet), and
+comparing/restoring against it meant selecting any other preset immediately
+reported the theme as customized, while reset painted Violet over the selected
+preset and left the selector pointing elsewhere — the two disagreed until the
+selector was cycled away and back. The preset is the baseline: selecting one is
+not a customization, and reset returns to that preset's colours.
 
 The same endpoint carries `bigDigitStaticBg`. Big Digit normally sweeps its
 whole ground through the zone colours, which is the only full-screen repaint in

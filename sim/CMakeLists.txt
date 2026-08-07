@@ -29,10 +29,12 @@ endif()
 find_package(SDL2 QUIET)
 find_package(Threads QUIET)
 
+add_compile_definitions(BOOST_NEON_DRAW_STATS=1)
 add_executable(boost_gauge_sim
     main.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_gauge.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_theme.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_neon_geom.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/alvida_big.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/font_mono_16.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/font_mono_40.c
@@ -43,6 +45,9 @@ add_executable(boost_gauge_sim
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/font_cond_96.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/font_wide_22.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/font_wide_32.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/neon_big.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/neon_huge.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/neon_label.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_sim.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_brightness.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_page.c
@@ -87,6 +92,18 @@ target_include_directories(test_tpms_protocol PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../main
 )
 target_link_libraries(test_tpms_protocol PRIVATE m)
+
+# Host-side unit test for the pure-C neon layout geometry. No LVGL or IDF
+# dependency — just the geometry source and the test harness.
+add_executable(test_neon_geom
+    ${CMAKE_CURRENT_SOURCE_DIR}/../tools/test_neon_geom.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_neon_geom.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_theme.c
+)
+target_include_directories(test_neon_geom PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main
+)
+target_link_libraries(test_neon_geom PRIVATE m)
 
 add_custom_target(sim-screenshots
     COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_SOURCE_DIR}/../preview/sim

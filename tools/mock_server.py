@@ -82,6 +82,22 @@ THEMES = [
             "zero": "#FFFFFF",
         },
     },
+    {
+        "id": "neon",
+        "name": "Neon",
+        "style": "neon",
+        "colors": {
+            "face": "#000000", "track": "#241038", "text": "#FFFFFF",
+            "muted": "#5A3A7A", "vacuum": "#8B3DFF", "boost": "#FF2BD6",
+            "overboost": "#FF6A00", "zero": "#FFFFFF",
+        },
+    },
+]
+
+NEON_PRESETS = [
+    {"track": "#241038", "muted": "#5A3A7A", "vacuum": "#8B3DFF", "boost": "#FF2BD6", "overboost": "#FF6A00"},
+    {"track": "#10222E", "muted": "#3F6E80", "vacuum": "#00E5FF", "boost": "#FF2BD6", "overboost": "#FF2A00"},
+    {"track": "#12300A", "muted": "#4C7A2E", "vacuum": "#39FF14", "boost": "#FFF000", "overboost": "#FF00A0"},
 ]
 
 # Keep in step with BOOST_PXSHIFT_SEC_* in main/boost_theme.h.
@@ -97,6 +113,8 @@ CONFIG = {
     "activeThemeId": "dyno-cell",
     "vaultNeedleRed": False,
     "vaultNeedleTail": False,
+    "neonLayout": 1,
+    "neonPreset": 0,
     "psiMin": -15.0,
     "psiMax": 10.0,
     "psiOverboost": 8.0,
@@ -394,6 +412,8 @@ def themes_payload() -> dict:
     out = []
     for t in THEMES:
         item = dict(t)
+        if t["id"] == "neon":
+            item["colors"] = {**t["colors"], **NEON_PRESETS[int(CONFIG.get("neonPreset", 0))]}
         item["customized"] = any(
             t["colors"][k] != THEME_DEFAULTS[t["id"]][k]
             for k in ("vacuum", "boost", "overboost")
@@ -417,6 +437,8 @@ def themes_payload() -> dict:
         "vaultVignette": int(CONFIG.get("vaultVignette", 60)),
         "vaultNeedleRed": bool(CONFIG.get("vaultNeedleRed", False)),
         "vaultNeedleTail": bool(CONFIG.get("vaultNeedleTail", False)),
+        "neonLayout": int(CONFIG.get("neonLayout", 1)),
+        "neonPreset": int(CONFIG.get("neonPreset", 0)),
         "themes": out,
     }
 
@@ -626,6 +648,16 @@ class Handler(BaseHTTPRequestHandler):
                 CONFIG["vaultNeedleRed"] = payload["vaultNeedleRed"]
             if "vaultNeedleTail" in payload and isinstance(payload["vaultNeedleTail"], bool):
                 CONFIG["vaultNeedleTail"] = payload["vaultNeedleTail"]
+            if "neonLayout" in payload and isinstance(payload["neonLayout"], int):
+                if payload["neonLayout"] not in (0, 1, 2):
+                    self.send_json({"error": "invalid_neon_layout"}, HTTPStatus.BAD_REQUEST)
+                    return
+                CONFIG["neonLayout"] = int(payload["neonLayout"])
+            if "neonPreset" in payload and isinstance(payload["neonPreset"], int):
+                if payload["neonPreset"] not in (0, 1, 2):
+                    self.send_json({"error": "invalid_neon_preset"}, HTTPStatus.BAD_REQUEST)
+                    return
+                CONFIG["neonPreset"] = int(payload["neonPreset"])
             theme_id = payload.get("id")
             if theme_id:
                 theme = next((t for t in THEMES if t["id"] == theme_id), None)

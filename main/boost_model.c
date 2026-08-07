@@ -215,6 +215,28 @@ static esp_err_t save_config_locked(void)
     return err;
 }
 
+/* The three neon palettes used to be three themes. They are now one theme plus
+ * a preset, so a board that persisted "neon-violet" would find no such theme,
+ * fall through to the default and silently lose both the face and the palette.
+ * Normalised on load and written back, so it runs once rather than every boot.
+ * Returns true when it rewrote the id. */
+static bool migrate_legacy_neon_id(char *id, size_t len)
+{
+    static const struct { const char *old_id; boost_neon_preset_t preset; } k_map[] = {
+        { "neon-violet", BOOST_NEON_PRESET_VIOLET },
+        { "neon-miami",  BOOST_NEON_PRESET_MIAMI  },
+        { "neon-toxic",  BOOST_NEON_PRESET_TOXIC  },
+    };
+    for (size_t i = 0; i < sizeof(k_map) / sizeof(k_map[0]); ++i) {
+        if (strcmp(id, k_map[i].old_id) == 0) {
+            boost_theme_set_neon_preset(k_map[i].preset);
+            strlcpy(id, "neon", len);
+            return true;
+        }
+    }
+    return false;
+}
+
 static void load_config(void)
 {
     defaults(&s_config);
@@ -226,14 +248,27 @@ static void load_config(void)
     if (nvs_get_blob(h, NVS_KEY_CONFIG, NULL, &len) == ESP_OK) {
         if (len == sizeof(s_config)) {
             boost_config_t loaded;
-            if (nvs_get_blob(h, NVS_KEY_CONFIG, &loaded, &len) == ESP_OK &&
-                boost_theme_find(loaded.active_theme_id) != NULL) {
-                s_config = loaded;
+            if (nvs_get_blob(h, NVS_KEY_CONFIG, &loaded, &len) == ESP_OK) {
+                /* Migrate BEFORE the theme lookup: the old id no longer
+                 * resolves, so testing first would discard the whole config. */
+                const bool migrated = migrate_legacy_neon_id(
+                    loaded.active_theme_id, sizeof(loaded.active_theme_id));
+                if (boost_theme_find(loaded.active_theme_id) != NULL) {
+                    s_config = loaded;
+                    if (migrated) {
+                        (void)save_config_locked();
+                    }
+                }
             }
         } else if (len == sizeof(boost_config_v1_t)) {
             boost_config_v1_t legacy;
-            if (nvs_get_blob(h, NVS_KEY_CONFIG, &legacy, &len) == ESP_OK &&
-                boost_theme_find(legacy.active_theme_id) != NULL) {
+            bool legacy_ok = nvs_get_blob(h, NVS_KEY_CONFIG, &legacy, &len) == ESP_OK;
+            if (legacy_ok) {
+                migrate_legacy_neon_id(legacy.active_theme_id,
+                                       sizeof(legacy.active_theme_id));
+                legacy_ok = boost_theme_find(legacy.active_theme_id) != NULL;
+            }
+            if (legacy_ok) {
                 s_config.brightness_high = legacy.brightness_high;
                 s_config.brightness_low = legacy.brightness_low;
                 s_config.dim_schedule = legacy.dim_schedule;

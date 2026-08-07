@@ -703,12 +703,26 @@ static esp_err_t time_post(httpd_req_t *req)
 
 }
 
+/* Upper bound on one theme object. append_theme_json() renders through a 384
+ * byte scratch buffer, so nothing longer than that can reach the accumulator;
+ * the +1 is the separating comma. */
+#define THEME_JSON_MAX (384 + 1)
+
 static esp_err_t themes_get(httpd_req_t *req)
 {
-    char json[2048] = {0};
+    /* Sized from the theme count, not fixed. A 2048 byte buffer fit the four
+     * original themes; the three neon themes took the payload to 2,047 bytes
+     * and strlcat() truncated it silently, so the endpoint served invalid JSON
+     * and the whole dashboard failed to parse it. strlcat cannot report that,
+     * which is why the length is checked explicitly below. */
+    const size_t cap = 1024 + boost_theme_count() * THEME_JSON_MAX;
+    char *json = calloc(1, cap);
+    if (json == NULL) {
+        return send_err(req, HTTPD_500, "themes_alloc");
+    }
     boost_config_t cfg;
     boost_model_get_config(&cfg);
-    snprintf(json, sizeof(json),
+    snprintf(json, cap,
              "{\"activeThemeId\":\"%s\",\"bigDigitStaticBg\":%s,"
              "\"bigDigitColorText\":%s,\"bigDigitStaticColor\":\"#%06lx\","
              "\"bigDigitTextColor\":\"#%06lx\","
@@ -716,7 +730,7 @@ static esp_err_t themes_get(httpd_req_t *req)
              "\"teSync\":%s,\"regionDBuf\":%s,"
              "\"rotation\":%u,"
              "\"vaultFace\":\"#%06lx\",\"vaultVignette\":%u,\"vaultNeedleRed\":%s,"
-             "\"vaultNeedleTail\":%s,\"demoMode\":%s,\"demoFastSweep\":%s,"
+              "\"vaultNeedleTail\":%s,\"neonLayout\":%u,\"neonPreset\":%u,\"demoMode\":%s,\"demoFastSweep\":%s,"
              "\"pixelShift\":%s,\"pixelShiftSec\":%u,\"themes\":[",
              cfg.active_theme_id,
              boost_theme_bigdigit_static_bg() ? "true" : "false",
@@ -731,20 +745,31 @@ static esp_err_t themes_get(httpd_req_t *req)
              (unsigned)boost_theme_rotation(),
              (unsigned long)boost_theme_vault_face(),
              (unsigned)boost_theme_vault_vignette_pct(),
-              boost_theme_vault_needle_red() ? "true" : "false",
+             boost_theme_vault_needle_red() ? "true" : "false",
              boost_theme_vault_needle_tail() ? "true" : "false",
+              (unsigned)boost_theme_neon_layout(),
+              (unsigned)boost_theme_neon_preset(),
              boost_theme_demo_mode() ? "true" : "false",
              boost_sim_fast_sweep() ? "true" : "false",
              boost_theme_pixel_shift() ? "true" : "false",
              (unsigned)boost_theme_pixel_shift_sec());
     for (size_t i = 0; i < boost_theme_count(); ++i) {
         if (i > 0) {
-            strlcat(json, ",", sizeof(json));
+            strlcat(json, ",", cap);
         }
-        append_theme_json(json, sizeof(json), boost_theme_at(i));
+        append_theme_json(json, cap, boost_theme_at(i));
     }
-    strlcat(json, "]}", sizeof(json));
-    return send_json(req, json);
+    strlcat(json, "]}", cap);
+    /* Serving truncated JSON is worse than serving nothing: the dashboard's
+     * parse fails and every theme control disappears with no clue why. */
+    if (strlen(json) + 1 >= cap) {
+        free(json);
+        ESP_LOGE(TAG, "themes payload truncated at %u bytes", (unsigned)cap);
+        return send_err(req, HTTPD_500, "themes_truncated");
+    }
+    const esp_err_t err = send_json(req, json);
+    free(json);
+    return err;
 }
 
 /* Parse "#rrggbb" / "rrggbb". Returns false rather than guessing, so a typo in
@@ -915,6 +940,34 @@ static esp_err_t themes_config_put(httpd_req_t *req)
     const cJSON *vtail = cJSON_GetObjectItemCaseSensitive(root, "vaultNeedleTail");
     if (cJSON_IsBool(vtail)) {
         boost_theme_set_vault_needle_tail(cJSON_IsTrue(vtail));
+    }
+    const cJSON *nlay = cJSON_GetObjectItemCaseSensitive(root, "neonLayout");
+    if (cJSON_IsNumber(nlay)) {
+        const double v = nlay->valuedouble;
+        if (!(v >= 0.0 && v <= 2.0)) {
+            cJSON_Delete(root);
+            return send_err(req, HTTPD_400, "invalid_neon_layout");
+        }
+        boost_theme_set_neon_layout((boost_neon_layout_t)(int)v);
+        if (boost_display_lock(1000) == ESP_OK) {
+            boost_gauge_apply_theme(boost_model_active_theme());
+            boost_display_unlock();
+        }
+    }
+
+    const cJSON *np = cJSON_GetObjectItemCaseSensitive(root, "neonPreset");
+    if (cJSON_IsNumber(np)) {
+        const double v = np->valuedouble;
+        /* 0..3: Violet, Miami, Toxic, Blood Moon. */
+        if (!(v >= 0.0 && v <= 3.0)) {
+            cJSON_Delete(root);
+            return send_err(req, HTTPD_400, "invalid_neon_preset");
+        }
+        boost_theme_set_neon_preset((boost_neon_preset_t)(int)v);
+        if (boost_display_lock(1000) == ESP_OK) {
+            boost_gauge_apply_theme(boost_model_active_theme());
+            boost_display_unlock();
+        }
     }
 
     const cJSON *id = cJSON_GetObjectItemCaseSensitive(root, "id");

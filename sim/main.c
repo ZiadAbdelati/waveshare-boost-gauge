@@ -360,6 +360,17 @@ static int run_audit(const char *theme_id, int seconds)
     uint32_t compares = 0;
     uint64_t severe = 0;
     int reported = 0;
+#if BOOST_NEON_DRAW_STATS
+    /* Flushed pixels measure the dirty AREA. These measure the work done inside
+     * it: callback invocations (one per dirty region) and ring segments
+     * submitted (three arc primitives each). */
+    extern uint32_t g_neon_cb_calls, g_neon_arcs, g_neon_labels;
+    extern uint32_t g_neon_sign_bars, g_neon_bulbs, g_neon_sprite_blits;
+    uint64_t cb_total = 0, arc_total = 0, label_total = 0;
+    uint64_t sign_total = 0, bulb_total = 0, sprite_total = 0;
+    uint32_t cb_max = 0, arc_max = 0, label_max = 0;
+    uint32_t sign_max = 0, bulb_max = 0, sprite_max = 0;
+#endif
 
     for (int i = 0; i < frames; ++i) {
         const float t = (float)i / 62.0f;
@@ -378,8 +389,28 @@ static int run_audit(const char *theme_id, int seconds)
         boost_gauge_update(&sample);
 
         s_flush_px = 0;
+#if BOOST_NEON_DRAW_STATS
+        g_neon_cb_calls = 0; g_neon_arcs = 0; g_neon_labels = 0;
+        g_neon_sign_bars = 0; g_neon_bulbs = 0; g_neon_sprite_blits = 0;
+#endif
         lv_tick_inc(16);
         lv_timer_handler();
+#if BOOST_NEON_DRAW_STATS
+        if (s_flush_px > 0) {
+            cb_total += g_neon_cb_calls;
+            arc_total += g_neon_arcs;
+            label_total += g_neon_labels;
+            sign_total += g_neon_sign_bars;
+            bulb_total += g_neon_bulbs;
+            sprite_total += g_neon_sprite_blits;
+            if (g_neon_cb_calls > cb_max) cb_max = g_neon_cb_calls;
+            if (g_neon_arcs > arc_max) arc_max = g_neon_arcs;
+            if (g_neon_labels > label_max) label_max = g_neon_labels;
+            if (g_neon_sign_bars > sign_max) sign_max = g_neon_sign_bars;
+            if (g_neon_bulbs > bulb_max) bulb_max = g_neon_bulbs;
+            if (g_neon_sprite_blits > sprite_max) sprite_max = g_neon_sprite_blits;
+        }
+#endif
         if (s_flush_px > 0) {
             px_total += s_flush_px;
             if (s_flush_px > px_max) px_max = s_flush_px;
@@ -449,6 +480,20 @@ static int run_audit(const char *theme_id, int seconds)
     printf("  flushed px/cycle   : mean %.0f  max %llu\n",
            rendered ? (double)px_total / (double)rendered : 0.0,
            (unsigned long long)px_max);
+#if BOOST_NEON_DRAW_STATS
+    printf("  draw callbacks/cyc : mean %.1f  max %u  (one per dirty region)\n",
+           rendered ? (double)cb_total / (double)rendered : 0.0, cb_max);
+    printf("  ring segments/cyc  : mean %.1f  max %u  (x3 arc primitives each)\n",
+           rendered ? (double)arc_total / (double)rendered : 0.0, arc_max);
+    printf("  readout labels/cyc : mean %.1f  max %u\n",
+           rendered ? (double)label_total / (double)rendered : 0.0, label_max);
+    printf("  sign bars/cyc      : mean %.1f  max %u\n",
+           rendered ? (double)sign_total / (double)rendered : 0.0, sign_max);
+    printf("  accent bulbs/cyc   : mean %.1f  max %u\n",
+           rendered ? (double)bulb_total / (double)rendered : 0.0, bulb_max);
+    printf("  sprite blits/cyc   : mean %.1f  max %u  (A8 coverage, BOOST_NEON_GLYPH_SPRITES)\n",
+           rendered ? (double)sprite_total / (double)rendered : 0.0, sprite_max);
+#endif
     printf("  throughput         : %.3f Mpx/s at 62.5 Hz\n",
            (double)px_total / (double)frames * 62.5 / 1e6);
     printf("  severe mismatches  : %llu px (>1 step in any 565 channel)\n",
@@ -469,7 +514,7 @@ static void usage(const char *argv0)
             "  %s --audit [--seconds N] partial-refresh trail + cost audit\n"
             "  %s --tpms [normal|stale|disconnected]\n"
             "                          snapshot the TPMS page under a mock scenario\n"
-            "  (all modes accept --theme ID)\n",
+            "  (all modes accept --theme ID and --neon-layout tube|segments|marquee)\n",
             argv0, argv0, argv0, argv0);
 }
 
@@ -508,6 +553,15 @@ int main(int argc, char **argv)
     const char *theme_id = NULL;
     const char *tpms_scenario = NULL;
 
+    /* Run the same theme initialisation the firmware does, BEFORE parsing the
+     * options that set layout/preset. Without this the sim only ever saw
+     * s_defaults[] - apply_neon_preset() is called from here, not from
+     * ensure_loaded() - so neon always rendered its compiled-in palette and no
+     * preset could be verified against a screenshot. The NVS half of this
+     * function is already #ifdef ESP_PLATFORM, so on the host it reduces to
+     * loading the defaults and applying the preset. */
+    boost_theme_init();
+
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--window") == 0) {
             window = true;
@@ -520,6 +574,42 @@ int main(int argc, char **argv)
             if (i + 1 < argc) audit_seconds = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--theme") == 0) {
             if (i + 1 < argc) theme_id = argv[++i];
+        } else if (strcmp(argv[i], "--neon-layout") == 0) {
+            /* The neon layout is persisted, so without this the sim always
+             * renders whichever layout happens to be stored - which silently
+             * made a "tube" audit and a "marquee" audit produce byte-identical
+             * numbers because both actually ran the same layout. */
+            if (i + 1 < argc) {
+                const char *v = argv[++i];
+                if (strcmp(v, "tube") == 0) {
+                    boost_theme_set_neon_layout(BOOST_NEON_TUBE);
+                } else if (strcmp(v, "segments") == 0) {
+                    boost_theme_set_neon_layout(BOOST_NEON_SEGMENTS);
+                } else if (strcmp(v, "marquee") == 0) {
+                    boost_theme_set_neon_layout(BOOST_NEON_MARQUEE);
+                } else {
+                    fprintf(stderr, "unknown neon layout: %s (tube|segments|marquee)\n", v);
+                    return 1;
+                }
+            }
+        } else if (strcmp(argv[i], "--neon-preset") == 0) {
+            /* Same class of trap as --neon-layout above, and it bit harder:
+             * boost_theme_find() reads s_themes directly and ensure_loaded()
+             * only memcpys s_defaults into it. apply_neon_preset() runs from
+             * boost_theme_init(), which the sim never called - so every sim
+             * render showed the COMPILED-IN palette no matter which preset was
+             * selected, and a preset's colours could not be checked here at
+             * all. boost_theme_init() is now called below; this selects which
+             * palette to render. */
+            if (i + 1 < argc) {
+                const char *v = argv[++i];
+                const int n = atoi(v);
+                if (n < 0 || n > 3) {
+                    fprintf(stderr, "unknown neon preset: %s (0=violet 1=miami 2=toxic 3=bloodmoon)\n", v);
+                    return 1;
+                }
+                boost_theme_set_neon_preset((boost_neon_preset_t)n);
+            }
         } else if (strcmp(argv[i], "--screenshot") == 0) {
             if (i + 1 < argc) {
                 shot_dir = argv[++i];
