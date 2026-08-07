@@ -726,7 +726,7 @@ static esp_err_t themes_get(httpd_req_t *req)
              "{\"activeThemeId\":\"%s\",\"bigDigitStaticBg\":%s,"
              "\"bigDigitColorText\":%s,\"bigDigitStaticColor\":\"#%06lx\","
              "\"bigDigitTextColor\":\"#%06lx\","
-             "\"arcGradient\":%s,\"hudGradient\":%s,\"hudTrueBlack\":%s,"
+             "\"arcGradient\":%s,\"hudGradient\":%s,\"hudTrueBlack\":%s,\"neonMarqueeSpin\":%s,"
              "\"teSync\":%s,\"regionDBuf\":%s,"
              "\"rotation\":%u,"
              "\"vaultFace\":\"#%06lx\",\"vaultVignette\":%u,\"vaultNeedleRed\":%s,"
@@ -740,6 +740,7 @@ static esp_err_t themes_get(httpd_req_t *req)
              boost_theme_arc_gradient() ? "true" : "false",
              boost_theme_hud_gradient() ? "true" : "false",
              boost_theme_hud_true_black() ? "true" : "false",
+             boost_theme_neon_marquee_spin() ? "true" : "false",
              boost_theme_te_sync() ? "true" : "false",
              boost_theme_region_dbuf() ? "true" : "false",
              (unsigned)boost_theme_rotation(),
@@ -871,6 +872,10 @@ static esp_err_t themes_config_put(httpd_req_t *req)
     const cJSON *hb = cJSON_GetObjectItemCaseSensitive(root, "hudTrueBlack");
     if (cJSON_IsBool(hb)) {
         boost_theme_set_hud_true_black(cJSON_IsTrue(hb));
+    }
+    const cJSON *nsp = cJSON_GetObjectItemCaseSensitive(root, "neonMarqueeSpin");
+    if (cJSON_IsBool(nsp)) {
+        boost_theme_set_neon_marquee_spin(cJSON_IsTrue(nsp));
     }
 
     const cJSON *te = cJSON_GetObjectItemCaseSensitive(root, "teSync");

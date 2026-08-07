@@ -57,6 +57,8 @@ function roundRectPath(x, y, w, h, r) { calls.push({ op: "roundRect", args: [x, 
 
 const state = {
   neonLayout: 1,
+  neonMarqueeSpin: false,
+  neonSpinTicks: 0,
   palette: { track: "#241038", muted: "#5A3A7A", vacuum: "#7B00FF", boost: "#FF2BD6", overboost: "#FF6A00" },
 };
 function psiRange() { return { psiMin: -15, psiMax: 10, psiOverboost: 8, zeroAngle: 236.25 }; }
@@ -74,8 +76,10 @@ const scope = { ARC_START, ARC_RANGE, DEG, NEON_INK_EM, clamp, degToRad, hexToRg
 const body = [
   extractConstLine("NEON_BLOOM"),
   extractConstLine("NEON_HALO_DIM"),
+  extractConstLine("NEON_MARQUEE_SPIN_MS"),
   extract("neonDim"),
-  extract("psiToSweep"), extract("neonLitColor"), extract("drawNeonGauge"),
+  extract("psiToSweep"), extract("neonLitColor"), extract("neonBulbColor"),
+  extract("drawNeonGauge"),
 ].join("\n");
 const run = new Function(...Object.keys(scope), body + "\nreturn { drawNeonGauge, psiToSweep, neonLitColor };");
 const api = run(...Object.values(scope));
@@ -151,11 +155,44 @@ for (const psi of [-12, -3, 2.5, 8.5]) {
   assert.ok(white.length >= 1, "zero marker missing at psi 0");
 }
 
+/* The reference is the FIRMWARE's bulb colour, read from its constants:
+ * neon_bulb_accent() = neon_lit(scale_rgb(zone, 0.55)). Deriving it here
+ * from boost_gauge.c means the mirror is checked against the panel's
+ * arithmetic, not against a restatement of its own. Module scope: the
+ * spin block below re-uses bulbRef. */
+  const cSrc = fs.readFileSync(path.join(__dirname, "..", "main", "boost_gauge.c"), "utf8");
+  const fdef = (name) => {
+    const m = new RegExp("^#define[ \t]+" + name + "[ \t]+([0-9.]+)f", "m").exec(cSrc);
+    assert.ok(m, `#define ${name} not found in main/boost_gauge.c`);
+    return Number(m[1]);
+  };
+  const BLOOM = fdef("NEON_BLOOM"), SAT = fdef("NEON_SAT"), LIFT = fdef("NEON_WHITE_LIFT");
+  const bulbRef = (hex) => {
+    const [r0, g0, b0] = hexToRgb(hex);
+    const dim = [r0, g0, b0].map((c) => Math.round(c * 0.55));
+    const luma = 0.299 * dim[0] + 0.587 * dim[1] + 0.114 * dim[2];
+    let v = dim.map((c) => Math.max(0, (luma + (c - luma) * SAT) * BLOOM));
+    const peak = Math.max(...v);
+    if (peak > 255) {
+      const s = 255 / peak;
+      v = v.map((c) => c * s);
+      const w = (1 - s) * LIFT;
+      v = v.map((c) => c + (255 - c) * w);
+    }
+    return `rgb(${Math.round(v[0])}, ${Math.round(v[1])}, ${Math.round(v[2])})`;
+  };
+
 /* --- marquee: bulbs, zero tick, bar mapping ------------------------------- */
 {
-  const c = render(2, -12);
+  /* Rendered in the BOOST zone (8.5 < overboost 8? No - 8.5 >= 8 is
+   * OVERBOOST, so all three rings are lit here and the full ladder shows). */
+  const c = render(2, 8.5);
+  /* Three concentric rings of 72 bulbs - innermost vacuum, middle boost,
+   * outermost overboost. Dead bulbs stay track; ring z's 24 accent bulbs
+   * light in ring z's zone colour once that zone is REACHED (zone id >= z),
+   * staggered per ring via NEON_BULB_IS_ACCENT(i, z) = (i + 2z) % 6 < 2. */
   const bulbs = c.filter((k) => k.op === "arc" && k.args[2] === 4);
-  assert.strictEqual(bulbs.length, 72, `expected 72 bulbs, got ${bulbs.length}`);
+  assert.strictEqual(bulbs.length, 3 * 72, `expected 216 bulbs, got ${bulbs.length}`);
 
   const fills = [];
   let cur = null;
@@ -163,24 +200,41 @@ for (const psi of [-12, -3, 2.5, 8.5]) {
     if (k.op === "set:fillStyle") cur = k.args[0];
     if (k.op === "arc" && k.args[2] === 4) fills.push(cur);
   }
-  const accents = fills.filter((f) => f !== state.palette.track).length;
-  assert.strictEqual(accents, 24, `expected 24 accent bulbs, got ${accents}`);
+  const zoneColors = [state.palette.vacuum, state.palette.boost, state.palette.overboost]
+    .map(bulbRef);
+  /* Live stage ladder + stagger, matching the panel: ring z's accent bulbs
+   * (i + 2z) % 6 < 2 light in ring z's zone colour once the reading has
+   * REACHED that zone (zone id >= z). Dead bulbs stay track. Rendered at
+   * psi 8.5 = BOOST, so rings 0 and 1 are lit and ring 2 is all track. */
+  const zoneAt = 8.5 >= 8 ? 2 : 8.5 > 0.05 ? 1 : 0;
+  for (let z = 0; z < 3; z++) {
+    for (let i = 0; i < 72; i++) {
+      const isAccent = (i + 2 * z) % 6 < 2;
+      const want = (isAccent && z <= zoneAt) ? zoneColors[z] : state.palette.track;
+      assert.strictEqual(fills[z * 72 + i], want,
+        `ring ${z} bulb ${i} fill ${fills[z * 72 + i]}, expected ${want}`);
+    }
+  }
 
   const rects = c.filter((k) => k.op === "roundRect");
-  const track = rects.find((k) => k.args[2] === 300);
+  /* The marquee draws the whole centre (bar included) at
+   * NEON_MARQUEE_CENTER_SCALE, read live from the firmware, so the bar's
+   * geometry assertions scale by it. */
+  const MQ = fdef("NEON_MARQUEE_CENTER_SCALE");
+  const track = rects.find((k) => Math.abs(k.args[2] - 264 * MQ) < 0.01);
   assert.ok(track, "bar track missing");
-   const tick = rects.find((k) => k.args[2] === 7 && k.args[3] === 27);
+   const tick = rects.find((k) => Math.abs(k.args[2] - 7 * MQ) < 0.01 && Math.abs(k.args[3] - 27 * MQ) < 0.01);
   assert.ok(tick, "zero tick missing");
   /* Zero must land at the same fraction along the bar as it does around the
    * arc - this is the bug a plain psiMin..psiMax lerp reintroduces. */
-  const tickCentre = tick.args[0] + 2 + 150;
+  const tickCentre = tick.args[0] + 7 * MQ / 2 + 132 * MQ;
   const arcFrac = (zeroAng - ARC_START) / ARC_RANGE;
-  assert.ok(Math.abs(tickCentre / 300 - arcFrac) < 0.01,
-    `zero tick at ${(tickCentre / 300).toFixed(4)} of the bar but ${arcFrac.toFixed(4)} of the arc`);
+  assert.ok(Math.abs(tickCentre / (264 * MQ) - arcFrac) < 0.01,
+    `zero tick at ${(tickCentre / (264 * MQ)).toFixed(4)} of the bar but ${arcFrac.toFixed(4)} of the arc`);
 
   /* The bar fill itself must still be drawn (firmware: draw_neon_live()
    * marquee branch, the accent-coloured lv_draw_rect over [x_lo, x_hi]). */
-  const fill = rects.find((k) => k.args[3] === 16 && k.args[2] !== 300);
+  const fill = rects.find((k) => Math.abs(k.args[3] - 16 * MQ) < 0.01 && Math.abs(k.args[2] - 264 * MQ) > 0.01);
   assert.ok(fill, "bar fill missing");
 
   /* No glare: commit 0085465 removed the white highlight strip the firmware
@@ -194,25 +248,84 @@ for (const psi of [-12, -3, 2.5, 8.5]) {
     if (k.op === "set:fillStyle") curFill = k.args[0];
     if (k.op === "roundRect" && curFill === "#ffffff") whiteRects.push(k);
   }
-  const nonTickWhite = whiteRects.filter((k) => !(k.args[2] === 7 && k.args[3] === 27));
+  const nonTickWhite = whiteRects.filter((k) => !(Math.abs(k.args[2] - 7 * MQ) < 0.01 && Math.abs(k.args[3] - 27 * MQ) < 0.01));
   assert.strictEqual(nonTickWhite.length, 0,
     `expected no white fill over the bar besides the zero tick, found: ${JSON.stringify(nonTickWhite.map((k) => k.args))}`);
 }
 
-/* --- the label stack keeps one rhythm, marquee only shifts it ------------- */
-for (const [layout, dy] of [[0, 0], [1, 0], [2, 20]]) {
+/* --- marquee chase: spin phase follows the firmware round-robin ----------- */
+{
+  /* Firmware constants: NEON_MARQUEE_SPIN_MS is the per-tick period, and
+   * NEON_SPIN_DIR_* the per-ring direction (inner/outer clockwise -1,
+   * middle counterclockwise +1). The mirror must read the SAME values, or a
+   * chase that matches the panel on the bench would drift on the browser. */
+  const cSrc = fs.readFileSync(path.join(__dirname, "..", "main", "boost_gauge.c"), "utf8");
+  const spinDef = (name) => {
+    const m = new RegExp("^#define[ \\t]+" + name + "[ \\t]+\\(?(-?[0-9]+)\\\)?", "m").exec(cSrc);
+    assert.ok(m, `#define ${name} not found in main/boost_gauge.c`);
+    return Number(m[1]);
+  };
+  const SPIN_MS = spinDef("NEON_MARQUEE_SPIN_MS");
+  const spinDir = [spinDef("NEON_SPIN_DIR_INNER"), spinDef("NEON_SPIN_DIR_MID"), spinDef("NEON_SPIN_DIR_OUTER")];
+  /* The mirror's own constant must equal the firmware's: the browser cannot
+   * read boost_gauge.c, so this is the one number that can drift. */
+  const mirrorSpinMs = Number(extractConstLine("NEON_MARQUEE_SPIN_MS").split("=")[1].replace(/[;\s]/g, ""));
+  assert.strictEqual(mirrorSpinMs, SPIN_MS,
+    `mirror NEON_MARQUEE_SPIN_MS ${mirrorSpinMs} != firmware ${SPIN_MS}`);
+
+  /* Render marquee with the chase ON at several explicit tick counts, and
+   * assert ring z's accent bulbs sit at (i + 2z + phase_z(T)) % 6 < 2, where
+   * phase_z follows the firmware's round-robin: ring z advances on ticks
+   * where T % 3 == z, so after T ticks it has advanced floor((T - z)/3) + 1
+   * times (for T >= z), each step moving the accent pair by dir[z] bulbs. */
+  state.neonMarqueeSpin = true;
+  for (const T of [0, 1, 2, 3, 5, 11]) {
+    state.neonSpinTicks = T;
+    const c = render(2, 8.5);
+    const fills = [];
+    let cur = null;
+    for (const k of c) {
+      if (k.op === "set:fillStyle") cur = k.args[0];
+      if (k.op === "arc" && k.args[2] === 4) fills.push(cur);
+    }
+    assert.strictEqual(fills.length, 216, `spin T=${T}: expected 216 bulbs`);
+    const zoneAt = 2; /* psi 8.5 = overboost, all three rings lit */
+    const zoneColors = [state.palette.vacuum, state.palette.boost, state.palette.overboost]
+      .map((hex) => bulbRef(hex));
+    for (let z = 0; z < 3; z++) {
+      const steps = T >= z ? Math.floor((T - z) / 3) + 1 : 0;
+      const phase = (((spinDir[z] * steps) % 6) + 6) % 6;
+      for (let i = 0; i < 72; i++) {
+        const isAccent = (i + 2 * z + phase) % 6 < 2;
+        const want = isAccent ? zoneColors[z] : state.palette.track;
+        assert.strictEqual(fills[z * 72 + i], want,
+          `spin T=${T} ring ${z} bulb ${i} fill ${fills[z * 72 + i]}, expected ${want}`);
+      }
+    }
+  }
+  state.neonMarqueeSpin = false;
+  state.neonSpinTicks = 0;
+}
+
+/* --- the label stack keeps one rhythm on every layout ---------------------- */
+for (const [layout, dy] of [[0, 0], [1, 0], [2, 0]]) {
   const c = render(layout, 1.0);
   const texts = c.filter((k) => k.op === "fillText");
   const psiRow = texts.find((k) => k.args[0] === "P S I");
   const peakRow = texts.find((k) => String(k.args[0]).startsWith("PEAK"));
-  const rule = c.filter((k) => k.op === "moveTo" && k.args[0] === -62);
+  const rule = c.filter((k) => k.op === "moveTo" && Math.abs(k.args[0] + 62 * (layout === 2 ? 0.87 : 1)) < 0.01);
+  /* The marquee draws the whole centre at NEON_MARQUEE_CENTER_SCALE (0.87),
+   * so its stack rows land scaled; the ring layouts stay full size. The
+   * mirror and firmware both derive the y as round(NEON_UNIT_Y * mq) + 2
+   * (box centre at round(UNIT_Y*mq), ink bottom +2), so 128 -> 111 + 2. */
+  const mq = layout === 2 ? 0.87 : 1;
   /* Firmware draws "P S I" in a 200x30 box top-anchored at NEON_UNIT_Y - 15;
    * with base_line 0 and a 17 px line height (24 px * 0.70 em, rounded) its
    * ink runs 81..98 at dy=0 - ink BOTTOM at NEON_UNIT_Y + 2, not at
    * NEON_UNIT_Y itself. See the ink-clearance block below for the derivation. */
-  assert.strictEqual(psiRow.args[2], 138 + dy, `layout ${layout} unit mark y`);
-  assert.strictEqual(peakRow.args[2], 166 + dy, `layout ${layout} peak y`);
-  assert.strictEqual(rule[0].args[1], 146 + dy, `layout ${layout} rule y`);
+  assert.strictEqual(psiRow.args[2], Math.round(128 * mq) + 2 + dy, `layout ${layout} unit mark y`);
+  assert.strictEqual(peakRow.args[2], Math.round(158 * mq) + dy, `layout ${layout} peak y`);
+  assert.strictEqual(rule[0].args[1], Math.round(138 * mq) + dy, `layout ${layout} rule y`);
 }
 
 /* --- every SF Alien Encounters request must match the weight styles.css
@@ -241,13 +354,17 @@ for (const [layout, dy] of [[0, 0], [1, 0], [2, 20]]) {
   }
 }
 
-/* --- the readout's ink TOP lands at NEON_READOUT_TOP / NEON_MARQUEE_READOUT_TOP,
+/* --- the readout's ink TOP lands at NEON_READOUT_TOP on every layout ------
    matching lv_draw_label()'s box-top anchoring. Canvas's "top" baseline anchors
    to the font's ascent metric instead, which sits above the ink for this face
    and is what made the readout draw low. -------------------------------------- */
 {
   const READOUT_INK_EM = 0.70; /* SF Alien Encounters: glyphs run baseline..0.70em, base_line 0 */
-  for (const [layout, expectedTop, fontPx] of [[0, -42, 118], [1, -42, 118], [2, -71, 130]]) {
+  /* Marquee draws the shared readout at NEON_MARQUEE_CENTER_SCALE (0.87) -
+   * its fontPx and readoutTop land scaled (plus NEON_MARQUEE_READOUT_LIFT
+   * on top of the readout's vertical offset), the ring layouts stay full
+   * size. */
+  for (const [layout, expectedTop, fontPx] of [[0, -42, 118], [1, -42, 118], [2, -42 * 0.87 - 12, 118 * 0.87]]) {
     const c = withTextState(render(layout, -12));
     const digitCalls = c.filter((k) => k.op === "fillText" && k.font &&
       k.font.includes('"SF Alien Encounters"') && k.font.includes(`${fontPx}px`));
@@ -265,7 +382,7 @@ for (const [layout, dy] of [[0, 0], [1, 0], [2, 20]]) {
 /* --- "P S I" ink must clear the separator rule below it, on all three
    layouts - this is the reported collision. ----------------------------------- */
 {
-  for (const [layout, dy] of [[0, 0], [1, 0], [2, 20]]) {
+  for (const [layout, dy] of [[0, 0], [1, 0], [2, 0]]) {
     const c = withTextState(render(layout, 1.0));
     const psiCall = c.find((k) => k.op === "fillText" && k.args[0] === "P S I");
     assert.ok(psiCall, `layout ${layout}: "P S I" not drawn`);
@@ -274,13 +391,14 @@ for (const [layout, dy] of [[0, 0], [1, 0], [2, 20]]) {
     /* base_line = 0 in the firmware's neon_label font means glyphs sit
      * exactly ON the baseline, so with an alphabetic baseline the y argument
      * IS the ink bottom. */
+    const mq = layout === 2 ? 0.87 : 1;
     const inkBottom = psiCall.args[2];
-    const rule = c.find((k) => k.op === "moveTo" && k.args[0] === -62);
+    const rule = c.find((k) => k.op === "moveTo" && Math.abs(k.args[0] + 62 * mq) < 0.01);
     assert.ok(rule, `layout ${layout}: rule not drawn`);
     const ruleY = rule.args[1];
     assert.ok(ruleY - inkBottom >= 4,
       `layout ${layout}: "P S I" ink bottom ${inkBottom} is only ${(ruleY - inkBottom).toFixed(2)}px above the rule at ${ruleY}`);
-    assert.strictEqual(inkBottom, 138 + dy, `layout ${layout}: "P S I" ink bottom ${inkBottom} != expected ${138 + dy}`);
+    assert.strictEqual(inkBottom, Math.round(128 * mq) + 2 + dy, `layout ${layout}: "P S I" ink bottom ${inkBottom} != expected ${Math.round(128 * mq) + 2 + dy}`);
   }
 }
 
@@ -468,17 +586,19 @@ console.log("neon web parity: tube zero marker band verified");
   };
   const F = {
     R: def("NEON_R"), slot: def("NEON_SLOT_W"), dot: def("NEON_DOT_W"),
-    mSlot: def("NEON_MARQUEE_SLOT_W"), mDot: def("NEON_MARQUEE_DOT_W"),
-    font: def("NEON_FONT_PX"), mFont: def("NEON_MARQUEE_FONT_PX"),
+    mSlot: def("NEON_SLOT_W"), mDot: def("NEON_DOT_W"),
+    font: def("NEON_FONT_PX"), mFont: def("NEON_FONT_PX"),
     unitY: def("NEON_UNIT_Y"), ruleY: def("NEON_RULE_Y"), peakY: def("NEON_PEAK_Y"),
-    stackDy: def("NEON_MARQUEE_STACK_DY"), bulbR: def("NEON_BULB_R"),
+    stackDy: 0, bulbR: def("NEON_BULB_R"),
+    bulbStep: def("NEON_BULB_RING_STEP"),
     zeroDeg: def("NEON_TUBE_ZERO_DEG"),
+    mqScale: def("NEON_MARQUEE_CENTER_SCALE"),
   };
 
   for (const [layout, dy, slot, dotw, fontPx] of [
     [0, 0, F.slot, F.dot, F.font],
     [1, 0, F.slot, F.dot, F.font],
-    [2, F.stackDy, F.mSlot, F.mDot, F.mFont],
+    [2, F.stackDy, F.mSlot * F.mqScale, F.mDot * F.mqScale, F.mFont * F.mqScale],
   ]) {
     const c = render(layout, 8.5);
     const fonts = c.filter((k) => k.op === "set:font").map((k) => k.args[0]);
@@ -490,19 +610,20 @@ console.log("neon web parity: tube zero marker band verified");
     const texts = c.filter((k) => k.op === "fillText" && /^[0-9.]$/.test(String(k.args[0])));
     assert.strictEqual(texts.length, 3, `layout ${layout}: expected 3 readout cells, got ${texts.length}`);
     const pitch = texts[2].args[1] - texts[0].args[1];
-    assert.strictEqual(pitch, slot + dotw,
+    assert.ok(Math.abs(pitch - (slot + dotw)) < 0.001,
       `layout ${layout}: readout ones->tenths pitch ${pitch}, firmware SLOT_W+DOT_W = ${slot + dotw}`);
 
     const rows = c.filter((k) => k.op === "fillText");
     const psiRow = rows.find((k) => k.args[0] === "P S I");
     const peakRow = rows.find((k) => String(k.args[0]).startsWith("PEAK"));
-    assert.strictEqual(psiRow.args[2], F.unitY + 2 + dy,
+    const mq = layout === 2 ? F.mqScale : 1;
+    assert.strictEqual(psiRow.args[2], Math.round(F.unitY * mq) + 2 + dy,
       `layout ${layout}: unit mark y vs NEON_UNIT_Y`);
-    assert.strictEqual(peakRow.args[2], F.peakY + dy,
+    assert.strictEqual(peakRow.args[2], Math.round(F.peakY * mq) + dy,
       `layout ${layout}: peak y vs NEON_PEAK_Y`);
     const rule = c.filter((k) => k.op === "moveTo");
-    assert.ok(rule.some((k) => k.args[1] === F.ruleY + dy),
-      `layout ${layout}: rule y vs NEON_RULE_Y (${F.ruleY + dy})`);
+    assert.ok(rule.some((k) => k.args[1] === Math.round(F.ruleY * mq) + dy),
+      `layout ${layout}: rule y vs NEON_RULE_Y (${Math.round(F.ruleY * mq) + dy})`);
   }
 
   /* Ring radius: every band's outer edge is ringR, and the mirror compensates
@@ -522,13 +643,17 @@ console.log("neon web parity: tube zero marker band verified");
     }
   }
 
-  /* Bulb ring radius. */
+  /* Bulb ring radii: three concentric rings, outermost at NEON_BULB_R,
+   * stepping inward by NEON_BULB_RING_STEP per zone. */
   {
     const c = render(2, 5);
     const bulbs = c.filter((k) => k.op === "arc" && k.args[2] === 4);
-    assert.strictEqual(bulbs.length, 72, `expected 72 bulbs, got ${bulbs.length}`);
-    const r = Math.round(Math.hypot(bulbs[0].args[0], bulbs[0].args[1]));
-    assert.strictEqual(r, F.bulbR, `bulb ring radius ${r}, firmware NEON_BULB_R = ${F.bulbR}`);
+    assert.strictEqual(bulbs.length, 3 * 72, `expected 216 bulbs, got ${bulbs.length}`);
+    for (let z = 0; z < 3; z++) {
+      const r = Math.round(Math.hypot(bulbs[z * 72].args[0], bulbs[z * 72].args[1]));
+      assert.strictEqual(r, F.bulbR - (2 - z) * F.bulbStep,
+        `ring ${z} radius ${r}, firmware NEON_BULB_RING_R(${z}) = ${F.bulbR - (2 - z) * F.bulbStep}`);
+    }
   }
 
   /* Tube zero marker half-width. */

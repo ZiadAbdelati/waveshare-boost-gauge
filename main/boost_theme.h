@@ -118,6 +118,12 @@ void boost_theme_set_hud_gradient(bool enabled);
 bool boost_theme_hud_true_black(void);
 void boost_theme_set_hud_true_black(bool enabled);
 
+/* Marquee border chase: the accent bulbs rotate around each ring (inner and
+ * outer clockwise, middle counterclockwise) while the bulb positions stay
+ * fixed. Persisted; affects only the neon marquee layout. */
+bool boost_theme_neon_marquee_spin(void);
+void boost_theme_set_neon_marquee_spin(bool enabled);
+
 /* Tearing-effect sync preference, persisted. Applied to the display at boot and
  * whenever changed. */
 bool boost_theme_te_sync(void);

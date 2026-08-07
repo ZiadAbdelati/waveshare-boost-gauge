@@ -18,8 +18,10 @@ def glyph_boxes(path):
             out.append((w, h))
     return out
 
-BIG = glyph_boxes("main/fonts/neon_big.c")      # 108 px, tube + segments
-HUGE = glyph_boxes("main/fonts/neon_huge.c")    # 154 px, marquee
+BIG = glyph_boxes("main/fonts/neon_big.c")      # 118 px, all three layouts
+# Marquee shares the big font now; the huge font it used to carry is gone
+# from the build, so the two analyses below collapse into one.
+HUGE = glyph_boxes("main/fonts/neon_big.c")
 LABEL = glyph_boxes("main/fonts/neon_label.c")  # 24 px, zone word
 
 # --- ring geometry, from boost_gauge.c -------------------------------------

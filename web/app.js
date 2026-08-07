@@ -606,7 +606,17 @@ function drawNeonGauge(sample, psi, g) {
   const lit = neonLitColor(accent);
   const marquee = layout === 2;
   const tube = layout === 0;
-  const stackDy = marquee ? 20 : 0;
+  /* Marquee shares the ring layouts' readout metrics and lower-stack rhythm
+   * now; only the border/bar art differs. The marquee draws the shared
+   * readout/bar/stack at NEON_MARQUEE_CENTER_SCALE (0.87) so they fit inside
+   * its spread rings - the panel scales its shared sprites at blit time, so
+   * the mirror scales the canvas geometry. */
+  const mq = marquee ? 0.87 : 1;
+  /* The centre scale pulls the readout toward the face centre, so on the
+   * marquee it gets an extra lift (NEON_MARQUEE_READOUT_LIFT) to keep the
+   * bar and the peak/psi stack below with room to breathe. */
+  const readoutLift = marquee ? 12 : 0;
+  const stackDy = 0;
   /* Canvas CAN blur, unlike the panel's draw path, so the mirror reproduces
    * the baked glow with a shadow rather than approximating it. The firmware
    * bakes a box blur of radius 5 applied twice at 115% gain; a shadowBlur of
@@ -640,22 +650,60 @@ function drawNeonGauge(sample, psi, g) {
   };
   const step = sweep / nseg;
   if (marquee) {
-    ctx.fillStyle = p.track; roundRectPath(-150, 68, 300, 16, 8); ctx.fill();
-    /* Both kinds of bulb. Every sixth PAIR is an accent carrying the zone
-     * colour; the rest are dead track. Drawing only the accents left the border
-     * as twelve floating dots instead of a marquee. */
-    for (let i = 0; i < 72; i++) {
-      const a = i * 360 / 72 * DEG;
-      ctx.fillStyle = i % 6 < 2 ? neonLitColor(accent, 0.55) : p.track;
-      ctx.beginPath(); ctx.arc(Math.cos(a) * 224, Math.sin(a) * 224, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = p.track; roundRectPath(-132 * mq, 68 * mq, 264 * mq, 16 * mq, 8); ctx.fill();
+    /* Three concentric bulb rings, one zone each - innermost vacuum, middle
+     * boost, outermost overboost - at the spread 24px step (NEON_BULB_RINGS /
+     * NEON_BULB_RING_STEP on the panel; parity reads both from
+     * boost_gauge.c). Dead bulbs stay dim track; every ring's 24 accent bulbs
+     * light LIVE in that ring's OWN zone colour once the reading has REACHED
+     * that zone (zone id >= ring index, cumulative - a stage ladder). The
+     * accent phase is STAGGERED per ring ((i + 2z) % 6 < 2), so lit rings
+     * form a diagonal, never radial spokes (NEON_BULB_IS_ACCENT). */
+    const ringRgb = [p.vacuum, p.boost, p.overboost];
+    const zone = psi >= range.psiOverboost ? 2 : psi > 0.05 ? 1 : 0;
+    /* Marquee chase (neonMarqueeSpin): one ring advances per spin tick,
+     * round-robin, so ring z's phase after T ticks is dir_z * floor((T + 2 - z)
+     * / 3) + 1 (for T >= z), mod 6 - the panel advances ring (tick % 3) each
+     * NEON_MARQUEE_SPIN_MS, inner/outer clockwise (-1) and middle
+     * counterclockwise (+1). The pattern period is 6, so a ring has exactly 6
+     * phase states. The mirror derives T from wall clock; the panel restarts
+     * at 0 on every scene build, so the two are not phase-locked (the chase
+     * is decorative, not a measurement). */
+    let spinTicks = 0;
+    if (state.neonMarqueeSpin) {
+      spinTicks = (state.neonSpinTicks !== undefined)
+        ? state.neonSpinTicks
+        : Math.floor(performance.now() / NEON_MARQUEE_SPIN_MS);
     }
-    const x0 = -150 + (psiToSweep(0, 0, 300, range));
-    const xv = -150 + (psiToSweep(psi, 0, 300, range));
+    const spinDir = [-1, 1, -1];
+    /* Only advance when the chase is ON: the panel never advances the phase
+     * while disabled, so the mirror must not either (its phase formula would
+     * otherwise give ring 0 a non-zero phase at tick 0 even though the static
+     * pattern is what ships with the toggle off). */
+    const spinPhase = [0, 0, 0];
+    if (state.neonMarqueeSpin) {
+      for (let z = 0; z < 3; z++) {
+        if (spinTicks >= z) {
+          spinPhase[z] = (((spinDir[z] * (Math.floor((spinTicks - z) / 3) + 1)) % 6) + 6) % 6;
+        }
+      }
+    }
+    for (let z = 0; z < 3; z++) {
+      const rr = 224 - (2 - z) * 24;
+      for (let i = 0; i < 72; i++) {
+        const a = i * 360 / 72 * DEG;
+        const isAccent = (i + 2 * z + spinPhase[z]) % 6 < 2;
+        ctx.fillStyle = (isAccent && z <= zone) ? neonBulbColor(ringRgb[z]) : p.track;
+        ctx.beginPath(); ctx.arc(Math.cos(a) * rr, Math.sin(a) * rr, 4, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    const x0 = -132 * mq + (psiToSweep(0, 0, 264 * mq, range));
+    const xv = -132 * mq + (psiToSweep(psi, 0, 264 * mq, range));
     const lo = Math.min(x0, xv), hi = Math.max(x0, xv);
     if (hi - lo > 2) {
-      ctx.fillStyle = lit; roundRectPath(lo, 68, hi - lo, 16, 8); ctx.fill();
+      ctx.fillStyle = lit; roundRectPath(lo, 68 * mq, hi - lo, 16 * mq, 8); ctx.fill();
     }
-    ctx.fillStyle = "#ffffff"; roundRectPath(x0 - 3.5, 62.5, 7, 27, 3.5); ctx.fill();
+    ctx.fillStyle = "#ffffff"; roundRectPath(x0 - 3.5 * mq, 62.5 * mq, 7 * mq, 27 * mq, 3.5 * mq); ctx.fill();
   } else {
     /* The unlit track shares the same outer edge as the lit bands. */
     arc(start, start + sweep, tube ? 26 : 30, p.track);
@@ -691,15 +739,16 @@ function drawNeonGauge(sample, psi, g) {
   const tenthsTotal = Math.round(Math.abs(psi) * 10);
   const whole = Math.floor(tenthsTotal / 10);
   const chars = `${whole >= 10 ? Math.floor(whole / 10) : ""}${whole % 10}.${tenthsTotal % 10}`;
-  /* These are NEON_SLOT_W / NEON_DOT_W and their marquee twins, verbatim. They
-   * had drifted badly - 64/33 against the panel's 88/34 - which made the mirror
-   * draw a visibly tighter readout than the panel ever showed, and sent the
-   * spacing work chasing a difference that was in this file, not on the glass. */
-  const widths = [...chars].map((ch) => ch === "." ? (marquee ? 37 : 34) : (marquee ? 96 : 88));
+  /* NEON_SLOT_W / NEON_DOT_W, verbatim, on every layout now - marquee lost
+   * its own wider metrics when the readout was unified. They had drifted
+   * badly once (64/33 against the panel's 88/34), which made the mirror draw
+   * a visibly tighter readout than the panel ever showed. The marquee scales
+   * these by mq (NEON_MARQUEE_CENTER_SCALE) to match its smaller sprites. */
+  const widths = [...chars].map((ch) => ch === "." ? 34 * mq : 88 * mq);
   const total = widths.reduce((a, b) => a + b, 0);
   let x = -total / 2;
-  const readoutTop = marquee ? -71 : -42;
-  const fontPx = marquee ? 130 : 118;
+  const readoutTop = -42 * mq - readoutLift;
+  const fontPx = 118 * mq;
   /* Weight 400, matching what styles.css actually declares for this face. It
    * asked for 700, which the family does not provide - the browser then shapes
    * the SYSTEM fallback instead, silently, and canvas never corrects itself
@@ -723,9 +772,9 @@ function drawNeonGauge(sample, psi, g) {
     const lsb = [133, 133, 113, 92, 99, 107, 133, 126, 128, 147];
     const first = Number(chars[0]);
     const font = fontPx;
-    const sw = marquee ? 44 : 42;
-    const gap = 8;
-    const firstCell = marquee ? 96 : 88;
+    const sw = 42 * mq;
+    const gap = 8 * mq;
+    const firstCell = 88 * mq;
     const glyphLeft = -total / 2 + firstCell / 2 - (adv[first] * font / 1000) / 2 + lsb[first] * font / 1000;
     const sx = glyphLeft - gap - sw / 2;
     const skew = 0.2126;                       /* tan(12 deg), the italic angle */
@@ -787,16 +836,16 @@ function drawNeonGauge(sample, psi, g) {
    * readout on the panel, having been the one lit element there with no glow
    * at all. */
   ctx.fillStyle = lit;
-  withGlow(lit, () => ctx.fillText(zone, 0, marquee ? -132 : -95));
+  withGlow(lit, () => ctx.fillText(zone, 0, -95));
   /* NEON_UNIT_Y / NEON_RULE_Y / NEON_PEAK_Y, which moved down 40 as a unit.
    * The unit mark's y is UNIT_Y + 2 because neon_label has base_line 0 and an
    * alphabetic baseline IS the ink bottom - see the note above. */
-  ctx.fillStyle = p.muted; ctx.fillText("P S I", 0, 138 + stackDy);
-  ctx.strokeStyle = p.muted; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(-62, 146 + stackDy); ctx.lineTo(62, 146 + stackDy); ctx.stroke();
+  ctx.fillStyle = p.muted; ctx.fillText("P S I", 0, Math.round(128 * mq) + 2 + stackDy);
+  ctx.strokeStyle = p.muted; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(-62 * mq, Math.round(138 * mq) + stackDy); ctx.lineTo(62 * mq, Math.round(138 * mq) + stackDy); ctx.stroke();
   /* Peak is clamped at zero on the panel, as on every other face here. */
   ctx.textBaseline = "middle";
-  ctx.font = `700 16px monospace`;
-  ctx.fillText(`PEAK ${Math.max(0, Number(sample.peakPsi) || 0).toFixed(1)}`, 0, 166 + stackDy);
+  ctx.font = `700 ${16 * mq}px monospace`;
+  ctx.fillText(`PEAK ${Math.max(0, Number(sample.peakPsi) || 0).toFixed(1)}`, 0, Math.round(158 * mq) + stackDy);
   ctx.restore();
 }
 
@@ -814,9 +863,35 @@ const NEON_BLOOM = 1.92, NEON_SAT = 1.30, NEON_WHITE_LIFT = 0.35;
 /* NEON_HALO_DIM: the ring's inner band is a dimmed zone colour, not the raw
  * palette entry, so the three bands read dark -> bright -> white outward. */
 const NEON_HALO_DIM = 0.55;
+/* Marquee chase tick (matches NEON_MARQUEE_SPIN_MS in boost_gauge.c): one
+ * ring advances per tick, round-robin; the pattern period is 6 so a ring
+ * has exactly 6 phase states. The parity test asserts this constant and the
+ * direction table against the firmware. */
+const NEON_MARQUEE_SPIN_MS = 90;
 function neonDim(hex, k = NEON_HALO_DIM) {
   const [r, g, b] = hexToRgb(hex);
   return `rgb(${Math.round(r * k)}, ${Math.round(g * k)}, ${Math.round(b * k)})`;
+}
+/* Mirrors neon_bulb_accent() in main/boost_gauge.c: the zone colour is dimmed
+ * to 55% with the firmware's scale_rgb() rounding FIRST, then bloomed. Folding
+ * the dim into neon_lit's gain (as the old accent bulbs did not have to care
+ * about, being live) rounds differently and drifts a channel off the panel. */
+function neonBulbColor(hex) {
+  const [r0, g0, b0] = hexToRgb(hex);
+  const dim = [Math.round(r0 * 0.55), Math.round(g0 * 0.55), Math.round(b0 * 0.55)];
+  const [dr, dg, db] = dim;
+  const luma = 0.299 * dr + 0.587 * dg + 0.114 * db;
+  let r = Math.max(0, (luma + (dr - luma) * NEON_SAT) * NEON_BLOOM);
+  let g = Math.max(0, (luma + (dg - luma) * NEON_SAT) * NEON_BLOOM);
+  let b = Math.max(0, (luma + (db - luma) * NEON_SAT) * NEON_BLOOM);
+  const peak = Math.max(r, g, b);
+  if (peak > 255) {
+    const scale = 255 / peak;
+    r *= scale; g *= scale; b *= scale;
+    const w = (1 - scale) * NEON_WHITE_LIFT;
+    r += (255 - r) * w; g += (255 - g) * w; b += (255 - b) * w;
+  }
+  return `rgb(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)})`;
 }
 function neonLitColor(hex, factor = 1) {
   const [r0, g0, b0] = hexToRgb(hex);
@@ -1961,6 +2036,7 @@ function queueThemeConfig(body, okMsg) {
       state.teSync = !!payload.teSync;
       state.regionDBuf = !!payload.regionDBuf;
       state.rotation = Number(payload.rotation) || 0;
+      state.neonMarqueeSpin = !!payload.neonMarqueeSpin;
       state.vaultFace = payload.vaultFace || state.vaultFace;
       if (payload.vaultVignette !== undefined) state.vaultVignette = payload.vaultVignette;
       if (payload.vaultNeedleRed !== undefined) state.vaultNeedleRed = !!payload.vaultNeedleRed;
@@ -2155,6 +2231,9 @@ function themeEditor(theme) {
     presetName.textContent = "Color preset";
     presetRow.append(presetName, preset);
     wrap.append(presetRow);
+    addToggle("neonMarqueeSpin",
+      "Spin the marquee border (accent bulbs chase around the rings)",
+      "Marquee spin on", "Marquee spin off");
   }
 
   if (theme.style === "arc") {
@@ -2342,6 +2421,7 @@ function wireDisplayToggles() {
       state.bigDigitStaticBg = !!payload.bigDigitStaticBg;
       state.bigDigitColorText = !!payload.bigDigitColorText;
       state.hudTrueBlack = !!payload.hudTrueBlack;
+      state.neonMarqueeSpin = !!payload.neonMarqueeSpin;
       state.vaultNeedleRed = !!payload.vaultNeedleRed;
       state.vaultNeedleTail = !!payload.vaultNeedleTail;
        state.neonLayout = [0, 1, 2].includes(Number(payload.neonLayout))

@@ -430,6 +430,7 @@ def themes_payload() -> dict:
         "arcGradient": bool(CONFIG.get("arcGradient", False)),
         "hudGradient": bool(CONFIG.get("hudGradient", False)),
         "hudTrueBlack": bool(CONFIG.get("hudTrueBlack", False)),
+        "neonMarqueeSpin": bool(CONFIG.get("neonMarqueeSpin", False)),
         "teSync": bool(CONFIG.get("teSync", False)),
         "rotation": int(CONFIG.get("rotation", 0)),
         "demoMode": bool(CONFIG.get("demoMode", False)),
@@ -630,6 +631,8 @@ class Handler(BaseHTTPRequestHandler):
                 CONFIG["hudGradient"] = bool(payload["hudGradient"])
             if "hudTrueBlack" in payload:
                 CONFIG["hudTrueBlack"] = bool(payload["hudTrueBlack"])
+            if "neonMarqueeSpin" in payload:
+                CONFIG["neonMarqueeSpin"] = bool(payload["neonMarqueeSpin"])
             if "teSync" in payload:
                 CONFIG["teSync"] = bool(payload["teSync"])
             if "rotation" in payload:

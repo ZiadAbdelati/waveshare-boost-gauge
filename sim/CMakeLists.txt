@@ -46,7 +46,6 @@ add_executable(boost_gauge_sim
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/font_wide_22.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/font_wide_32.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/neon_big.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/neon_huge.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/neon_label.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_sim.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_brightness.c

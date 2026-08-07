@@ -634,7 +634,20 @@ than several theme entries. Both persist in NVS and both are exposed on
 
 - **`neonLayout`** (0–2) picks the face: `0` tube (one continuous arc), `1`
   segments (54 discrete segments, the default — smallest dirty region), `2`
-  marquee (linear bar with a 72-bulb border, no ring).
+  marquee (linear bar with a three-ring bulb border — innermost vacuum,
+  middle boost, outermost overboost — and no value ring). The three rings sit
+  at 176/200/224 (`NEON_BULB_RING_STEP` 24, 1.5x the first spread) so the
+  shared 118 px readout draws scaled to 0.87 (one sprite set, `neon_mq()`
+  scaling; see below). The border is a **cumulative stage ladder**: ring z's
+  accent bulbs (staggered per ring, `(i + 2z) % 6 < 2`) light once the
+  reading has REACHED that zone (vacuum → inner only, boost → inner+middle,
+  overboost → all three); dead bulbs stay dim `track`, so the two-tone look
+  survives even fully lit. `neonMarqueeSpin` (persisted) makes the accent
+  bulbs CHASE around the rings — one ring advances every 90 ms, round-robin,
+  inner/outer clockwise and middle counterclockwise, a full 6-phase rotation
+  per ring in 1.62 s. The chase only repaints one ring per step (12 small
+  boxes) and defers to zone flips, so it stays inside LVGL's 32-slot
+  invalidation buffer and the face keeps ~1 Mpx/s.
 - **`neonPreset`** (0–3) picks the colourway: `0` Violet, `1` Miami, `2` Toxic,
   `3` Blood Moon. Presets set `track`/`muted` as well as the three zone
   colours, so changing one repaints the cached background.
@@ -697,7 +710,9 @@ Shared rules across styles:
   headless PNGs, including the generated fonts, so a face can be checked without
   flashing. SDL2 is optional (only `--window` needs it); `--theme <id>` selects
   the style, `--neon-layout tube|segments|marquee` and `--neon-preset 0..3` the
-  neon face and colourway. Both of those exist because the sim does **not**
+  neon face and colourway, and `--neon-spin` enables the marquee chase (and
+  `--neon-chase DIR` writes a fixed-psi 90 ms/step chase sequence to DIR for
+  preview GIFs). Both of those exist because the sim does **not**
   inherit the device's persisted settings: it calls `boost_theme_init()` at
   startup, and without these flags it renders whatever the defaults say. Before
   `--neon-preset` existed the sim never applied a preset at all
@@ -1042,8 +1057,7 @@ Bahnschrift/Consolas are Microsoft fonts and cannot be embedded):
 | `font_cond_14/18/22/32` | Saira Condensed SemiBold | labels |
 | `font_cond_96` | IBM Plex Sans Condensed BoldItalic | Night City readout |
 | `font_wide_22/32` | Saira SemiCondensed Bold | Big Digit labels |
-| `neon_big` (118 px) | SF Alien Encounters Italic (user supplied) | neon readout, tube/segments |
-| `neon_huge` (130 px) | SF Alien Encounters Italic | neon readout, marquee |
+| `neon_big` (118 px) | SF Alien Encounters Italic (user supplied) | neon readout, all three layouts |
 | `neon_label` (24 px) | SF Alien Encounters **regular** | neon zone word and `P S I` |
 
 The readout is italic; the zone word and `P S I` are the **upright** face, so
@@ -1074,7 +1088,11 @@ one theme with another's colours. Face, track, text, muted and zero stay fixed:
 a theme whose face and text are both user-settable is a theme that can be made
 unreadable. Note for `neon`: its cached background is painted from `track`,
 which is *not* user-editable but *is* changed by `neonPreset` — so a preset
-change repaints it and a zone-colour edit correctly does not. If `track` ever
+change repaints it. The marquee border's accent bulbs are LIVE (drawn each
+update in the ring's zone colour once that stage is reached), so a zone-colour
+edit reaches them via the scene rebuild `apply_theme()` performs — the
+background cache itself only bakes the neutral `track` bulbs, and `neon_bg_key_t`
+carries no zone fields. If `track` ever
 becomes editable, `neon_bg_key_t` already covers it, but that pairing is worth
 re-checking rather than assuming. `{"id":"...","reset":true}` restores the built-in palette, and each
 theme reports `customized` in `GET /themes`.

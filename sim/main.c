@@ -365,11 +365,11 @@ static int run_audit(const char *theme_id, int seconds)
      * it: callback invocations (one per dirty region) and ring segments
      * submitted (three arc primitives each). */
     extern uint32_t g_neon_cb_calls, g_neon_arcs, g_neon_labels;
-    extern uint32_t g_neon_sign_bars, g_neon_bulbs, g_neon_sprite_blits;
+    extern uint32_t g_neon_sign_bars, g_neon_sprite_blits;
     uint64_t cb_total = 0, arc_total = 0, label_total = 0;
-    uint64_t sign_total = 0, bulb_total = 0, sprite_total = 0;
+    uint64_t sign_total = 0, sprite_total = 0;
     uint32_t cb_max = 0, arc_max = 0, label_max = 0;
-    uint32_t sign_max = 0, bulb_max = 0, sprite_max = 0;
+    uint32_t sign_max = 0, sprite_max = 0;
 #endif
 
     for (int i = 0; i < frames; ++i) {
@@ -391,7 +391,7 @@ static int run_audit(const char *theme_id, int seconds)
         s_flush_px = 0;
 #if BOOST_NEON_DRAW_STATS
         g_neon_cb_calls = 0; g_neon_arcs = 0; g_neon_labels = 0;
-        g_neon_sign_bars = 0; g_neon_bulbs = 0; g_neon_sprite_blits = 0;
+        g_neon_sign_bars = 0; g_neon_sprite_blits = 0;
 #endif
         lv_tick_inc(16);
         lv_timer_handler();
@@ -401,13 +401,11 @@ static int run_audit(const char *theme_id, int seconds)
             arc_total += g_neon_arcs;
             label_total += g_neon_labels;
             sign_total += g_neon_sign_bars;
-            bulb_total += g_neon_bulbs;
             sprite_total += g_neon_sprite_blits;
             if (g_neon_cb_calls > cb_max) cb_max = g_neon_cb_calls;
             if (g_neon_arcs > arc_max) arc_max = g_neon_arcs;
             if (g_neon_labels > label_max) label_max = g_neon_labels;
             if (g_neon_sign_bars > sign_max) sign_max = g_neon_sign_bars;
-            if (g_neon_bulbs > bulb_max) bulb_max = g_neon_bulbs;
             if (g_neon_sprite_blits > sprite_max) sprite_max = g_neon_sprite_blits;
         }
 #endif
@@ -489,8 +487,6 @@ static int run_audit(const char *theme_id, int seconds)
            rendered ? (double)label_total / (double)rendered : 0.0, label_max);
     printf("  sign bars/cyc      : mean %.1f  max %u\n",
            rendered ? (double)sign_total / (double)rendered : 0.0, sign_max);
-    printf("  accent bulbs/cyc   : mean %.1f  max %u\n",
-           rendered ? (double)bulb_total / (double)rendered : 0.0, bulb_max);
     printf("  sprite blits/cyc   : mean %.1f  max %u  (A8 coverage, BOOST_NEON_GLYPH_SPRITES)\n",
            rendered ? (double)sprite_total / (double)rendered : 0.0, sprite_max);
 #endif
@@ -514,7 +510,8 @@ static void usage(const char *argv0)
             "  %s --audit [--seconds N] partial-refresh trail + cost audit\n"
             "  %s --tpms [normal|stale|disconnected]\n"
             "                          snapshot the TPMS page under a mock scenario\n"
-            "  (all modes accept --theme ID and --neon-layout tube|segments|marquee)\n",
+            "  (all modes accept --theme ID, --neon-layout tube|segments|marquee,\n"
+            "   and --neon-spin to enable the marquee chase for screenshots)\n",
             argv0, argv0, argv0, argv0);
 }
 
@@ -543,15 +540,58 @@ static int run_tpms(const char *out_dir, const char *scenario_name)
     return 0;
 }
 
+/* Fixed-psi marquee chase: hold the OVERBOOST reading (all three rings lit)
+ * and snapshot at each 90 ms spin boundary so the accent bulbs walk through
+ * all six phase states. The chase starts at phase 0 on scene build, so the
+ * first frame is the static stagger. Requires --neon-layout marquee. */
+static int run_chase(const char *out_dir)
+{
+    sim_mkdir(out_dir);
+    boost_sim_init();
+    boost_page_create();
+    pump_lvgl(50);
+
+    /* Reset the scene so the chase starts from phase 0 deterministically. */
+    boost_theme_set_neon_marquee_spin(true);
+    const boost_theme_t *t = boost_theme_find("neon");
+    boost_gauge_apply_theme(t);
+    pump_lvgl(50);
+
+    boost_sample_t sample = { .psi = 19.5f, .peak_psi = 19.5f, .demo = true };
+    const uint32_t step = 16;
+    uint32_t last_tick = lv_tick_get();
+    int shot = 0;
+    for (uint32_t elapsed = 0; elapsed < 9 * 90 + 60; elapsed += step) {
+        boost_gauge_update(&sample);
+        lv_tick_inc(step);
+        lv_timer_handler();
+        usleep(step * 1000);
+        const uint32_t now = lv_tick_get();
+        if (now - last_tick >= 90) {
+            char path[512];
+            snprintf(path, sizeof(path), "%s/chase_%02d.raw", out_dir, shot++);
+            if (!snapshot_screen(path)) {
+                return 2;
+            }
+            last_tick = now;
+            if (shot >= 8) break;
+        }
+    }
+    printf("wrote %d chase frames to %s (90 ms per ring step)\n", shot, out_dir);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     bool window = false;
     bool audit = false;
     bool tpms = false;
+    bool chase = false;
     int audit_seconds = 20;
     const char *shot_dir = "preview/sim";
     const char *theme_id = NULL;
     const char *tpms_scenario = NULL;
+    const char *chase_dir = NULL;
 
     /* Run the same theme initialisation the firmware does, BEFORE parsing the
      * options that set layout/preset. Without this the sim only ever saw
@@ -610,6 +650,18 @@ int main(int argc, char **argv)
                 }
                 boost_theme_set_neon_preset((boost_neon_preset_t)n);
             }
+        } else if (strcmp(argv[i], "--neon-spin") == 0) {
+            /* Enable the marquee chase so a screenshot sequence can show the
+             * accent bulbs walking around the rings. The chase starts at
+             * phase 0 on scene build, so the first frame is the static
+             * stagger; later frames differ. */
+            boost_theme_set_neon_marquee_spin(true);
+    } else if (strcmp(argv[i], "--neon-chase") == 0) {
+            /* Fixed-psi chase sequence: hold the OVERBOOST reading (all three
+             * rings lit) and snapshot every 90 ms so the accent bulbs walk
+             * through all 6 phase states. Requires --neon-layout marquee. */
+            chase = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') chase_dir = argv[++i];
         } else if (strcmp(argv[i], "--screenshot") == 0) {
             if (i + 1 < argc) {
                 shot_dir = argv[++i];
@@ -641,6 +693,9 @@ int main(int argc, char **argv)
     }
     if (tpms) {
         return run_tpms(shot_dir, tpms_scenario);
+    }
+    if (chase) {
+        return run_chase(chase_dir ? chase_dir : "preview/chase");
     }
     return run_screenshots(shot_dir, theme_id);
 }

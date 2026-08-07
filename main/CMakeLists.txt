@@ -32,7 +32,6 @@ idf_component_register(
         "fonts/font_cond_32.c"
         "fonts/font_cond_96.c"
         "fonts/neon_big.c"
-        "fonts/neon_huge.c"
         "fonts/neon_label.c"
         "fonts/font_wide_22.c"
         "fonts/font_wide_32.c"
