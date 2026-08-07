@@ -1094,7 +1094,12 @@ static uint32_t neon_bulb_accent(uint32_t accent_rgb)
  * invalidation cannot disagree about where the rings are. */
 static void neon_bulb_pos(int cx, int cy, int z, int i, int *bx, int *by)
 {
-    const float rad = (float)i * (360.0f / (float)NEON_BULB_N(z)) * (float)M_PI / 180.0f;
+    /* -90 deg puts bulb 0 at 12 o'clock (screen y is down, so angle -90 =
+     * top). Every ring count is even, so bulb N/2 lands exactly at 6 o'clock
+     * too - a perfectly centred dot at top and bottom on all three rings, and
+     * the rings share those two alignment axes. The single source keeps the
+     * bake, the live draw and the invalidation in agreement. */
+    const float rad = ((float)i * (360.0f / (float)NEON_BULB_N(z)) - 90.0f) * (float)M_PI / 180.0f;
     const float r = (float)NEON_BULB_RING_R(z);
     *bx = cx + (int)lroundf(cosf(rad) * r);
     *by = cy + (int)lroundf(sinf(rad) * r);

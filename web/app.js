@@ -696,7 +696,10 @@ function drawNeonGauge(sample, psi, g) {
       const rr = 224 - (2 - z) * 24;
       const n = ringN[z];
       for (let i = 0; i < n; i++) {
-        const a = i * 360 / n * DEG;
+        /* -90 puts bulb 0 at 12 o'clock (top); n even means bulb n/2 lands at
+         * the bottom too, so every ring has a centred dot at top and bottom
+         * and the rings share those two alignment axes (matches the panel). */
+        const a = (i * 360 / n - 90) * DEG;
         const isAccent = (i + 2 * z + spinPhase[z]) % 6 < 2;
         ctx.fillStyle = (isAccent && z <= zone) ? neonBulbColor(ringRgb[z]) : p.track;
         ctx.beginPath(); ctx.arc(Math.cos(a) * rr, Math.sin(a) * rr, 4, 0, Math.PI * 2); ctx.fill();
@@ -2236,9 +2239,14 @@ function themeEditor(theme) {
     presetName.textContent = "Color preset";
     presetRow.append(presetName, preset);
     wrap.append(presetRow);
-    addToggle("neonMarqueeSpin",
-      "Spin the marquee border (accent bulbs chase around the rings)",
-      "Marquee spin on", "Marquee spin off");
+    /* The ring-spin chase only exists on the marquee layout, so only offer it
+     * there. Switching layout re-renders this panel (the PUT response handler
+     * calls renderThemes()), which shows/hides the row. */
+    if (Number(state.neonLayout) === 2) {
+      addToggle("neonMarqueeSpin",
+        "Ring spin effect",
+        "Ring spin on", "Ring spin off");
+    }
   }
 
   if (theme.style === "arc") {
