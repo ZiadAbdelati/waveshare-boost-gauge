@@ -661,6 +661,10 @@ function drawNeonGauge(sample, psi, g) {
      * form a diagonal, never radial spokes (NEON_BULB_IS_ACCENT). */
     const ringRgb = [p.vacuum, p.boost, p.overboost];
     const zone = psi >= range.psiOverboost ? 2 : psi > 0.05 ? 1 : 0;
+    /* Per-ring bulb counts for uniform chord spacing: outer 72, middle 66,
+     * inner 54 (parity reads NEON_BULB_N_INNER/MID/OUTER from the panel).
+     * All divisible by 6 so the 2-lit/4-dark accent pattern stays seamless. */
+    const ringN = [54, 66, 72];
     /* Marquee chase (neonMarqueeSpin): one ring advances per spin tick,
      * round-robin, so ring z's phase after T ticks is dir_z * floor((T + 2 - z)
      * / 3) + 1 (for T >= z), mod 6 - the panel advances ring (tick % 3) each
@@ -690,8 +694,9 @@ function drawNeonGauge(sample, psi, g) {
     }
     for (let z = 0; z < 3; z++) {
       const rr = 224 - (2 - z) * 24;
-      for (let i = 0; i < 72; i++) {
-        const a = i * 360 / 72 * DEG;
+      const n = ringN[z];
+      for (let i = 0; i < n; i++) {
+        const a = i * 360 / n * DEG;
         const isAccent = (i + 2 * z + spinPhase[z]) % 6 < 2;
         ctx.fillStyle = (isAccent && z <= zone) ? neonBulbColor(ringRgb[z]) : p.track;
         ctx.beginPath(); ctx.arc(Math.cos(a) * rr, Math.sin(a) * rr, 4, 0, Math.PI * 2); ctx.fill();

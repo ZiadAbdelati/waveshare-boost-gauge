@@ -638,7 +638,9 @@ than several theme entries. Both persist in NVS and both are exposed on
   middle boost, outermost overboost — and no value ring). The three rings sit
   at 176/200/224 (`NEON_BULB_RING_STEP` 24, 1.5x the first spread) so the
   shared 118 px readout draws scaled to 0.87 (one sprite set, `neon_mq()`
-  scaling; see below). The border is a **cumulative stage ladder**: ring z's
+  scaling; see below). Each ring's bulb count is chosen for UNIFORM chord
+  spacing — inner 54, middle 66, outer 72 (`NEON_BULB_N_INNER/MID/OUTER`, all
+  divisible by 6 so the 2-lit/4-dark accent pattern wraps seamlessly). The border is a **cumulative stage ladder**: ring z's
   accent bulbs (staggered per ring, `(i + 2z) % 6 < 2`) light once the
   reading has REACHED that zone (vacuum → inner only, boost → inner+middle,
   overboost → all three); dead bulbs stay dim `track`, so the two-tone look

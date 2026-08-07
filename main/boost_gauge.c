@@ -656,7 +656,18 @@ static void update_sport(const boost_sample_t *sample, const boost_theme_t *them
 #define NEON_BULB_RING_STEP 24
 #define NEON_BULB_RING_R(z) (NEON_BULB_R - ((2 - (z)) * NEON_BULB_RING_STEP))
 #define NEON_BULB_R     224
-#define NEON_BULB_N     72
+/* Bulb count PER RING. All three must stay divisible by 6 so the 2-lit/
+ * 4-dark accent pattern wraps seamlessly and the invalidation groups of 6
+ * stay whole. The counts are chosen so the CHORD spacing (2*pi*r/N) is
+ * uniform across rings: outer 72 (chord 19.55), middle 66 (19.04), inner
+ * 54 (20.48) - versus the old equal-72 counts, whose inner ring was 21%
+ * tighter than the outer (15.36 vs 19.55). Multiples of 6 that bracket
+ * the exact spacing are 54/66/72; the residual spread is under a pixel. */
+#define NEON_BULB_N_INNER 54
+#define NEON_BULB_N_MID   66
+#define NEON_BULB_N_OUTER 72
+#define NEON_BULB_N(z) ((z) == 0 ? NEON_BULB_N_INNER \
+                       : (z) == 1 ? NEON_BULB_N_MID : NEON_BULB_N_OUTER)
 #define NEON_BULB_HALF  4
 /* Staggered accent phase: ring z's accent pairs sit at (i + 2z) % 6 < 2, so
  * ring 0 lights 0,1; ring 1 lights 4,5; ring 2 lights 2,3 (mod 6). The
@@ -1083,7 +1094,7 @@ static uint32_t neon_bulb_accent(uint32_t accent_rgb)
  * invalidation cannot disagree about where the rings are. */
 static void neon_bulb_pos(int cx, int cy, int z, int i, int *bx, int *by)
 {
-    const float rad = (float)i * (360.0f / (float)NEON_BULB_N) * (float)M_PI / 180.0f;
+    const float rad = (float)i * (360.0f / (float)NEON_BULB_N(z)) * (float)M_PI / 180.0f;
     const float r = (float)NEON_BULB_RING_R(z);
     *bx = cx + (int)lroundf(cosf(rad) * r);
     *by = cy + (int)lroundf(sinf(rad) * r);
@@ -1157,7 +1168,7 @@ static void paint_neon_background(lv_obj_t *canvas, const boost_theme_t *theme)
          * pair-boxes instead of the whole border, and the two-tone rest
          * state (only the innermost ring coloured) comes free. */
         for (int z = 0; z < NEON_BULB_RINGS; ++z) {
-            for (int i = 0; i < NEON_BULB_N; ++i) {
+            for (int i = 0; i < NEON_BULB_N(z); ++i) {
                 bulb.bg_color = c(theme->track);
                 int bx, by;
                 neon_bulb_pos(cx, cy, z, i, &bx, &by);
@@ -2094,7 +2105,7 @@ static void draw_neon_live(lv_event_t *e)
             bulb.bg_opa = LV_OPA_COVER;
             for (int z = 0; z <= zone && z < NEON_BULB_RINGS; ++z) {
                 const lv_color_t lit_c = c(neon_bulb_accent(ring_rgb[z]));
-                for (int i = 0; i < NEON_BULB_N; ++i) {
+                for (int i = 0; i < NEON_BULB_N(z); ++i) {
                     if (!NEON_BULB_IS_ACCENT(i, z)) continue;
                     int bx, by;
                     neon_bulb_pos(cx, cy, z, i, &bx, &by);
@@ -2766,7 +2777,7 @@ static void update_neon(const boost_sample_t *sample, const boost_theme_t *theme
                      * first+1, first+2) per group - 12 boxes, like a zone
                      * flip. */
                     const int first = (s_neon_spin_dir[z] == -1) ? base_old : base_new;
-                    for (int k = 0; k < NEON_BULB_N / 6; ++k) {
+                    for (int k = 0; k < NEON_BULB_N(z) / 6; ++k) {
                         int bx[3], by[3];
                         for (int j = 0; j < 3; ++j) {
                             neon_bulb_pos(px_icx(), px_icy(), z,
@@ -2798,7 +2809,7 @@ static void update_neon(const boost_sample_t *sample, const boost_theme_t *theme
                  * base at its CURRENT phase (neon_accent_base), so a flip
                  * mid-chase invalidates exactly the bulbs that are lit now. */
                 const int base = neon_accent_base(z);
-                for (int k = 0; k < NEON_BULB_N / 6; ++k) {
+                for (int k = 0; k < NEON_BULB_N(z) / 6; ++k) {
                     int bx1, by1, bx2, by2;
                     neon_bulb_pos(px_icx(), px_icy(), z, k * 6 + base, &bx1, &by1);
                     neon_bulb_pos(px_icx(), px_icy(), z, k * 6 + base + 1, &bx2, &by2);

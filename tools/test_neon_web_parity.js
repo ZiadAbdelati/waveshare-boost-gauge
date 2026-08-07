@@ -167,6 +167,14 @@ for (const psi of [-12, -3, 2.5, 8.5]) {
     return Number(m[1]);
   };
   const BLOOM = fdef("NEON_BLOOM"), SAT = fdef("NEON_SAT"), LIFT = fdef("NEON_WHITE_LIFT");
+  /* Per-ring marquee bulb counts, read from the panel (NEON_BULB_N(z) is a
+   * macro over these three). Module scope: the ladder block below and the F
+   * table both need them, and the F table is defined later in the file. */
+  const bulbN = [
+    Number(new RegExp("^#define[ \\t]+NEON_BULB_N_INNER[ \\t]+([0-9]+)", "m").exec(cSrc)[1]),
+    Number(new RegExp("^#define[ \\t]+NEON_BULB_N_MID[ \\t]+([0-9]+)", "m").exec(cSrc)[1]),
+    Number(new RegExp("^#define[ \\t]+NEON_BULB_N_OUTER[ \\t]+([0-9]+)", "m").exec(cSrc)[1]),
+  ];
   const bulbRef = (hex) => {
     const [r0, g0, b0] = hexToRgb(hex);
     const dim = [r0, g0, b0].map((c) => Math.round(c * 0.55));
@@ -187,12 +195,14 @@ for (const psi of [-12, -3, 2.5, 8.5]) {
   /* Rendered in the BOOST zone (8.5 < overboost 8? No - 8.5 >= 8 is
    * OVERBOOST, so all three rings are lit here and the full ladder shows). */
   const c = render(2, 8.5);
-  /* Three concentric rings of 72 bulbs - innermost vacuum, middle boost,
-   * outermost overboost. Dead bulbs stay track; ring z's 24 accent bulbs
+  /* Three concentric rings with per-ring bulb counts for uniform chord
+   * spacing (outer 72, middle 66, inner 54) - innermost vacuum, middle
+   * boost, outermost overboost. Dead bulbs stay track; ring z's accent bulbs
    * light in ring z's zone colour once that zone is REACHED (zone id >= z),
    * staggered per ring via NEON_BULB_IS_ACCENT(i, z) = (i + 2z) % 6 < 2. */
   const bulbs = c.filter((k) => k.op === "arc" && k.args[2] === 4);
-  assert.strictEqual(bulbs.length, 3 * 72, `expected 216 bulbs, got ${bulbs.length}`);
+  const bulbTotal = bulbN.reduce((a, b) => a + b, 0);
+  assert.strictEqual(bulbs.length, bulbTotal, `expected ${bulbTotal} bulbs, got ${bulbs.length}`);
 
   const fills = [];
   let cur = null;
@@ -207,13 +217,15 @@ for (const psi of [-12, -3, 2.5, 8.5]) {
    * REACHED that zone (zone id >= z). Dead bulbs stay track. Rendered at
    * psi 8.5 = BOOST, so rings 0 and 1 are lit and ring 2 is all track. */
   const zoneAt = 8.5 >= 8 ? 2 : 8.5 > 0.05 ? 1 : 0;
+  let off = 0;
   for (let z = 0; z < 3; z++) {
-    for (let i = 0; i < 72; i++) {
+    for (let i = 0; i < bulbN[z]; i++) {
       const isAccent = (i + 2 * z) % 6 < 2;
       const want = (isAccent && z <= zoneAt) ? zoneColors[z] : state.palette.track;
-      assert.strictEqual(fills[z * 72 + i], want,
-        `ring ${z} bulb ${i} fill ${fills[z * 72 + i]}, expected ${want}`);
+      assert.strictEqual(fills[off + i], want,
+        `ring ${z} bulb ${i} fill ${fills[off + i]}, expected ${want}`);
     }
+    off += bulbN[z];
   }
 
   const rects = c.filter((k) => k.op === "roundRect");
@@ -288,19 +300,21 @@ for (const psi of [-12, -3, 2.5, 8.5]) {
       if (k.op === "set:fillStyle") cur = k.args[0];
       if (k.op === "arc" && k.args[2] === 4) fills.push(cur);
     }
-    assert.strictEqual(fills.length, 216, `spin T=${T}: expected 216 bulbs`);
+    assert.strictEqual(fills.length, bulbN.reduce((a, b) => a + b, 0), `spin T=${T}: expected ${bulbN.reduce((a, b) => a + b, 0)} bulbs`);
     const zoneAt = 2; /* psi 8.5 = overboost, all three rings lit */
     const zoneColors = [state.palette.vacuum, state.palette.boost, state.palette.overboost]
       .map((hex) => bulbRef(hex));
+    let off = 0;
     for (let z = 0; z < 3; z++) {
       const steps = T >= z ? Math.floor((T - z) / 3) + 1 : 0;
       const phase = (((spinDir[z] * steps) % 6) + 6) % 6;
-      for (let i = 0; i < 72; i++) {
+      for (let i = 0; i < bulbN[z]; i++) {
         const isAccent = (i + 2 * z + phase) % 6 < 2;
         const want = isAccent ? zoneColors[z] : state.palette.track;
-        assert.strictEqual(fills[z * 72 + i], want,
-          `spin T=${T} ring ${z} bulb ${i} fill ${fills[z * 72 + i]}, expected ${want}`);
+        assert.strictEqual(fills[off + i], want,
+          `spin T=${T} ring ${z} bulb ${i} fill ${fills[off + i]}, expected ${want}`);
       }
+      off += bulbN[z];
     }
   }
   state.neonMarqueeSpin = false;
@@ -591,6 +605,7 @@ console.log("neon web parity: tube zero marker band verified");
     unitY: def("NEON_UNIT_Y"), ruleY: def("NEON_RULE_Y"), peakY: def("NEON_PEAK_Y"),
     stackDy: 0, bulbR: def("NEON_BULB_R"),
     bulbStep: def("NEON_BULB_RING_STEP"),
+    bulbN: [def("NEON_BULB_N_INNER"), def("NEON_BULB_N_MID"), def("NEON_BULB_N_OUTER")],
     zeroDeg: def("NEON_TUBE_ZERO_DEG"),
     mqScale: def("NEON_MARQUEE_CENTER_SCALE"),
   };
@@ -648,11 +663,14 @@ console.log("neon web parity: tube zero marker band verified");
   {
     const c = render(2, 5);
     const bulbs = c.filter((k) => k.op === "arc" && k.args[2] === 4);
-    assert.strictEqual(bulbs.length, 3 * 72, `expected 216 bulbs, got ${bulbs.length}`);
+    const bulbTotal = F.bulbN.reduce((a, b) => a + b, 0);
+    assert.strictEqual(bulbs.length, bulbTotal, `expected ${bulbTotal} bulbs, got ${bulbs.length}`);
+    let off = 0;
     for (let z = 0; z < 3; z++) {
-      const r = Math.round(Math.hypot(bulbs[z * 72].args[0], bulbs[z * 72].args[1]));
+      const r = Math.round(Math.hypot(bulbs[off].args[0], bulbs[off].args[1]));
       assert.strictEqual(r, F.bulbR - (2 - z) * F.bulbStep,
         `ring ${z} radius ${r}, firmware NEON_BULB_RING_R(${z}) = ${F.bulbR - (2 - z) * F.bulbStep}`);
+      off += F.bulbN[z];
     }
   }
 
