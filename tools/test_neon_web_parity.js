@@ -200,9 +200,10 @@ for (const psi of [-12, -3, 2.5, 8.5]) {
    * boost, outermost overboost. Dead bulbs stay track; ring z's accent bulbs
    * light in ring z's zone colour once that zone is REACHED (zone id >= z),
    * staggered per ring via NEON_BULB_IS_ACCENT(i, z) = (i + offset(z)) % 6
-   * < 2 with offset 0/4/0: inner and outer pairs at 0,1 (top centre, outer
-   * mirrors inner), middle pairs at 2,3 (bottom centre, bulb N/2 at 6
-   * o'clock). */
+   * < 2 with offset 0/3/2: inner pairs at 0,1 (top centre), middle pairs at
+   * 3,4 (bottom centre, bulb N/2 at 6 o'clock as the pair's first dot,
+   * partner one dot left), outer pairs at 2,3 (off the vertical axis,
+   * mirroring the inner ring's pattern as close as the counts allow). */
   const bulbs = c.filter((k) => k.op === "arc" && k.args[2] === 4);
   const bulbTotal = bulbN.reduce((a, b) => a + b, 0);
   assert.strictEqual(bulbs.length, bulbTotal, `expected ${bulbTotal} bulbs, got ${bulbs.length}`);
@@ -216,7 +217,7 @@ for (const psi of [-12, -3, 2.5, 8.5]) {
   const zoneColors = [state.palette.vacuum, state.palette.boost, state.palette.overboost]
     .map(bulbRef);
   /* Live stage ladder + anchor, matching the panel: ring z's accent bulbs
-   * (i + offset(z)) % 6 < 2, offset 0/4/0, light in ring z's zone colour once
+   * (i + offset(z)) % 6 < 2, offset 0/3/2, light in ring z's zone colour once
    * the reading has REACHED that zone (zone id >= z). Dead bulbs stay track.
    * Rendered at psi 8.5 = BOOST, so rings 0 and 1 are lit and ring 2 is all
    * track. */
@@ -224,7 +225,7 @@ for (const psi of [-12, -3, 2.5, 8.5]) {
   let off = 0;
   for (let z = 0; z < 3; z++) {
     for (let i = 0; i < bulbN[z]; i++) {
-      const isAccent = (i + (z === 1 ? 4 : 0)) % 6 < 2;
+      const isAccent = (i + (z === 1 ? 3 : (z === 2 ? 2 : 0))) % 6 < 2;
       const want = (isAccent && z <= zoneAt) ? zoneColors[z] : state.palette.track;
       assert.strictEqual(fills[off + i], want,
         `ring ${z} bulb ${i} fill ${fills[off + i]}, expected ${want}`);
@@ -313,7 +314,7 @@ for (const psi of [-12, -3, 2.5, 8.5]) {
       const steps = T >= z ? Math.floor((T - z) / 3) + 1 : 0;
       const phase = (((spinDir[z] * steps) % 6) + 6) % 6;
       for (let i = 0; i < bulbN[z]; i++) {
-        const isAccent = (i + (z === 1 ? 4 : 0) + phase) % 6 < 2;
+        const isAccent = (i + (z === 1 ? 3 : (z === 2 ? 2 : 0)) + phase) % 6 < 2;
         const want = isAccent ? zoneColors[z] : state.palette.track;
         assert.strictEqual(fills[off + i], want,
           `spin T=${T} ring ${z} bulb ${i} fill ${fills[off + i]}, expected ${want}`);

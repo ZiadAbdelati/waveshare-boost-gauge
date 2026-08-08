@@ -647,8 +647,9 @@ than several theme entries. Both persist in NVS and both are exposed on
   spacing — inner 54, middle 66, outer 72 (`NEON_BULB_N_INNER/MID/OUTER`, all
   divisible by 6 so the 2-lit/4-dark accent pattern wraps seamlessly). The border is a **cumulative stage ladder**: ring z's
   accent bulbs (anchored per ring, `(i + offset(z)) % 6 < 2` with offset
-  0/4/0: inner and outer pairs share the top centre, the middle ring's pair
-  sits at the bottom centre) light once the
+  0/3/0: inner and outer pairs share the top centre, the middle ring's pair
+  sits at the bottom centre with bulb N/2 at 6 o'clock and its partner one
+  dot left) light once the
   reading has REACHED that zone (vacuum → inner only, boost → inner+middle,
   overboost → all three); dead bulbs stay dim `track`, so the two-tone look
   survives even fully lit. `neonMarqueeSpin` (persisted) makes the accent
@@ -662,7 +663,16 @@ than several theme entries. Both persist in NVS and both are exposed on
   (min 41 → 47), `worstRenderUs` median 43.0 → 42.0 ms / max 63.0 → 55.7 ms.
   The median worst stays ~42 ms because the worst cycles are TE-wait + merged
   full-region bound, not sprite bound; the win shows up as fewer over-budget
-  frames and a better tail. First marquee scene build is ~513 ms (the scaled
+  frames and a better tail. Min-FPS isolation on the board: the 40s mins are
+  fast-motion seconds (demo sweep peak slew ~9.8 psi/s), not dot cost — a
+  120 s spin-OFF capture held min **58** / med 61 (zone-flip seconds never
+  below 58), while spin ON (181 s) dropped min to **45** with 10-13
+  over-budget cycles/s and 50-61 ms worst cycles. Each spin step is a render
+  cycle that pays the regionDBuf TE wait (up to 16.7 ms) when the scan
+  crosses the readout band, so the lever is cycle count (spin cadence /
+  heavy-tick deferral / the stubbed TE scanline), not per-dot raster —
+  caching the accent dots would not help, they are already the cheapest
+  primitive. First marquee scene build is ~513 ms (the scaled
   bake adds ~66 ms over the plain glyph bake); cached returns ~172 ms.
 - **`neonPreset`** (0–3) picks the colourway: `0` Violet, `1` Miami, `2` Toxic,
   `3` Blood Moon. Presets set `track`/`muted` as well as the three zone

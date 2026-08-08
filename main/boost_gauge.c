@@ -636,11 +636,15 @@ static void update_sport(const boost_sample_t *sample, const boost_theme_t *them
  * stage ladder while staying two-tone at idle.
  *
  * The accent phase is ANCHORED per ring (NEON_BULB_ACCENT_OFFSET(z)): the
- * inner and outer rings share the SAME pair positions (radially aligned),
- * and the middle ring's pairs sit at the bottom centre - bulb N/2 is exactly
- * at 6 o'clock, so ring 1's pair straddles it. The two rings that share the
- * top read as one ladder, and the middle ring's bottom pair marks the boost
- * stage.
+ * inner ring keeps its pairs at 0,1 (top centre), the OUTER ring is shifted
+ * two bulbs on so its pairs sit OFF the vertical axis (flanking top and
+ * bottom rather than straddling them) - the same pattern the inner ring
+ * shows, as close as the different bulb counts allow. The middle ring's
+ * pairs sit at the bottom centre - bulb N/2 is exactly at 6 o'clock and
+ * carries the pair's FIRST residue, with its partner one dot
+ * counterclockwise, so the pair leans left. The outer ring reads as one
+ * ladder with the inner, and the middle ring's bottom pair marks the
+ * boost stage.
  *
  * Invalidation on a zone flip is bounded: only the ACCENT bulbs (24 per
  * ring, 12 adjacent pairs) change colour, so one ring costs 12 pair-boxes and
@@ -671,15 +675,18 @@ static void update_sport(const boost_sample_t *sample, const boost_theme_t *them
 #define NEON_BULB_N(z) ((z) == 0 ? NEON_BULB_N_INNER \
                        : (z) == 1 ? NEON_BULB_N_MID : NEON_BULB_N_OUTER)
 #define NEON_BULB_HALF  4
-/* Static accent anchor per ring: (i + offset) % 6 < 2. Ring 0 and ring 2 use
- * offset 0 -> pairs at 0,1 (top centre, bulb 0 at 12 o'clock), so the outer
- * ring mirrors the inner. Ring 1 uses offset 4 -> pairs at 2,3, and with
- * NEON_BULB_N_MID = 66 its pair (32,33) sits at the bottom centre (bulb 33 is
- * exactly at 6 o'clock). The optional marquee chase adds a per-ring phase
- * that advances one ring per spin tick (see s_neon_spin_phase below) - the
- * pattern repeats every 6 bulbs, so a ring has exactly 6 phase states and one
- * advance moves every accent pair by a single bulb. */
-#define NEON_BULB_ACCENT_OFFSET(z) ((z) == 1 ? 4 : 0)
+/* Static accent anchor per ring: (i + offset) % 6 < 2. Ring 0 keeps offset 0
+ * -> pairs at 0,1 (top centre, bulb 0 at 12 o'clock). Ring 2 is shifted two
+ * bulbs on -> offset 2, so its pairs land at 2,3 and sit OFF the vertical
+ * axis, flanking the top/bottom rather than straddling it - the same pattern
+ * the inner ring shows, as close as the different bulb counts allow. Ring 1
+ * uses offset 3 -> pairs at 3,4, and with NEON_BULB_N_MID = 66 its pair
+ * (33,34) sits at the bottom centre (bulb 33 is exactly at 6 o'clock,
+ * partner one dot counterclockwise). The optional marquee chase adds a
+ * per-ring phase that advances one ring per spin tick (see s_neon_spin_phase
+ * below) - the pattern repeats every 6 bulbs, so a ring has exactly 6 phase
+ * states and one advance moves every accent pair by a single bulb. */
+#define NEON_BULB_ACCENT_OFFSET(z) ((z) == 1 ? 3 : ((z) == 2 ? 2 : 0))
 #define NEON_BULB_IS_ACCENT(i, z) (((((i) + NEON_BULB_ACCENT_OFFSET(z) + s_neon_spin_phase[z]) % 6) + 6) % 6 < 2)
 
 /* Marquee border chase (neonMarqueeSpin, persisted in the theme store). One

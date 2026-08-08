@@ -659,7 +659,8 @@ function drawNeonGauge(sample, psi, g) {
      * that zone (zone id >= ring index, cumulative - a stage ladder). The
      * accent phase is ANCHORED per ring (NEON_BULB_ACCENT_OFFSET(z)): inner
      * and outer share pair positions at 0,1 (top centre), middle ring's pairs
-     * at 2,3 (bottom centre) - so lit rings align inner/outer and the middle
+     * at 3,4 (bottom centre, bulb N/2 at 6 o'clock as the pair's first dot,
+     * partner one dot left) - so lit rings align inner/outer and the middle
      * marks the boost stage (NEON_BULB_IS_ACCENT). */
     const ringRgb = [p.vacuum, p.boost, p.overboost];
     const zone = psi >= range.psiOverboost ? 2 : psi > 0.05 ? 1 : 0;
@@ -702,7 +703,7 @@ function drawNeonGauge(sample, psi, g) {
          * the bottom too, so every ring has a centred dot at top and bottom
          * and the rings share those two alignment axes (matches the panel). */
         const a = (i * 360 / n - 90) * DEG;
-        const isAccent = (i + (z === 1 ? 4 : 0) + spinPhase[z]) % 6 < 2;
+        const isAccent = (i + (z === 1 ? 3 : (z === 2 ? 2 : 0)) + spinPhase[z]) % 6 < 2;
         ctx.fillStyle = (isAccent && z <= zone) ? neonBulbColor(ringRgb[z]) : p.track;
         ctx.beginPath(); ctx.arc(Math.cos(a) * rr, Math.sin(a) * rr, 4, 0, Math.PI * 2); ctx.fill();
       }
