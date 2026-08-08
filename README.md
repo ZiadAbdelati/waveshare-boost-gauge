@@ -656,7 +656,14 @@ than several theme entries. Both persist in NVS and both are exposed on
   inner/outer clockwise and middle counterclockwise, a full 6-phase rotation
   per ring in 1.62 s. The chase only repaints one ring per step (12 small
   boxes) and defers to zone flips, so it stays inside LVGL's 32-slot
-  invalidation buffer and the face keeps ~1 Mpx/s.
+  invalidation buffer and the face keeps ~1 Mpx/s. Pre-scaled readout A/B on
+  hardware (fresh boot each arm, spin + demo on, pixel shift off, 30 s):
+  framesOverBudget/s **33.2 → 21.6 (−35%)**, renderFps median **55 → 57**
+  (min 41 → 47), `worstRenderUs` median 43.0 → 42.0 ms / max 63.0 → 55.7 ms.
+  The median worst stays ~42 ms because the worst cycles are TE-wait + merged
+  full-region bound, not sprite bound; the win shows up as fewer over-budget
+  frames and a better tail. First marquee scene build is ~513 ms (the scaled
+  bake adds ~66 ms over the plain glyph bake); cached returns ~172 ms.
 - **`neonPreset`** (0–3) picks the colourway: `0` Violet, `1` Miami, `2` Toxic,
   `3` Blood Moon. Presets set `track`/`muted` as well as the three zone
   colours, so changing one repaints the cached background.
