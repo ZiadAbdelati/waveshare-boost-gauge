@@ -1,11 +1,13 @@
-# Prebuilt firmware v0.7.0 — neon gauge theme
+# Prebuilt firmware v0.7.1 — neon marquee refinement
 
-Firmware **`v0.7.0`**, built with **ESP-IDF 5.5.1** for **ESP32-S3**, 16 MB
-flash. Adds the `neon` gauge theme: three selectable faces (tube, segments,
-marquee) and four colourways (Violet, Miami, Toxic, Blood Moon), with a
-glow-baked readout in SF Alien Encounters. Also carries everything from
-v0.6.0 — physical theme swipes, the persisted Vault-Tec needle choice, the
-embedded Wi-Fi dashboard, the DMA-safe AMOLED display path
+Firmware **`v0.7.1`**, built with **ESP-IDF 5.5.1** for **ESP32-S3**, 16 MB
+flash. Refines the `neon` marquee face added in v0.7.0: the three-ring bulb
+border is realigned so every ring shares a top/bottom axis, the accent pairs
+are re-anchored (middle ring's pair at the bottom centre, outer ring shifted
+off-axis to match the inner ring's pattern), and the marquee readout is
+pre-scaled once at scene build so the live blits are plain stride-copies.
+Carries everything from v0.7.0 — tube/segments/marquee faces, four colourways,
+the embedded Wi-Fi dashboard, the DMA-safe AMOLED display path
 (`main/boost_display.c`), and the calibrated GM 12223861 MAP path. The same
 files are published on the
 [latest GitHub release](https://github.com/ZiadAbdelati/waveshare-boost-gauge/releases/latest).
@@ -14,22 +16,60 @@ The image reports its own version on `/api/v1/state` (`firmwareVersion`), taken
 from `git describe` at build time rather than a literal. Note that this value is
 captured at CMake **configure** time, not build time: a tree that was dirty when
 `idf.py` last configured will keep reporting `-dirty` through subsequent clean
-builds until `idf.py reconfigure` runs. This release was rebuilt and reflashed
-until the board reported a clean `v0.7.0`.
+builds until `idf.py reconfigure` runs. This release was tagged first, then
+built from the clean tagged tree and reflashed, so the board reports a clean
+`v0.7.1`.
+
+## What changed since v0.7.0
+
+The marquee border (layout 2) is now three concentric bulb rings at 176/200/224
+(`NEON_BULB_RING_STEP` 24): innermost vacuum, middle boost, outermost
+overboost. Each ring has its own bulb count (54/66/72, all divisible by 6) so
+the CHORD spacing is uniform across rings even though the radii differ. Bulb 0
+sits at 12 o'clock and bulb N/2 at 6 o'clock on every ring (`-90°` rotation in
+`neon_bulb_pos`), so the top and bottom are radially aligned. Lighting is a
+**cumulative stage ladder**: ring z's accent pairs light once the reading has
+REACHED that zone (vacuum → inner only, boost → inner+middle, overboost → all
+three), anchored per ring at `(i + offset(z)) % 6 < 2` with offset **0/3/2** —
+inner pairs at the top centre, the middle ring's pair at the bottom centre
+(bulb N/2 at 6 o'clock, partner one dot left), and the OUTER ring's pair two
+bulbs off the vertical axis so it flanks top/bottom like the inner ring's
+pattern, as close as the different bulb counts allow. Dead bulbs stay dim
+`track`, so the two-tone look survives even fully lit. `neonMarqueeSpin`
+(persisted) makes the accent pairs CHASE around the rings — one ring advances
+every 90 ms round-robin, inner/outer clockwise and middle counterclockwise, a
+full 6-phase rotation per ring in 1.62 s; only one ring repaints per step (12
+small boxes), deferred on zone-flip frames, inside LVGL's 32-slot invalidation
+buffer.
+
+Readout performance: the shared 118 px A8 sprite set is baked ONCE per scene
+build at the 0.87 marquee scale (`neon_bake_scaled_sprites`, through the same
+LVGL transform the per-frame draw used, so the pixels are identical), and live
+blits are plain stride-copy blends. Host A/B measured the per-frame transform
+at ~35-40% of every readout repaint; the marquee audit is fully clean (0
+severe, 0 stale px). The pre-scaled readout A/B on hardware (fresh boot each
+arm, spin + demo on, pixel shift off, 30 s) cut framesOverBudget/s from 33.2 →
+21.6 (−35%) and lifted renderFps min 41 → 47.
+
+Min-FPS isolation on the board: the remaining 40s mins are fast-motion seconds
+of the demo sweep (peak slew ~9.8 psi/s), not dot cost. A 120 s spin-OFF
+capture held min 58 / med 61 (zone-flip seconds never below 58); spin ON
+(181 s) dropped min to 45 with 10-13 over-budget cycles/s and 50-61 ms worst
+cycles. Each spin step is a render cycle that pays the regionDBuf TE wait (up
+to 16.7 ms) when the scan crosses the readout band — the lever is cycle count,
+not per-dot raster.
 
 ## Verified on hardware for this release
 
 Measured on the board at `192.168.50.102`, running the exact image published
-here (clean tree, tagged `v0.7.0`, reconfigured, rebuilt, reflashed).
+here (clean tree, tagged `v0.7.1`, built from the tag, flashed, hard-reset).
 
 | Gate | Result |
 |---|---|
-| Boot and network after serial flash | control plane reachable at `192.168.50.102` |
-| Release identity | published app image reports **`firmwareVersion v0.7.0`** (asserted, not eyeballed) |
-| Neon cadence, `tools/check_neon_hw.py` | **segments 56, tube 59, marquee 60 FPS median**; counters live, no watchdog output |
-| Neon theme entry time | ~2 ms warm (background and glyph tiles memoized), against ~350 ms before that work |
-| Neon palettes | all four presets applied and read back over the API, including Blood Moon |
-| Reset / `customized` semantics | reset returns to the *selected* preset with the selector unmoved; verified for two presets over HTTP |
+| Boot and network after serial flash | control plane reachable at `192.168.50.102`, clean boot log (`HTTP API ready`, no `task_wdt`/panic/`ESP_ERR_NO_MEM`) |
+| Release identity | published app image reports **`firmwareVersion v0.7.1`** (asserted, not eyeballed) |
+| Neon cadence, `tools/check_neon_hw.py` | **segments 57, tube 57, marquee 58 FPS median**; counters live, no watchdog output |
+| Marquee accent pattern on glass | device debug snapshot at overboost (psi 8.5, Miami preset): all three rings lit, accent residues match the committed macro (ring0 `{0,1}` = vacuum cyan, ring1 `{3,4}` = boost pink, ring2 `{4,5}` = overboost red-orange), dead bulbs dim `track` |
 | Serial error absence | no `task_wdt`, panic, or reset markers while the face was driven |
 
 **Not verified this cycle, and not claimed:** the media upload/abort/delete
