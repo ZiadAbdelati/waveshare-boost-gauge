@@ -133,8 +133,19 @@ python3 tools/check_display_cadence.py --url http://<BOOST_WEB_IP> --seconds 30
 This guard defends the physical gauge path; it is not a network telemetry or
 GIF playback benchmark.
 
+**Every selectable theme is a locked-60 target** (contract 2026-08-09). The
+`dyno-cell` guard above is the reference it was established under, not a
+ceiling: each theme must also sustain a median ≥60 physical FPS in demo mode on
+the constant-slew fast-motion sweep (`python3 tools/bench_fast_motion.py sweep
+--theme <id> [--layout N]`, 9.789 psi/s), and the full per-theme matrix is
+`python3 tools/bench_theme_matrix.py`. Demo mode is the precondition for every
+cadence check — a real MAP sensor at constant atmosphere invalidates nothing
+and is not a cadence measurement.
+
 Do not reintroduce a marker, throttle the filled arc/readout, or alter the
-invalidation callback without a before/after hardware measurement.
+invalidation callback without a before/after hardware measurement. No visual
+compromise buys frames: a visual-vs-performance trade is a proposal to the
+user first.
 
 ### Measured strip-height boundary
 
@@ -684,8 +695,7 @@ than several theme entries. Both persist in NVS and both are exposed on
   skipped when the dirty region cannot reach the rings. Host audit, 25 s, all
   four variants: **0 severe / 0 stale px**. Tube/segments flushed
   px/cycle **19,753 → 18,397 (−6.9%)**; marquee unchanged at 14,848 (spin
-  16,441). Hardware cadence/fast-motion re-run still pending for the locked-60
-  claim.
+  16,441). **Hardware cadence re-run (2026-08-09, demo mode, 30 s/window, fresh captures, `teTimeouts 0` everywhere):** four-layout battery A matches the prior session's reference almost exactly — dyno-cell **min 58 / med 61** (guard PASS), neon tube 53/58, neon segments 40/57, neon marquee 26/36 (prior: 58/61, 52/58, 39/57, 24/36). Fast-motion constant-slew runs (`tools/bench_fast_motion.py sweep`, 9.789 psi/s, fresh boot per arm): marquee **min 56 / med 59** (1 over-budget/s, worst 43.4 ms), tube 45/56 (5 ob/s), segments **29/45 (14 ob/s)** — under sustained slew the layout ranking INVERTS vs the organic demo, because the segments face re-lights discrete wedges every tick while the marquee's cost stays bounded. Organic cross-check on the marquee (90 s, quartile-binned): fastest crossing seconds **min 43 / med 52**, slowest peak-dwell seconds **min 24 / med 31** — the marquee's floor is the DWELL seconds (needle hovering at a turning point while the tenths digit flutters), not fast motion, the opposite of the Vault pattern. TE accounting verified `waits/fps = 1.000` across 41 windows: `teSkips` is a subset of `teWaits` (47.8% here), never additive
 - **`neonPreset`** (0–3) picks the colourway: `0` Violet, `1` Miami, `2` Toxic,
   `3` Blood Moon. Presets set `track`/`muted` as well as the three zone
   colours, so changing one repaints the cached background.
