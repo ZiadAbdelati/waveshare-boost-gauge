@@ -154,7 +154,12 @@ def cmd_sweep(args) -> int:
     wait_online(base)
     print(f"online, setting demoMode=true demoFastSweep=true regionDBuf={args.region_dbuf} "
           f"teSync=true pixelShift=false", file=sys.stderr)
-    api_put(base, "/api/v1/themes/active", {"id": "vault-tec"}) if args.set_theme else None
+    theme = args.theme or ("vault-tec" if args.set_theme else None)
+    if theme:
+        api_put(base, "/api/v1/themes/active", {"id": theme})
+    if args.layout is not None:
+        lcfg = api_put(base, "/api/v1/themes/config", {"neonLayout": args.layout})
+        assert lcfg.get("neonLayout") == args.layout, f"neonLayout did not take effect: {lcfg}"
     cfg = api_put(base, "/api/v1/themes/config", {
         "demoMode": True,
         "demoFastSweep": True,
@@ -194,6 +199,8 @@ def cmd_sweep(args) -> int:
         "n": len(samples),
         "n_distinct_windows": len(deduped),
         "regionDBuf": args.region_dbuf,
+        "theme": args.theme or ("vault-tec" if args.set_theme else None),
+        "layout": args.layout,
         "renderFps_min": min(col(samples, "renderFps")),
         "renderFps_median": statistics.median(col(samples, "renderFps")),
         "renderGapP50Us_median": statistics.median(col(samples, "renderGapP50Us")),
@@ -341,6 +348,12 @@ def main() -> int:
                           help="true/false")
     p_sweep.add_argument("--set-theme", action="store_true",
                           help="also PUT /themes/active id=vault-tec first")
+    p_sweep.add_argument("--theme", default=None,
+                          help="theme id to PUT as active after reboot (e.g. neon); "
+                               "overrides --set-theme when both are given")
+    p_sweep.add_argument("--layout", type=int, default=None,
+                          help="neonLayout 0=tube/1=segments/2=marquee to PUT when "
+                               "--theme neon is used")
     p_sweep.add_argument("--out", default="fast_motion_sweep_results.json")
     p_sweep.set_defaults(func=cmd_sweep)
 
