@@ -3225,6 +3225,18 @@ static float s_arc_anim_target_psi;
 static float s_arc_anim_display_psi;
 static float s_arc_drawn_psi;
 static float s_arc_color_psi;
+/* The "PEAK  x.x" label is only regenerated when the peak value actually
+ * moves. Formatting `%.1f` through a double runs soft-float conversion on
+ * the S3 (no double FPU) and is pure waste on the ticks where the peak is
+ * constant - which is nearly all of them once the sweep's maximum is set.
+ * The cached text is a pure function of s_peak_psi (updated once per
+ * boost_gauge_update() and on peak reset), so it can never diverge from
+ * what the label should show; the strcmp in update_arc() still guards the
+ * actual lv_label_set_text(), including the "PEAK  0.0" build text after a
+ * scene rebuild. NAN != anything, so the first tick after boot always
+ * formats. */
+static float s_arc_peak_text_psi = NAN;
+static char s_arc_peak_text[32] = "PEAK  0.0";
 
 static bool s_ui_ready;
 static bool s_hold_dim_fired;
@@ -3949,10 +3961,20 @@ static void invalidate_value_arc(float start, float end)
 
 static void set_value_arc(float psi, float raw_color_psi)
 {
+    const float color_psi = isfinite(raw_color_psi) ? raw_color_psi : 0.0f;
+    if (psi == s_arc_drawn_psi && color_psi == s_arc_color_psi) {
+        /* The wedge is already committed at this endpoint and this colour.
+         * The old code reached the same state, found no side flip and no
+         * colour flip, and then invalidated zero-length spans - a no-op.
+         * Skip the angle/colour recomputation and the empty invalidations
+         * on dwell ticks. The theme is stable within a scene (any config
+         * change rebuilds it), so equal colour inputs cannot have changed
+         * the committed colour, and s_arc_color_psi is unchanged either way. */
+        return;
+    }
     float old_start, old_end, new_start, new_end;
     value_arc_angles(s_arc_drawn_psi, &old_start, &old_end);
     value_arc_angles(psi, &new_start, &new_end);
-    const float color_psi = isfinite(raw_color_psi) ? raw_color_psi : 0.0f;
     const bool color_flip = !lv_color_eq(color_for_psi(active_theme(), s_arc_color_psi),
                                          color_for_psi(active_theme(), color_psi));
     const bool side_flip = (s_arc_drawn_psi < 0.0f) != (psi < 0.0f);
@@ -4201,9 +4223,17 @@ static void update_arc(const boost_sample_t *sample, const boost_theme_t *theme)
     if (strcmp(lv_label_get_text(s_value_ones_label), ones) != 0) lv_label_set_text(s_value_ones_label, ones);
     if (strcmp(lv_label_get_text(s_value_tenths_label), tenths) != 0) lv_label_set_text(s_value_tenths_label, tenths);
 
-    char buf[32];
-    snprintf(buf, sizeof(buf), "PEAK  %.1f", (double)s_peak_psi);
-    if (strcmp(lv_label_get_text(s_peak_label), buf) != 0) lv_label_set_text(s_peak_label, buf);
+    /* Only regenerate the "PEAK  x.x" text when the peak value actually
+     * moves; the soft-float double conversion in `%.1f` is otherwise wasted
+     * on every tick while the peak sits at the sweep's maximum. */
+    if (s_peak_psi != s_arc_peak_text_psi) {
+        snprintf(s_arc_peak_text, sizeof(s_arc_peak_text), "PEAK  %.1f",
+                 (double)s_peak_psi);
+        s_arc_peak_text_psi = s_peak_psi;
+    }
+    if (strcmp(lv_label_get_text(s_peak_label), s_arc_peak_text) != 0) {
+        lv_label_set_text(s_peak_label, s_arc_peak_text);
+    }
     const lv_color_t peak_color = s_peak_psi >= s_psi_overboost ? c(theme->overboost) : c(theme->boost);
     if (!lv_color_eq(lv_obj_get_style_text_color(s_peak_label, 0), peak_color)) {
         lv_obj_set_style_text_color(s_peak_label, peak_color, 0);
