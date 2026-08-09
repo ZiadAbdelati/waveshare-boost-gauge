@@ -674,6 +674,18 @@ than several theme entries. Both persist in NVS and both are exposed on
   caching the accent dots would not help, they are already the cheapest
   primitive. First marquee scene build is ~513 ms (the scaled
   bake adds ~66 ms over the plain glyph bake); cached returns ~172 ms.
+  Invalidation is per-glyph, not per-slot: `neon_cell_x_span`/`neon_sign_x_span`
+  ask the baked sprite for its own footprint (marquee: the pre-scaled tile's
+  `bbox_s` at the scaled anchor; tube/segments: the full-size bbox at `spr_dx`)
+  and REPLACE the uniform label box with the tile's exact extent (+1 px AA
+  margin), unioning the old and new glyph footprints when a cell's occupant
+  changes. The marquee bar invalidates only when its DRAWN pixel extent or the
+  zone colour changed, so a static reading goes idle; the live accent scan is
+  skipped when the dirty region cannot reach the rings. Host audit, 25 s, all
+  four variants: **0 severe / 0 stale px**. Tube/segments flushed
+  px/cycle **19,753 → 18,397 (−6.9%)**; marquee unchanged at 14,848 (spin
+  16,441). Hardware cadence/fast-motion re-run still pending for the locked-60
+  claim.
 - **`neonPreset`** (0–3) picks the colourway: `0` Violet, `1` Miami, `2` Toxic,
   `3` Blood Moon. Presets set `track`/`muted` as well as the three zone
   colours, so changing one repaints the cached background.

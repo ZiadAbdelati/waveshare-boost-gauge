@@ -1,6 +1,7 @@
 #include "boost_neon_geom.h"
 
 #include <math.h>
+#include <stddef.h>
 
 boost_neon_layout_t boost_neon_layout_clamp(uint8_t stored)
 {

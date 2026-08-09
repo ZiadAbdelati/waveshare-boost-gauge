@@ -3,6 +3,7 @@
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -709,6 +710,30 @@ static const int8_t s_neon_spin_dir[NEON_BULB_RINGS] = {
     NEON_SPIN_DIR_INNER, NEON_SPIN_DIR_MID, NEON_SPIN_DIR_OUTER,
 };
 
+/* Committed marquee bar fill extent: pixel x of the zero end and of the
+ * value end, as drawn. The bar invalidation is gated on these (plus a zone
+ * colour flip) instead of firing on every 16 ms sample - when neither end
+ * moved by a full pixel and the zone colour is unchanged, the painted bar is
+ * pixel-identical, so repainting would only flush the same box at 62.5 Hz
+ * forever. That is what lets the marquee go idle at a static reading like
+ * every other face. Reset to impossible sentinels at scene build so the
+ * first update after a rebuild always repaints. */
+static int s_neon_bar_lo = INT_MIN;
+static int s_neon_bar_hi = INT_MAX;
+
+/* Precomputed bulb centre offsets, shared by the bake, the live draw and both
+ * invalidation paths. The old per-call neon_bulb_pos() ran two trig calls and
+ * a rounding per bulb, and the live draw plus every spin/zone-flip callback
+ * invocation scans every accent bulb - so that cost repeated once per dirty
+ * region. The offsets depend only on the ring constants, so they are computed
+ * once and the per-bulb call becomes one table load and an integer centre
+ * add. Bit identical: same lroundf(cosf/sinf(rad) * r), same centre. The
+ * array is sized to the OUTER ring's count (the largest) and only the used
+ * prefix of each ring is filled. */
+static int16_t s_neon_bulb_ox[NEON_BULB_RINGS][NEON_BULB_N_OUTER];
+static int16_t s_neon_bulb_oy[NEON_BULB_RINGS][NEON_BULB_N_OUTER];
+static bool s_neon_bulb_table_ready;
+
 /* Residue where ring z's accent pair starts at its CURRENT spin phase:
  * (i + NEON_BULB_ACCENT_OFFSET(z) + phase) % 6 < 2 lights residues base and
  * base+1. Shared by the live draw (via NEON_BULB_IS_ACCENT) and BOTH
@@ -1119,18 +1144,30 @@ static uint32_t neon_bulb_accent(uint32_t accent_rgb)
 
 /* Centre of the i-th bulb of ring z (0 = innermost/vacuum .. 2 =
  * outermost/overboost). One place, so the bake, the live draw and the
- * invalidation cannot disagree about where the rings are. */
+ * invalidation cannot disagree about where the rings are.
+ *
+ * The offsets are precomputed once into s_neon_bulb_ox/oy (the -90 deg
+ * offset puts bulb 0 at 12 o'clock on a y-down screen; every ring count is
+ * even, so bulb N/2 lands exactly at 6 o'clock too). Computing lroundf(cos/sin)
+ * per call made the live accent scan pay two trig calls and a rounding for
+ * every accent bulb on every callback invocation - the table keeps the
+ * arithmetic bit-identical but turns the call into one table load. */
 static void neon_bulb_pos(int cx, int cy, int z, int i, int *bx, int *by)
 {
-    /* -90 deg puts bulb 0 at 12 o'clock (screen y is down, so angle -90 =
-     * top). Every ring count is even, so bulb N/2 lands exactly at 6 o'clock
-     * too - a perfectly centred dot at top and bottom on all three rings, and
-     * the rings share those two alignment axes. The single source keeps the
-     * bake, the live draw and the invalidation in agreement. */
-    const float rad = ((float)i * (360.0f / (float)NEON_BULB_N(z)) - 90.0f) * (float)M_PI / 180.0f;
-    const float r = (float)NEON_BULB_RING_R(z);
-    *bx = cx + (int)lroundf(cosf(rad) * r);
-    *by = cy + (int)lroundf(sinf(rad) * r);
+    if (!s_neon_bulb_table_ready) {
+        for (int tz = 0; tz < NEON_BULB_RINGS; ++tz) {
+            const float r = (float)NEON_BULB_RING_R(tz);
+            for (int ti = 0; ti < NEON_BULB_N(tz); ++ti) {
+                const float rad = ((float)ti * (360.0f / (float)NEON_BULB_N(tz))
+                                   - 90.0f) * (float)M_PI / 180.0f;
+                s_neon_bulb_ox[tz][ti] = (int16_t)lroundf(cosf(rad) * r);
+                s_neon_bulb_oy[tz][ti] = (int16_t)lroundf(sinf(rad) * r);
+            }
+        }
+        s_neon_bulb_table_ready = true;
+    }
+    *bx = cx + s_neon_bulb_ox[z][i];
+    *by = cy + s_neon_bulb_oy[z][i];
 }
 
 /* Bounding box of every ring segment at its widest stroke, in screen
@@ -2288,14 +2325,22 @@ static void draw_neon_live(lv_event_t *e)
         lv_draw_rect(layer, &tick, &tk);
     }
 
-    /* Live accent bulbs: ring z's 24 accent dots light in ring z's zone colour
-     * once the reading has REACHED that zone (zone id >= z). The dead track
-     * bulbs are baked, so only these need repainting - and only when the zone
-     * flips (see update_neon's pair-box invalidation). Drawing here (over the
-     * baked canvas) is what makes them live. */
+    /* Live accent bulbs: ring z's accent dots (18/22/24 by ring) light in ring
+     * z's zone colour once the reading has REACHED that zone (zone id >= z).
+     * The dead track bulbs are baked, so only these need repainting - and only
+     * when the zone flips (see update_neon's pair-box invalidation). Drawing
+     * here (over the baked canvas) is what makes them live. */
     if (s_neon_layout == BOOST_NEON_MARQUEE) {
         const int zone = neon_zone_id(psi);
-        if (zone >= 0) {
+        /* The nearest pixel any accent bulb can reach is the innermost ring's
+         * inner edge (176 - 4). A dirty region that stays inside that radius
+         * (the usual value-tick cell/bar boxes, whose far corner is r~156)
+         * cannot contain an accent pixel, so skip the whole 192-bulb scan
+         * instead of running its per-bulb clip test on every callback
+         * invocation. Spin and zone-flip boxes reach the rings, so they still
+         * scan. Byte-identical: nothing is drawn where no bulb overlaps. */
+        if (zone >= 0 && clip_reaches_radius(layer, (float)cx, (float)cy,
+                (float)(NEON_BULB_RING_R(0) - NEON_BULB_HALF))) {
             const uint32_t ring_rgb[NEON_BULB_RINGS] = {
                 theme->vacuum, theme->boost, theme->overboost,
             };
@@ -2570,6 +2615,10 @@ static void build_neon(lv_obj_t *scr)
     memset(s_neon_spin_phase, 0, sizeof(s_neon_spin_phase));
     s_neon_spin_tick = 0;
     s_neon_spin_last_ms = 0;
+    /* Force a bar repaint on the first update after a rebuild: the sentinels
+     * can never equal a real neon_bar_x() extent. */
+    s_neon_bar_lo = INT_MIN;
+    s_neon_bar_hi = INT_MAX;
     s_neon_bg_reused = false;
     s_neon_sprites_reused = false;
     neon_build_seg_boxes();
@@ -2749,23 +2798,65 @@ static void neon_sign_x_span(int cx, int sign_x, int pad, int *lo, int *hi)
 #if BOOST_NEON_GLYPH_SPRITES
     if (s_neon_glyph_sprites_ready &&
         s_neon_glyph_img[NEON_SIGN_SLOT].data != NULL) {
-        const int16_t *bb = s_neon_glyph_bbox[NEON_SIGN_SLOT];
-        *lo = cx + sign_x + s_neon_spr_dx + bb[0];
-        *hi = *lo + (int)s_neon_glyph_img[NEON_SIGN_SLOT].header.w - 1;
+        /* Marquee scaled set active: the sign is blitted as the pre-scaled
+         * tile at anchor + bbox_s (see neon_blit_sprite_scaled), whose
+         * footprint is narrower than the pad box - ask the tile, with a 1 px
+         * AA margin, exactly like the full-size path below. */
+        if (s_neon_layout == BOOST_NEON_MARQUEE && s_neon_glyph_buf_s != NULL &&
+            s_neon_glyph_img_s[NEON_SIGN_SLOT].data != NULL) {
+            const int ax = cx + sign_x +
+                (int)lroundf(NEON_MARQUEE_CENTER_SCALE * (float)s_neon_spr_dx);
+            const int16_t *bs = s_neon_glyph_bbox_s[NEON_SIGN_SLOT];
+            *lo = ax + bs[0] - 1;
+            *hi = ax + bs[0] + (int)s_neon_glyph_img_s[NEON_SIGN_SLOT].header.w;
+        } else {
+            const int16_t *bb = s_neon_glyph_bbox[NEON_SIGN_SLOT];
+            *lo = cx + sign_x + s_neon_spr_dx + bb[0];
+            *hi = *lo + (int)s_neon_glyph_img[NEON_SIGN_SLOT].header.w - 1;
+        }
     }
 #endif
 }
 
-static void neon_cell_x_span(int cx, int cell_x, int slot_w, int cell_pad, int *lo, int *hi)
+static void neon_cell_x_span(int cx, int cell_x, int slot_w, int cell_pad,
+                             int glyph, int *lo, int *hi)
 {
     *lo = cx + cell_x - slot_w / 2 - cell_pad;
     *hi = cx + cell_x + slot_w / 2 + cell_pad;
 #if BOOST_NEON_GLYPH_SPRITES
     if (s_neon_glyph_sprites_ready) {
-        const int sx0 = cx + cell_x + s_neon_spr_dx;
-        const int sx1 = sx0 + s_neon_spr_w - 1;
-        if (sx0 < *lo) *lo = sx0;
-        if (sx1 > *hi) *hi = sx1;
+        /* Marquee scaled set active: the cell is blitted as the pre-scaled
+         * tile at anchor + bbox_s (see neon_blit_sprite_scaled), so the painted
+         * pixels are exactly that footprint - narrower than the label box's
+         * slot/bleed span, and REPLACING it with the tile's own extent (plus
+         * 1 px AA margin) shrinks the flushed box without dropping coverage.
+         * The fallback paths (per-frame transform or no sprite for this
+         * glyph) keep the label-box span unioned with the full-size tile. */
+        if (s_neon_layout == BOOST_NEON_MARQUEE && s_neon_glyph_buf_s != NULL &&
+            glyph >= 0 && s_neon_glyph_img_s[glyph].data != NULL) {
+            const int ax = cx + cell_x +
+                (int)lroundf(NEON_MARQUEE_CENTER_SCALE * (float)s_neon_spr_dx);
+            const int16_t *bs = s_neon_glyph_bbox_s[glyph];
+            *lo = ax + bs[0] - 1;
+            *hi = ax + bs[0] + (int)s_neon_glyph_img_s[glyph].header.w;
+        } else if (s_neon_layout != BOOST_NEON_MARQUEE &&
+                   glyph >= 0 && s_neon_glyph_img[glyph].data != NULL) {
+            /* Full-size set (tube/segments, mq=1.0): the blit is the tile at
+             * anchor + bbox (see neon_blit_sprite_scaled), so the per-glyph
+             * bbox footprint is exact - narrower than the label box, and
+             * REPLACING it (plus 1 px AA margin) shrinks the flushed box.
+             * Marquee never reaches here: its transform path shifts the rect
+             * by (scale-1)*bw/2, which the conservative label box covers. */
+            const int16_t *bb = s_neon_glyph_bbox[glyph];
+            const int sx0 = cx + cell_x + s_neon_spr_dx + bb[0] - 1;
+            *lo = sx0;
+            *hi = sx0 + (int)s_neon_glyph_img[glyph].header.w + 1;
+        } else {
+            const int sx0 = cx + cell_x + s_neon_spr_dx;
+            const int sx1 = sx0 + s_neon_spr_w - 1;
+            if (sx0 < *lo) *lo = sx0;
+            if (sx1 > *hi) *hi = sx1;
+        }
     }
 #endif
 }
@@ -2930,29 +3021,46 @@ static void update_neon(const boost_sample_t *sample, const boost_theme_t *theme
          * neon_bar_x() so the invalidation and the fill share one rule. */
         const int x0 = neon_bar_x(px_icx(), fminf(fminf(old_psi, psi), 0.0f));
         const int x1 = neon_bar_x(px_icx(), fmaxf(fmaxf(old_psi, psi), 0.0f));
-        /* Tall enough for the zero mark, which overhangs the bar top and
-         * bottom and is redrawn with it. */
-        const int over = (neon_mq(NEON_BAR_TICK_H) - neon_mq(NEON_BAR_H)) / 2 + 6;
-        lv_area_t bar = { x0 - 6, px_icy() + neon_mq(NEON_BAR_Y) - over,
-                          x1 + 6, px_icy() + neon_mq(NEON_BAR_Y)
-                                      + neon_mq(NEON_BAR_H) + over };
-        lv_obj_invalidate_area(s_neon_face, &bar);
+        /* Gate on the DRAWN extent, not on the sample: the fill is always the
+         * current extent zero..new, so the box has to cover the vacated tail
+         * whenever the value moved toward zero. When both ends are unchanged
+         * and the zone colour did not flip, the painted bar is pixel-identical
+         * and repainting would only flush the same box every 16 ms - this is
+         * what lets the marquee go idle at a static reading like every other
+         * face. */
+        const int lo = neon_bar_x(px_icx(), fminf(psi, 0.0f));
+        const int hi = neon_bar_x(px_icx(), fmaxf(psi, 0.0f));
+        if (lo != s_neon_bar_lo || hi != s_neon_bar_hi || color_flip) {
+            /* Tall enough for the zero mark, which overhangs the bar top and
+             * bottom and is redrawn with it. The +2 is AA margin beyond the
+             * tick's integer capsule box; verified 0-stale by the host audit
+             * (was +6). */
+            const int over = (neon_mq(NEON_BAR_TICK_H) - neon_mq(NEON_BAR_H)) / 2 + 2;
+            lv_area_t bar = { x0 - 6, px_icy() + neon_mq(NEON_BAR_Y) - over,
+                              x1 + 6, px_icy() + neon_mq(NEON_BAR_Y)
+                                          + neon_mq(NEON_BAR_H) + over };
+            lv_obj_invalidate_area(s_neon_face, &bar);
+        }
+        s_neon_bar_lo = lo;
+        s_neon_bar_hi = hi;
         /* Live accent bulbs: on a zone flip, the rings whose lit-state
-         * changed must repaint - each ring's 24 accent bulbs in 12 adjacent
-         * PAIR-boxes (pairs of bulbs i, i+1 where (i + 2z) % 6 < 2). With the
-         * cumulative ladder a single-step flip touches ONE ring (12 boxes); a
-         * two-zone jump touches two (24) - both inside LVGL's 32-slot
-         * invalidation buffer. The dead track bulbs are baked and never move. */
+         * changed must repaint - each ring's accent bulbs in adjacent
+         * PAIR-boxes (pairs of bulbs i, i+1 at the accent residues). With the
+         * cumulative ladder a single-step flip touches ONE ring (9/11/12
+         * boxes by ring); a two-zone jump touches two - both inside LVGL's
+         * 32-slot invalidation buffer. The dead track bulbs are baked and
+         * never move. */
         const int z_old = neon_zone_id(old_psi);
         const int z_new = neon_zone_id(psi);
         /* Marquee chase (neonMarqueeSpin): one ring advances per spin tick,
-         * round-robin, so a step costs the SAME 12 pair-boxes as a zone flip
-         * and stays inside LVGL's 32-slot buffer. Advanced phases are skipped
-         * on a zone-flip frame so the two never stack; the flip's own
-         * invalidation reads the CURRENT phase via neon_accent_base(), so a
-         * ring that lights mid-chase draws at its phase. Unlit rings advance
-         * silently (nothing is drawn, nothing to repaint) so that when the
-         * reading reaches them they are already mid-chase. */
+         * round-robin, so a step costs the SAME number of pair-boxes as a zone
+         * flip (the advancing ring's 9/11/12) and stays inside LVGL's 32-slot
+         * buffer. Advanced phases are skipped on a zone-flip frame so the two
+         * never stack; the flip's own invalidation reads the CURRENT phase via
+         * neon_accent_base(), so a ring that lights mid-chase draws at its
+         * phase. Unlit rings advance silently (nothing is drawn, nothing to
+         * repaint) so that when the reading reaches them they are already
+         * mid-chase. */
         if (boost_theme_neon_marquee_spin() && z_old == z_new) {
             const uint32_t now = lv_tick_get();
             if (now - s_neon_spin_last_ms >= NEON_MARQUEE_SPIN_MS) {
@@ -3032,13 +3140,15 @@ static void update_neon(const boost_sample_t *sample, const boost_theme_t *theme
                             px_icx() + r.half_w + cell_pad, cell_bot };
         for (uint8_t i = 0; i < r.count; ++i) {
             int lo, hi;
-            neon_cell_x_span(px_icx(), r.cells[i].x, inv_slot, cell_pad, &lo, &hi);
+            neon_cell_x_span(px_icx(), r.cells[i].x, inv_slot, cell_pad,
+                             neon_glyph_index(r.cells[i].ch), &lo, &hi);
             if (lo < whole.x1) whole.x1 = lo;
             if (hi > whole.x2) whole.x2 = hi;
         }
         for (uint8_t i = 0; i < s_neon_cell_n; ++i) {
             int lo, hi;
-            neon_cell_x_span(px_icx(), s_neon_cell_x[i], inv_slot, cell_pad, &lo, &hi);
+            neon_cell_x_span(px_icx(), s_neon_cell_x[i], inv_slot, cell_pad,
+                             neon_glyph_index(s_neon_cell_ch[i]), &lo, &hi);
             if (lo < whole.x1) whole.x1 = lo;
             if (hi > whole.x2) whole.x2 = hi;
         }
@@ -3061,7 +3171,17 @@ static void update_neon(const boost_sample_t *sample, const boost_theme_t *theme
             if (r.cells[i].ch == s_neon_cell_ch[i] &&
                 r.cells[i].x == s_neon_cell_x[i] && !color_flip) continue;
             int lo, hi;
-            neon_cell_x_span(px_icx(), r.cells[i].x, inv_slot, cell_pad, &lo, &hi);
+            /* The tight scaled span is per-glyph, so a changed cell must cover
+             * the OLD glyph's footprint too - the previous occupant may have
+             * been wider or sat differently, and the old code's uniform label
+             * box hid that by construction. */
+            neon_cell_x_span(px_icx(), r.cells[i].x, inv_slot, cell_pad,
+                             neon_glyph_index(r.cells[i].ch), &lo, &hi);
+            int lo2, hi2;
+            neon_cell_x_span(px_icx(), s_neon_cell_x[i], inv_slot, cell_pad,
+                             neon_glyph_index(s_neon_cell_ch[i]), &lo2, &hi2);
+            if (lo2 < lo) lo = lo2;
+            if (hi2 > hi) hi = hi2;
             lv_area_t cell = { lo, cell_top, hi, cell_bot };
             lv_obj_invalidate_area(s_neon_face, &cell);
         }
