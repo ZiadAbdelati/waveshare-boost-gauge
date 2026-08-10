@@ -4813,6 +4813,11 @@ static void draw_vault_readout(lv_event_t *e)
         if (s_vault_slot_text[i][0] == '\0') continue;
         lv_area_t area;
         vault_readout_area(i, &area);
+        /* A digit change dirties one 26x34 slot; without this, LVGL allocates
+         * a label draw task and clip-tests all six slots for every readout
+         * repaint. A skipped slot's ink is inside its own box, and non-adjacent
+         * slot boxes are 23 px apart, so it cannot reach this dirty region. */
+        if (!neon_area_overlaps(&area, &layer->_clip_area)) continue;
         d.text = s_vault_slot_text[i];
         lv_draw_label(layer, &d, &area);
     }
