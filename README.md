@@ -149,12 +149,13 @@ user first.
 
 ### Theme optimization campaign (2026-08-09)
 
-Three no-visual-change wins are integrated on `main`:
+Four no-visual-change wins are integrated on `main`:
 
 | Theme | Commit | Change | Host audit | Hardware (sweep 30 s) |
 |---|---|---:|---:|---|
 | dyno-cell | `df35958` | Peak-label soft-float formatting cached; `set_value_arc()` early-outs on committed dwell ticks. Wedge geometry untouched. | 0 severe / 0 stale | 56/60 → 56/60 (win is organic-demo dwell; organic 59/60 PASS) |
 | vault-tec | `9402ff2` | Needle invalidation pad follows the tapered wedge (shared `VAULT_NEEDLE_TIP_HALF`); flush −8% | 0 severe / 3 isolated AA seams (documented baseline) | 59/60 → 58/60, worstUs 17689 → 16906 (−4%) |
+| vault-tec | `f0c0c32` | Readout draw skips slots whose box misses the dirty region (clip-test); fewer LVGL draw tasks, byte-identical pixels | 0 severe / 4 isolated AA seams (documented baseline); combined flush 10786 → 9862 (−8.6%) | sweep median 60, worstUs median 17.9 ms, over-budget median 0, teTimeouts 0 (flat vs baseline) |
 | night-city | `ad49e8f` | HUD fill invalidation uses the flat stroke box + 3 px AA margin (was rounded, over-covered every edge); flush −6.8% | 0 severe / 0 stale | min 41 → 43, over-budget 77 → 70 (−9%), median 60 |
 
 Every selectable theme now holds a **median 60 under the constant-slew sweep**
@@ -162,10 +163,11 @@ Every selectable theme now holds a **median 60 under the constant-slew sweep**
 segments 29/45 remain below). The remaining gaps are **organic-demo floors**
 (big-digit ~21-27, marquee 25-36, segments 36-56) caused by value flutter re-
 triggering ground/readout repaints at turning points — the safe no-visual-change
-wins there are exhausted. Four **visual-vs-performance proposals** are recorded
+wins there are exhausted. Six **visual-vs-performance proposals** are recorded
 in the AGENTS.md ledger (big-digit boundary hysteresis; fewer/wider neon
 segments; fast-motion tenths sample-and-hold on the marquee; slower spin
-cadence) — none implemented, all awaiting the user's call.
+cadence; vault peak-mark shrink; vault needle-gate raise) — none implemented,
+all awaiting the user's call.
 
 ### Measured strip-height boundary
 
