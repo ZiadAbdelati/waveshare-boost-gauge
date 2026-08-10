@@ -177,6 +177,9 @@ static const int8_t k_pxshift[][2] = {
  * to either 0 or 26 px; draw and invalidation must always use the same value. */
 #define VAULT_NEEDLE_TAIL_LEN 26
 #define VAULT_NEEDLE_HALFW   7
+/* Tapered-wedge tip half-width, shared by the draw (triangle tips) and the
+ * invalidation (per-slice pad) so the two can never drift apart. */
+#define VAULT_NEEDLE_TIP_HALF 2.5f
 #define VAULT_HUB_R          15
 /* Sits just inside the bezel ring (r=231, width 3, so its inner edge is at
  * 229.5): the tell-tale must stop where the green circle starts, not cross it. */
@@ -4612,7 +4615,7 @@ static void draw_vault_needle(lv_event_t *e)
     /* Two triangles exactly tile the convex trapezoid. A former third A-B-D
      * triangle was wholly inside this union and paid LVGL's full mask/raster
      * cost again without adding geometry. */
-    const float tipw = 2.5f;
+    const float tipw = (float)VAULT_NEEDLE_TIP_HALF;
     lv_draw_triangle_dsc_t tri;
     lv_draw_triangle_dsc_init(&tri);
     tri.color = needle_col;
@@ -4709,10 +4712,12 @@ static void invalidate_vault_needle(float old_deg, float new_deg)
     const float cx = px_cx();
     const float cy = px_cy();
 
-    /* Shaft: one box per radial slice, spanning both angles. The needle is at
-     * most VAULT_NEEDLE_HALFW wide perpendicular to the spoke, and a
-     * perpendicular offset can never exceed that on either axis, so a flat pad
-     * of half-width plus an AA pixel covers the ink itself. */
+    /* Shaft: one box per radial slice, spanning both angles. The wedge is
+     * tapered - VAULT_NEEDLE_HALFW wide at the base, VAULT_NEEDLE_TIP_HALF at
+     * the tip - so the perpendicular pad only needs the local half-width at
+     * this slice's inner radius (the half-width shrinks linearly outward),
+     * plus the AA pixel. Slice 0 keeps the full base width and the hub fold,
+     * so the change only tightens the outer slices' boxes. */
     const float c0 = cosf(old_deg * (float)M_PI / 180.0f);
     const float s0 = sinf(old_deg * (float)M_PI / 180.0f);
     const float c1 = cosf(new_deg * (float)M_PI / 180.0f);
@@ -4751,8 +4756,11 @@ static void invalidate_vault_needle(float old_deg, float new_deg)
             if (cy - hub < miny) miny = cy - hub;
             if (cy + hub > maxy) maxy = cy + hub;
         }
+        const float hw_at_ra = (float)VAULT_NEEDLE_HALFW
+            + ((float)VAULT_NEEDLE_TIP_HALF - (float)VAULT_NEEDLE_HALFW)
+              * (ra - r_lo) / (r_hi - r_lo);
         const float rmax = (ra < 0.0f ? -ra : ra) > rb ? (ra < 0.0f ? -ra : ra) : rb;
-        vault_inv_box(minx, miny, maxx, maxy, pad_base + rmax * bulge);
+        vault_inv_box(minx, miny, maxx, maxy, hw_at_ra + 2.0f + rmax * bulge);
     }
 #endif
 }
