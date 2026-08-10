@@ -5363,8 +5363,15 @@ static void invalidate_hud_fill(float a, float b)
         const float boundary = (floorf(seg / 90.0f) + 1.0f) * 90.0f;
         const float seg_end = fminf(hi, boundary);
         lv_area_t area;
+        /* The live fill arc is drawn with flat ends (draw_hud_fill() never sets
+         * arc.rounded), so a rounded invalidation box over-covers by
+         * HUD_ARC_WIDTH / 2 + 1 px on every edge on every tick. Request the
+         * exact flat stroke box instead and add a small AA margin: the software
+         * arc rasteriser's coverage extends ~2 px beyond the nominal stroke
+         * bbox (measured: 1 px strands the inner-edge AA, 3 px is clean). */
         lv_draw_arc_get_area(px_icx(), px_icy(), HUD_ARC_RADIUS, seg, seg_end,
-                             HUD_ARC_WIDTH, true, &area);
+                             HUD_ARC_WIDTH, false, &area);
+        area.x1 -= 3; area.y1 -= 3; area.x2 += 3; area.y2 += 3;
         lv_obj_invalidate_area(s_hud_fill, &area);
         seg = seg_end;
     }
