@@ -39,3 +39,13 @@ preview/mq_*/
 preview/device_*.png
 preview/device_*.raw
 .pi-subagents/
+
+# Bench capture outputs (reproducible with tools/bench_fast_motion.py and
+# tools/bench_theme_matrix.py; the summaries live in AGENTS.md). Keeping them
+# tracked made a plain `git status`/branch diff show +10k lines of telemetry.
+crossings-*.json
+baselines/
+after/
+*.o
+.claude/
+deepseek-neon-review.*
