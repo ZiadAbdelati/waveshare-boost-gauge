@@ -48,8 +48,10 @@ until a verified vLinker FD+ BLE GATT profile exists.
 Gesture classification tracks the greatest signed excursion during
 `LV_EVENT_PRESSING`, not only the release coordinate. Only movement within the
 12 px tap slop resets peak; a meaningful horizontal/ambiguous drag is rejected,
-and a valid vertical drag changes one theme at 48 px. GIF playback suppresses all
-screen gestures. Movement from
+and a valid vertical drag changes one theme at 48 px. GIF playback suppresses the
+tap-reset, theme-swipes and page switches, but the one-second hold-to-dim still
+works over media (the press is tracked while the GIF owns the screen; only
+tap/theme/page actions are gated on `media_active()`). Movement from
 12 through 47 px is a rejected drag rather than a peak reset. The screen object
 survives theme rebuilds, so synchronous
 `boost_gauge_apply_theme()` from `LV_EVENT_RELEASED` deletes children but not

@@ -140,7 +140,9 @@ static void boost_page_indev_event(lv_event_t *event)
     const lv_event_code_t code = lv_event_get_code(event);
 
     if (code == LV_EVENT_PRESSED) {
-        if (media_active()) return;
+        /* The press is tracked even while a GIF owns the screen so the 1 s
+         * hold-to-dim still works over media; tap/theme/page actions stay
+         * GIF-suppressed in finish_press() and apply_theme_delta(). */
         s_press_indev = indev;
         lv_indev_get_point(indev, &s_start);
         s_max_dx = s_max_dy = 0;
@@ -159,7 +161,7 @@ static void boost_page_indev_event(lv_event_t *event)
                  (long)s_start.x, (long)s_start.y, HOLD_DIM_MS);
 #endif
     } else if (code == LV_EVENT_LONG_PRESSED && s_press_active &&
-               indev == s_press_indev && !s_hold_fired && !media_active()) {
+               indev == s_press_indev && !s_hold_fired) {
         update_press_motion(indev);
         s_hold_fired = true;
         boost_brightness_toggle_max_min_locked();
