@@ -160,6 +160,9 @@ static volatile uint32_t s_touch_irq_sequence;
 static volatile int64_t s_touch_irq_us;
 static boost_touch_timing_t s_touch_timing;
 static boost_display_metrics_t s_metrics;
+static bool s_gauge_update_active;
+static bool s_gauge_update_dirty;
+static uint32_t s_gauge_demand_count;
 static uint32_t s_render_count;
 static uint32_t s_flush_count;
 static uint32_t s_pixel_count;
@@ -202,6 +205,14 @@ static uint8_t s_te_miss_streak;
  * microseconds) so te_wait_for_region_spans()'s scan-position estimate keeps a
  * useful amount of precision without floating point. */
 static uint32_t s_te_row_time_ns;
+/* CO5300 set_tear_scanline (0x44) dynamic support. When a region-dbuf
+ * writeback cannot prove the scan is safely before/after its dirty rows, it
+ * re-programs the panel to assert TE just past the region's bottom edge, so
+ * the next edge arrives as soon as the scan clears the band (bounded by the
+ * band's height, not the rest of the frame). Only the LVGL task writes these. */
+static volatile int32_t s_te_scanline_row;   /* row the last fresh edge fired at; -1 = V-blank */
+static volatile bool s_te_scanline_enabled;  /* runtime toggle from settings */
+static uint32_t s_te_scanline_waits;         /* per-second cycles that used a programmed scanline edge */
 
 /*
  * Not installed with ESP_INTR_FLAG_IRAM - the touch driver registers a
@@ -263,6 +274,9 @@ static esp_err_t te_init(void)
                         TAG, "TE isr handler add failed");
 
     s_te_active = true;
+    /* Anchor matches whatever line the init table left the panel on: -1 (no
+     * scanline entry baked in) means V-blank, or the compiled-in line. */
+    s_te_scanline_row = BOOST_LCD_TE_SCANLINE;
     ESP_LOGI(TAG, "TE sync active on GPIO%d, %s edge, level=%d at boot, %d ms timeout",
              BOOST_LCD_TE_GPIO,
              (BOOST_LCD_TE_EDGE == GPIO_INTR_NEGEDGE) ? "falling" : "rising",
@@ -270,33 +284,11 @@ static esp_err_t te_init(void)
     return ESP_OK;
 }
 
-/* Called on the LVGL task, once per render cycle, from the first strip's blit. */
-static void te_wait_for_vblank(void)
+/* One timeout's accounting, shared by every TE wait path: bump the counter,
+ * grow the miss streak, and latch the whole gate off once the streak proves
+ * the line is dead. */
+static void te_account_timeout(void)
 {
-    if (!s_te_active || !s_te_enabled) {
-        return;
-    }
-
-    ++s_te_waits;
-
-    if (s_te_edges != 0) {
-        const uint32_t age = (uint32_t)esp_timer_get_time() - s_te_last_edge_us;
-        if (age < BOOST_LCD_TE_FRESH_US) {
-            /* Blanking has only just begun - write now rather than idling a
-             * whole frame to arrive at the same place. */
-            s_te_miss_streak = 0;
-            return;
-        }
-    }
-
-    /* Drop the stale edge so the wait below returns on a fresh one. */
-    (void)xSemaphoreTake(s_te_sem, 0);
-
-    if (xSemaphoreTake(s_te_sem, pdMS_TO_TICKS(BOOST_LCD_TE_TIMEOUT_MS)) == pdTRUE) {
-        s_te_miss_streak = 0;
-        return;
-    }
-
     ++s_te_timeouts;
     if (s_te_miss_streak < BOOST_LCD_TE_GIVEUP_STREAK) {
         ++s_te_miss_streak;
@@ -308,6 +300,112 @@ static void te_wait_for_vblank(void)
                  "display may tear but will not stall",
                  BOOST_LCD_TE_GPIO, BOOST_LCD_TE_GIVEUP_STREAK, (unsigned)s_te_edges);
     }
+}
+
+/* Drop any stale edge and wait for the next one, with the shared bounded
+ * timeout and give-up accounting. Returns true when an edge arrived. */
+static bool te_wait_next_edge(uint32_t timeout_ms)
+{
+    (void)xSemaphoreTake(s_te_sem, 0);
+    if (xSemaphoreTake(s_te_sem, pdMS_TO_TICKS(timeout_ms)) == pdTRUE) {
+        s_te_miss_streak = 0;
+        return true;
+    }
+    te_account_timeout();
+    return false;
+}
+
+/* Wait for an edge strictly newer than cutoff_us without first draining the
+ * semaphore. The caller has already discarded any known-stale token before
+ * establishing the cutoff; draining here would race with and discard the very
+ * edge being awaited. Rejected stale tokens share one bounded timeout budget.
+ * All timestamp arithmetic is modulo 2^32, matching the ISR. */
+static bool te_wait_edge_after(uint32_t cutoff_us, uint32_t timeout_ms)
+{
+    const uint32_t wait_start_us = (uint32_t)esp_timer_get_time();
+    const uint32_t timeout_us = timeout_ms * 1000u;
+
+    for (;;) {
+        /* The caller may have drained a token immediately after establishing
+         * cutoff_us. If the ISR ran in that tiny interval, its timestamp is
+         * still authoritative even though the binary-semaphore token was
+         * consumed. Likewise, a fresh edge can arrive after tx_param() returns
+         * but before this function starts. Accept either without waiting a
+         * second panel period. */
+        if ((int32_t)((uint32_t)s_te_last_edge_us - cutoff_us) > 0) {
+            s_te_miss_streak = 0;
+            return true;
+        }
+
+        const uint32_t elapsed_us = (uint32_t)esp_timer_get_time() - wait_start_us;
+        if (elapsed_us >= timeout_us) {
+            te_account_timeout();
+            return false;
+        }
+
+        const uint32_t remaining_us = timeout_us - elapsed_us;
+        TickType_t ticks = pdMS_TO_TICKS((remaining_us + 999u) / 1000u);
+        if (ticks == 0) {
+            ticks = 1;
+        }
+        if (xSemaphoreTake(s_te_sem, ticks) != pdTRUE) {
+            te_account_timeout();
+            return false;
+        }
+
+        /* The ISR publishes the timestamp before giving the semaphore. Strict
+         * ordering rejects equality, whose microsecond resolution cannot prove
+         * whether the edge preceded or followed the cutoff. The interval is at
+         * most one timeout, far below the signed half-range. */
+        if ((int32_t)((uint32_t)s_te_last_edge_us - cutoff_us) > 0) {
+            s_te_miss_streak = 0;
+            return true;
+        }
+    }
+}
+
+/* Program the CO5300's set_tear_scanline (0x44, 9-bit STS). Does NOT touch
+ * s_te_scanline_row: the anchor is only advanced after a FRESH edge proves the
+ * new line took effect (see te_wait_for_region_spans), so a timeout can never
+ * leave the estimate anchored at a line no edge actually fired at. If the
+ * panel ignores 0x44, TE keeps firing at V-blank and the fresh-edge check in
+ * the caller simply waits for that edge - no worse than today. */
+static esp_err_t te_program_scanline(int row)
+{
+    const uint8_t payload[2] = { (uint8_t)((row >> 8) & 0x01u), (uint8_t)(row & 0xFFu) };
+    const esp_err_t err = esp_lcd_panel_io_tx_param(s_panel_io, 0x44, payload, sizeof(payload));
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "TE: set_tear_scanline 0x44 row=%d failed: %s",
+                 row, esp_err_to_name(err));
+    }
+    return err;
+}
+
+/* Called on the LVGL task, once per render cycle, from the first strip's blit. */
+static void te_wait_for_vblank(void)
+{
+    if (!s_te_active || !s_te_enabled) {
+        return;
+    }
+
+    ++s_te_waits;
+
+    if (s_te_edges != 0 && s_te_scanline_row < 0) {
+        /* The fresh-window shortcut means "the edge just fired at V-blank, so
+         * the write from the panel top is safe". That is only true while no
+         * scanline has been programmed - with a scanline anchor the edge can
+         * land anywhere in the frame. This path (region-dbuf OFF) cannot know
+         * where, so it conservatively waits for a real edge instead. */
+        const uint32_t age = (uint32_t)esp_timer_get_time() - s_te_last_edge_us;
+        if (age < BOOST_LCD_TE_FRESH_US) {
+            /* Blanking has only just begun - write now rather than idling a
+             * whole frame to arrive at the same place. */
+            s_te_miss_streak = 0;
+            return;
+        }
+    }
+
+    (void)te_wait_next_edge(BOOST_LCD_TE_TIMEOUT_MS);
 }
 
 /*
@@ -739,9 +837,22 @@ static void te_wait_for_region_spans(const region_span_t *spans, int count)
         const uint64_t scan_age_ns = (uint64_t)age * 1000u;
         const bool edge_in_current_frame =
             scan_age_ns < (uint64_t)s_te_row_time_ns * BSP_LCD_V_RES;
-        const int32_t scan_row_now = edge_in_current_frame
-                                         ? (int32_t)(scan_age_ns / s_te_row_time_ns)
-                                         : BSP_LCD_V_RES;
+        int32_t scan_row_now;
+        if (edge_in_current_frame) {
+            /* The last edge may have fired at a programmed scanline, not at
+             * V-blank (row 0): the scan restarts at THAT line each frame, so
+             * the estimate must anchor there. -1 (never programmed) means
+             * V-blank, i.e. today's row-0 anchor. `since_edge` is < V_RES and
+             * the anchor is < V_RES, so one conditional subtract wraps. */
+            const int32_t anchor = (s_te_scanline_row >= 0) ? s_te_scanline_row : 0;
+            const int32_t since_edge = (int32_t)(scan_age_ns / s_te_row_time_ns);
+            scan_row_now = anchor + since_edge;
+            if (scan_row_now >= BSP_LCD_V_RES) {
+                scan_row_now -= BSP_LCD_V_RES;
+            }
+        } else {
+            scan_row_now = BSP_LCD_V_RES;
+        }
 
         uint32_t rows_before = 0;   /* pessimistic elapsed-time-so-far, in SCAN-row units */
         bool all_provable = true;
@@ -783,34 +894,82 @@ static void te_wait_for_region_spans(const region_span_t *spans, int count)
         }
     } else if (s_te_edges != 0) {
         /* Period not measured yet (first ~2 s after boot): same fixed-window
-         * fallback te_wait_for_vblank() uses. */
+         * fallback te_wait_for_vblank() uses, valid only while the anchor is
+         * still V-blank (no scanline has been programmed). */
         const uint32_t age = (uint32_t)esp_timer_get_time() - s_te_last_edge_us;
-        if (age < BOOST_LCD_TE_FRESH_US) {
+        if (s_te_scanline_row < 0 && age < BOOST_LCD_TE_FRESH_US) {
             s_te_miss_streak = 0;
             ++s_te_skips;
             return;
         }
     }
 
+    /* Establish the cutoff BEFORE draining. A stale pending token has an older
+     * timestamp and will be rejected, while an edge arriving immediately after
+     * the drain remains newer than this cutoff and cannot be lost in a second
+     * pre-wait drain. */
+    const uint32_t prewait_cutoff_us = (uint32_t)esp_timer_get_time();
     /* Drop the stale edge so the wait below returns on a fresh one. */
     (void)xSemaphoreTake(s_te_sem, 0);
 
-    if (xSemaphoreTake(s_te_sem, pdMS_TO_TICKS(BOOST_LCD_TE_TIMEOUT_MS)) == pdTRUE) {
-        s_te_miss_streak = 0;
+    /*
+     * TE-scanline writeback (dynamic): when neither EARLY nor LATE can be
+     * proved, the scan is inside the dirty band and the V-blank fallback
+     * below would wait up to a full ~16.75 ms period - the measured
+     * "second-frame tax" on wide bands (the neon segments boost->overboost
+     * flip recolours ~18 segments x 3 arc bands, the widest dirty region on
+     * any face, and measured 29/45 min/median FPS under the constant-slew
+     * sweep). The CO5300's set_tear_scanline (0x44) moves the TE assertion
+     * from V-blank to a chosen line, so instead we program it to just past
+     * the dirty region's bottom edge (y1 is exclusive) + margin: the next
+     * edge arrives as soon as the scan CLEARS the band, i.e. within
+     * (band height + margin) x row_time (~0.7-4.5 ms for a ~103-row band)
+     * rather than the rest of the frame. When that edge fires the scan is
+     * LATE for every span by BOOST_LCD_TE_ROW_MARGIN rows, so the burst below
+     * is provably tear-free with exactly the same one-frame-old-band semantics
+     * the existing LATE skip already accepts. If the panel ignores 0x44 (TE
+     * keeps firing at V-blank), the fresh-edge check below just waits for that
+     * edge and the write starts EARLY from the panel top - no worse than today.
+     */
+    if (s_te_scanline_enabled && s_te_edges != 0) {
+        int target = 0;
+        for (int i = 0; i < count; ++i) {
+            const int b = spans[i].y1 + BOOST_LCD_TE_ROW_MARGIN;
+            if (b > target) {
+                target = b;
+            }
+        }
+        if (target >= BSP_LCD_V_RES) {
+            /* Clamped to the panel bottom. Still safe: the scan is at most a
+             * frame ahead of the write's start and the write is faster per
+             * row, so it cannot be caught inside the band (Fix 2 proof). */
+            target = BSP_LCD_V_RES - 1;
+        }
+
+        /* The stale token was drained above. For an unchanged target, establish
+         * the cutoff now and preserve any edge that arrives before the wait
+         * starts. For a changed target, an edge during blocking tx_param() may
+         * still be from the OLD line, so only an edge strictly after successful
+         * command completion can establish the new anchor. */
+        uint32_t cutoff_us;
+        if (target != s_te_scanline_row) {
+            if (te_program_scanline(target) != ESP_OK) {
+                (void)te_wait_next_edge(BOOST_LCD_TE_TIMEOUT_MS);
+                return;
+            }
+            cutoff_us = (uint32_t)esp_timer_get_time();
+        } else {
+            cutoff_us = prewait_cutoff_us;
+        }
+
+        if (te_wait_edge_after(cutoff_us, BOOST_LCD_TE_TIMEOUT_MS)) {
+            s_te_scanline_row = target;
+            ++s_te_scanline_waits;
+        }
         return;
     }
 
-    ++s_te_timeouts;
-    if (s_te_miss_streak < BOOST_LCD_TE_GIVEUP_STREAK) {
-        ++s_te_miss_streak;
-    }
-    if (s_te_miss_streak >= BOOST_LCD_TE_GIVEUP_STREAK && s_te_active) {
-        s_te_active = false;
-        ESP_LOGW(TAG,
-                 "TE: no edge on GPIO%d for %d cycles (%u seen total) - gating off, "
-                 "display may tear but will not stall",
-                 BOOST_LCD_TE_GPIO, BOOST_LCD_TE_GIVEUP_STREAK, (unsigned)s_te_edges);
-    }
+    (void)te_wait_next_edge(BOOST_LCD_TE_TIMEOUT_MS);
 }
 
 /*
@@ -992,10 +1151,63 @@ static void rounder_event_cb(lv_event_t *e)
     area->y2 = ((area->y2 >> 1) << 1) + 1;
 }
 
+static void display_metrics_rollover(int64_t now_us)
+{
+    if (now_us - s_metrics_start_us < 1000000) return;
+
+    s_metrics.render_fps = s_render_count;
+    s_metrics.gauge_demand_per_second = s_gauge_demand_count;
+    s_metrics.flushes_per_second = s_flush_count;
+    s_metrics.pixels_per_second = s_pixel_count;
+    s_metrics.worst_render_us = s_worst_gap_us;
+    /* Median by insertion sort - at most 80 entries, once a second. */
+    if (s_gap_n > 0) {
+        for (uint8_t i = 1; i < s_gap_n; ++i) {
+            const uint16_t v = s_gaps_ms10[i];
+            int8_t j = (int8_t)i - 1;
+            while (j >= 0 && s_gaps_ms10[j] > v) { s_gaps_ms10[j + 1] = s_gaps_ms10[j]; --j; }
+            s_gaps_ms10[j + 1] = v;
+        }
+        s_metrics.render_gap_p50_us = (uint32_t)s_gaps_ms10[s_gap_n / 2] * 100u;
+    } else {
+        s_metrics.render_gap_p50_us = 0;
+    }
+    s_metrics.render_gap_max_us = s_gap_max_us;
+    s_metrics.frames_over_budget = s_over_budget;
+#if BOOST_LCD_USE_TE
+    te_log_period_once();
+    s_metrics.te_waits = s_te_waits;
+    s_metrics.te_timeouts = s_te_timeouts;
+    s_metrics.te_skips = s_te_skips;
+    s_metrics.te_scanline_waits = s_te_scanline_waits;
+    s_te_waits = 0;
+    s_te_timeouts = 0;
+    s_te_skips = 0;
+    s_te_scanline_waits = 0;
+#endif
+    s_gap_n = 0;
+    s_gap_max_us = 0;
+    s_over_budget = 0;
+    s_render_count = 0;
+    s_gauge_demand_count = 0;
+    s_flush_count = 0;
+    s_pixel_count = 0;
+    s_worst_gap_us = 0;
+    s_metrics_start_us = now_us;
+}
+
 static void display_metrics_event_cb(lv_event_t *e)
 {
     const lv_event_code_t code = lv_event_get_code(e);
-    if (code == LV_EVENT_RENDER_START) {
+    if (code == LV_EVENT_INVALIDATE_AREA || code == LV_EVENT_REFR_REQUEST) {
+        /* INVALIDATE_AREA fires before LVGL deduplicates a contained dirty
+         * rectangle, so a new 16 ms gauge state is still counted when the
+         * previous render is pending. REFR_REQUEST also catches layout-only
+         * changes. The bracket coalesces all requests from one tick into one
+         * demanded render cycle without adding work to the renderer. */
+        if (s_gauge_update_active) s_gauge_update_dirty = true;
+        return;
+    } else if (code == LV_EVENT_RENDER_START) {
 #if BOOST_LCD_USE_TE
         /* Arm the gate for this cycle. Consumed either by the first strip's
          * blit (region-dbuf off: te_draw_bitmap_cb) or once, later, by
@@ -1045,44 +1257,7 @@ static void display_metrics_event_cb(lv_event_t *e)
             }
         }
     }
-    const int64_t now_us = esp_timer_get_time();
-    if (now_us - s_metrics_start_us >= 1000000) {
-        s_metrics.render_fps = s_render_count;
-        s_metrics.flushes_per_second = s_flush_count;
-        s_metrics.pixels_per_second = s_pixel_count;
-        s_metrics.worst_render_us = s_worst_gap_us;
-        /* Median by insertion sort - at most 80 entries, once a second. */
-        if (s_gap_n > 0) {
-            for (uint8_t i = 1; i < s_gap_n; ++i) {
-                const uint16_t v = s_gaps_ms10[i];
-                int8_t j = (int8_t)i - 1;
-                while (j >= 0 && s_gaps_ms10[j] > v) { s_gaps_ms10[j + 1] = s_gaps_ms10[j]; --j; }
-                s_gaps_ms10[j + 1] = v;
-            }
-            s_metrics.render_gap_p50_us = (uint32_t)s_gaps_ms10[s_gap_n / 2] * 100u;
-        } else {
-            s_metrics.render_gap_p50_us = 0;
-        }
-        s_metrics.render_gap_max_us = s_gap_max_us;
-        s_metrics.frames_over_budget = s_over_budget;
-#if BOOST_LCD_USE_TE
-        te_log_period_once();
-        s_metrics.te_waits = s_te_waits;
-        s_metrics.te_timeouts = s_te_timeouts;
-        s_metrics.te_skips = s_te_skips;
-        s_te_waits = 0;
-        s_te_timeouts = 0;
-        s_te_skips = 0;
-#endif
-        s_gap_n = 0;
-        s_gap_max_us = 0;
-        s_over_budget = 0;
-        s_render_count = 0;
-        s_flush_count = 0;
-        s_pixel_count = 0;
-        s_worst_gap_us = 0;
-        s_metrics_start_us = now_us;
-    }
+    display_metrics_rollover(esp_timer_get_time());
 }
 
 /* Vendored from the Waveshare BSP's bsp_display_new(). Identical apart from
@@ -1166,6 +1341,24 @@ bool boost_display_te(void)
     return s_te_enabled && s_te_active;
 #else
     return false;
+#endif
+}
+
+/* Enable/disable the CO5300 set_tear_scanline (0x44) writeback described on
+ * te_wait_for_region_spans(): when a region-dbuf burst cannot prove the scan
+ * is safely before/after its dirty rows, program the panel's TE edge to just
+ * past the region's bottom so the write starts as soon as the scan clears the
+ * band instead of waiting for the next V-blank. Default OFF, runtime-toggleable
+ * like teSync/regionDBuf. The panel is left wherever its last edge fired when
+ * disabled - s_te_scanline_row stays truthful, and the V-blank fresh-window
+ * shortcuts in both wait paths are already guarded on s_te_scanline_row < 0. */
+void boost_display_set_te_scanline(bool enabled)
+{
+#if BOOST_LCD_USE_TE
+    s_te_scanline_enabled = enabled;
+    ESP_LOGI(TAG, "TE scanline writeback %s (runtime)", enabled ? "enabled" : "disabled");
+#else
+    (void)enabled;
 #endif
 }
 
@@ -1260,6 +1453,8 @@ static lv_display_t *register_display(void)
     lv_display_add_event_cb(disp, display_metrics_event_cb, LV_EVENT_RENDER_START, NULL);
     lv_display_add_event_cb(disp, display_metrics_event_cb, LV_EVENT_RENDER_READY, NULL);
     lv_display_add_event_cb(disp, display_metrics_event_cb, LV_EVENT_FLUSH_START, NULL);
+    lv_display_add_event_cb(disp, display_metrics_event_cb, LV_EVENT_INVALIDATE_AREA, NULL);
+    lv_display_add_event_cb(disp, display_metrics_event_cb, LV_EVENT_REFR_REQUEST, NULL);
     ESP_LOGI(TAG, "LVGL %dx%d partial, %d lines, internal DMA buffers, strip=%u B, rotation %u deg",
              BSP_LCD_H_RES, BSP_LCD_V_RES, BOOST_LVGL_BUF_LINES,
              (unsigned)BOOST_LVGL_STRIP_BYTES, (unsigned)boost_theme_rotation());
@@ -1407,6 +1602,22 @@ void boost_display_get_metrics(boost_display_metrics_t *out)
     if (out != NULL) {
         *out = s_metrics;
     }
+}
+
+void boost_display_gauge_update_begin(void)
+{
+    /* Gauge updates continue at 16 ms even when quantized visual state is idle,
+     * so this also publishes zero-demand windows without forcing a render. */
+    display_metrics_rollover(esp_timer_get_time());
+    s_gauge_update_active = true;
+    s_gauge_update_dirty = false;
+}
+
+void boost_display_gauge_update_end(void)
+{
+    if (s_gauge_update_active && s_gauge_update_dirty) ++s_gauge_demand_count;
+    s_gauge_update_active = false;
+    s_gauge_update_dirty = false;
 }
 
 void boost_display_get_touch_timing(boost_touch_timing_t *out)

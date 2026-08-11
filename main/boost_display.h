@@ -31,6 +31,11 @@ typedef struct {
 
 typedef struct {
     uint32_t render_fps;
+    /* Gauge-update ticks that introduced at least one new LVGL dirty area in
+     * the published window. Unlike render_fps, this records how many renders
+     * the visible gauge state actually demanded; one update that invalidates
+     * several areas still counts once. */
+    uint32_t gauge_demand_per_second;
     uint32_t flushes_per_second;
     uint32_t pixels_per_second;
     /* Longest gap between consecutive render-ready events in the window. This
@@ -62,6 +67,12 @@ typedef struct {
      * per-flush path still uses the older fixed-window check, which is not
      * counted here). */
     uint32_t te_skips;
+    /* Cycles per second where the dynamic CO5300 scanline path engaged: the
+     * panel was reprogrammed (or already at) a line just past the dirty
+     * region's bottom and the burst started as soon as the scan cleared the
+     * band, instead of waiting for the next V-blank. 0 when the scanline
+     * toggle is off. */
+    uint32_t te_scanline_waits;
 } boost_display_metrics_t;
 
 lv_display_t *boost_display_start(void);
@@ -81,6 +92,14 @@ esp_err_t boost_display_set_brightness(int percent);
  * both enabled and actually receiving edges. */
 void boost_display_set_te(bool enabled);
 bool boost_display_te(void);
+
+/* TE-scanline writeback: re-program the panel's set_tear_scanline (CO5300
+ * 0x44) to just past the dirty region's bottom before a region-dbuf burst, so
+ * the TE edge (and hence the write) arrives as soon as the scan clears the
+ * band instead of waiting for the next V-blank - bounded by the band's height
+ * rather than the rest of the frame. Default OFF; runtime-toggleable like
+ * teSync/regionDBuf. */
+void boost_display_set_te_scanline(bool enabled);
 
 /*
  * Region double-buffering: rasterise a whole render cycle's dirty strips into
@@ -104,6 +123,17 @@ bool boost_display_region_dbuf(void);
 esp_err_t boost_display_lock(uint32_t timeout_ms);
 void boost_display_unlock(void);
 void boost_display_get_metrics(boost_display_metrics_t *out);
+
+/* Bracket one physical-gauge update so display telemetry can distinguish
+ * demand-limited idle ticks from render cycles the pipeline failed to deliver.
+ * Both calls run on the LVGL task and never add an invalidation themselves. */
+#ifdef ESP_PLATFORM
+void boost_display_gauge_update_begin(void);
+void boost_display_gauge_update_end(void);
+#else
+static inline void boost_display_gauge_update_begin(void) {}
+static inline void boost_display_gauge_update_end(void) {}
+#endif
 
 /** Snapshot the raw CST9217 IRQ/read/contact timing captured by the adapter callbacks. */
 void boost_display_get_touch_timing(boost_touch_timing_t *out);

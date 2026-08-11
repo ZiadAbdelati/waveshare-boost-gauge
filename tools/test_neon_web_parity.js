@@ -509,8 +509,10 @@ console.log("neon web parity: all assertions passed");
   assert.ok(widths.includes(6), "white cap band missing");
   const cap = bands.find((b) => b.w === 6);
   const body = bands.find((b) => b.w === 30);
-  const inner = bands.find((b) => b.w === 42);
-  assert.ok(cap && body && inner, "expected 6/30/42 px bands");
+  /* The inner band matches the body width (NEON_BODY_W = W - CAP + 1), so the
+   * mirror's full-depth dim band is 2W - CAP = 54 px for segments. */
+  const inner = bands.find((b) => b.w === 54);
+  assert.ok(cap && body && inner, "expected 6/30/54 px bands");
   assert.ok(cap.r > body.r && body.r > inner.r,
     "bands must stack inward: cap outermost, then body, then the raw palette");
 }
@@ -550,12 +552,13 @@ console.log("neon web parity: all assertions passed");
 
 console.log("neon web parity: band stacking and sign shear verified");
 
-/* --- tube: the zero marker matches the firmware's widened band (e400195) -- */
+/* --- tube: the zero marker matches the firmware's widened band ------------- */
 /* Firmware widened the tube zero marker to span the full band width -
- * NEON_TUBE_W (26) + NEON_HALO_EXTRA (12) = 38 - instead of the old bare
- * NEON_TUBE_W. Its outer edge must land on the same ring radius (NEON_R,
- * 228) as every other band, using the identical ringR - width/2
- * compensation the rest of the ring uses.
+ * NEON_BAND_DEPTH(NEON_TUBE_W) = 2*26 - 6 = 46 - instead of the old bare
+ * NEON_TUBE_W. The inner (dimmed) band now matches the body width, so the
+ * marker tracks the full lit depth on every layout. Its outer edge must land
+ * on the same ring radius (NEON_R, 228) as every other band, using the
+ * identical ringR - width/2 compensation the rest of the ring uses.
  *
  * It also spans 6 degrees now, not 4: the panel's lit run starts exactly at
  * zero and sweeps outward over this same band, so half the marker used to be
@@ -572,12 +575,12 @@ console.log("neon web parity: band stacking and sign shear verified");
   }
   /* The zero marker is the only white band spanning exactly 6 degrees
    * (zero - 3 .. zero + 3). The lit run's own outer (accent-coloured) band
-   * shares the same 38 px width, so width alone cannot identify it. */
+   * shares the same 46 px width, so width alone cannot identify it. */
   const zeroMarker = bands.find((b) => b.stroke === "#ffffff" &&
     Math.abs((b.a1 - b.a0) / DEG - 6) < 0.01);
   assert.ok(zeroMarker, "tube zero marker band not found");
-  assert.strictEqual(zeroMarker.w, 38,
-    `tube zero marker width ${zeroMarker.w}, expected NEON_TUBE_W(26) + NEON_HALO_EXTRA(12) = 38`);
+  assert.strictEqual(zeroMarker.w, 46,
+    `tube zero marker width ${zeroMarker.w}, expected NEON_BAND_DEPTH(26) = 46`);
   assert.ok(Math.abs((zeroMarker.r + zeroMarker.w / 2) - 228) < 0.001,
     `tube zero marker outer edge ${zeroMarker.r + zeroMarker.w / 2}, expected ring radius 228`);
 }
@@ -613,6 +616,7 @@ console.log("neon web parity: tube zero marker band verified");
     bulbN: [def("NEON_BULB_N_INNER"), def("NEON_BULB_N_MID"), def("NEON_BULB_N_OUTER")],
     zeroDeg: def("NEON_TUBE_ZERO_DEG"),
     mqScale: def("NEON_MARQUEE_CENTER_SCALE"),
+    segW: def("NEON_SEG_W"), tubeW: def("NEON_TUBE_W"), capW: def("NEON_CAP_W"),
   };
 
   for (const [layout, dy, slot, dotw, fontPx] of [
@@ -660,6 +664,24 @@ console.log("neon web parity: tube zero marker band verified");
     for (const o of outer) {
       assert.ok(Math.abs(o - F.R) < 0.001,
         `ring band outer edge ${o}, firmware NEON_R = ${F.R}`);
+    }
+  }
+
+  /* Band depths: the inner (dimmed) band matches the body, so the full lit
+   * depth is 2W - CAP on each ring layout, and the mirror's deepest band must
+   * carry exactly that width. */
+  {
+    const expect = [2 * F.tubeW - F.capW, 2 * F.segW - F.capW];
+    for (let layout = 0; layout <= 1; layout++) {
+      const c = render(layout, 8.5);
+      let lw = null;
+      const widths = [];
+      for (const k of c) {
+        if (k.op === "set:lineWidth") lw = k.args[0];
+        if (k.op === "arc" && lw > 4) widths.push(lw);
+      }
+      assert.ok(widths.includes(expect[layout]),
+        `layout ${layout}: no ${expect[layout]} px band - mirror inner band must be 2*NEON_${layout ? "SEG" : "TUBE"}_W - NEON_CAP_W`);
     }
   }
 

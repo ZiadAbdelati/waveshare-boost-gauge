@@ -179,10 +179,11 @@ static int state_json(char *json, size_t len)
                     "{\"psi\":%.2f,\"peakPsi\":%.2f,\"zone\":\"%s\",\"demo\":%s,"
                     "\"brightness\":%d,\"firmwareVersion\":\"%s\",\"uptimeMs\":%llu,"
                     "\"epochMs\":%lld,\"timezoneOffsetMinutes\":%d,\"activeThemeId\":\"%s\",\"activePage\":%d,"
-                    "\"display\":{\"renderFps\":%lu,\"flushesPerSecond\":%lu,\"pixelsPerSecond\":%lu,"
+                    "\"display\":{\"renderFps\":%lu,\"gaugeDemandPerSecond\":%lu,\"flushesPerSecond\":%lu,\"pixelsPerSecond\":%lu,"
                     "\"worstRenderUs\":%lu,\"renderGapP50Us\":%lu,"
                     "\"renderGapMaxUs\":%lu,\"framesOverBudget\":%lu,"
-                    "\"tePeriodUs\":%lu,\"teWaits\":%lu,\"teTimeouts\":%lu,\"teSkips\":%lu},"
+                    "\"tePeriodUs\":%lu,\"teWaits\":%lu,\"teTimeouts\":%lu,\"teSkips\":%lu,"
+                    "\"teScanlineWaits\":%lu},"
                     /* Raw sensor readings so a bench check against a known value
                      * (atmospheric ~101.3 kPa, gauge ~0 psi engine-off) is
                      * possible without the display. */
@@ -192,7 +193,9 @@ static int state_json(char *json, size_t len)
                     (double)st.psi, (double)st.peak_psi, st.zone, st.demo ? "true" : "false",
                     st.brightness, st.firmware_version, (unsigned long long)st.uptime_ms,
                     (long long)st.epoch_ms, st.timezone_offset_minutes, st.active_theme_id, st.active_page,
-                    (unsigned long)st.display.render_fps, (unsigned long)st.display.flushes_per_second,
+                    (unsigned long)st.display.render_fps,
+                    (unsigned long)st.display.gauge_demand_per_second,
+                    (unsigned long)st.display.flushes_per_second,
                     (unsigned long)st.display.pixels_per_second,
                     (unsigned long)st.display.worst_render_us,
                     (unsigned long)st.display.render_gap_p50_us,
@@ -202,6 +205,7 @@ static int state_json(char *json, size_t len)
                     (unsigned long)st.display.te_waits,
                     (unsigned long)st.display.te_timeouts,
                     (unsigned long)st.display.te_skips,
+                    (unsigned long)st.display.te_scanline_waits,
                     st.ads_present ? "true" : "false",
                     st.bmp_present ? "true" : "false",
                     st.sensor_fault ? "true" : "false",
@@ -727,7 +731,7 @@ static esp_err_t themes_get(httpd_req_t *req)
              "\"bigDigitColorText\":%s,\"bigDigitStaticColor\":\"#%06lx\","
              "\"bigDigitTextColor\":\"#%06lx\","
              "\"arcGradient\":%s,\"hudGradient\":%s,\"hudTrueBlack\":%s,\"neonMarqueeSpin\":%s,"
-             "\"teSync\":%s,\"regionDBuf\":%s,"
+             "\"teSync\":%s,\"regionDBuf\":%s,\"teScanline\":%s,"
              "\"rotation\":%u,"
              "\"vaultFace\":\"#%06lx\",\"vaultVignette\":%u,\"vaultNeedleRed\":%s,"
               "\"vaultNeedleTail\":%s,\"neonLayout\":%u,\"neonPreset\":%u,\"demoMode\":%s,\"demoFastSweep\":%s,"
@@ -743,6 +747,7 @@ static esp_err_t themes_get(httpd_req_t *req)
              boost_theme_neon_marquee_spin() ? "true" : "false",
              boost_theme_te_sync() ? "true" : "false",
              boost_theme_region_dbuf() ? "true" : "false",
+             boost_theme_te_scanline() ? "true" : "false",
              (unsigned)boost_theme_rotation(),
              (unsigned long)boost_theme_vault_face(),
              (unsigned)boost_theme_vault_vignette_pct(),
@@ -890,6 +895,13 @@ static esp_err_t themes_config_put(httpd_req_t *req)
         const bool on = cJSON_IsTrue(rdb);
         boost_theme_set_region_dbuf(on);
         boost_display_set_region_dbuf(on);
+    }
+
+    const cJSON *tsl = cJSON_GetObjectItemCaseSensitive(root, "teScanline");
+    if (cJSON_IsBool(tsl)) {
+        const bool on = cJSON_IsTrue(tsl);
+        boost_theme_set_te_scanline(on);
+        boost_display_set_te_scanline(on);
     }
 
     /* Quarter turns only - see boost_theme.h for why an arbitrary angle is not

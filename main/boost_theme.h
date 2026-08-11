@@ -140,6 +140,15 @@ void boost_theme_set_te_sync(bool enabled);
 bool boost_theme_region_dbuf(void);
 void boost_theme_set_region_dbuf(bool enabled);
 
+/* Dynamic CO5300 set_tear_scanline writeback preference, persisted. Default OFF
+ * like te_sync/region_dbuf; applied to the display at boot and whenever
+ * changed. When ON, a region-dbuf burst that cannot prove the scan is safely
+ * before/after its dirty rows reprograms the panel's TE edge to just past the
+ * region's bottom so the write starts as soon as the scan clears the band
+ * (bounded by band height, not the rest of the frame). */
+bool boost_theme_te_scanline(void);
+void boost_theme_set_te_scanline(bool enabled);
+
 /**
  * Persisted panel rotation in degrees: **0, 90, 180 or 270 only**.
  *

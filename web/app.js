@@ -596,7 +596,13 @@ function drawNeonGauge(sample, psi, g) {
   const nseg = 54;
   const ringR = 228;
   const segmentW = 30;
-  const halo = 12;
+  const tubeW = 26;
+  const capW = 6;
+  /* The inner (dimmed) band matches the body width (NEON_BODY_W = W - CAP + 1
+   * on the panel), so the full lit depth is 2W - CAP: 46 px tube / 54 px
+   * segments. The unlit track stays at the body width with the same outer
+   * edge. One formula here and in boost_gauge.c so they cannot drift. */
+  const bandDepth = (w) => 2 * w - capW;
   const start = ARC_START;
   const sweep = ARC_RANGE;
   const zero = psiToSweep(0, start, start + sweep, range);
@@ -716,17 +722,22 @@ function drawNeonGauge(sample, psi, g) {
     }
     ctx.fillStyle = "#ffffff"; roundRectPath(x0 - 3.5 * mq, 62.5 * mq, 7 * mq, 27 * mq, 3.5 * mq); ctx.fill();
   } else {
-    /* The unlit track shares the same outer edge as the lit bands. */
-    arc(start, start + sweep, tube ? 26 : 30, p.track);
+    /* The unlit track shares the same outer edge as the lit bands, and stays
+     * at the body width while the lit run extends further in. */
+    arc(start, start + sweep, tube ? tubeW : segmentW, p.track);
     const lo = Math.min(zero, value), hi = Math.max(zero, value);
     const zeroSeg = Math.floor((zero - start) / step);
     if (tube) {
-      if (hi - lo > 2) { arc(lo, hi, 38, neonDim(accent)); arc(lo, hi, 26, lit); arc(lo, hi, 6, "#ffffff"); }
+      if (hi - lo > 2) {
+        arc(lo, hi, bandDepth(tubeW), neonDim(accent));
+        arc(lo, hi, tubeW, lit);
+        arc(lo, hi, capW, "#ffffff");
+      }
       /* After the run, and +-3 degrees: the panel's run starts exactly at zero
        * and sweeps outward at this same radius and width, so drawing the
        * marker first would leave only half of it - which is what used to
        * happen on the panel itself (NEON_TUBE_ZERO_DEG). */
-      arc(zero - 3, zero + 3, 38, "#ffffff");
+      arc(zero - 3, zero + 3, bandDepth(tubeW), "#ffffff");
     } else {
       /* Index by floor at BOTH ends, exactly as boost_neon_lit_span() does, so
        * a value landing mid-segment lights that segment whole. Testing each
@@ -738,11 +749,11 @@ function drawNeonGauge(sample, psi, g) {
       for (let i = 0; i < nseg; i++) {
         const a0 = start + i * step + 1;
         const a1 = a0 + step - 2;
-        if (i === zeroSeg) { arc(a0, a1, segmentW + halo, "#ffffff"); continue; }
+        if (i === zeroSeg) { arc(a0, a1, bandDepth(segmentW), "#ffffff"); continue; }
         if (!litRun || i < first || i > last) continue;
-        arc(a0, a1, segmentW + halo, neonDim(accent));
+        arc(a0, a1, bandDepth(segmentW), neonDim(accent));
         arc(a0, a1, segmentW, lit);
-        arc(a0, a1, 6, "#ffffff");
+        arc(a0, a1, capW, "#ffffff");
       }
     }
   }

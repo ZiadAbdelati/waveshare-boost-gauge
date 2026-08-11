@@ -2,8 +2,23 @@
 #include "boost_theme.h"
 
 #include <assert.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
+
+/* Segments symmetric-difference helper, against the production default sweep
+ * (zeroAngle 236.25, ARC_START 135, ARC_RANGE 270, 54 segments, step 5). */
+static void seg_diff_expect(float a_old, float a_new, int n,
+                            int f0, int l0, int f1, int l1)
+{
+    boost_neon_seg_diff_t d;
+    const int got = boost_neon_seg_diff(236.25f, a_old, a_new,
+                                        135.0f, 270.0f, 54, &d);
+    assert(got == n);
+    assert(d.count == n);
+    if (n >= 1) { assert(d.first[0] == f0); assert(d.last[0] == l0); }
+    if (n >= 2) { assert(d.first[1] == f1); assert(d.last[1] == l1); }
+}
 
 int main(void)
 {
@@ -80,6 +95,108 @@ int main(void)
                             &first, &last);
     assert(n == 0);
     assert(first == -99 && last == -99);
+
+    /* --- tube dirty span at the half-segment lit threshold ---------------- */
+    /* The tube is all-or-nothing: within half a segment of the notch nothing
+     * is lit, at half a segment or beyond the whole run lights. Crossing that
+     * threshold flips the painted area by the whole run, so the dirty span
+     * must run from the notch through the FARTHER endpoint, not the (tiny)
+     * delta between the endpoints. Production uses 54 segments: step 5 deg,
+     * so 2.49 deg from the notch is still unlit while 2.51 deg is lit - a 0.02 deg movement across the
+     * threshold, well inside the 0.1 deg movement bound. */
+    const float t_zero = 236.25f;
+    static const struct {
+        float a_old, a_new;
+    } t_transitions[4] = {
+        { t_zero + 2.49f, t_zero + 2.51f },  /* boost 0 -> 1 */
+        { t_zero + 2.51f, t_zero + 2.49f },  /* boost 1 -> 0 */
+        { t_zero - 2.49f, t_zero - 2.51f },  /* vacuum 0 -> 1 */
+        { t_zero - 2.51f, t_zero - 2.49f },  /* vacuum 1 -> 0 */
+    };
+    for (int i = 0; i < 4; ++i) {
+        const float a_old = t_transitions[i].a_old;
+        const float a_new = t_transitions[i].a_new;
+        assert(fabsf(a_new - a_old) <= 0.1f);
+        float lo = -1.0f, hi = -1.0f;
+        assert(boost_neon_tube_dirty_span(t_zero, a_old, a_new,
+                                          135.0f, 270.0f, 54, &lo, &hi));
+        /* The full dirty span includes the notch... */
+        assert(lo <= t_zero + 1e-3f && t_zero - 1e-3f <= hi);
+        /* ...and is much wider than the endpoint-only delta. */
+        assert((hi - lo) > 5.0f * fabsf(a_new - a_old));
+        /* The span is exactly zero through the farther endpoint. */
+        assert(fabsf(lo - fminf(t_zero, fminf(a_old, a_new))) < 1e-3f);
+        assert(fabsf(hi - fmaxf(t_zero, fmaxf(a_old, a_new))) < 1e-3f);
+    }
+    /* No lit-state change: both endpoints lit or both unlit keep the precise
+     * delta-only span, so the helper must report no transition and leave the
+     * outputs untouched. */
+    {
+        float lo = -1.0f, hi = -1.0f;
+        assert(!boost_neon_tube_dirty_span(t_zero, t_zero + 3.0f, t_zero + 4.0f,
+                                           135.0f, 270.0f, 54, &lo, &hi));
+        assert(lo == -1.0f && hi == -1.0f);
+        assert(!boost_neon_tube_dirty_span(t_zero, t_zero + 1.0f, t_zero + 2.0f,
+                                           135.0f, 270.0f, 54, &lo, &hi));
+        assert(lo == -1.0f && hi == -1.0f);
+    }
+
+    /* --- segments symmetric-difference invalidation ---------------------- */
+    /* a_zero = 236.25 sits in segment 20 (floor(101.25 / 5)); the baked zero
+     * marker is segment 20, so a boost run of length k paints [21..20+k] and
+     * a vacuum run paints down from 19. Only the segments whose painted state
+     * changed may be invalidated - the angular delta would also reflush the
+     * segment that merely contained the old endpoint. */
+    /* Boost expansion: 251.25 lights [21..23], 261.25 lights [21..25]; only
+     * the two newly-lit segments differ. */
+    seg_diff_expect(251.25f, 261.25f, 1, 24, 25, -1, -1);
+    /* Retraction is the same symmetric difference. */
+    seg_diff_expect(261.25f, 251.25f, 1, 24, 25, -1, -1);
+    /* A one-segment step keeps just that segment. */
+    seg_diff_expect(251.25f, 256.25f, 1, 24, 24, -1, -1);
+    /* Vacuum expansion: 221.25 paints [17..19], 211.25 paints [15..19]. */
+    seg_diff_expect(221.25f, 211.25f, 1, 15, 16, -1, -1);
+    seg_diff_expect(211.25f, 221.25f, 1, 15, 16, -1, -1);
+    seg_diff_expect(221.25f, 216.25f, 1, 16, 16, -1, -1);
+
+    /* Lit/unlit threshold: within half a segment of the notch nothing is lit.
+     * Crossing the threshold while the run still stops inside the zero segment
+     * paints nothing either side (only the baked marker would light), so the
+     * painted sets are identical and the diff is empty - including at the
+     * exact 2.5 deg half-segment boundary. */
+    seg_diff_expect(238.74f, 238.76f, 0, -1, -1, -1, -1);
+    seg_diff_expect(238.74f, 238.75f, 0, -1, -1, -1, -1);
+    seg_diff_expect(238.76f, 238.74f, 0, -1, -1, -1, -1);
+    /* Unlit -> lit repaints the WHOLE newly-painted set, not the tiny angular
+     * delta between the endpoints. */
+    seg_diff_expect(238.74f, 256.25f, 1, 21, 24, -1, -1);
+    seg_diff_expect(256.25f, 238.74f, 1, 21, 24, -1, -1);
+    seg_diff_expect(233.76f, 216.25f, 1, 16, 19, -1, -1);
+    seg_diff_expect(216.25f, 233.76f, 1, 16, 19, -1, -1);
+
+    /* Exact segment boundaries: a value landing exactly on a boundary belongs
+     * to the floor() segment and paints it fully, in both directions. */
+    seg_diff_expect(250.0f, 255.0f, 1, 24, 24, -1, -1);
+    seg_diff_expect(255.0f, 260.0f, 1, 25, 25, -1, -1);
+    seg_diff_expect(260.0f, 255.0f, 1, 25, 25, -1, -1);
+    /* Boundary between segments 0 and 1: floor() yields 1, so a vacuum run
+     * stepping off it lights segment 1, never the out-of-range segment 0. */
+    seg_diff_expect(140.0f, 145.0f, 1, 1, 1, -1, -1);
+
+    /* Identical painted sets: same far segment (value moved within it) or the
+     * exact same value produce no difference. */
+    seg_diff_expect(251.25f, 253.0f, 0, -1, -1, -1, -1);
+    seg_diff_expect(251.25f, 251.25f, 0, -1, -1, -1, -1);
+
+    /* Zero segment exclusion: the baked marker (segment 20) is never in the
+     * diff, even when one side is unlit and the other's whole run is new. */
+    seg_diff_expect(246.25f, 238.74f, 1, 21, 22, -1, -1);
+    seg_diff_expect(238.74f, 256.25f, 1, 21, 24, -1, -1);
+
+    /* Two disjoint ranges: the helper returns the full symmetric difference
+     * even across the notch (update_neon never asks for this - side flips are
+     * repainted in full - but the helper stays a faithful set operation). */
+    seg_diff_expect(261.25f, 211.25f, 2, 15, 19, 21, 25);
 
     /* --- theme table -------------------------------------------------- */
     /* The three neon palettes are ONE theme plus a preset, not three themes:

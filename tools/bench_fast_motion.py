@@ -38,6 +38,7 @@ import math
 import statistics
 import sys
 import time
+from pathlib import Path
 from urllib.request import urlopen, Request
 
 # ---------------------------------------------------------------------------
@@ -153,7 +154,7 @@ def cmd_sweep(args) -> int:
     time.sleep(2.0)
     wait_online(base)
     print(f"online, setting demoMode=true demoFastSweep=true regionDBuf={args.region_dbuf} "
-          f"teSync=true pixelShift=false", file=sys.stderr)
+          f"teSync=true teScanline={args.te_scanline} pixelShift=false", file=sys.stderr)
     theme = args.theme or ("vault-tec" if args.set_theme else None)
     if theme:
         api_put(base, "/api/v1/themes/active", {"id": theme})
@@ -165,10 +166,12 @@ def cmd_sweep(args) -> int:
         "demoFastSweep": True,
         "regionDBuf": args.region_dbuf,
         "teSync": True,
+        "teScanline": args.te_scanline,
         "pixelShift": False,
     })
     assert cfg.get("demoFastSweep") is True, f"demoFastSweep did not take effect: {cfg}"
     assert cfg.get("regionDBuf") == args.region_dbuf, f"regionDBuf did not take effect: {cfg}"
+    assert cfg.get("teScanline") == args.te_scanline, f"teScanline did not take effect: {cfg}"
     print(f"settling {args.settle}s...", file=sys.stderr)
     time.sleep(args.settle)
 
@@ -187,7 +190,8 @@ def cmd_sweep(args) -> int:
     deduped = []
     prev_key = None
     for s in samples:
-        key = (s["renderFps"], s["worstRenderUs"], s["teWaits"], s["teSkips"])
+        key = (s["renderFps"], s.get("gaugeDemandPerSecond"),
+               s["worstRenderUs"], s["teWaits"], s["teSkips"])
         if key != prev_key:
             deduped.append(s)
         prev_key = key
@@ -199,6 +203,7 @@ def cmd_sweep(args) -> int:
         "n": len(samples),
         "n_distinct_windows": len(deduped),
         "regionDBuf": args.region_dbuf,
+        "teScanline": args.te_scanline,
         "theme": args.theme or ("vault-tec" if args.set_theme else None),
         "layout": args.layout,
         "renderFps_min": min(col(samples, "renderFps")),
@@ -212,11 +217,21 @@ def cmd_sweep(args) -> int:
         "teSkips_sum_deduped": sum(col(deduped, "teSkips")),
         "teWaits_sum_deduped": sum(col(deduped, "teWaits")),
         "teTimeouts_sum_deduped": sum(col(deduped, "teTimeouts")),
+        "teScanlineWaits_sum_deduped": sum(r.get("teScanlineWaits", 0) for r in deduped),
         "pixelsPerSecond_median": statistics.median(col(samples, "pixelsPerSecond")),
         "flushesPerSecond_median": statistics.median(col(samples, "flushesPerSecond")),
         "tePeriodUs": samples[-1].get("tePeriodUs"),
         "raw": samples,
     }
+    demand_rows = [(r["renderFps"], r["gaugeDemandPerSecond"])
+                   for r in samples if r.get("gaugeDemandPerSecond", 0) > 0]
+    if demand_rows:
+        result["gaugeDemandPerSecond_median"] = statistics.median(
+            demand for _, demand in demand_rows)
+        result["demandCoverage_median"] = statistics.median(
+            min(1.0, fps / demand) for fps, demand in demand_rows)
+        result["demandShortfallPerSecond_median"] = statistics.median(
+            max(0, demand - fps) for fps, demand in demand_rows)
     print(json.dumps({k: v for k, v in result.items() if k != "raw"}, indent=2))
 
     # Leave demoFastSweep off afterwards - it is diagnostic-only and would
@@ -227,6 +242,173 @@ def cmd_sweep(args) -> int:
         json.dump(result, f, indent=2)
     print(f"\nRaw results written to {args.out}")
     return 0
+
+
+def display_window_key(display: dict) -> tuple:
+    """Identify one published display-metric window without a firmware ID."""
+    return tuple(display.get(k) for k in (
+        "renderFps", "renderGapP50Us", "renderGapMaxUs", "worstRenderUs",
+        "framesOverBudget", "gaugeDemandPerSecond", "teWaits", "teSkips", "teTimeouts",
+        "teScanlineWaits", "pixelsPerSecond", "flushesPerSecond",
+    ))
+
+
+def analyze_crossings(rows: list[dict], threshold: float,
+                      crossings_per_direction: int) -> dict:
+    """Pair each threshold crossing with the first subsequently published
+    display window.  This avoids repeatedly counting the rolling 1 Hz metrics
+    while the HTTP poller is faster than their producer."""
+    pending: list[dict] = []
+    events: list[dict] = []
+    accepted = {"boost_to_overboost": 0, "overboost_to_boost": 0}
+    previous = None
+
+    for row in rows:
+        psi = float(row["psi"])
+        uptime_ms = int(row["uptimeMs"])
+        display = row["display"]
+        window_key = display_window_key(display)
+
+        still_pending = []
+        for crossing in pending:
+            if window_key == crossing["window_key"]:
+                still_pending.append(crossing)
+                continue
+            direction = crossing["direction"]
+            if accepted[direction] < crossings_per_direction:
+                event = {k: v for k, v in crossing.items() if k != "window_key"}
+                event["metricUptimeMs"] = uptime_ms
+                event["metricLatencyMs"] = uptime_ms - crossing["crossingUptimeMs"]
+                event["display"] = display
+                events.append(event)
+                accepted[direction] += 1
+        pending = still_pending
+
+        if previous is not None:
+            previous_psi = float(previous["psi"])
+            direction = None
+            if previous_psi < threshold <= psi:
+                direction = "boost_to_overboost"
+            elif previous_psi >= threshold > psi:
+                direction = "overboost_to_boost"
+            if direction and accepted[direction] < crossings_per_direction and not any(
+                    p["direction"] == direction for p in pending):
+                pending.append({
+                    "direction": direction,
+                    "crossingUptimeMs": uptime_ms,
+                    "crossingPsi": psi,
+                    "previousPsi": previous_psi,
+                    "window_key": window_key,
+                })
+        previous = row
+
+    summaries = {}
+    metric_names = (
+        "renderFps", "renderGapP50Us", "renderGapMaxUs", "worstRenderUs",
+        "framesOverBudget", "teWaits", "teSkips", "teTimeouts",
+        "teScanlineWaits", "pixelsPerSecond", "flushesPerSecond",
+    )
+    for direction in accepted:
+        group = [event for event in events if event["direction"] == direction]
+        summary = {"n": len(group)}
+        if group:
+            summary["metricLatencyMs_median"] = statistics.median(
+                event["metricLatencyMs"] for event in group)
+            for name in metric_names:
+                values = [event["display"].get(name, 0) for event in group]
+                summary[f"{name}_min"] = min(values)
+                summary[f"{name}_median"] = statistics.median(values)
+                summary[f"{name}_max"] = max(values)
+        summaries[direction] = summary
+    return {
+        "thresholdPsi": threshold,
+        "requestedPerDirection": crossings_per_direction,
+        "complete": all(accepted[d] >= crossings_per_direction for d in accepted),
+        "summaries": summaries,
+        "events": events,
+    }
+
+
+def cmd_crossings(args) -> int:
+    if args.count < 1:
+        raise SystemExit("--count must be at least 1")
+    if args.poll <= 0 or args.timeout <= 0 or args.settle < 0:
+        raise SystemExit("--poll/--timeout must be positive and --settle non-negative")
+    if args.input:
+        capture = json.loads(args.input.read_text(encoding="utf-8-sig"))
+        rows = capture["rows"] if isinstance(capture, dict) else capture
+        threshold = args.threshold if args.threshold is not None else capture.get("thresholdPsi")
+        if threshold is None:
+            raise SystemExit("offline analysis needs --threshold or thresholdPsi in the input")
+        result = analyze_crossings(rows, float(threshold), args.count)
+        print(json.dumps(result, indent=2))
+        return 0 if result["complete"] else 2
+
+    base = args.url.rstrip("/")
+    initial = api_get(base, "/api/v1/themes")
+    config = api_get(base, "/api/v1/config")
+    threshold = float(args.threshold if args.threshold is not None else config["psiOverboost"])
+    restore = {key: initial[key] for key in (
+        "demoMode", "demoFastSweep", "regionDBuf", "teSync", "teScanline",
+        "pixelShift", "neonLayout",
+    )}
+    rows = []
+    try:
+        if not args.no_reboot:
+            print("rebooting...", file=sys.stderr)
+            api_post(base, "/api/v1/restart")
+            time.sleep(2.0)
+            wait_online(base)
+        if args.theme:
+            api_put(base, "/api/v1/themes/active", {"id": args.theme})
+        if args.layout is not None:
+            layout_cfg = api_put(base, "/api/v1/themes/config", {"neonLayout": args.layout})
+            assert layout_cfg.get("neonLayout") == args.layout, layout_cfg
+        configured = api_put(base, "/api/v1/themes/config", {
+            "demoMode": True,
+            "demoFastSweep": True,
+            "regionDBuf": args.region_dbuf,
+            "teSync": True,
+            "teScanline": args.te_scanline,
+            "pixelShift": False,
+        })
+        for key, expected in (("demoMode", True), ("demoFastSweep", True),
+                              ("regionDBuf", args.region_dbuf), ("teSync", True),
+                              ("teScanline", args.te_scanline), ("pixelShift", False)):
+            assert configured.get(key) == expected, f"{key} did not take effect: {configured}"
+        print(f"settling {args.settle}s, then collecting {args.count} crossings/direction "
+              f"at {threshold:.3f} psi (timeout {args.timeout}s)...", file=sys.stderr)
+        time.sleep(args.settle)
+        deadline = time.monotonic() + args.timeout
+        result = analyze_crossings(rows, threshold, args.count)
+        while time.monotonic() < deadline and not result["complete"]:
+            state = api_get(base, "/api/v1/state")
+            rows.append({
+                "uptimeMs": state["uptimeMs"],
+                "psi": state["psi"],
+                "display": state["display"],
+            })
+            result = analyze_crossings(rows, threshold, args.count)
+            time.sleep(args.poll)
+    finally:
+        print("restoring initial board configuration", file=sys.stderr)
+        wait_online(base)
+        api_put(base, "/api/v1/themes/config", restore)
+        api_put(base, "/api/v1/themes/active", {"id": initial["activeThemeId"]})
+
+    output = {
+        "thresholdPsi": threshold,
+        "theme": args.theme,
+        "layout": args.layout,
+        "regionDBuf": args.region_dbuf,
+        "teScanline": args.te_scanline,
+        "rows": rows,
+        "analysis": result,
+    }
+    args.out.write_text(json.dumps(output, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps(result, indent=2))
+    print(f"raw capture and analysis written to {args.out}", file=sys.stderr)
+    return 0 if result["complete"] else 2
 
 
 def cmd_organic(args) -> int:
@@ -284,7 +466,8 @@ def cmd_organic(args) -> int:
     display_by_sec: dict[int, dict] = {}
     prev_key = None
     for t, up, psi, d in rows:
-        key = (d["renderFps"], d["worstRenderUs"], d["teWaits"])
+        key = (d["renderFps"], d.get("gaugeDemandPerSecond"),
+               d["worstRenderUs"], d["teWaits"])
         if key == prev_key:
             continue
         prev_key = key
@@ -319,6 +502,16 @@ def cmd_organic(args) -> int:
         print(f"  renderGapP50Us: median={statistics.median(gap):.0f}")
         print(f"  worstRenderUs: median={statistics.median(worst):.0f} max={max(worst)}")
         print(f"  framesOverBudget: median={statistics.median(over):.1f}")
+        demand = [(d["renderFps"], d["gaugeDemandPerSecond"])
+                  for _, d in group if d.get("gaugeDemandPerSecond", 0) > 0]
+        if demand:
+            coverage = [min(1.0, fps / requested) for fps, requested in demand]
+            shortfall = [max(0, requested - fps) for fps, requested in demand]
+            print(f"  gaugeDemandPerSecond: median={statistics.median(d for _, d in demand):.1f}")
+            print(f"  demandCoverage: median={statistics.median(coverage) * 100:.1f}%")
+            print(f"  demandShortfallPerSecond: median={statistics.median(shortfall):.1f}")
+        else:
+            print("  demandCoverage: n/a (firmware does not expose gauge demand)")
 
     print(f"\ntotal polls: {len(rows)}, distinct display windows: {len(display_by_sec)}, "
           f"paired (velocity,window) seconds: {len(paired)}")
@@ -346,6 +539,10 @@ def main() -> int:
     p_sweep.add_argument("--sample", type=float, default=20.0)
     p_sweep.add_argument("--region-dbuf", type=lambda s: s.lower() == "true", default=True,
                           help="true/false")
+    p_sweep.add_argument("--te-scanline", type=lambda s: s.lower() == "true", default=False,
+                          help="true/false: enable the dynamic CO5300 set_tear_scanline "
+                               "writeback (region-dbuf bursts wait for the scan to clear the "
+                               "band instead of the next V-blank)")
     p_sweep.add_argument("--set-theme", action="store_true",
                           help="also PUT /themes/active id=vault-tec first")
     p_sweep.add_argument("--theme", default=None,
@@ -356,6 +553,30 @@ def main() -> int:
                                "--theme neon is used")
     p_sweep.add_argument("--out", default="fast_motion_sweep_results.json")
     p_sweep.set_defaults(func=cmd_sweep)
+
+    p_cross = sub.add_parser(
+        "crossings",
+        help="bounded boost<->overboost crossing capture, or offline re-analysis")
+    p_cross.add_argument("--url", default="http://192.168.50.102")
+    p_cross.add_argument("--theme", default="neon")
+    p_cross.add_argument("--layout", type=int, default=1,
+                         help="neon layout (default: segments); use with --theme neon")
+    p_cross.add_argument("--count", type=int, default=4,
+                         help="completed crossings required in each direction")
+    p_cross.add_argument("--threshold", type=float, default=None,
+                         help="overboost PSI; live default comes from current config")
+    p_cross.add_argument("--settle", type=float, default=4.0)
+    p_cross.add_argument("--timeout", type=float, default=35.0)
+    p_cross.add_argument("--poll", type=float, default=0.04)
+    p_cross.add_argument("--region-dbuf", type=lambda s: s.lower() == "true", default=True,
+                         help="true/false")
+    p_cross.add_argument("--te-scanline", type=lambda s: s.lower() == "true", default=False,
+                         help="true/false")
+    p_cross.add_argument("--no-reboot", action="store_true")
+    p_cross.add_argument("--input", type=Path,
+                         help="analyze a prior JSON capture without contacting a board")
+    p_cross.add_argument("--out", type=Path, default=Path("fast_motion_crossings.json"))
+    p_cross.set_defaults(func=cmd_crossings)
 
     p_org = sub.add_parser("organic", help="cross-check against the normal demo waveform (no reboot)")
     p_org.add_argument("--url", default="http://192.168.50.102")

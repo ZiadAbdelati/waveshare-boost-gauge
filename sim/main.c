@@ -395,8 +395,12 @@ static int run_audit(const char *theme_id, int seconds)
         /* Full-range sweep in both directions, crossing zero and the overboost
          * threshold repeatedly, plus a faster ripple so digits change at
          * different rates - which is exactly what a per-slot invalidation gets
-         * wrong when it is wrong. */
-        const float span = 19.0f;
+         * wrong when it is wrong. The neon theme raises the base peak so psi
+         * actually CROSSES the overboost threshold: that zone flip recolours
+         * the whole lit run in one frame, and the full-run recolor can only be
+         * stale-pixel-validated when the flip happens. */
+        const float span = (theme_id != NULL && strcmp(theme_id, "neon") == 0)
+            ? 22.0f : 19.0f;
         float psi = -14.0f + span * (0.5f + 0.5f * sinf(t * 1.35f));
         psi += 0.9f * sinf(t * 11.0f) + 0.35f * sinf(t * 23.0f);
 
@@ -486,10 +490,11 @@ static int run_audit(const char *theme_id, int seconds)
                             const double dx = x - (DISP_W / 2.0);
                             const double dy = y - (DISP_H / 2.0);
                             printf("    mismatch frame=%d at (%d,%d) r=%.1f bearing=%.1f deg "
-                                   "d565=%d/%d/%d %s\n",
+                                   "d565=%d/%d/%d %s partial=#%02X%02X%02X truth=#%02X%02X%02X\n",
                                    i, x, y, sqrt(dx * dx + dy * dy),
                                    atan2(dy, dx) * 180.0 / M_PI, dr, dg, db,
-                                   worst_ch > 1 ? "SEVERE" : "(1-step AA seam)");
+                                   worst_ch > 1 ? "SEVERE" : "(1-step AA seam)",
+                                   a[2], a[1], a[0], b[2], b[1], b[0]);
                             reported++;
                         }
                     }
@@ -556,8 +561,8 @@ static int run_audit(const char *theme_id, int seconds)
            (unsigned long long)severe);
     printf("  stale-pixel check  : %u compares, %u with any mismatch, "
            "total %llu px, worst %llu px\n",
-           compares, stale_frames, (unsigned long long)stale_px_total,
-           (unsigned long long)stale_worst);
+            compares, stale_frames, (unsigned long long)stale_px_total,
+            (unsigned long long)stale_worst);
     return (stale_frames == 0) ? 0 : 4;
 }
 

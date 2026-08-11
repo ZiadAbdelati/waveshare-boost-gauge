@@ -148,3 +148,129 @@ int boost_neon_lit_span(float a_zero, float a_value, float a_start,
     *last = i1;
     return (i1 - i0) + 1;
 }
+
+bool boost_neon_tube_dirty_span(float a_zero, float a_old, float a_new,
+                                float a_start, float span, int nseg,
+                                float *lo, float *hi)
+{
+    int of = 0, ol = 0, nf = 0, nl = 0;
+    const bool old_lit = boost_neon_lit_span(a_zero, a_old, a_start, span,
+                                             nseg, &of, &ol) > 0;
+    const bool new_lit = boost_neon_lit_span(a_zero, a_new, a_start, span,
+                                             nseg, &nf, &nl) > 0;
+    if (old_lit == new_lit) return false;
+
+    *lo = fminf(a_zero, fminf(a_old, a_new));
+    *hi = fmaxf(a_zero, fmaxf(a_old, a_new));
+    return true;
+}
+
+/* Painted range of a lit span once the baked zero marker is removed. The lit
+ * span is zero-rooted, so the marker is always its first or last segment and
+ * removal leaves one contiguous range - empty when the marker is all that is
+ * lit. The two split-at-interior branches cannot occur from a zero-rooted
+ * span (a_zero is always one endpoint of [lo,hi] in boost_neon_lit_span());
+ * they are kept as bounded fallbacks rather than written as unreachable. */
+static int neon_painted_seg(int first, int last, int zero_seg, int *a, int *b)
+{
+    if (first > last) return 0;
+    if (zero_seg == first) {
+        if (first == last) return 0;
+        *a = first + 1;
+        *b = last;
+        return 1;
+    }
+    if (zero_seg == last) {
+        if (first == last) return 0;
+        *a = first;
+        *b = last - 1;
+        return 1;
+    }
+    *a = first;
+    *b = last;
+    return 1;
+}
+
+int boost_neon_seg_diff(float a_zero, float a_old, float a_new,
+                        float a_start, float span, int nseg,
+                        boost_neon_seg_diff_t *out)
+{
+    out->count = 0;
+    if (nseg <= 0 || span <= 0.0f) return 0;
+
+    int of = 0, ol = 0, nf = 0, nl = 0;
+    const int old_n = boost_neon_lit_span(a_zero, a_old, a_start, span,
+                                          nseg, &of, &ol);
+    const int new_n = boost_neon_lit_span(a_zero, a_new, a_start, span,
+                                          nseg, &nf, &nl);
+
+    /* Baked zero marker, by the same floor() the draw uses via
+     * neon_seg_index(). Clamped like boost_neon_lit_span() clamps its span
+     * so a_zero outside the sweep cannot index past the ends. */
+    const float step = span / (float)nseg;
+    int z = (int)floorf((a_zero - a_start) / step);
+    if (z < 0) z = 0;
+    if (z > nseg - 1) z = nseg - 1;
+
+    int oa, ob, na, nb;
+    const bool old_paint = old_n > 0 &&
+        neon_painted_seg(of, ol, z, &oa, &ob);
+    const bool new_paint = new_n > 0 &&
+        neon_painted_seg(nf, nl, z, &na, &nb);
+
+    /* Interval symmetric difference of the two painted ranges. Each is one
+     * range, so the XOR is at most two disjoint ranges (one range minus the
+     * other can only ever produce a left and a right edge). */
+    int cand[4][2];
+    int ncand = 0;
+    if (old_paint) {
+        if (!new_paint || ob < na || oa > nb) {
+            cand[ncand][0] = oa; cand[ncand][1] = ob; ncand++;
+        } else {
+            if (oa <= na - 1) { cand[ncand][0] = oa; cand[ncand][1] = na - 1; ncand++; }
+            if (nb + 1 <= ob) { cand[ncand][0] = nb + 1; cand[ncand][1] = ob; ncand++; }
+        }
+    }
+    if (new_paint) {
+        if (!old_paint || nb < oa || na > ob) {
+            cand[ncand][0] = na; cand[ncand][1] = nb; ncand++;
+        } else {
+            if (na <= oa - 1) { cand[ncand][0] = na; cand[ncand][1] = oa - 1; ncand++; }
+            if (ob + 1 <= nb) { cand[ncand][0] = ob + 1; cand[ncand][1] = nb; ncand++; }
+        }
+    }
+
+    /* Sort ascending and merge overlapping/adjacent ranges into minimal form.
+     * ncand never exceeds 2 for two intervals, so this is cheap either way. */
+    for (int i = 1; i < ncand; ++i) {
+        const int f = cand[i][0], l = cand[i][1];
+        int j = i;
+        while (j > 0 && cand[j - 1][0] > f) {
+            cand[j][0] = cand[j - 1][0];
+            cand[j][1] = cand[j - 1][1];
+            j--;
+        }
+        cand[j][0] = f; cand[j][1] = l;
+    }
+    out->count = 0;
+    for (int i = 0; i < ncand; ++i) {
+        if (out->count == 0) {
+            out->first[0] = cand[i][0];
+            out->last[0] = cand[i][1];
+            out->count = 1;
+        } else if (cand[i][0] <= out->last[out->count - 1] + 1) {
+            if (cand[i][1] > out->last[out->count - 1])
+                out->last[out->count - 1] = cand[i][1];
+        } else if (out->count < 2) {
+            out->first[1] = cand[i][0];
+            out->last[1] = cand[i][1];
+            out->count = 2;
+        } else {
+            /* Unreachable for two intervals; fold defensively to stay in
+             * bounds rather than drop the segment. */
+            if (cand[i][0] < out->first[0]) out->first[0] = cand[i][0];
+            if (cand[i][1] > out->last[1]) out->last[1] = cand[i][1];
+        }
+    }
+    return out->count;
+}

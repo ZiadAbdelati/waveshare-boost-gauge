@@ -432,6 +432,7 @@ def themes_payload() -> dict:
         "hudTrueBlack": bool(CONFIG.get("hudTrueBlack", False)),
         "neonMarqueeSpin": bool(CONFIG.get("neonMarqueeSpin", False)),
         "teSync": bool(CONFIG.get("teSync", False)),
+        "teScanline": bool(CONFIG.get("teScanline", False)),
         "rotation": int(CONFIG.get("rotation", 0)),
         "demoMode": bool(CONFIG.get("demoMode", False)),
         "vaultFace": str(CONFIG.get("vaultFace", "#05281a")),
@@ -635,6 +636,8 @@ class Handler(BaseHTTPRequestHandler):
                 CONFIG["neonMarqueeSpin"] = bool(payload["neonMarqueeSpin"])
             if "teSync" in payload:
                 CONFIG["teSync"] = bool(payload["teSync"])
+            if "teScanline" in payload:
+                CONFIG["teScanline"] = bool(payload["teScanline"])
             if "rotation" in payload:
                 # Quarter turns only, matching boost_theme_set_rotation().
                 if payload["rotation"] not in (0, 90, 180, 270):

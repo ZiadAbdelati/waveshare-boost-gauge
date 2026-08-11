@@ -26,6 +26,7 @@
 #define NVS_KEY_NEONSPIN "neon_spin"
 #define NVS_KEY_TESYNC  "te_sync"
 #define NVS_KEY_REGDBUF "region_dbuf"
+#define NVS_KEY_TESCAN  "te_scan"
 #define NVS_KEY_ROT     "rotation"
 #define NVS_KEY_VFACE   "vault_face"
 #define NVS_KEY_VVIG    "vault_vig"
@@ -134,6 +135,7 @@ static bool s_hud_true_black;
 static bool s_neon_marquee_spin;
 static bool s_te_sync;
 static bool s_region_dbuf;
+static bool s_te_scanline;   /* dynamic CO5300 set_tear_scanline writeback, default OFF */
 /* Panel rotation in degrees. The LVGL adapter accepts only quarter turns and
  * takes the value at registration time, so this is applied at boot. */
 static uint16_t s_rotation;
@@ -285,6 +287,7 @@ static void persist(void)
     nvs_set_u8(h, NVS_KEY_NEONSPIN, s_neon_marquee_spin ? 1 : 0);
     nvs_set_u8(h, NVS_KEY_TESYNC, s_te_sync ? 1 : 0);
     nvs_set_u8(h, NVS_KEY_REGDBUF, s_region_dbuf ? 1 : 0);
+    nvs_set_u8(h, NVS_KEY_TESCAN, s_te_scanline ? 1 : 0);
     nvs_set_u16(h, NVS_KEY_ROT, s_rotation);
     nvs_set_u32(h, NVS_KEY_VFACE, s_vault_face);
     nvs_set_u8(h, NVS_KEY_VVIG, s_vault_vig_pct);
@@ -386,6 +389,10 @@ void boost_theme_init(void)
     uint8_t rdb = 0;
     if (nvs_get_u8(h, NVS_KEY_REGDBUF, &rdb) == ESP_OK) {
         s_region_dbuf = (rdb != 0);
+    }
+    uint8_t tsc = 0;
+    if (nvs_get_u8(h, NVS_KEY_TESCAN, &tsc) == ESP_OK) {
+        s_te_scanline = (tsc != 0);
     }
 
     uint16_t rot = 0;
@@ -666,6 +673,18 @@ void boost_theme_set_region_dbuf(bool enabled)
 {
     ensure_loaded();
     s_region_dbuf = enabled;
+    persist();
+}
+
+bool boost_theme_te_scanline(void)
+{
+    return s_te_scanline;
+}
+
+void boost_theme_set_te_scanline(bool enabled)
+{
+    ensure_loaded();
+    s_te_scanline = enabled;
     persist();
 }
 

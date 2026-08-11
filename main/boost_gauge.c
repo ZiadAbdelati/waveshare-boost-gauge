@@ -1,4 +1,4 @@
-#include "boost_gauge.h"
+﻿#include "boost_gauge.h"
 
 #include <math.h>
 #include <stddef.h>
@@ -37,6 +37,9 @@ static double neon_now_ms(void)
 #include "boost_model.h"
 #include "boost_display.h"
 #include "boost_sensors.h"
+#else
+static inline void boost_display_gauge_update_begin(void) {}
+static inline void boost_display_gauge_update_end(void) {}
 #endif
 #if LV_USE_GIF
 #include "libs/gif/lv_gif.h"
@@ -64,7 +67,7 @@ static double neon_now_ms(void)
  * scanlines) is drawn by a face object that LVGL clips to the dirty region.
  *
  * The `arc` style is the original verified face and is preserved byte-for-byte
- * in its geometry/invalidation logic — it is the one gated by the 60 FPS
+ * in its geometry/invalidation logic â€” it is the one gated by the 60 FPS
  * hardware cadence guard.
  */
 
@@ -107,7 +110,7 @@ _Static_assert(THEME_SWIPE_MIN_PX == 48, "theme swipe threshold is part of the i
  * AMOLED burn-in countermeasure.
  * -----------------------------
  * One face is shown for hours at a time at 85-92% brightness with high-contrast
- * art pinned to fixed pixels — tick rings, "VAULT-TEC", reticle brackets, the
+ * art pinned to fixed pixels â€” tick rings, "VAULT-TEC", reticle brackets, the
  * readout outline. Blue emitters age fastest, then green, then red, so those
  * shapes are exactly what would ghost. The whole scene therefore hangs off a
  * single container (`s_root`) that is nudged a pixel or two every so often,
@@ -125,7 +128,7 @@ _Static_assert(THEME_SWIPE_MIN_PX == 48, "theme swipe threshold is part of the i
  * The offsets walk a ring rather than a raster so consecutive steps are never
  * more than ~1.4 px apart, and so the sequence never dwells near one place.
  * Every dy in {-2,-1,0,1} appears, which is also every phase of the vault's
- * 4-row scanline overlay — without that the three rows between scanlines would
+ * 4-row scanline overlay â€” without that the three rows between scanlines would
  * carry full duty forever and burn in as stripes.
  */
 #define PXSHIFT_MIN         (-2)
@@ -144,7 +147,7 @@ static const int8_t k_pxshift[][2] = {
  * BOOST_PXSHIFT_SEC_* in boost_theme.h for the range and the default. Read
  * per tick rather than cached, so a change over the API takes effect on the
  * next sample without a scene rebuild. */
-/* A step dirties all 217k pixels — about 45 ms, three dropped frames. Held
+/* A step dirties all 217k pixels â€” about 45 ms, three dropped frames. Held
  * back until the reading has been steady for a moment so the hitch lands where
  * nothing is moving; mid-sweep it would read as a stutter in the needle. */
 #define PXSHIFT_SETTLE_MS   1500u
@@ -184,6 +187,15 @@ static const int8_t k_pxshift[][2] = {
 /* Sits just inside the bezel ring (r=231, width 3, so its inner edge is at
  * 229.5): the tell-tale must stop where the green circle starts, not cross it. */
 #define VAULT_PEAK_R         220
+/* Size of the peak tell-tale's LVGL object box. The drawn triangle's vertices
+ * sit at +-8 px along the radial axis and +-7.5 px tangential, so the ink's
+ * furthest corner is sqrt(8^2 + 7.5^2) ~= 10.97 px from the centre (~22 px
+ * across); with AA that needs at most ~24 px. The box was 34x34 for years,
+ * flushing ~34x34 = 1156 px whenever the marker moved; 26 keeps a 2 px AA
+ * margin over the worst-case ink extent and is byte-identical on the glass
+ * (LV_ALIGN_CENTER keeps the centre fixed, so mx/my in draw_vault_peak_mark()
+ * are unchanged). */
+#define VAULT_PEAK_MARK_SIZE 26
 /* CRT overlay, mirroring the web canvas: a smooth radial darkening that starts
  * just past half radius, plus scanlines every 4th row clipped to the face. The
  * web draws both last, so they sit over the needle and digits too. */
@@ -500,10 +512,10 @@ static void update_sport(const boost_sample_t *sample, const boost_theme_t *them
  * is exactly how far from centre the brightest pixel of the ring sits. Panel
  * radius is 233; 228 leaves a 5px margin to the bezel, matching marquee's own
  * outermost bulb ring's tips (centreline 224, tips at 228) closely enough to
- * carry no new risk. Inner edge for the widest band (segments' halo,
- * NEON_SEG_W+NEON_HALO_EXTRA = 42px) becomes 228-42=186; the widest readout
- * (-12.0, measured ink reaching ~170px at the current NEON_FONT_PX /
- * NEON_SLOT_W / NEON_SIGN_W) clears it by ~16px, measured on the rendered
+ * carry no new risk. The lit band depth is NEON_BAND_DEPTH(W) = 2W - CAP (46
+ * tube / 54 segments), so segments' inner edge becomes 228-54=174; the widest
+ * readout (-12.0, measured ink reaching ~170px at the current NEON_FONT_PX /
+ * NEON_SLOT_W / NEON_SIGN_W) clears it by ~4px, measured on the rendered
  * -12.0 screenshot. */
 #define NEON_R          228     /* ring centre radius */
 #define NEON_SEG_W      30      /* segment stroke width */
@@ -512,13 +524,39 @@ static void update_sport(const boost_sample_t *sample, const boost_theme_t *them
 /* Glow reach. The mockup's bloom was a gaussian blur composited additively,
  * which this pipeline cannot afford per frame - alpha is its most expensive
  * operation. It is approximated with concentric OPAQUE strokes of falling
- * brightness: NEON_GLOW_OUT px outside the ring and NEON_HALO_EXTRA px inside
+ * brightness: NEON_GLOW_OUT px outside the ring and the inner band px inside
  * the body. Both feed the clip guard and the invalidation bounds, so widening
  * the glow automatically widens the dirty region. */
 #define NEON_GLOW_OUT   0       /* no outward bleed: the segment is three flat bands */
 #define NEON_CAP_W      6       /* white tip, the outermost of the three bands */
-#define NEON_HALO_EXTRA 12      /* inner purple band; pink body should dominate */
+/* The inner (dimmed) band is the SAME width as the bloomed body, extending
+ * inward from the body's inner edge - so the lit three-tone band is
+ * symmetric about the body and its full depth is 2W - CAP. The unlit track
+ * stays at the body width W with the same outer edge. One formula feeds the
+ * draw, the bakes, the invalidation and the web mirror so they cannot drift. */
+#define NEON_BODY_W(W)      ((W) - NEON_CAP_W + 1)   /* 21 tube / 25 segments */
+#define NEON_BAND_DEPTH(W)  (2 * (W) - NEON_CAP_W)   /* 46 tube / 54 segments */
 #define NEON_SEG_GAP    2.0f    /* 270/54 = 5 exact degrees; equal 3-degree lit segments */
+/* Tube run tiles: the continuous run is drawn as a_zero-aligned A8 wedge
+ * tiles (NEON_TUBE_TILE_STEP each) plus a live arc for the partial tip, so a
+ * zone flip that recolours the whole run repaints as blits instead of
+ * rasterising the full run four times. Each tile is baked OVERLAP past both
+ * edges and the tip arc starts the same overlap early, so adjacent AA
+ * fringes always land under a neighbour's full-coverage interior and the run
+ * reads as one continuous band. */
+#define NEON_TUBE_TILE_STEP   (ARC_RANGE / (float)NEON_NSEG)   /* 5.0 */
+/* The tube tiles carry NO angular AA (they are cut from a full-ring radial
+ * bake in neon_bake_tube_sprites), so they tile exactly with no overlap; the
+ * live tip arc starts at the tile boundary. This constant is the tip
+ * overhang and the clip-box extent and stays 0. */
+#define NEON_TUBE_TILE_OVERLAP 0.0f
+/* Radial-gradient arc image margin (px each side of the band). The image must
+ * hold the baked band's own AA fringes (r=NEON_R + 1) plus the arc's slightly
+ * larger mask, so the gradient arc is drawn at radius NEON_R + NEON_GRAD_MARGIN
+ * and width NEON_BAND_DEPTH + 2*NEON_GRAD_MARGIN: the mask then clips far
+ * outside the band and the image's own baked edges supply the ring's AA
+ * uniformly (a bare 2*NEON_R image cut the cap's outer AA off at the axes). */
+#define NEON_GRAD_MARGIN 4
 /* Numerals sit INSIDE the ring. Outside would put them within ~13 px of the
  * glass on a 466 px round panel, where the bezel and the curve eat them. */
 #define NEON_LABEL_R    134     /* scale numeral radius */
@@ -553,8 +591,8 @@ static void update_sport(const boost_sample_t *sample, const boost_theme_t *them
 #define NEON_SIGN_W     42
 /* The negative readout (-12.0) is the widest the face ever gets. Measured on
  * the rendered screenshot at 118 px: readout ink reaches ~170 px against the
- * ring's 186 px inner edge (NEON_R 228 minus NEON_SEG_W+NEON_HALO_EXTRA),
- * clearing by ~16 px. */
+ * ring's 174 px inner edge (NEON_R 228 minus NEON_BAND_DEPTH(NEON_SEG_W)),
+ * clearing by ~4 px. */
 #define NEON_FONT_PX    118
 /* Half the slack the draw box adds around each cell. The box must be at least
  * the glyph's ADVANCE wide, because lv_draw_label centres on the advance and a
@@ -940,6 +978,76 @@ static void *s_neon_glyph_buf_s;
 static lv_image_dsc_t s_neon_glyph_img_s[NEON_SPRITE_COUNT];
 static int16_t s_neon_glyph_bbox_s[NEON_SPRITE_COUNT][4];
 
+/* Segments layout only: colour-independent A8 coverage for each segment's
+ * three lit bands (halo/body/cap), baked at scene build so a changed segment
+ * repaints as three recolored blits instead of three lv_draw_arc primitives.
+ * Each tile is cropped to that band's actual painted extent (ink bbox of the
+ * arc rendered in white, plus its AA fringe) and positioned by the offset
+ * from the face centre to the tile's top-left corner - so a blit at
+ * (px_icx() + off_x, px_icy() + off_y) lands on the exact pixels the arc
+ * rasterized, at any burn-in shift. Coverage carries no colour, so the ink is
+ * a per-blit recolor like the glyph tiles. A NULL data pointer means that
+ * band has no tile and the segment falls back to the live arcs.
+ *
+ * The buffer is a sibling of the glyph cache and shares its lifecycle:
+ * freed in neon_free_glyph_sprites() (which runs only from the scene-build
+ * path, after destroy_scene() has drained draw units), so it outlives every
+ * draw callback that references it. */
+typedef struct {
+    lv_image_dsc_t img;
+    int16_t off_x, off_y;
+} neon_seg_band_tile_t;
+static neon_seg_band_tile_t s_neon_seg_tile[NEON_NSEG][3];
+static void *s_neon_seg_buf;
+static bool s_neon_seg_sprites_ready;
+/* Tube layout only, same shape as the segment tiles: a_zero-aligned wedges,
+ * direction 0 counterclockwise (boost side), 1 clockwise (vacuum side). */
+#define NEON_TUBE_TILES NEON_NSEG
+static neon_seg_band_tile_t s_neon_tube_tile[2][NEON_TUBE_TILES][3];
+static void *s_neon_tube_buf;
+static bool s_neon_tube_sprites_ready;
+static lv_area_t s_neon_tube_box[2][NEON_TUBE_TILES];
+/* Tube layout only: one radial-gradient image PER ZONE COLOUR, drawn by a
+ * single lv_draw_arc with img_src instead of the three live band arcs. The
+ * image is a square of the three abutting bands (dim, body, white cap) baked
+ * from the exact same arc geometry as the live arcs, so the zone-flip
+ * recolor - which re-rasterises the whole run - costs one arc mask pass
+ * instead of three (~3x less raster), and every normal tube frame costs one
+ * arc too. ALL THREE zone images are baked at scene build so a zone flip
+ * only SWITCHES the image - rebuilding on the flip frame would re-pay the
+ * three full-ring rasterisations that this feature exists to avoid. */
+#define NEON_GRAD_ZONES 3
+static void *s_neon_grad_buf[NEON_GRAD_ZONES];
+static lv_image_dsc_t s_neon_grad_img[NEON_GRAD_ZONES];
+static uint32_t s_neon_grad_key[NEON_GRAD_ZONES];
+/* Window padding around the band bbox when rendering the arc for extraction:
+ * the rasteriser can paint its AA fringe a pixel or so outside
+ * lv_draw_arc_get_area()'s trig-table bound, and the crop is taken from the
+ * ACTUAL painted ink, so this only has to be generous enough that nothing
+ * reaches the scratch edge. */
+#define NEON_SEG_SPR_MARGIN 6
+/* Clip-skip box inflation: the arcs' AA fringe paints ~1-2 px past the wedge
+ * and the end corner reaches sin(step)*(R-rin) beyond the geometric bbox
+ * (5 px for the 54-deep band). 8 px covers both so a segment whose fringe
+ * falls inside a dirty region is submitted and repaints it. */
+#define NEON_BAND_SPR_MARGIN 8
+/* The three bands' geometry, one source for the bake and the blit path so
+ * they cannot drift from each other (or from the constants the fallback arcs
+ * still spell out inline). Index order inner, body, cap - the draw order. The
+ * inner band is NEON_BODY_W(W) wide, the same as the body, so the bands abut
+ * 1:1:1 (inner:body:cap at 25:25:6 for segments, 21:21:6 for tube). */
+typedef struct { int radius; int width; } neon_seg_band_geom_t;
+static const neon_seg_band_geom_t k_neon_seg_band_geom[3] = {
+    { NEON_R - NEON_SEG_W + 1, NEON_BODY_W(NEON_SEG_W) },        /* inner */
+    { NEON_R - NEON_CAP_W + 1, NEON_SEG_W - NEON_CAP_W + 1 },    /* body  */
+    { NEON_R, NEON_CAP_W },                                      /* cap   */
+};
+static const neon_seg_band_geom_t k_neon_tube_band_geom[3] = {
+    { NEON_R - NEON_TUBE_W + 1, NEON_BODY_W(NEON_TUBE_W) },      /* inner */
+    { NEON_R - NEON_CAP_W + 1, NEON_TUBE_W - NEON_CAP_W + 1 },   /* body  */
+    { NEON_R, NEON_CAP_W },                                      /* cap   */
+};
+
 /* The zone word (VACUUM / BOOST / OVERBOOST) gets the same treatment.
  *
  * It was a plain lv_label, so it was the one lit element on the face with no
@@ -963,10 +1071,10 @@ static int16_t s_neon_glyph_bbox_s[NEON_SPRITE_COUNT][4];
 /* Centre of the zone word, off face centre. One value for every layout now:
  * marquee shares the ring layouts' readout metrics, so the word sits at the
  * same height on all three faces. Upward clearance is to the ring's inner
- * glow edge at radius 186 on the ring layouts, and to the innermost bulb
+ * glow edge at radius 174 on the ring layouts, and to the innermost bulb
  * ring's inner edge (188) on marquee - "OVERBOOST" is the widest word at
  * ~200 px of ink, so its top corners sit sqrt(100^2 + 112^2) = 150 from
- * centre, ~36 px clear either way. */
+ * centre, ~24 px clear either way. */
 #define NEON_WORD_Y (-95)
 static const char *const k_neon_zone_words[NEON_WORD_COUNT] = {
     "VACUUM", "BOOST", "OVERBOOST"
@@ -1200,8 +1308,22 @@ static void neon_build_seg_boxes(void)
         const float s = (float)ARC_START + (float)i * step + NEON_SEG_GAP * 0.5f;
         lv_draw_arc_get_area(px_icx(), px_icy(), (uint16_t)NEON_R,
                              s, s + step - NEON_SEG_GAP,
-                             (uint16_t)(NEON_SEG_W + NEON_HALO_EXTRA),
+                             (uint16_t)NEON_BAND_DEPTH(NEON_SEG_W),
                              false, &s_neon_seg_box[i]);
+        /* Inflate by NEON_BAND_SPR_MARGIN so a dirty region that reaches only
+         * the segment's AA fringe (the angle mask paints ~1-2 px past the
+         * wedge's end edge, and the end corner reaches sin(step)*(R-rin)
+         * beyond the bbox) still overlaps the box and the segment is
+         * submitted. Without this, a neighbouring segment's region repaints
+         * the canvas over the fringe and strands it: the canvas's track
+         * fringe is the track colour at single-digit % coverage, which
+         * RGB565 quantises to black, while the live cap arc's white fringe
+         * is visible - so the partial pipeline showed black where the truth
+         * showed the lit fringe. */
+        s_neon_seg_box[i].x1 -= NEON_BAND_SPR_MARGIN;
+        s_neon_seg_box[i].y1 -= NEON_BAND_SPR_MARGIN;
+        s_neon_seg_box[i].x2 += NEON_BAND_SPR_MARGIN;
+        s_neon_seg_box[i].y2 += NEON_BAND_SPR_MARGIN;
     }
     s_neon_seg_box_ready = true;
 }
@@ -1272,7 +1394,7 @@ static void paint_neon_background(lv_obj_t *canvas, const boost_theme_t *theme)
          * radial depth as the ring it marks. Baked here so the marker still
          * shows when nothing is lit and the live pass never runs; the live
          * pass in draw_neon_live() redraws it on top of the run. */
-        arc.width = NEON_TUBE_W + NEON_HALO_EXTRA;
+        arc.width = NEON_BAND_DEPTH(NEON_TUBE_W);
         lv_draw_arc(&layer, &arc);
     } else for (int i = 0; i < NEON_NSEG; ++i) {
         arc.start_angle = (float)ARC_START + (float)i * step + NEON_SEG_GAP * 0.5f;
@@ -1281,7 +1403,7 @@ static void paint_neon_background(lv_obj_t *canvas, const boost_theme_t *theme)
          * length and shape as a coloured segment and reads as a marker
          * rather than as a brighter piece of track. */
         arc.color = (i == zero_seg) ? lv_color_white() : c(theme->track);
-        arc.width = (i == zero_seg) ? (NEON_SEG_W + NEON_HALO_EXTRA) : NEON_SEG_W;
+        arc.width = (i == zero_seg) ? NEON_BAND_DEPTH(NEON_SEG_W) : NEON_SEG_W;
         lv_draw_arc(&layer, &arc);
     }
     /* No scale numerals. Inside the ring the lit segments' inner band reaches
@@ -1392,6 +1514,35 @@ static void neon_free_glyph_sprites(void)
     memset(s_neon_glyph_bbox_s, 0, sizeof(s_neon_glyph_bbox_s));
     s_neon_glyph_sprites_ready = false;
     s_neon_sprite_layout = (boost_neon_layout_t)0xFF;
+    /* Segment band tiles are layout-independent but kept only while the
+     * segments layout is active; dropping them here (the same scene-build-only
+     * path) keeps them from eating PSRAM on the tube/marquee faces. */
+    if (s_neon_seg_buf != NULL) {
+        BG_FREE(s_neon_seg_buf);
+        s_neon_seg_buf = NULL;
+    }
+    memset(s_neon_seg_tile, 0, sizeof(s_neon_seg_tile));
+    s_neon_seg_sprites_ready = false;
+    /* Tube run tiles: a_zero-dependent, so kept only while the tube layout is
+     * active; same lifecycle rule as the segment tiles. */
+    if (s_neon_tube_buf != NULL) {
+        BG_FREE(s_neon_tube_buf);
+        s_neon_tube_buf = NULL;
+    }
+    memset(s_neon_tube_tile, 0, sizeof(s_neon_tube_tile));
+    memset(s_neon_tube_box, 0, sizeof(s_neon_tube_box));
+    s_neon_tube_sprites_ready = false;
+    /* Tube radial-gradient arc image. Same lifecycle as the tube tiles:
+     * scene-build-only, freed here so it does not eat PSRAM on the
+     * segments/marquee faces. */
+    for (int z = 0; z < NEON_GRAD_ZONES; ++z) {
+        if (s_neon_grad_buf[z] != NULL) {
+            BG_FREE(s_neon_grad_buf[z]);
+            s_neon_grad_buf[z] = NULL;
+        }
+    }
+    memset(s_neon_grad_img, 0, sizeof(s_neon_grad_img));
+    memset(s_neon_grad_key, 0, sizeof(s_neon_grad_key));
 }
 
 /* Deliberately does NOT touch the zone-word tiles. They are baked once and
@@ -1536,12 +1687,6 @@ static void neon_store_coverage(int slot, const uint8_t *core, const uint8_t *gl
 static bool neon_blit_sprite_scaled(lv_layer_t *layer, int slot,
                                     int anchor_x, int anchor_y, uint32_t ink,
                                     float scale);
-static bool neon_blit_sprite(lv_layer_t *layer, int slot,
-                             int anchor_x, int anchor_y, uint32_t ink)
-{
-    return neon_blit_sprite_scaled(layer, slot, anchor_x, anchor_y, ink, 1.0f);
-}
-
 /* Scaled variant for the marquee: draws the SAME baked tile at scale S, so
  * the one shared sprite set serves every layout. The anchor is the cell
  * centre already scaled about the face centre (the caller scales cell.x and
@@ -2233,6 +2378,506 @@ static void neon_bake_glyph_sprites(lv_obj_t *scr)
     s_neon_glyph_sprites_ready = true;
     s_neon_sprite_layout = s_neon_layout;
 }
+
+/* Bake the segments layout's three lit-band coverage tiles for every segment.
+ *
+ * Each band is rendered with the EXACT arc the live fallback path draws
+ * (same radius, width and angular extent - the same lv_draw_arc call, white
+ * instead of the accent-derived colour) into a scratch canvas whose (0,0) is
+ * the band's bounding box, so the coverage is whatever the rasteriser actually
+ * painted and the blit lands on those same pixels. The ink bbox crop means
+ * the tile is exactly the painted extent (including the AA fringe) and the
+ * stored offset (face centre -> tile top-left) reproduces the position at any
+ * burn-in shift.
+ *
+ * Allocation failure clears the whole set: the draw path checks
+ * s_neon_seg_sprites_ready before blitting and otherwise keeps the live arcs
+ * unchanged, so a failed bake degrades gracefully to the current renderer. */
+static void neon_bake_seg_sprites(lv_obj_t *scr)
+{
+    if (s_neon_seg_sprites_ready) return;
+    if (s_neon_seg_buf != NULL) {
+        BG_FREE(s_neon_seg_buf);
+        s_neon_seg_buf = NULL;
+    }
+    memset(s_neon_seg_tile, 0, sizeof(s_neon_seg_tile));
+
+    const float step = (float)ARC_RANGE / (float)NEON_NSEG;
+    const int nom_cx = DISP_SIZE / 2, nom_cy = DISP_SIZE / 2;
+
+    /* Pass 1: windowed dims per band tile and the packed total. The window is
+     * the band's bbox inflated by NEON_SEG_SPR_MARGIN so no rasterised pixel
+     * can be clipped by the scratch edge; the crop below is the actual ink. */
+    size_t total = 0;
+    int max_w = 0, max_h = 0;
+    for (int i = 0; i < NEON_NSEG; ++i) {
+        const float s = (float)ARC_START + (float)i * step + NEON_SEG_GAP * 0.5f;
+        for (int b = 0; b < 3; ++b) {
+            lv_area_t bb;
+            lv_draw_arc_get_area(nom_cx, nom_cy,
+                                 (uint16_t)k_neon_seg_band_geom[b].radius,
+                                 s, s + step - NEON_SEG_GAP,
+                                 (uint16_t)k_neon_seg_band_geom[b].width,
+                                 false, &bb);
+            const int w = bb.x2 - bb.x1 + 1 + 2 * NEON_SEG_SPR_MARGIN;
+            const int h = bb.y2 - bb.y1 + 1 + 2 * NEON_SEG_SPR_MARGIN;
+            uint32_t stride = lv_draw_buf_width_to_stride((uint32_t)w, LV_COLOR_FORMAT_A8);
+            if (stride % LV_DRAW_BUF_ALIGN != 0)
+                stride += LV_DRAW_BUF_ALIGN - (stride % LV_DRAW_BUF_ALIGN);
+            total += (size_t)stride * (size_t)h;
+            if (w > max_w) max_w = w;
+            if (h > max_h) max_h = h;
+        }
+    }
+    if (max_w <= 0 || max_h <= 0) return;
+
+    s_neon_seg_buf = BG_ALLOC(total);
+    if (s_neon_seg_buf == NULL) {
+        ESP_LOGW(TAG, "neon segment band sprite alloc failed (%u B); keeping live arcs",
+                 (unsigned)total);
+        return;
+    }
+    memset(s_neon_seg_buf, 0, total);
+
+    const uint32_t scratch_bytes =
+        LV_CANVAS_BUF_SIZE((uint32_t)max_w, (uint32_t)max_h, 16, LV_DRAW_BUF_STRIDE_ALIGN);
+    void *scratch_buf = BG_ALLOC(scratch_bytes);
+    if (scratch_buf == NULL) {
+        ESP_LOGW(TAG, "neon segment band scratch alloc failed (%u B); keeping live arcs",
+                 (unsigned)scratch_bytes);
+        BG_FREE(s_neon_seg_buf);
+        s_neon_seg_buf = NULL;
+        return;
+    }
+    lv_obj_t *scratch = lv_canvas_create(scr);
+    lv_canvas_set_buffer(scratch, scratch_buf, max_w, max_h, LV_COLOR_FORMAT_RGB565);
+    lv_obj_add_flag(scratch, LV_OBJ_FLAG_HIDDEN);
+
+    uint8_t *out = (uint8_t *)s_neon_seg_buf;
+    for (int i = 0; i < NEON_NSEG; ++i) {
+        const float s = (float)ARC_START + (float)i * step + NEON_SEG_GAP * 0.5f;
+        for (int b = 0; b < 3; ++b) {
+            lv_area_t bb;
+            lv_draw_arc_get_area(nom_cx, nom_cy,
+                                 (uint16_t)k_neon_seg_band_geom[b].radius,
+                                 s, s + step - NEON_SEG_GAP,
+                                 (uint16_t)k_neon_seg_band_geom[b].width,
+                                 false, &bb);
+            const int wx0 = bb.x1 - NEON_SEG_SPR_MARGIN;
+            const int wy0 = bb.y1 - NEON_SEG_SPR_MARGIN;
+            const int win_w = bb.x2 - bb.x1 + 1 + 2 * NEON_SEG_SPR_MARGIN;
+            const int win_h = bb.y2 - bb.y1 + 1 + 2 * NEON_SEG_SPR_MARGIN;
+
+            /* White arc at the translated centre: scratch (0,0) is screen
+             * (wx0, wy0), so the coverage pixels land exactly where the live
+             * arc paints them. */
+            neon_scratch_clear(scratch, 0, 0, max_w, max_h);
+            lv_layer_t layer;
+            lv_canvas_init_layer(scratch, &layer);
+            lv_draw_arc_dsc_t arc; lv_draw_arc_dsc_init(&arc);
+            arc.center.x = nom_cx - wx0;
+            arc.center.y = nom_cy - wy0;
+            arc.radius = (uint16_t)k_neon_seg_band_geom[b].radius;
+            arc.width = (uint16_t)k_neon_seg_band_geom[b].width;
+            arc.start_angle = s;
+            arc.end_angle = s + step - NEON_SEG_GAP;
+            arc.color = lv_color_white();
+            arc.opa = LV_OPA_COVER;
+            lv_draw_arc(&layer, &arc);
+            lv_canvas_finish_layer(scratch, &layer);
+
+            const lv_draw_buf_t *db = lv_canvas_get_draw_buf(scratch);
+            int ix0 = max_w, iy0 = max_h, ix1 = -1, iy1 = -1;
+            for (int y = 0; y < win_h; ++y) {
+                const lv_color16_t *row =
+                    (const lv_color16_t *)(db->data + (size_t)y * db->header.stride);
+                for (int x = 0; x < win_w; ++x) {
+                    if (row[x].red) {
+                        if (x < ix0) ix0 = x;
+                        if (x > ix1) ix1 = x;
+                        if (y < iy0) iy0 = y;
+                        if (y > iy1) iy1 = y;
+                    }
+                }
+            }
+            if (ix1 < ix0 || iy1 < iy0) continue;   /* no ink: tile stays NULL */
+
+            const int bw = ix1 - ix0 + 1, bh = iy1 - iy0 + 1;
+            uint32_t stride = lv_draw_buf_width_to_stride((uint32_t)win_w, LV_COLOR_FORMAT_A8);
+            if (stride % LV_DRAW_BUF_ALIGN != 0)
+                stride += LV_DRAW_BUF_ALIGN - (stride % LV_DRAW_BUF_ALIGN);
+            uint8_t *tile = out;
+            for (int y = 0; y < bh; ++y) {
+                const lv_color16_t *row =
+                    (const lv_color16_t *)(db->data + (size_t)(iy0 + y) * db->header.stride);
+                uint8_t *dst = tile + (size_t)y * stride;
+                for (int x = 0; x < bw; ++x)
+                    dst[x] = (uint8_t)(row[ix0 + x].red * 255 / 31);
+            }
+            out += (size_t)stride * (size_t)bh;
+
+            neon_seg_band_tile_t *t = &s_neon_seg_tile[i][b];
+            t->img.header.magic = LV_IMAGE_HEADER_MAGIC;
+            t->img.header.cf = LV_COLOR_FORMAT_A8;
+            t->img.header.w = (uint32_t)bw;
+            t->img.header.h = (uint32_t)bh;
+            t->img.header.stride = stride;
+            t->img.data_size = stride * (uint32_t)bh;
+            t->img.data = tile;
+            t->off_x = (int16_t)(wx0 + ix0 - nom_cx);
+            t->off_y = (int16_t)(wy0 + iy0 - nom_cy);
+        }
+    }
+    lv_obj_delete(scratch);
+    BG_FREE(scratch_buf);
+    s_neon_seg_sprites_ready = true;
+    ESP_LOGI(TAG, "neon segment band sprites: %d tiles, %u B",
+             NEON_NSEG * 3, (unsigned)total);
+}
+
+/* Blit one baked band tile as `ink` at its baked position. A NULL tile or a
+ * dirty region that misses the tile is a no-op, so a partial bake or a region
+ * far from the ring degrades exactly like the arc path did. */
+static void neon_blit_seg_band(lv_layer_t *layer, int cx, int cy,
+                               int seg, int band, uint32_t ink)
+{
+    const neon_seg_band_tile_t *tile = &s_neon_seg_tile[seg][band];
+    if (tile->img.data == NULL) return;
+    const int x = cx + tile->off_x;
+    const int y = cy + tile->off_y;
+    const int bw = (int)tile->img.header.w, bh = (int)tile->img.header.h;
+    lv_area_t a = { x, y, x + bw - 1, y + bh - 1 };
+    if (!neon_area_overlaps(&a, &layer->_clip_area)) return;
+    NEON_STAT_SPRITE();
+    lv_draw_image_dsc_t idsc; lv_draw_image_dsc_init(&idsc);
+    idsc.src = &tile->img;
+    idsc.opa = LV_OPA_COVER;
+    /* A8 source: LVGL blends `recolor` through the plane as the ink. */
+    idsc.recolor = c(ink);
+    idsc.recolor_opa = LV_OPA_COVER;
+    lv_draw_image(layer, &idsc, &a);
+}
+
+/* Clip-skip boxes for the tube run tiles, anchored at the CURRENT face
+ * centre, so they must be rebuilt on scene build and on pixel shift exactly
+ * like the segment boxes. Full band depth, plus the tile overlap. */
+static void neon_build_tube_boxes(void)
+{
+    if (!s_neon_tube_sprites_ready) return;
+    const float tstep = NEON_TUBE_TILE_STEP;
+    const float ov = NEON_TUBE_TILE_OVERLAP;
+    const float a_zero = psi_to_sweep(0.0f, (float)ARC_START,
+                                      (float)(ARC_START + ARC_RANGE));
+    for (int dir = 0; dir < 2; ++dir) {
+        const float d = dir ? -1.0f : 1.0f;
+        for (int k = 0; k < NEON_TUBE_TILES; ++k) {
+            const float s0 = a_zero + d * ((float)k * tstep - ov);
+            const float s1 = a_zero + d * (((float)k + 1.0f) * tstep + ov);
+            lv_draw_arc_get_area(px_icx(), px_icy(), (uint16_t)NEON_R,
+                                 fminf(s0, s1), fmaxf(s0, s1),
+                                 (uint16_t)NEON_BAND_DEPTH(NEON_TUBE_W),
+                                 false, &s_neon_tube_box[dir][k]);
+            /* Same fringe inflation as the segment boxes: a region reaching
+             * only the tile's AA fringe must still overlap the box or the
+             * tile is skipped and the canvas repaints the fringe black. */
+            s_neon_tube_box[dir][k].x1 -= NEON_BAND_SPR_MARGIN;
+            s_neon_tube_box[dir][k].y1 -= NEON_BAND_SPR_MARGIN;
+            s_neon_tube_box[dir][k].x2 += NEON_BAND_SPR_MARGIN;
+            s_neon_tube_box[dir][k].y2 += NEON_BAND_SPR_MARGIN;
+        }
+    }
+}
+
+/* Tube layout only: bake the run's A8 coverage as a_zero-aligned wedge tiles,
+ * direction 0 counterclockwise from the notch (boost side), 1 clockwise
+ * (vacuum side). Each tile is NEON_TUBE_TILE_STEP wide and carries the band's
+ * PURE RADIAL AA with NO angular AA: each band is baked ONCE as a full
+ * 360-degree ring (lv_draw_arc start=0 end=360 draws it as a border with only
+ * radial edges), and every tile of that band is copied from that one ring,
+ * keeping only pixels whose CENTER lies inside the tile's half-open wedge.
+ * Because the tiles carry no angular AA they tile EXACTLY - every pixel in
+ * the run is painted by exactly one tile at the full radial coverage, so
+ * there is no src-over dip at tile boundaries and the composite is
+ * independent of which tiles the run currently blits (a dirty region
+ * bisecting a boundary repaints one side correctly). The run's true angular
+ * edges stay live: the moving tip is a live arc in draw_neon_live() and the
+ * zero notch is covered by the baked white marker. Geometry is
+ * k_neon_tube_band_geom - the exact arcs the tip draws. Lifecycle and
+ * failure mode mirror neon_bake_seg_sprites: a failed bake keeps the live
+ * arcs. */
+static void neon_bake_tube_sprites(lv_obj_t *scr)
+{
+    if (s_neon_tube_sprites_ready) return;
+    if (s_neon_tube_buf != NULL) {
+        BG_FREE(s_neon_tube_buf);
+        s_neon_tube_buf = NULL;
+    }
+    memset(s_neon_tube_tile, 0, sizeof(s_neon_tube_tile));
+
+    const float tstep = NEON_TUBE_TILE_STEP;
+    const float a_zero = psi_to_sweep(0.0f, (float)ARC_START,
+                                      (float)(ARC_START + ARC_RANGE));
+    const int nom_cx = DISP_SIZE / 2, nom_cy = DISP_SIZE / 2;
+
+    /* Pass 1: windowed dims per band tile and the packed total, exactly as the
+     * segment bake does - the window is the tile's nominal wedge bbox inflated
+     * by NEON_SEG_SPR_MARGIN and the crop below is the actual ink. */
+    size_t total = 0;
+    int max_w = 0, max_h = 0;
+    for (int dir = 0; dir < 2; ++dir) {
+        const float d = dir ? -1.0f : 1.0f;
+        for (int k = 0; k < NEON_TUBE_TILES; ++k) {
+            const float lo = a_zero + d * ((float)k * tstep);
+            const float hi = a_zero + d * (((float)k + 1.0f) * tstep);
+            for (int b = 0; b < 3; ++b) {
+                lv_area_t bb;
+                lv_draw_arc_get_area(nom_cx, nom_cy,
+                                     (uint16_t)k_neon_tube_band_geom[b].radius,
+                                     fminf(lo, hi), fmaxf(lo, hi),
+                                     (uint16_t)k_neon_tube_band_geom[b].width,
+                                     false, &bb);
+                const int w = bb.x2 - bb.x1 + 1 + 2 * NEON_SEG_SPR_MARGIN;
+                const int h = bb.y2 - bb.y1 + 1 + 2 * NEON_SEG_SPR_MARGIN;
+                uint32_t stride = lv_draw_buf_width_to_stride((uint32_t)w, LV_COLOR_FORMAT_A8);
+                if (stride % LV_DRAW_BUF_ALIGN != 0)
+                    stride += LV_DRAW_BUF_ALIGN - (stride % LV_DRAW_BUF_ALIGN);
+                total += (size_t)stride * (size_t)h;
+                if (w > max_w) max_w = w;
+                if (h > max_h) max_h = h;
+            }
+        }
+    }
+    if (max_w <= 0 || max_h <= 0) return;
+    if (max_w > 128 || max_h > 128) return;   /* window bound for the stack */
+
+    s_neon_tube_buf = BG_ALLOC(total);
+    if (s_neon_tube_buf == NULL) {
+        ESP_LOGW(TAG, "neon tube band sprite alloc failed (%u B); keeping live arcs",
+                 (unsigned)total);
+        return;
+    }
+    memset(s_neon_tube_buf, 0, total);
+
+    /* The ring bake needs the whole panel (the ring spans 233+-228 px). This
+     * is temporary, freed below, like the per-window scratch the segment bake
+     * uses. */
+    const uint32_t scratch_bytes =
+        LV_CANVAS_BUF_SIZE(DISP_SIZE, DISP_SIZE, 16, LV_DRAW_BUF_STRIDE_ALIGN);
+    void *scratch_buf = BG_ALLOC(scratch_bytes);
+    if (scratch_buf == NULL) {
+        ESP_LOGW(TAG, "neon tube band scratch alloc failed (%u B); keeping live arcs",
+                 (unsigned)scratch_bytes);
+        BG_FREE(s_neon_tube_buf);
+        s_neon_tube_buf = NULL;
+        return;
+    }
+    lv_obj_t *scratch = lv_canvas_create(scr);
+    lv_canvas_set_buffer(scratch, scratch_buf, DISP_SIZE, DISP_SIZE, LV_COLOR_FORMAT_RGB565);
+    lv_obj_add_flag(scratch, LV_OBJ_FLAG_HIDDEN);
+
+    uint8_t *out = (uint8_t *)s_neon_tube_buf;
+    uint8_t covwin[128 * 128];
+    for (int b = 0; b < 3; ++b) {
+        /* Bake the band once as a full ring - only radial AA, no angular
+         * edges - then extract every tile of that band from the one ring. */
+        neon_scratch_clear(scratch, 0, 0, DISP_SIZE, DISP_SIZE);
+        lv_layer_t layer;
+        lv_canvas_init_layer(scratch, &layer);
+        lv_draw_arc_dsc_t arc; lv_draw_arc_dsc_init(&arc);
+        arc.center.x = nom_cx;
+        arc.center.y = nom_cy;
+        arc.radius = (uint16_t)k_neon_tube_band_geom[b].radius;
+        arc.width = (uint16_t)k_neon_tube_band_geom[b].width;
+        arc.start_angle = 0;
+        arc.end_angle = 360;
+        arc.color = lv_color_white();
+        arc.opa = LV_OPA_COVER;
+        lv_draw_arc(&layer, &arc);
+        lv_canvas_finish_layer(scratch, &layer);
+        const lv_draw_buf_t *db = lv_canvas_get_draw_buf(scratch);
+
+        for (int dir = 0; dir < 2; ++dir) {
+            const float d = dir ? -1.0f : 1.0f;
+            for (int k = 0; k < NEON_TUBE_TILES; ++k) {
+                const float lo = a_zero + d * ((float)k * tstep);
+                const float hi = a_zero + d * (((float)k + 1.0f) * tstep);
+                const float c_lo = cosf(lo), s_lo = sinf(lo);
+                const float c_hi = cosf(hi), s_hi = sinf(hi);
+                lv_area_t bb;
+                lv_draw_arc_get_area(nom_cx, nom_cy,
+                                     (uint16_t)k_neon_tube_band_geom[b].radius,
+                                     fminf(lo, hi), fmaxf(lo, hi),
+                                     (uint16_t)k_neon_tube_band_geom[b].width,
+                                     false, &bb);
+                const int wx0 = bb.x1 - NEON_SEG_SPR_MARGIN;
+                const int wy0 = bb.y1 - NEON_SEG_SPR_MARGIN;
+                const int win_w = bb.x2 - bb.x1 + 1 + 2 * NEON_SEG_SPR_MARGIN;
+                const int win_h = bb.y2 - bb.y1 + 1 + 2 * NEON_SEG_SPR_MARGIN;
+
+                /* Fill the window from the ring, keeping only pixels whose
+                 * CENTER is inside the tile's half-open wedge (the CCW arc
+                 * from lo to hi), so no pixel belongs to two tiles.
+                 * cross(a, p) = c*dy - s*dx is >= 0 when the pixel is CCW of
+                 * the line; the pixel is inside iff it is CCW of the lo line
+                 * AND CW (before) the hi line. */
+                int ix0 = win_w, iy0 = win_h, ix1 = -1, iy1 = -1;
+                for (int y = 0; y < win_h; ++y) {
+                    const int py = wy0 + y;
+                    const float dy = (float)(py - nom_cy);
+                    const lv_color16_t *rrow =
+                        (const lv_color16_t *)(db->data + (size_t)py * db->header.stride);
+                    uint8_t *cv = &covwin[(size_t)y * (size_t)win_w];
+                    for (int x = 0; x < win_w; ++x) {
+                        const int px = wx0 + x;
+                        const float dx = (float)(px - nom_cx);
+                        const float cr_lo = c_lo * dy - s_lo * dx;
+                        const float cr_hi = dx * s_hi - dy * c_hi;
+                        const uint8_t cov = (cr_lo < 0.0f || cr_hi < 0.0f)
+                            ? 0 : (uint8_t)(rrow[px].red * 255 / 31);
+                        cv[x] = cov;
+                        if (cov) {
+                            if (x < ix0) ix0 = x;
+                            if (x > ix1) ix1 = x;
+                            if (y < iy0) iy0 = y;
+                            if (y > iy1) iy1 = y;
+                        }
+                    }
+                }
+                if (ix1 < ix0 || iy1 < iy0) continue;   /* no ink: tile stays NULL */
+
+                const int bw = ix1 - ix0 + 1, bh = iy1 - iy0 + 1;
+                uint32_t stride = lv_draw_buf_width_to_stride((uint32_t)win_w, LV_COLOR_FORMAT_A8);
+                if (stride % LV_DRAW_BUF_ALIGN != 0)
+                    stride += LV_DRAW_BUF_ALIGN - (stride % LV_DRAW_BUF_ALIGN);
+                uint8_t *tile = out;
+                for (int y = 0; y < bh; ++y) {
+                    const uint8_t *src = &covwin[(size_t)(iy0 + y) * (size_t)win_w + (size_t)ix0];
+                    memcpy(tile + (size_t)y * stride, src, (size_t)bw);
+                }
+                out += (size_t)stride * (size_t)bh;
+
+                neon_seg_band_tile_t *t = &s_neon_tube_tile[dir][k][b];
+                t->img.header.magic = LV_IMAGE_HEADER_MAGIC;
+                t->img.header.cf = LV_COLOR_FORMAT_A8;
+                t->img.header.w = (uint32_t)bw;
+                t->img.header.h = (uint32_t)bh;
+                t->img.header.stride = stride;
+                t->img.data_size = stride * (uint32_t)bh;
+                t->img.data = tile;
+                t->off_x = (int16_t)(wx0 + ix0 - nom_cx);
+                t->off_y = (int16_t)(wy0 + iy0 - nom_cy);
+            }
+        }
+    }
+    lv_obj_delete(scratch);
+    BG_FREE(scratch_buf);
+    s_neon_tube_sprites_ready = true;
+    neon_build_tube_boxes();
+    ESP_LOGI(TAG, "neon tube band sprites: %d tiles, %u B",
+             2 * NEON_TUBE_TILES * 3, (unsigned)total);
+}
+
+/* Blit one baked tube wedge tile as `ink` at its baked position. A NULL tile
+ * or a dirty region that misses the tile is a no-op, exactly like the segment
+ * band blit. */
+static void neon_blit_tube_tile(lv_layer_t *layer, int cx, int cy,
+                                int dir, int k, int band, uint32_t ink)
+{
+    const neon_seg_band_tile_t *tile = &s_neon_tube_tile[dir][k][band];
+    if (tile->img.data == NULL) return;
+    const int x = cx + tile->off_x;
+    const int y = cy + tile->off_y;
+    const int bw = (int)tile->img.header.w, bh = (int)tile->img.header.h;
+    lv_area_t a = { x, y, x + bw - 1, y + bh - 1 };
+    if (!neon_area_overlaps(&a, &layer->_clip_area)) return;
+    NEON_STAT_SPRITE();
+    lv_draw_image_dsc_t idsc; lv_draw_image_dsc_init(&idsc);
+    idsc.src = &tile->img;
+    idsc.opa = LV_OPA_COVER;
+    /* A8 source: LVGL blends `recolor` through the plane as the ink. */
+    idsc.recolor = c(ink);
+    idsc.recolor_opa = LV_OPA_COVER;
+    lv_draw_image(layer, &idsc, &a);
+}
+
+/* Tube layout only: bake one 2*NEON_R (456x456) RGB565 radial-gradient image
+ * for the lit run, drawn by draw_neon_live() as a single lv_draw_arc whose
+ * img_src is this image instead of the three stacked live band arcs. The
+ * three abutting bands (dim / body / white cap) are drawn as full rings with
+ * the EXACT geometry k_neon_tube_band_geom spells out - the same geometry the
+ * live arcs use - so the image's pixels along the radius are identical to what
+ * the live arcs paint, and the arc's own angular + radial masks in the live
+ * draw supply the run's edges. Drawing the run then costs ONE arc mask pass
+ * instead of three, on every tube frame (zone flips recolour the whole run, so
+ * those were the ~3x-rasterisation stutters this is attacking).
+ *
+ * Each image depends on its zone's accent colour only, so ALL THREE are baked
+ * once at scene build (guarded by s_neon_grad_key[zone]) and a zone flip just
+ * SWITCHES which image the run repaint uses - a flip never rebuilds, or it
+ * would re-pay the three full-ring rasterisations this feature exists to
+ * avoid. The bake runs from scene build only - NEVER from inside a draw
+ * callback (canvas finish_layer inside a draw is unsafe). Allocation failure
+ * keeps the live arcs as the fallback. The web mirror intentionally stays on
+ * the live three-band arcs: this is a firmware rasterisation optimisation with
+ * identical band colours, not a visual change. */
+static void neon_bake_grad(lv_obj_t *scr, int zone_id, uint32_t accent_rgb)
+{
+    if (zone_id < 0 || zone_id >= NEON_GRAD_ZONES) return;
+    if (s_neon_grad_buf[zone_id] != NULL && s_neon_grad_key[zone_id] == accent_rgb) return;
+    /* The image is NEON_R + NEON_GRAD_MARGIN either side of the centre so the
+     * baked ring's own outer/inner AA (which spans r=NEON_R and its 1 px
+     * fringe) fits fully INSIDE the square. A bare 2*NEON_R image is one
+     * pixel short at the axes (its last pixel sits at r=NEON_R-1) so the cap
+     * ring's outer AA was cut off at the four axis directions while the
+     * diagonals had room - the outer edge read ragged/pixelated in spots. */
+    const int size = 2 * (NEON_R + NEON_GRAD_MARGIN);
+    const uint32_t bytes = LV_CANVAS_BUF_SIZE((uint32_t)size, (uint32_t)size, 16,
+                                              LV_DRAW_BUF_STRIDE_ALIGN);
+    if (s_neon_grad_buf[zone_id] == NULL) {
+        s_neon_grad_buf[zone_id] = BG_ALLOC(bytes);
+        if (s_neon_grad_buf[zone_id] == NULL) {
+            ESP_LOGW(TAG, "neon tube gradient image alloc failed (%u B); keeping live arcs",
+                     (unsigned)bytes);
+            return;
+        }
+    }
+    /* Deterministic bake: clear everything so the area outside the band (which
+     * the arc's radial AA fringes still sample) is black on every rebuild. */
+    memset(s_neon_grad_buf[zone_id], 0, bytes);
+
+    lv_obj_t *cv = lv_canvas_create(scr);
+    lv_canvas_set_buffer(cv, s_neon_grad_buf[zone_id], size, size, LV_COLOR_FORMAT_RGB565);
+    lv_obj_add_flag(cv, LV_OBJ_FLAG_HIDDEN);
+    lv_layer_t layer;
+    lv_canvas_init_layer(cv, &layer);
+    lv_draw_arc_dsc_t arc; lv_draw_arc_dsc_init(&arc);
+    arc.center.x = size / 2; arc.center.y = size / 2;
+    arc.start_angle = 0; arc.end_angle = 360;
+    arc.opa = LV_OPA_COVER;
+    for (int b = 0; b < 3; ++b) {
+        arc.radius = (uint16_t)k_neon_tube_band_geom[b].radius;
+        arc.width = (uint16_t)k_neon_tube_band_geom[b].width;
+        arc.color = (b == 2) ? lv_color_white()
+                             : c((b == 0) ? scale_rgb(accent_rgb, NEON_HALO_DIM)
+                                          : neon_lit(accent_rgb));
+        lv_draw_arc(&layer, &arc);
+    }
+    lv_canvas_finish_layer(cv, &layer);
+
+    const lv_draw_buf_t *db = lv_canvas_get_draw_buf(cv);
+    memset(&s_neon_grad_img[zone_id], 0, sizeof(s_neon_grad_img[zone_id]));
+    s_neon_grad_img[zone_id].header.magic = LV_IMAGE_HEADER_MAGIC;
+    s_neon_grad_img[zone_id].header.cf = LV_COLOR_FORMAT_RGB565;
+    s_neon_grad_img[zone_id].header.w = (uint32_t)size;
+    s_neon_grad_img[zone_id].header.h = (uint32_t)size;
+    s_neon_grad_img[zone_id].header.stride = (uint32_t)db->header.stride;
+    s_neon_grad_img[zone_id].data_size = bytes;
+    s_neon_grad_img[zone_id].data = s_neon_grad_buf[zone_id];
+    lv_obj_delete(cv);
+    s_neon_grad_key[zone_id] = accent_rgb;
+    ESP_LOGI(TAG, "neon tube gradient image %d: %dx%d, %u B, accent 0x%06X",
+             zone_id, size, size, (unsigned)bytes, (unsigned)accent_rgb);
+}
 #endif /* BOOST_NEON_GLYPH_SPRITES */
 
 /* One pass of the sign mark's antialiased-triangle + solid-row fill (see the
@@ -2368,9 +3013,12 @@ static void draw_neon_live(lv_event_t *e)
 
     /* Guard on the GLOW's inner edge, not the body's. The glow reaches furthest
      * in, so a dirty region touching only that band would otherwise skip the
-     * ring entirely and strand its pixels. */
+     * ring entirely and strand its pixels. Per layout: the inner band now
+     * matches the body width, so the inner edge is NEON_R - (2W - CAP). */
     if (s_neon_layout != BOOST_NEON_MARQUEE && clip_reaches_radius(layer, (float)cx, (float)cy,
-                            (float)(NEON_R - (NEON_SEG_W + NEON_HALO_EXTRA)))) {
+                            (float)(NEON_R - ((s_neon_layout == BOOST_NEON_TUBE)
+                                ? NEON_BAND_DEPTH(NEON_TUBE_W)
+                                : NEON_BAND_DEPTH(NEON_SEG_W))))) {
         lv_draw_arc_dsc_t arc; lv_draw_arc_dsc_init(&arc);
         arc.center.x = cx; arc.center.y = cy; arc.opa = LV_OPA_COVER;
         const float step = (float)ARC_RANGE / (float)NEON_NSEG;
@@ -2392,21 +3040,105 @@ static void draw_neon_live(lv_event_t *e)
             float lo = a_zero;
             float hi = a_val;
             if (lo > hi) { const float t = lo; lo = hi; hi = t; }
-            arc.start_angle = lo;
-            arc.end_angle = hi;
-            /* Abutting bands, same reasoning as the segments loop below. */
-            arc.radius = NEON_R - NEON_TUBE_W + 1;
-            arc.width = NEON_HALO_EXTRA + 1;
-            arc.color = c(scale_rgb(accent_rgb, NEON_HALO_DIM));
-            lv_draw_arc(layer, &arc);
-            arc.radius = NEON_R - NEON_CAP_W + 1;
-            arc.width = NEON_TUBE_W - NEON_CAP_W + 1;
-            arc.color = c(neon_lit(accent_rgb));
-            lv_draw_arc(layer, &arc);
-            arc.radius = NEON_R;
-            arc.width = NEON_CAP_W;
-            arc.color = lv_color_white();
-            lv_draw_arc(layer, &arc);
+            /* The run is a continuous arc from the zero notch to the value,
+             * drawn as A8 wedge tiles (NEON_TUBE_TILE_STEP each, aligned to
+             * a_zero, blitted with recolor) plus a live arc for the partial
+             * tip. The tip stays live because the run end is continuous - the
+             * tiles only ever cover whole wedges - and it is the part that
+             * moves every tick anyway. A zone flip that recolours the whole
+             * run then repaints as blits instead of rasterising the full run
+             * three arcs deep; that recolor is what used to stutter at the
+             * boost/overboost crossings. Tiles and tip both use
+             * k_neon_tube_band_geom's arcs, so the two paint identical
+             * pixels. */
+            int k = 0;
+#if BOOST_NEON_GLYPH_SPRITES
+            if (s_neon_tube_sprites_ready) {
+                const float tstep = NEON_TUBE_TILE_STEP;
+                const int dir = (a_val >= a_zero) ? 0 : 1;
+                while (k < NEON_TUBE_TILES &&
+                       (float)k * tstep <= (hi - lo) - tstep + 0.001f) {
+                    if (!neon_area_overlaps(&s_neon_tube_box[dir][k],
+                                            &layer->_clip_area)) {
+                        ++k;
+                        continue;
+                    }
+                    /* A missing tile (alloc failure mid-bake) falls through
+                     * to the live arcs for the remainder of the run. */
+                    if (s_neon_tube_tile[dir][k][0].img.data == NULL ||
+                        s_neon_tube_tile[dir][k][1].img.data == NULL ||
+                        s_neon_tube_tile[dir][k][2].img.data == NULL) break;
+                    neon_blit_tube_tile(layer, cx, cy, dir, k, 0,
+                                        scale_rgb(accent_rgb, NEON_HALO_DIM));
+                    neon_blit_tube_tile(layer, cx, cy, dir, k, 1,
+                                        neon_lit(accent_rgb));
+                    neon_blit_tube_tile(layer, cx, cy, dir, k, 2, 0xFFFFFFu);
+                    ++k;
+                }
+            }
+#endif
+            /* Live tip: the partial wedge beyond the last full tile. It starts
+             * NEON_TUBE_TILE_OVERLAP before the tile boundary so the last
+             * tile's AA fringe lands under this arc's full-coverage interior
+             * (and the tile's own baked overhang covers this arc's start
+             * fringe). With no tiles blitted the run starts exactly at the
+             * notch, as before, and the marker repaint below covers the
+             * zero-adjacent pixels either way. */
+            const float ov = (k > 0) ? NEON_TUBE_TILE_OVERLAP : 0.0f;
+            const float tip_a = (a_val >= a_zero)
+                ? a_zero + (float)k * NEON_TUBE_TILE_STEP
+                : a_zero - (float)k * NEON_TUBE_TILE_STEP;
+            if (k < NEON_TUBE_TILES) {
+                lo = fminf(a_val, tip_a - ov);
+                hi = fmaxf(a_val, tip_a - ov);
+            } else {
+                lo = a_zero; hi = a_zero;   /* whole sweep lit; no tip */
+            }
+            if (hi - lo > 0.01f) {
+                arc.start_angle = lo;
+                arc.end_angle = hi;
+#if BOOST_NEON_GLYPH_SPRITES
+                /* One arc carrying the baked radial-gradient image (the
+                 * dim/body/cap bands baked into a 2*NEON_R RGB565 square by
+                 * neon_bake_grad) replaces the three stacked live band arcs
+                 * whenever the bake is present and the zone accent matches.
+                 * lv_draw_arc centres an img_src square 1:1 on the arc centre,
+                 * so the image spans the full radius range with no transform;
+                 * the arc's own angular and radial masks supply the run's
+                 * edges exactly as the three live arcs did, so the painted
+                 * pixels are identical and the per-frame arc mask work drops
+                 * from three passes to one. On a key mismatch (gradient not
+                 * baked for this zone yet) it falls through to the three live
+                 * arcs below. */
+                const int grad_zone = neon_zone_id(psi);
+                if (s_neon_grad_buf[grad_zone] != NULL &&
+                    s_neon_grad_key[grad_zone] == accent_rgb) {
+                    arc.img_src = &s_neon_grad_img[grad_zone];
+                    /* Mask clips NEON_GRAD_MARGIN outside the band so the
+                     * image's own baked edges supply the ring's AA; a mask
+                     * exactly on the band would double-AA the edges. */
+                    arc.radius = NEON_R + NEON_GRAD_MARGIN;
+                    arc.width = NEON_BAND_DEPTH(NEON_TUBE_W) + 2 * NEON_GRAD_MARGIN;
+                    lv_draw_arc(layer, &arc);
+                    arc.img_src = NULL;
+                }                 else
+#endif
+                {
+                    /* Abutting bands, same reasoning as the segments loop below. */
+                    arc.radius = NEON_R - NEON_TUBE_W + 1;
+                    arc.width = NEON_BODY_W(NEON_TUBE_W);
+                    arc.color = c(scale_rgb(accent_rgb, NEON_HALO_DIM));
+                    lv_draw_arc(layer, &arc);
+                    arc.radius = NEON_R - NEON_CAP_W + 1;
+                    arc.width = NEON_BODY_W(NEON_TUBE_W);
+                    arc.color = c(neon_lit(accent_rgb));
+                    lv_draw_arc(layer, &arc);
+                    arc.radius = NEON_R;
+                    arc.width = NEON_CAP_W;
+                    arc.color = lv_color_white();
+                    lv_draw_arc(layer, &arc);
+                }
+            }
             /* Zero marker last, so the run that just swept over it cannot bury
              * it - the same ordering the marquee bar's tick already uses. The
              * segments layout gets this for free by skipping the zero segment
@@ -2416,10 +3148,19 @@ static void draw_neon_live(lv_event_t *e)
              * copy underneath is already correct and untouched. */
             arc.start_angle = a_zero - NEON_TUBE_ZERO_DEG;
             arc.end_angle = a_zero + NEON_TUBE_ZERO_DEG;
-            arc.width = NEON_TUBE_W + NEON_HALO_EXTRA;
+            /* Explicit radius: after the gradient path above, `arc.radius`
+             * still holds NEON_R + NEON_GRAD_MARGIN from the mask, which would
+             * shift this marker 4 px outboard and leave the ring's inner band
+             * (the baked marker's innermost depth) uncovered on its inner
+             * edge. Match the baked copy (NEON_R / NEON_BAND_DEPTH) so live
+             * and baked markers are the same geometry whether or not the
+             * gradient bake is active. */
+            arc.radius = NEON_R;
+            arc.width = NEON_BAND_DEPTH(NEON_TUBE_W);
             arc.color = lv_color_white();
             lv_draw_arc(layer, &arc);
         } else if (lit_n > 0) {
+            const int zseg = neon_seg_index(a_zero);
             for (int i = first; i <= last; ++i) {
                 /* Skip segments this dirty region does not touch. Without it the
                  * whole run was re-submitted for every region. */
@@ -2428,6 +3169,37 @@ static void draw_neon_live(lv_event_t *e)
                     NEON_STAT_SKIP();
                     continue;
                 }
+                if (i == zseg) {
+                    /* Nothing to draw. The zero marker is already BAKED white
+                     * at this exact radius, width and angle, and the baked
+                     * canvas sits under this layer and is repainted with every
+                     * dirty region - so redrawing it here produced an identical
+                     * pixel for an extra arc primitive. The zero segment is
+                     * always inside the lit run, since the run starts at zero,
+                     * so that was one wasted arc on every cycle the ring moved.
+                     * It is also what makes the marker survive with nothing
+                     * lit, where this loop never runs at all. */
+                    continue;
+                }
+#if BOOST_NEON_GLYPH_SPRITES
+                if (s_neon_seg_sprites_ready &&
+                    s_neon_seg_tile[i][0].img.data != NULL &&
+                    s_neon_seg_tile[i][1].img.data != NULL &&
+                    s_neon_seg_tile[i][2].img.data != NULL) {
+                    /* Lit-run fast path: the three bands are baked A8 coverage
+                     * tiles (neon_bake_seg_sprites) made by the SAME lv_draw_arc
+                     * geometry, so a changed segment repaints as three
+                     * recolored blits on the exact pixels the arcs rasterized -
+                     * same bands, same colours, same draw order. A missing tile
+                     * (bake alloc failure) falls through to the live arcs. */
+                    neon_blit_seg_band(layer, cx, cy, i, 0,
+                                       scale_rgb(accent_rgb, NEON_HALO_DIM));
+                    neon_blit_seg_band(layer, cx, cy, i, 1,
+                                       neon_lit(accent_rgb));
+                    neon_blit_seg_band(layer, cx, cy, i, 2, 0xFFFFFFu);
+                    continue;
+                }
+#endif
                 const float s = (float)ARC_START + (float)i * step + NEON_SEG_GAP * 0.5f;
                 arc.start_angle = s; arc.end_angle = s + step - NEON_SEG_GAP;
                 NEON_STAT_ARC();
@@ -2443,30 +3215,18 @@ static void draw_neon_live(lv_event_t *e)
                  * narrowing stacks them without any blending. A multi-step
                  * falloff was tried and rejected - it reads as banding, not as
                  * depth. */
-                if (i == neon_seg_index(a_zero)) {
-                    /* Nothing to draw. The zero marker is already BAKED white
-                     * at this exact radius, width and angle, and the baked
-                     * canvas sits under this layer and is repainted with every
-                     * dirty region - so redrawing it here produced an identical
-                     * pixel for an extra arc primitive. The zero segment is
-                     * always inside the lit run, since the run starts at zero,
-                     * so that was one wasted arc on every cycle the ring moved.
-                     * It is also what makes the marker survive with nothing
-                     * lit, where this loop never runs at all. */
-                    continue;
-                }
                 /* Stacked so the three bands ABUT rather than overlap. They
                  * used to share arc.radius and differ only in width, so each
                  * band painted the full depth of the one outside it and was
-                 * then covered by it - 42+30+6 = 78 px of radial
-                 * rasterisation for 42 px of visible band, on every lit
+                 * then covered by it - 54+30+6 = 90 px of radial
+                 * rasterisation for 54 px of visible band, on every lit
                  * segment, three arcs deep. Giving each band its own radius
                  * paints each pixel once for an identical result. The 1 px
                  * of deliberate overlap (the +1s) keeps the antialiased
                  * edges meeting instead of abutting exactly, where neither
                  * arc fully covers and a faint seam can show. */
                 arc.radius = NEON_R - NEON_SEG_W + 1;
-                arc.width = NEON_HALO_EXTRA + 1;
+                arc.width = NEON_BODY_W(NEON_SEG_W);
                 arc.color = c(scale_rgb(accent_rgb, NEON_HALO_DIM)); /* inner  */
                 lv_draw_arc(layer, &arc);
                 arc.radius = NEON_R - NEON_CAP_W + 1;
@@ -2661,6 +3421,35 @@ static void build_neon(lv_obj_t *scr)
      * works either way. */
     neon_bake_glyph_sprites(scr);
     neon_bake_zone_words(scr);
+    if (s_neon_layout == BOOST_NEON_SEGMENTS) {
+        neon_bake_seg_sprites(scr);
+    } else if (0 && s_neon_layout == BOOST_NEON_TUBE) {
+        /* Tube run tiles are PARKED. Three designs failed the sim stale-pixel
+         * audit: overlap 0.5 deg, overlap 2 deg, and the full-ring radial
+         * bake with half-open angular membership plus a tile-boundary
+         * invalidation. The tiles tile exactly (no seams) but the tile blits
+         * are opaque src-over paints: a pixel's composite depends on which
+         * tiles AND the live tip arc happened to paint it across frames, and
+         * the delta-only invalidation lets the retained composite drift from
+         * the truth. The tube keeps the live arcs (pixel-clean); the zone
+         * flip cost is attacked by the radial-gradient arc instead. */
+        neon_bake_tube_sprites(scr);
+    }
+    /* The tube run's radial-gradient arc images, baked with the other bakes
+     * (never from inside a draw callback). ALL THREE zone images are baked
+     * here so a zone flip only SWITCHES which image the run repaint uses -
+     * rebuilding on the flip frame would re-pay the three full-ring
+     * rasterisations this feature exists to avoid. Each is keyed on its
+     * zone's accent colour, so a theme change (which rebuilds the scene)
+     * rebakes all three. */
+    if (s_neon_layout == BOOST_NEON_TUBE) {
+        for (int z = 0; z < NEON_GRAD_ZONES; ++z) {
+            const float zp = (z == 2) ? s_psi_overboost
+                                      : (z == 1) ? (s_psi_overboost * 0.5f)
+                                                 : -1.0f;
+            neon_bake_grad(scr, z, neon_zone_rgb(theme, zp));
+        }
+    }
 #endif
     const double bake_done_ms = neon_now_ms();
     s_neon_face = lv_obj_create(scr);
@@ -2736,22 +3525,32 @@ static void neon_inv_span(float a0, float a1)
     /* Segments light whole: boost_neon_lit_span() indexes by floor(), so a
      * value landing mid-segment lights that segment all the way to its far
      * edge. Snapping the run outward to segment boundaries is what makes the
-     * invalidated area cover what is actually painted — without it the far
-     * half of the boundary segment is left stale on every frame. */
-    const float step = (float)ARC_RANGE / (float)NEON_NSEG;
-    a0 = (float)ARC_START + floorf((a0 - (float)ARC_START) / step) * step;
-    a1 = (float)ARC_START + ceilf((a1 - (float)ARC_START) / step) * step;
+     * invalidated area cover what is actually painted â€” without it the far
+     * half of the boundary segment is left stale on every frame. The tube
+     * paints one continuous arc at the exact span, so it keeps its precise
+     * angular extent; only the common sweep clamp below applies to both. */
+    if (s_neon_layout == BOOST_NEON_SEGMENTS) {
+        const float step = (float)ARC_RANGE / (float)NEON_NSEG;
+        a0 = (float)ARC_START + floorf((a0 - (float)ARC_START) / step) * step;
+        a1 = (float)ARC_START + ceilf((a1 - (float)ARC_START) / step) * step;
+    }
     if (a0 < (float)ARC_START) a0 = (float)ARC_START;
     if (a1 > (float)(ARC_START + ARC_RANGE)) a1 = (float)(ARC_START + ARC_RANGE);
     for (float seg = a0; seg < a1;) {
         const float boundary = (floorf(seg / 90.0f) + 1.0f) * 90.0f;
         const float seg_end = fminf(a1, boundary);
         lv_area_t area;
-        /* Span the full glow: NEON_GLOW_OUT outside the ring through to the
-         * halo's inner edge, so widening the glow cannot outrun the bounds. */
+        /* Span the live painted band: NEON_GLOW_OUT outside the ring through
+         * to the inner band's inner edge, so widening the glow cannot outrun
+         * the bounds. The radial width is per-layout - the tube and the
+         * segments each paint NEON_BAND_DEPTH(W) = 2W - CAP (46 vs 54). */
+        const uint16_t band_w = (uint16_t)(NEON_GLOW_OUT +
+            ((s_neon_layout == BOOST_NEON_TUBE)
+                ? NEON_BAND_DEPTH(NEON_TUBE_W)
+                : NEON_BAND_DEPTH(NEON_SEG_W)));
         lv_draw_arc_get_area(px_icx(), px_icy(), (uint16_t)(NEON_R + NEON_GLOW_OUT),
                              seg, seg_end,
-                             (uint16_t)(NEON_GLOW_OUT + NEON_SEG_W + NEON_HALO_EXTRA),
+                             band_w,
                              false, &area);
         area.x1 -= 14; area.y1 -= 14; area.x2 += 14; area.y2 += 14;
         lv_obj_invalidate_area(s_neon_face, &area);
@@ -2767,12 +3566,23 @@ static int neon_seg_index(float angle)
     return (i >= 0 && i < NEON_NSEG) ? i : -1;
 }
 
+/* Invalidate one contiguous run of segments, first through last inclusive.
+ * One angular span (split at the 90 degree boundaries inside neon_inv_span),
+ * not one call per segment, so a run crossing an axis stays a single box and
+ * a run's neighbouring gaps stay covered by the same span the segments paint
+ * into. */
+static void neon_inv_seg_range(int first, int last)
+{
+    if (first < 0 || last < first || last >= NEON_NSEG) return;
+    const float step = (float)ARC_RANGE / (float)NEON_NSEG;
+    neon_inv_span((float)ARC_START + (float)first * step,
+                  (float)ARC_START + (float)(last + 1) * step);
+}
+
 static void neon_inv_seg(int index)
 {
     if (index < 0) return;
-    const float step = (float)ARC_RANGE / (float)NEON_NSEG;
-    const float s0 = (float)ARC_START + (float)index * step;
-    neon_inv_span(s0, s0 + step);
+    neon_inv_seg_range(index, index);
 }
 
 /* Horizontal invalidation span for one readout cell: the union of the
@@ -2864,6 +3674,50 @@ static void neon_cell_x_span(int cx, int cell_x, int slot_w, int cell_pad,
 #endif
 }
 
+/* Tight vertical extent of one baked readout sprite's ACTUAL painted pixels at
+ * the readout anchor `top`, for the full-size sprite set (tube/segments; the
+ * marquee's pre-scaled set has its own geometry and stays on the conservative
+ * box). Returns false when no immutable full-size tile exists for this glyph -
+ * live-label fallback or marquee - leaving the y outputs untouched so the caller
+ * keeps its conservative box. The +/-1 AA margin is CLAMPED into the caller's
+ * conservative box (lo_box..hi_box), which already covers the painted pixels
+ * by construction, so tightening can never expand a flush box. */
+#if BOOST_NEON_GLYPH_SPRITES
+static bool neon_glyph_y_span(int top, int glyph, int lo_box, int hi_box,
+                              int *y0, int *y1)
+{
+    if (s_neon_layout == BOOST_NEON_MARQUEE || !s_neon_glyph_sprites_ready)
+        return false;
+    if (glyph < 0) return false;
+    const lv_image_dsc_t *img = &s_neon_glyph_img[glyph];
+    if (img->data == NULL) return false;
+    const int16_t *bb = s_neon_glyph_bbox[glyph];
+    const int sy0 = top + s_neon_spr_dy + bb[1] - 1;
+    int t0 = sy0, t1 = sy0 + (int)img->header.h + 1;
+    if (t0 < lo_box) t0 = lo_box;
+    if (t1 > hi_box) t1 = hi_box;
+    *y0 = t0;
+    *y1 = t1;
+    return true;
+}
+
+/* Fold one element's tight vertical extent into a running union. An element
+ * without an immutable sprite can be painted anywhere inside the conservative
+ * label-box/tile union, so its presence marks the whole union as needing that
+ * box. */
+static void neon_y_fold(int top, int glyph, int lo_box, int hi_box,
+                        int *y0, int *y1, bool *all_tight)
+{
+    int t0, t1;
+    if (neon_glyph_y_span(top, glyph, lo_box, hi_box, &t0, &t1)) {
+        if (t0 < *y0) *y0 = t0;
+        if (t1 > *y1) *y1 = t1;
+    } else {
+        *all_tight = false;
+    }
+}
+#endif
+
 static void update_neon(const boost_sample_t *sample, const boost_theme_t *theme)
 {
     const float psi = isfinite(sample->psi) ? sample->psi : 0.0f;
@@ -2915,6 +3769,41 @@ static void update_neon(const boost_sample_t *sample, const boost_theme_t *theme
         /* Every lit segment restyles, so repaint the union of both full runs. */
         neon_inv_span(fminf(a_zero, fminf(a_old, a_new)),
                       fmaxf(a_zero, fmaxf(a_old, a_new)));
+    } else if (s_neon_layout == BOOST_NEON_SEGMENTS) {
+        /* Segments light whole and in the same colour, so only the segments
+         * whose painted state flipped need a repaint - the symmetric
+         * difference of the old and new lit runs, minus the baked zero
+         * marker. Repainting the angular delta instead also reflushed the
+         * segment that merely contained the old endpoint on every move. The
+         * helper derives both sets from boost_neon_lit_span() with the same
+         * arguments the draw passes, so threshold and boundary behaviour
+         * cannot disagree with what draw_neon_live() actually painted. */
+        boost_neon_seg_diff_t d;
+        const int dn = boost_neon_seg_diff(a_zero, a_old, a_new,
+                                           (float)ARC_START, (float)ARC_RANGE,
+                                           NEON_NSEG, &d);
+        for (int i = 0; i < dn; ++i)
+            neon_inv_seg_range(d.first[i], d.last[i]);
+    } else if (s_neon_layout == BOOST_NEON_TUBE) {
+        /* The tube is all-or-nothing: draw_neon_live() paints the whole
+         * run from a_zero whenever boost_neon_lit_span() finds at least
+         * half a segment, and nothing at all below that. When old and
+         * new straddle that lit threshold, the painted area changes by
+         * the whole run, not by the delta between the endpoints - so a
+         * delta-only wedge strands the zero-to-near-endpoint band (the
+         * ring-stale audit caught this at r~228.8). Detect the flip
+         * with the same helper the draw uses and repaint the full span
+         * (a_zero through the farther endpoint) so the whole run flips
+         * at once. Steady motion with both ends lit (or both unlit)
+         * keeps the precise delta wedge. */
+        float lo, hi;
+        if (boost_neon_tube_dirty_span(a_zero, a_old, a_new,
+                                       (float)ARC_START, (float)ARC_RANGE,
+                                       NEON_NSEG, &lo, &hi)) {
+            neon_inv_span(lo, hi);
+        } else {
+            neon_inv_span(a_old, a_new);
+        }
     } else {
         /* Only the moving end moved. */
         neon_inv_span(a_old, a_new);
@@ -2964,7 +3853,6 @@ static void update_neon(const boost_sample_t *sample, const boost_theme_t *theme
     /* MUST use the same metrics draw_neon_live uses, per layout. Computing the
      * invalidation from the segments constants while marquee draws at 156 px
      * left the sign and the outer digits uncovered. */
-    const bool mq = (s_neon_layout == BOOST_NEON_MARQUEE);
     /* Same scaled metrics draw_neon_live() uses on the marquee, so the dirty
      * boxes and the painted pixels agree. */
     const int inv_slot = neon_mq(NEON_SLOT_W);
@@ -3138,7 +4026,16 @@ static void update_neon(const boost_sample_t *sample, const boost_theme_t *theme
     if (r.count != s_neon_cell_n) {
         /* Same overhang allowance as the per-cell path, applied to the union
          * of the old and new compositions - plus, per cell, the sprite's own
-         * footprint (see neon_cell_x_span()). */
+         * footprint (see neon_cell_x_span()). Vertically the whole box can be
+         * tightened to the union of the baked sprites' own extents when every
+         * element has an immutable full-size tile (tube/segments); anything
+         * without one - live-label fallback, the marquee scaled set - keeps
+         * the conservative cell_top..cell_bot, which is exactly what
+         * cell_top/cell_bot were already computed to be. */
+#if BOOST_NEON_GLYPH_SPRITES
+        int ty0 = cell_top, ty1 = cell_bot;
+        bool all_tight = true;
+#endif
         lv_area_t whole = { px_icx() - r.half_w - cell_pad, cell_top,
                             px_icx() + r.half_w + cell_pad, cell_bot };
         for (uint8_t i = 0; i < r.count; ++i) {
@@ -3147,6 +4044,9 @@ static void update_neon(const boost_sample_t *sample, const boost_theme_t *theme
                              neon_glyph_index(r.cells[i].ch), &lo, &hi);
             if (lo < whole.x1) whole.x1 = lo;
             if (hi > whole.x2) whole.x2 = hi;
+#if BOOST_NEON_GLYPH_SPRITES
+            neon_y_fold(cell_top, neon_glyph_index(r.cells[i].ch), cell_top, cell_bot, &ty0, &ty1, &all_tight);
+#endif
         }
         for (uint8_t i = 0; i < s_neon_cell_n; ++i) {
             int lo, hi;
@@ -3154,6 +4054,9 @@ static void update_neon(const boost_sample_t *sample, const boost_theme_t *theme
                              neon_glyph_index(s_neon_cell_ch[i]), &lo, &hi);
             if (lo < whole.x1) whole.x1 = lo;
             if (hi > whole.x2) whole.x2 = hi;
+#if BOOST_NEON_GLYPH_SPRITES
+            neon_y_fold(cell_top, neon_glyph_index(s_neon_cell_ch[i]), cell_top, cell_bot, &ty0, &ty1, &all_tight);
+#endif
         }
         /* Both the old and the new sign position: crossing +-10.0 changes the
          * cell count AND slides the sign, and covering only the new one leaves
@@ -3162,12 +4065,24 @@ static void update_neon(const boost_sample_t *sample, const boost_theme_t *theme
             int sl, sh;
             neon_sign_x_span(px_icx(), r.sign_x, inv_sign_pad + cell_pad, &sl, &sh);
             if (sl < whole.x1) whole.x1 = sl;
+#if BOOST_NEON_GLYPH_SPRITES
+            neon_y_fold(cell_top, NEON_SIGN_SLOT, cell_top, cell_bot, &ty0, &ty1, &all_tight);
+#endif
         }
         if (s_neon_sign_drawn) {
             int sl, sh;
             neon_sign_x_span(px_icx(), s_neon_sign_x, inv_sign_pad + cell_pad, &sl, &sh);
             if (sl < whole.x1) whole.x1 = sl;
+#if BOOST_NEON_GLYPH_SPRITES
+            neon_y_fold(cell_top, NEON_SIGN_SLOT, cell_top, cell_bot, &ty0, &ty1, &all_tight);
+#endif
         }
+#if BOOST_NEON_GLYPH_SPRITES
+        if (all_tight) {
+            whole.y1 = ty0;
+            whole.y2 = ty1;
+        }
+#endif
         lv_obj_invalidate_area(s_neon_face, &whole);
     } else {
         for (uint8_t i = 0; i < r.count; ++i) {
@@ -3185,7 +4100,19 @@ static void update_neon(const boost_sample_t *sample, const boost_theme_t *theme
                              neon_glyph_index(s_neon_cell_ch[i]), &lo2, &hi2);
             if (lo2 < lo) lo = lo2;
             if (hi2 > hi) hi = hi2;
+#if BOOST_NEON_GLYPH_SPRITES
+            /* Same per-glyph tightening as the horizontal spans: the changed
+             * cell covers the union of the OLD and NEW glyphs' own vertical
+             * extents (plus 1 px AA), falling back to the conservative box
+             * when either lacks an immutable full-size tile. */
+            int t0 = cell_top, t1 = cell_bot;
+            bool tight = true;
+            neon_y_fold(cell_top, neon_glyph_index(r.cells[i].ch), cell_top, cell_bot, &t0, &t1, &tight);
+            neon_y_fold(cell_top, neon_glyph_index(s_neon_cell_ch[i]), cell_top, cell_bot, &t0, &t1, &tight);
+            lv_area_t cell = { lo, tight ? t0 : cell_top, hi, tight ? t1 : cell_bot };
+#else
             lv_area_t cell = { lo, cell_top, hi, cell_bot };
+#endif
             lv_obj_invalidate_area(s_neon_face, &cell);
         }
         if (r.sign != s_neon_sign_drawn || r.sign_x != s_neon_sign_x ||
@@ -3195,7 +4122,16 @@ static void update_neon(const boost_sample_t *sample, const boost_theme_t *theme
             int l0, l1, h0, h1;
             neon_sign_x_span(px_icx(), lo, inv_sign_pad + cell_pad, &l0, &l1);
             neon_sign_x_span(px_icx(), hi, inv_sign_pad + cell_pad, &h0, &h1);
+#if BOOST_NEON_GLYPH_SPRITES
+            /* Tighten to the baked sign sprite's own vertical extent; the
+             * live-bar fallback keeps the conservative box. */
+            int s0 = cell_top, s1 = cell_bot;
+            bool tight = true;
+            neon_y_fold(cell_top, NEON_SIGN_SLOT, cell_top, cell_bot, &s0, &s1, &tight);
+            lv_area_t sg = { l0, tight ? s0 : cell_top, h1, tight ? s1 : cell_bot };
+#else
             lv_area_t sg = { l0, cell_top, h1, cell_bot };
+#endif
             lv_obj_invalidate_area(s_neon_face, &sg);
         }
     }
@@ -3353,7 +4289,7 @@ static float update_visual_arc_animation(float target)
  *
  * Draw callbacks get a layer in absolute screen space, so a callback that
  * hardcodes DISP_SIZE/2 keeps painting at the unshifted centre while the object
- * it belongs to has moved — the moving parts detach from the static art. Every
+ * it belongs to has moved â€” the moving parts detach from the static art. Every
  * such site, and every invalidation that pairs with one, must come through
  * these. Objects placed with lv_obj_align()/lv_obj_set_pos() are parent-
  * relative and must NOT add the offset again.
@@ -3998,8 +4934,8 @@ static void set_value_arc(float psi, float raw_color_psi)
     s_arc_color_psi = color_psi;
 }
 
-/* Paint the static arc face — unfilled track, scale numerals and the "PSI"
- * unit mark — into an off-screen canvas ONCE. Redraws
+/* Paint the static arc face â€” unfilled track, scale numerals and the "PSI"
+ * unit mark â€” into an off-screen canvas ONCE. Redraws
  * then become a blit instead of re-rasterising a 270 degree, 45 px-wide ring
  * (by far the largest draw on this face) inside every wedge-invalidated dirty
  * region. Mirrors paint_vault_background()/build_hud()'s canvas fill; only
@@ -4134,7 +5070,7 @@ static void build_arc(lv_obj_t *scr)
     const boost_theme_t *theme = active_theme();
 
     /* Static face (unfilled track, scale numerals, "PSI" mark) is
-     * rasterised once into PSRAM and blitted thereafter — the same win
+     * rasterised once into PSRAM and blitted thereafter â€” the same win
      * vault/hud got. A failed allocation degrades the same way vault's does:
      * warn and skip the cached art rather than adding a second fallback
      * convention. */
@@ -4392,11 +5328,11 @@ static bool paint_vault_background(lv_obj_t *canvas, const boost_theme_t *theme)
 
     /* Vignette, applied straight to the pixels. Concentric arcs banded visibly;
      * a per-pixel pass reproduces the web's radial gradient exactly and costs
-     * nothing after build. Scanlines are NOT baked here — they belong on top.
+     * nothing after build. Scanlines are NOT baked here â€” they belong on top.
      *
      * The ramp is then dithered, and it has to be. The face is #02100a, whose
      * green sits at level 4 of 63 in RGB565, so darkening it toward black has
-     * only four distinct values to land on — an exact gradient still resolves
+     * only four distinct values to land on â€” an exact gradient still resolves
      * to four flat rings. The web mirror looks smooth only because canvas is
      * 8-bit (green 16 -> 6). Ordered dithering trades spatial noise for tonal
      * resolution, which is the only way to get a smooth ramp out of a channel
@@ -4529,7 +5465,7 @@ static void draw_vault_crt(lv_event_t *e)
     int32_t y0 = clip->y1 < 0 ? 0 : clip->y1;
     int32_t y1 = clip->y2 > DISP_SIZE - 1 ? DISP_SIZE - 1 : clip->y2;
     /* Phase follows the burn-in offset so the scanlines travel with the face
-     * rather than staying pinned to absolute rows — otherwise the three rows
+     * rather than staying pinned to absolute rows â€” otherwise the three rows
      * between scanlines would carry full duty forever. It is still a single
      * global phase, so neighbouring dirty regions cannot disagree and reproduce
      * the banding this had when the phase was per-region. */
@@ -4865,7 +5801,7 @@ static void build_vault(lv_obj_t *scr)
          * a margin of up to two pixels off one edge and exposes the screen's
          * own background at the other. By the time the face reaches its rim the
          * vignette has taken it down to (1 - VAULT_VIGN_MAX) of the face
-         * colour, so match THAT, not the raw face — otherwise the margin reads
+         * colour, so match THAT, not the raw face â€” otherwise the margin reads
          * as a bright hairline tracing one side of the glass. The other three
          * styles need no such trick: hud's cached face and bigdigit's ground
          * are flat fills that already equal the screen background. */
@@ -4878,7 +5814,7 @@ static void build_vault(lv_obj_t *scr)
 
     s_vault_peak_mark = lv_obj_create(scr);
     lv_obj_remove_style_all(s_vault_peak_mark);
-    lv_obj_set_size(s_vault_peak_mark, 34, 34);
+    lv_obj_set_size(s_vault_peak_mark, VAULT_PEAK_MARK_SIZE, VAULT_PEAK_MARK_SIZE);
     lv_obj_clear_flag(s_vault_peak_mark, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(s_vault_peak_mark, draw_vault_peak_mark, LV_EVENT_DRAW_MAIN, NULL);
     lv_obj_add_flag(s_vault_peak_mark, LV_OBJ_FLAG_HIDDEN);
@@ -5117,7 +6053,7 @@ static lv_color_t hud_face_color(const boost_theme_t *theme)
  * drawn once, in full.
  *
  * The centre is a parameter because the two callers work in different spaces.
- * Cached, it is the canvas's own centre and carries no burn-in offset — the
+ * Cached, it is the canvas's own centre and carries no burn-in offset â€” the
  * canvas is a bitmap that gets MOVED, and re-rasterising it on every shift
  * would throw away the whole point of caching it. Live, it is the shifted
  * screen centre. */
@@ -5539,7 +6475,7 @@ static void update_hud(const boost_sample_t *sample, const boost_theme_t *theme)
     } else if (new_a != old_a) {
         s_hud_fill_deg = new_a;
         s_hud_fill_psi = visual_psi;
-        /* Otherwise only the wedge between the old and new ends changed —
+        /* Otherwise only the wedge between the old and new ends changed â€”
          * repainting the full arc every frame is what was costing cadence. */
         invalidate_hud_fill(old_a, new_a);
     }
@@ -5782,9 +6718,9 @@ static void build_bigdigit(lv_obj_t *scr)
     s_big_bg_step = -1;
 
     /* Recolouring the ground in one go dirties all 217k pixels at once: a ~69 ms
-     * stall that reads as a lurch every colour step. The work is unavoidable —
+     * stall that reads as a lurch every colour step. The work is unavoidable â€”
      * a flat fill is already the cheapest primitive there is, so there is
-     * nothing to pre-render — but it does not have to land in a single cycle.
+     * nothing to pre-render â€” but it does not have to land in a single cycle.
      * Four full-width bands each take their new colour on a later tick, turning
      * one long stall into four short ones. Adjacent steps differ by about a
      * twelfth of a colour transition, so the wipe is not visible as a seam. */
@@ -6331,7 +7267,7 @@ static void build_scene(boost_gauge_style_t style)
 
     /* One styleless, screen-sized container that every style builds into, so
      * the burn-in shift is a single lv_obj_set_pos() instead of a walk over
-     * every object — and, more importantly, so the cached PSRAM faces move as
+     * every object â€” and, more importantly, so the cached PSRAM faces move as
      * bitmaps rather than being re-rasterised. It draws nothing and adds one
      * bounds test per redraw. Children keep addressing the same coordinates
      * they always did, because it is exactly screen-sized and starts at the
@@ -6434,8 +7370,8 @@ void boost_gauge_apply_config(void)
 {
     if (!s_ui_ready) return;
     load_range_from_config();
-    /* Range and zero-angle move every style's static art — ticks, notch,
-     * numerals — including the arc face's cached PSRAM background now that it
+    /* Range and zero-angle move every style's static art â€” ticks, notch,
+     * numerals â€” including the arc face's cached PSRAM background now that it
      * has one. Rebuild rather than patch cached pixels in place; this is the
      * same path vault/hud/bigdigit already take here. */
     destroy_scene();
@@ -6479,7 +7415,10 @@ static void set_pixel_shift(int32_t dx, int32_t dy)
     if (dx == s_px_dx && dy == s_px_dy) return;
     s_px_dx = dx;
     s_px_dy = dy;
-    if (s_neon_face != NULL) neon_build_seg_boxes();
+    if (s_neon_face != NULL) {
+        neon_build_seg_boxes();
+        neon_build_tube_boxes();
+    }
     if (s_root != NULL) {
         lv_obj_set_pos(s_root, dx, dy);
     }
@@ -6512,7 +7451,7 @@ static void pixel_shift_tick(float psi)
     }
 
     /* "Settled" means the reading has not wandered more than a quarter psi for
-     * a second and a half — not merely that this one tick was quiet, which a
+     * a second and a half â€” not merely that this one tick was quiet, which a
      * slow sweep would also satisfy. */
     if (fabsf(psi - s_px_ref_psi) > PXSHIFT_SETTLE_PSI) {
         s_px_ref_psi = psi;
@@ -6537,6 +7476,8 @@ void boost_gauge_update(const boost_sample_t *sample)
     const boost_theme_t *theme = active_theme();
     s_peak_psi = fmaxf(s_peak_psi, fmaxf(sample->peak_psi, 0.0f));
 
+    boost_display_gauge_update_begin();
+
     /* Before the per-style update: those compute dirty areas from px_cx()/
      * px_cy(), and an offset that changed between the invalidation and the
      * draw is precisely how stale pixels get stranded. */
@@ -6551,6 +7492,8 @@ void boost_gauge_update(const boost_sample_t *sample)
         case BOOST_STYLE_ARC:
         default:                   update_arc(sample, theme); break;
     }
+
+    boost_display_gauge_update_end();
 
     s_display_psi = sample->psi;
 }

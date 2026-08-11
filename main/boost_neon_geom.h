@@ -94,6 +94,77 @@ void boost_neon_sign_bars(int cx, int cy, int size, int width,
 int boost_neon_lit_span(float a_zero, float a_value, float a_start,
                         float span, int nseg, int *first, int *last);
 
+/**
+ * Tube dirty-region decision at the half-segment lit threshold.
+ *
+ * The tube layout is all-or-nothing: draw_neon_live() paints the whole run
+ * from a_zero whenever boost_neon_lit_span() finds at least half a segment
+ * lit, and nothing at all below that. When the value crosses that threshold
+ * the painted area changes by the whole run, so a delta-only invalidation
+ * between the two endpoints strands the zero-to-near-endpoint band (the
+ * ring-stale audit caught this at r~228.8). This helper owns exactly that
+ * decision so the renderer and the regression test share it.
+ *
+ * Returns true when old and new are on opposite sides of the lit threshold
+ * (a lit<->unlit transition) and writes the complete dirty angular span,
+ * zero through the farther endpoint, as [*lo, *hi]. Returns false when both
+ * endpoints are lit or both unlit and leaves the outputs untouched, matching
+ * the boost_neon_lit_span() convention; the caller then keeps its precise
+ * delta-only span (a_old..a_new).
+ *
+ * The lit decision is taken with boost_neon_lit_span() itself, with the same
+ * sweep arguments, so the helper cannot disagree with the draw. The span is
+ * [min(a_zero, a_old, a_new), max(a_zero, a_old, a_new)], the same fmin/fmax
+ * union used by the tube branch of update_neon(). The caller must keep its own side-flip and colour-
+ * flip branches BEFORE this test: a run crossing zero while lit (or a zone
+ * recolour) is not a threshold transition and is not this helper's decision.
+ */
+bool boost_neon_tube_dirty_span(float a_zero, float a_old, float a_new,
+                                float a_start, float span, int nseg,
+                                float *lo, float *hi);
+
+/* Inclusive index ranges of segments whose painted state differs between the
+ * old and new readings, on the Segments layout. */
+typedef struct {
+    int first[2];
+    int last[2];
+    int count;   /* 0, 1 or 2 ranges; only the first `count` entries are valid */
+} boost_neon_seg_diff_t;
+
+/**
+ * Symmetric difference of the old and new PAINTED segment sets.
+ *
+ * draw_neon_live() paints every segment in
+ * boost_neon_lit_span(a_zero, a_value, ...) except the baked zero marker (the
+ * segment containing a_zero, which is always an endpoint of the lit run). On
+ * a steady same-side frame the ring's pixels change on exactly the segments
+ * whose painted state flipped - not on the whole angular delta, which also
+ * reflushes the segment that merely happened to contain the old endpoint.
+ * This helper is that minimal set, so the caller can repaint precisely what
+ * the draw changes.
+ *
+ * The lit sets are taken with boost_neon_lit_span() itself (same arguments the
+ * draw passes), so threshold and boundary behaviour - the half-segment lit
+ * gate and floor() segment indexing - cannot disagree with the draw. The baked
+ * zero marker is excluded from both painted sets before the difference, so it
+ * can never appear in the output even when one side is unlit. Each painted set
+ * is one contiguous range (the zero marker is always the lit run's first or
+ * last segment), so their symmetric difference is at most two disjoint ranges.
+ *
+ * Returns out->count (0 when the painted sets are identical) and fills
+ * out->first[]/out->last[] with inclusive segment indices in ascending order.
+ * When nothing changes, count is zero and the range entries are untouched.
+ *
+ * The caller decides the branch, not this helper: side flips (runs on
+ * opposite sides of the notch) and colour flips (a zone recolour) repaint
+ * both runs in full regardless of which segments changed, so this is only the
+ * same-side, same-colour steady case - exactly the branch that used to call
+ * neon_inv_span(a_old, a_new) directly.
+ */
+int boost_neon_seg_diff(float a_zero, float a_old, float a_new,
+                        float a_start, float span, int nseg,
+                        boost_neon_seg_diff_t *out);
+
 #ifdef __cplusplus
 }
 #endif

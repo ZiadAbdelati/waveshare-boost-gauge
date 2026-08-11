@@ -1,16 +1,23 @@
 #!/usr/bin/env python3
 """Full-theme performance matrix against the live board.
 
-Drives every theme (and each neon layout) in demo mode, samples the
-once-a-second /api/v1/state display telemetry, and reports pacing/work
-metrics per arm. This is the hardware side of the "locked 60 fps" goal:
-the gate is a sustained median renderFps >= 60, and the supporting metrics
-(worstRenderUs, renderGapP50Us, framesOverBudget, pixelsPerSecond) expose
-stutter that a single average would hide.
+Drives every theme (and each neon layout) under the organic demo waveform,
+samples the once-a-second /api/v1/state display telemetry, and reports
+pacing/work metrics per arm. Organic acceptance compares completed renders to
+the visible gauge demand: quantized faces legitimately demand fewer than 60
+renders in dwell seconds. Older firmware without demand telemetry retains the
+legacy median renderFps >= 60 gate. The constant-slew harness keeps the direct
+median renderFps >= 60 capacity gate.
 
-Arms (all in demo mode, matching the cadence-guard precondition from
-AGENTS.md - a real MAP sensor at constant atmosphere invalidates nothing
-and legitimately reports single-digit renderFps):
+Determinism: demoMode is forced on, demoFastSweep is forced off so this is
+the organic waveform (not the constant-slew fast-motion sweep), and
+pixelShift is controlled off so the anti-burn-in full-panel repaint cannot
+land inside a measurement window. The board's prior values are restored at
+the end.
+
+Arms (all in organic demo mode, matching the cadence-guard precondition
+from AGENTS.md - a real MAP sensor at constant atmosphere invalidates
+nothing and legitimately reports single-digit renderFps):
 
     dyno-cell, vault-tec, night-city, big-digit,
     neon tube, neon segments, neon marquee (spin as persisted),
@@ -20,7 +27,8 @@ Usage:
     python tools/bench_theme_matrix.py --url http://192.168.50.102
                                         [--seconds 30] [--settle 8]
 
-The board's starting theme/layout/spin state is restored at the end.
+The board's starting theme/layout/spin/demo/pixel-shift state is restored
+at the end.
 """
 from __future__ import annotations
 
@@ -42,11 +50,12 @@ def get(base: str, path: str) -> dict:
         return json.load(r)
 
 
-def put(base: str, path: str, payload: dict) -> None:
+def put(base: str, path: str, payload: dict) -> dict:
     req = urllib.request.Request(
         f"{base}/api/v1{path}", data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json"}, method="PUT")
-    urllib.request.urlopen(req, timeout=8).read()
+    with urllib.request.urlopen(req, timeout=8) as r:
+        return json.load(r)
 
 
 def med(xs):
@@ -70,6 +79,20 @@ def stats(samples: list[dict], key: str) -> tuple:
     if not vals:
         return float("nan"), float("nan"), 0
     return min(vals), med(vals), len(vals)
+
+
+def demand_stats(samples: list[dict]) -> tuple[float, float, int] | None:
+    rows = [(int(s["renderFps"]), int(s["gaugeDemandPerSecond"]))
+            for s in samples if "gaugeDemandPerSecond" in s]
+    if not rows:
+        return None
+    demanded = [(fps, demand) for fps, demand in rows if demand > 0]
+    if not demanded:
+        return float("nan"), float("nan"), len(rows)
+    coverage = [min(1.0, fps / demand) for fps, demand in demanded]
+    shortfall = [max(0, demand - fps) for fps, demand in demanded]
+    zero_demand = len(rows) - len(demanded)
+    return med(coverage), med(shortfall), zero_demand
 
 
 def run_arm(base: str, name: str, theme: str, layout: int | None,
@@ -99,7 +122,19 @@ def run_arm(base: str, name: str, theme: str, layout: int | None,
     te_waits = sum(int(s.get("teWaits", 0)) for s in samples)
     te_timeouts = sum(int(s.get("teTimeouts", 0)) for s in samples)
     n = len(samples)
-    gate = "PASS" if fps_med >= MIN_MEDIAN_RENDER_FPS else "FAIL"
+    demand = demand_stats(samples)
+    if demand is None:
+        gate = "PASS legacy" if fps_med >= MIN_MEDIAN_RENDER_FPS else "FAIL legacy"
+        demand_text = "demand n/a"
+    else:
+        coverage_med, shortfall_med, zero_demand = demand
+        if coverage_med != coverage_med:  # all sampled windows had no demand
+            gate = "NO DEMAND"
+            demand_text = f"demand idle({zero_demand})"
+        else:
+            gate = "PASS" if coverage_med >= 0.95 else "FAIL"
+            demand_text = (f"coverage {coverage_med * 100:5.1f}% "
+                           f"short {shortfall_med:3.0f} idle {zero_demand}")
 
     print(
         f"{name:<26} fps {fps_min:3.0f}/{fps_med:3.0f}  "
@@ -107,7 +142,7 @@ def run_arm(base: str, name: str, theme: str, layout: int | None,
         f"gapP50 {gap_p50:5.0f} gapMax {gap_max:6.0f}  "
         f"ob/s {ob_med:4.0f}/{ob_max:4.0f}  pps {pps:8.0f}  "
         f"fl {flushes:5.0f}  teS/W/T {te_skips}/{te_waits}/{te_timeouts}  "
-        f"n={n}  [{gate}]")
+        f"{demand_text}  n={n}  [{gate}]")
 
 
 def main() -> int:
@@ -122,10 +157,23 @@ def main() -> int:
     start_theme = initial["activeThemeId"]
     start_layout = initial.get("neonLayout")
     start_spin = initial.get("neonMarqueeSpin")
-    print(f"restore target: theme={start_theme} layout={start_layout} spin={start_spin}")
-    print(f"arm matrix, {args.seconds:.0f}s per arm after {args.settle:.0f}s settle\n")
+    start_demo = bool(initial.get("demoMode", False))
+    start_fastsweep = bool(initial.get("demoFastSweep", False))
+    start_pixelshift = bool(initial.get("pixelShift", True))
+    print(f"restore target: theme={start_theme} layout={start_layout} spin={start_spin} "
+          f"demo={start_demo} fastSweep={start_fastsweep} pixelShift={start_pixelshift}")
+    print(f"organic demo waveform matrix (demoFastSweep off, pixelShift controlled off), "
+          f"{args.seconds:.0f}s per arm after {args.settle:.0f}s settle\n")
 
-    put(base, "/themes/config", {"demoMode": True})
+    forced = put(base, "/themes/config", {
+        "demoMode": True,
+        "demoFastSweep": False,
+        "pixelShift": False,
+    })
+    for key, expected in (("demoMode", True), ("demoFastSweep", False),
+                          ("pixelShift", False)):
+        assert forced.get(key) == expected, \
+            f"{key} did not take effect: {forced}"
 
     arms = [
         ("dyno-cell",            "dyno-cell", None, None),
@@ -148,7 +196,13 @@ def main() -> int:
         put(base, "/themes/config", {"neonLayout": start_layout})
         if start_spin is not None:
             put(base, "/themes/config", {"neonMarqueeSpin": start_spin})
-        print(f"\nrestored theme={start_theme} layout={start_layout} spin={start_spin}")
+        put(base, "/themes/config", {
+            "demoMode": start_demo,
+            "demoFastSweep": start_fastsweep,
+            "pixelShift": start_pixelshift,
+        })
+        print(f"\nrestored theme={start_theme} layout={start_layout} spin={start_spin} "
+              f"demo={start_demo} fastSweep={start_fastsweep} pixelShift={start_pixelshift}")
     return 0
 
 
