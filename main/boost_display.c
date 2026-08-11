@@ -862,9 +862,36 @@ static void te_wait_for_region_spans(const region_span_t *spans, int count)
             const int height = y1 - y0;
 
             bool span_ok = (scan_row_now - (int32_t)BOOST_LCD_TE_ROW_MARGIN >= y1); /* LATE */
+            const int32_t scan_row_projected = scan_row_now + (int32_t)rows_before;
             if (!span_ok) {
-                const int32_t scan_row_projected = scan_row_now + (int32_t)rows_before;
                 span_ok = (scan_row_projected + (int32_t)BOOST_LCD_TE_ROW_MARGIN <= y0); /* EARLY */
+            }
+            if (!span_ok && rows_before == 0 &&
+                s_te_row_time_ns > BOOST_REGION_DBUF_WRITE_ROW_TIME_NS) {
+                /* WRITE-AHEAD (middle case): the scan is inside [y0,y1), but the
+                 * burst writes at ~32 us/row against the scan's measured ~35.95
+                 * us/row, so the scan can only catch the write at collision row
+                 * C = (S*ts - y0*tw)/(ts - tw) (see Fix 2/3 block comment). If C
+                 * is at/beyond the span bottom + margin, the write finishes the
+                 * span before the scan reaches it - the scan reads old data for
+                 * the whole span this pass and the new data lands on the next
+                 * pass, the exact one-frame-old semantics LATE already accepts.
+                 * Measured on hardware 2026-08-11: a full-height 466-row burst
+                 * writes at 31.4-31.6 us/row including the per-chunk CASET/RASET
+                 * intercepts (one outlier at 121.6 us/row was seen right after
+                 * boot during settle - so the margin is NOT unconditional, which
+                 * is exactly why a visual tear check is still required before
+                 * trusting this). First span only (rows_before == 0): the EARLY
+                 * projection is pessimistically rounded, the wrong direction for
+                 * this test, so later spans keep the conservative wait. Guarded
+                 * on ts > tw: if the panel ever measures slower than the write,
+                 * a mid-frame start is unsafe and must not be claimed.
+                 * Integer division truncates C downward - conservative. */
+                const int64_t num = (int64_t)scan_row_projected * s_te_row_time_ns
+                                  - (int64_t)y0 * BOOST_REGION_DBUF_WRITE_ROW_TIME_NS;
+                const int64_t den = (int64_t)s_te_row_time_ns
+                                  - BOOST_REGION_DBUF_WRITE_ROW_TIME_NS;
+                span_ok = (num > 0) && (num / den >= (int64_t)y1 + BOOST_LCD_TE_ROW_MARGIN);
             }
             if (!span_ok) {
                 all_provable = false;

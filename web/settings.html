@@ -134,6 +134,15 @@
           catch. Costs a few frames per second and roughly doubles the worst-case
           frame time, so judge it by eye &mdash; if the needle looks the same, leave
           it off.</p>
+        <label class="toggle-field">
+          <input id="teScanline" type="checkbox">
+          <span>TE scanline writeback (experimental)</span>
+        </label>
+        <p class="hint-text">When a large region (like the neon tube boost&rarr;overboost
+          flip) lands mid-scan, tear sync can wait up to a full refresh for the next
+          V-blank. This programs the panel&rsquo;s tear line to just past the dirty band,
+          so the wait is only as long as the band itself. Helps wide-region cadence;
+          requires a visual tear check on glass before trusting it.</p>
         <label class="field">
           <span>Screen rotation</span>
           <select id="rotation">

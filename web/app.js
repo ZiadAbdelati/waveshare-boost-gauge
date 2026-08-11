@@ -156,6 +156,7 @@ const el = {
   pixelShiftMode: document.getElementById("pixelShiftMode"),
   teSync: document.getElementById("teSync"),
   regionDBuf: document.getElementById("regionDBuf"),
+  teScanline: document.getElementById("teScanline"),
   rotation: document.getElementById("rotation"),
   demoMode: document.getElementById("demoMode"),
   loadLogsBtn: document.getElementById("loadLogsBtn"),
@@ -2001,6 +2002,7 @@ function applyThemePayload(payload, fallback = {}) {
   set("hudTrueBlack", bool("hudTrueBlack"));
   set("teSync", bool("teSync"));
   set("regionDBuf", bool("regionDBuf"));
+  set("teScanline", bool("teScanline"));
   set("rotation", (() => { const v = pick("rotation"); return v === undefined ? undefined : Number(v) || 0; })());
   set("neonMarqueeSpin", bool("neonMarqueeSpin"));
   set("pixelShift", bool("pixelShift"));
@@ -2386,6 +2388,7 @@ function syncDisplayToggles() {
   }
   if (el.teSync) el.teSync.checked = !!state.teSync;
   if (el.regionDBuf) el.regionDBuf.checked = !!state.regionDBuf;
+  if (el.teScanline) el.teScanline.checked = !!state.teScanline;
   if (el.rotation) el.rotation.value = String(state.rotation ?? 0);
   if (el.demoMode) el.demoMode.checked = !!state.demoMode;
 }
@@ -2417,6 +2420,12 @@ function wireDisplayToggles() {
     el.regionDBuf.addEventListener("change", () =>
       send({ regionDBuf: el.regionDBuf.checked },
            el.regionDBuf.checked ? "Region double-buffer on" : "Region double-buffer off"),
+    );
+  }
+  if (el.teScanline) {
+    el.teScanline.addEventListener("change", () =>
+      send({ teScanline: el.teScanline.checked },
+           el.teScanline.checked ? "TE scanline writeback on" : "TE scanline writeback off"),
     );
   }
   if (el.rotation) {
