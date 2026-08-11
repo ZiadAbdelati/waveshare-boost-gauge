@@ -10,9 +10,6 @@
 extern "C" {
 #endif
 
-/** Build the boost gauge on the active LVGL screen (legacy convenience API). */
-void boost_gauge_create(void);
-
 /** Build the boost gauge below a caller-owned page root. */
 void boost_gauge_create_in(lv_obj_t *parent);
 

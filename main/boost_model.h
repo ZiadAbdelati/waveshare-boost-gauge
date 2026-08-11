@@ -73,14 +73,6 @@ typedef struct {
     bool demo;
 } boost_log_sample_t;
 
-typedef struct {
-    char name[32];
-    size_t size;
-    uint32_t uploaded_at_ms;
-    bool present;
-    bool playback_supported;
-} boost_media_status_t;
-
 esp_err_t boost_model_init(void);
 void boost_model_publish_sample(const boost_sample_t *sample);
 void boost_model_publish_tpms(const float psi[4], const bool valid[4], int status);
@@ -99,9 +91,6 @@ bool boost_model_schedule_wants_low(void);
 
 size_t boost_model_copy_logs(boost_log_sample_t *out, size_t max_count);
 void boost_model_clear_logs(void);
-
-void boost_model_set_media_status(const boost_media_status_t *status);
-void boost_model_get_media_status(boost_media_status_t *out);
 
 enum {
     BOOST_CONFIG_BRIGHTNESS_HIGH = 1u << 0,

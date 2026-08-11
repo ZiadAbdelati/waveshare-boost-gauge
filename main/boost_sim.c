@@ -27,7 +27,7 @@ static bool s_fast_sweep;
  * excluded), computed offline by numerically differentiating the exact
  * formula below at dt=1e-4 over multiple full envelope cycles: peak was
  * 9.789 psi/s, occurring near the psi=0 crossing. Re-derive with
- * tools/bench_fast_motion.py --print-constants if PSI_MIN/PSI_MAX or the
+ * tools/bench_fast_motion.py constants if PSI_MIN/PSI_MAX or the
  * envelope shape ever change here - this is not re-derived automatically.
  */
 #define FAST_SWEEP_SLEW_PSI_PER_S 9.789f

@@ -51,13 +51,10 @@ void boost_neon_layout_readout(float psi, int slot_w, int dot_w,
     }
     out->cells[out->count].ch = (char)('0' + (whole % 10));
     out->count++;
-    const uint8_t dot_index = out->count;
     out->cells[out->count].ch = '.';
     out->count++;
     out->cells[out->count].ch = (char)('0' + tenths);
     out->count++;
-
-    (void)dot_index;
 
     /* Centre the cell block on the face. Fixed cell widths mean nothing
      * moves as the value changes within a digit count; the block re-centres

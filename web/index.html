@@ -9,7 +9,7 @@
 </head>
 <body data-page="cockpit">
 
-  <main class="shell" data-view="cockpit" id="shell">
+  <main class="shell" data-view="cockpit">
     <section class="gauge-bay" aria-label="Live boost gauge">
       <div class="mast">
         <div>
@@ -25,7 +25,7 @@
         </div>
       </div>
 
-      <div class="gauge-wrap" id="gaugeMirror">
+      <div class="gauge-wrap">
         <div class="gauge-device" id="gaugeDevice">
           <canvas id="gaugeCanvas" width="466" height="466" aria-label="Boost gauge face"></canvas>
         </div>
@@ -139,8 +139,7 @@
             <button id="deleteMediaBtn">Delete</button>
           </div>
           <progress id="mediaProgress" max="100" value="0"></progress>
-          <img id="mediaPreview" class="media-preview" alt="Uploaded GIF preview" hidden>
-          <p class="hint-text">GIF playback is exclusive and replaces the live gauge until deleted. Smaller GIFs stay at native size, centered on a black AMOLED background; 466 × 466 clips use the full panel. The browser preview remains disabled.</p>
+          <p class="hint-text">GIF playback is exclusive and replaces the live gauge until deleted. Smaller GIFs stay at native size, centered on a black AMOLED background; 466 × 466 clips use the full panel.</p>
         </section>
 
         <section class="service-bay">

@@ -126,7 +126,6 @@ const state = {
 };
 
 const el = {
-  shell: document.getElementById("shell"),
   connection: document.getElementById("connection"),
   connectionText: document.getElementById("connectionText"),
   errorBox: document.getElementById("errorBox"),
@@ -134,7 +133,6 @@ const el = {
   canvas: document.getElementById("gaugeCanvas"),
   sparkline: document.getElementById("sparkline"),
   gaugeDevice: document.getElementById("gaugeDevice"),
-  gaugeMirror: document.getElementById("gaugeMirror"),
   pageToggle: document.getElementById("pageToggle"),
   pageSegments: [...document.querySelectorAll(".page-segment")],
   sampleCount: document.getElementById("sampleCount"),
@@ -169,7 +167,6 @@ const el = {
   deleteMediaBtn: document.getElementById("deleteMediaBtn"),
   mediaStatus: document.getElementById("mediaStatus"),
   mediaProgress: document.getElementById("mediaProgress"),
-  mediaPreview: document.getElementById("mediaPreview"),
   otaFile: document.getElementById("otaFile"),
   uploadOtaBtn: document.getElementById("uploadOtaBtn"),
   otaStatus: document.getElementById("otaStatus"),
@@ -494,8 +491,6 @@ function drawGauge(sample) {
       return drawBigDigitGauge(sample, psi, g);
     case "neon":
       return drawNeonGauge(sample, psi, g);
-    case "sport":
-      return drawSportGauge(sample, psi, g);
     default:
       return drawArcGauge(sample, psi, g);
   }
@@ -684,9 +679,9 @@ function drawNeonGauge(sample, psi, g) {
      * is decorative, not a measurement). */
     let spinTicks = 0;
     if (state.neonMarqueeSpin) {
-      spinTicks = (state.neonSpinTicks !== undefined)
-        ? state.neonSpinTicks
-        : Math.floor(performance.now() / NEON_MARQUEE_SPIN_MS);
+      /* The parity test injects state.neonSpinTicks for a deterministic phase;
+       * production leaves it undefined and derives T from wall clock. */
+      spinTicks = state.neonSpinTicks ?? Math.floor(performance.now() / NEON_MARQUEE_SPIN_MS);
     }
     const spinDir = [-1, 1, -1];
     /* Only advance when the chase is ON: the panel never advances the phase
@@ -943,14 +938,6 @@ function roundRectPath(x, y, w, h, r) {
   ctx.closePath();
 }
 
-/* Linear psi→angle for the stylized faces (symmetric sweep, clockwise from
- * top). The precise value lives in the center readout, so a linear dial reads
- * fine even when 0 isn't centered. */
-function linMap(psi, range, a0, a1) {
-  const t = (clamp(psi, range.psiMin, range.psiMax) - range.psiMin) / (range.psiMax - range.psiMin);
-  return a0 + t * (a1 - a0);
-}
-
 /* Split a psi value into sign / integer / fraction parts for fixed-decimal
  * rendering. */
 function splitNum(psi, decimals) {
@@ -1148,7 +1135,6 @@ function drawVaultGauge(sample, psi, g) {
 }
 
 /* ── Style: hud — Night City cyberpunk targeting HUD ─────────────────────── */
-let hudPrevPsi = 0;
 function drawHudGauge(sample, psi, g) {
   const range = psiRange();
   const p = state.palette;
@@ -1275,7 +1261,6 @@ function drawHudGauge(sample, psi, g) {
   /* big italic value with a glitch shear on fast spikes */
   const { neg, intPart, fracPart } = splitNum(psi, 1);
   const intStr = `${neg ? "−" : ""}${intPart}`;
-  hudPrevPsi = psi;
   ctx.font = `700 italic 88px "Bahnschrift", "DIN Alternate", system-ui, sans-serif`;
   /* Match the physical face's visible chromatic ghost passes. Keep the offset
    * layers opaque at their pre-blended strength so the effect is not lost
@@ -1311,140 +1296,6 @@ function drawHudGauge(sample, psi, g) {
   ctx.fillText("NC-2077", 138, 150);
   ctx.restore();
 }
-
-/* ── Style: sport — magenta/purple segmented circular cluster ─────────────── */
-function drawSportGauge(sample, psi, g) {
-  const range = psiRange();
-  const { cx, cy, scale } = g;
-  const over = psi >= range.psiOverboost;
-  const zone = over ? "OVERBOOST" : psi >= 0 ? "BOOST" : "VACUUM";
-  const magenta = "#FF36C0";
-  const green = "#39FF8B";
-  const stars = [
-    [-184, -191, 1], [-131, -177, 1], [-69, -194, 1], [-12, -166, 1],
-    [48, -188, 1], [112, -171, 1], [174, -183, 1], [-208, -126, 1],
-    [-157, -111, 1], [-102, -139, 1], [-37, -119, 1], [26, -143, 1],
-    [88, -112, 1], [143, -130, 1], [201, -91, 1], [-185, -57, 1],
-    [-121, -73, 1], [-57, -83, 1], [7, -66, 1], [69, -86, 1],
-    [131, -61, 1], [190, -48, 1],
-  ];
-  const segLine = (color, x0, y0, x1, y1, width, alpha = 1) => {
-    ctx.globalAlpha = alpha;
-    ctx.strokeStyle = color;
-    ctx.lineWidth = width;
-    ctx.lineCap = "round";
-    ctx.beginPath();
-    ctx.moveTo(x0, y0);
-    ctx.lineTo(x1, y1);
-    ctx.stroke();
-    ctx.globalAlpha = 1;
-  };
-  ctx.save();
-  ctx.translate(cx, cy);
-  ctx.scale(scale, scale);
-
-  /* AMOLED-black circular field, with a restrained starfield and horizon haze. */
-  ctx.beginPath();
-  ctx.arc(0, 0, 233, 0, Math.PI * 2);
-  ctx.clip();
-  const field = ctx.createRadialGradient(0, -40, 30, 0, 0, 245);
-  field.addColorStop(0, "#090613");
-  field.addColorStop(0.72, "#030308");
-  field.addColorStop(1, "#000000");
-  ctx.fillStyle = field;
-  ctx.fillRect(-233, -233, 466, 466);
-  for (const [x, y, r] of stars) {
-    ctx.globalAlpha = 0.22;
-    ctx.fillStyle = "#B9D7D8";
-    ctx.beginPath();
-    ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  const horizon = ctx.createLinearGradient(0, 78, 0, 233);
-  horizon.addColorStop(0, "rgba(47,224,208,0)");
-  horizon.addColorStop(0.62, "rgba(47,224,208,0.08)");
-  horizon.addColorStop(1, "rgba(47,224,208,0.42)");
-  ctx.fillStyle = horizon;
-  ctx.fillRect(-233, 78, 466, 155);
-  ctx.strokeStyle = "rgba(47,224,208,0.16)";
-  ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(-233, 190); ctx.lineTo(233, 190); ctx.stroke();
-
-  /* One thick continuous ring: magenta at the crown, purple at the sides,
-   * and cyan at the bottom, with the glow kept underneath the main stroke. */
-  const ringGradient = ctx.createConicGradient(-Math.PI / 2, 0, 0);
-  ringGradient.addColorStop(0, "#FF2D9B");
-  ringGradient.addColorStop(0.25, "#A735D2");
-  ringGradient.addColorStop(0.5, "#2FE0D0");
-  ringGradient.addColorStop(0.75, "#A735D2");
-  ringGradient.addColorStop(1, "#FF2D9B");
-  ctx.lineCap = "round";
-  ctx.strokeStyle = ringGradient;
-  ctx.globalAlpha = 0.26;
-  ctx.lineWidth = 30;
-  ctx.shadowColor = "#FF2D9B";
-  ctx.shadowBlur = 24;
-  ctx.beginPath(); ctx.arc(0, 0, 208, 0, Math.PI * 2); ctx.stroke();
-  ctx.globalAlpha = 1;
-  ctx.lineWidth = 20;
-  ctx.shadowColor = "rgba(255,45,155,0.9)";
-  ctx.shadowBlur = 14;
-  ctx.beginPath(); ctx.arc(0, 0, 208, 0, Math.PI * 2); ctx.stroke();
-  ctx.shadowColor = "transparent";
-  ctx.shadowBlur = 0;
-  ctx.strokeStyle = "rgba(255,120,220,0.26)";
-  ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.arc(0, 0, 185, 0, Math.PI * 2); ctx.stroke();
-
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillStyle = green;
-  ctx.shadowColor = "rgba(57,255,139,0.8)";
-  ctx.shadowBlur = 8;
-  ctx.font = '700 17px "Bahnschrift", system-ui, sans-serif';
-  ctx.fillText(zone.split("").join(" "), 0, -139);
-  ctx.shadowColor = "transparent";
-  ctx.shadowBlur = 0;
-
-  /* Fixed-slot, bright segmented readout matching the physical cluster. */
-  const masks = [0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x07, 0x7f, 0x6f];
-  const drawDigit = (digit, x, y) => {
-    if (digit < 0 || digit > 9) return;
-    const mask = masks[digit];
-    const w = 45, h = 102, k = 8, midGap = 6;
-    const points = [
-      [k, 0, w - k, 0], [w, k, w, h / 2 - midGap],
-      [w, h / 2 + midGap, w, h - k], [k, h, w - k, h],
-      [0, h / 2 + midGap, 0, h - k], [0, k, 0, h / 2 - midGap],
-      [k, h / 2, w - k, h / 2],
-    ];
-    for (let i = 0; i < 7; i++) if (mask & (1 << i)) {
-      const [x0, y0, x1, y1] = points[i];
-      segLine(magenta, x - w / 2 + x0, y - h / 2 + y0,
-              x - w / 2 + x1, y - h / 2 + y1, 22, 0.18);
-      segLine(magenta, x - w / 2 + x0, y - h / 2 + y0,
-              x - w / 2 + x1, y - h / 2 + y1, 14, 1);
-    }
-  };
-  const absoluteTenths = Math.round(Math.abs(Number(psi) || 0) * 10);
-  const whole = Math.floor(absoluteTenths / 10);
-  if (psi < -0.05) segLine(magenta, -116, -3, -94, -3, 14, 1);
-  if (whole >= 10) drawDigit(Math.floor(whole / 10) % 10, -77, -3);
-  drawDigit(whole % 10, -25, -3);
-  ctx.fillStyle = magenta;
-  ctx.shadowColor = "rgba(255,54,192,0.9)";
-  ctx.shadowBlur = 14;
-  ctx.beginPath(); ctx.arc(3, 42, 7, 0, Math.PI * 2); ctx.fill();
-  ctx.shadowColor = "transparent";
-  ctx.shadowBlur = 0;
-  drawDigit(absoluteTenths % 10, 31, -3);
-
-  ctx.fillStyle = "rgba(255,54,192,0.58)";
-  ctx.font = '600 13px Consolas, monospace';
-  ctx.fillText(`PEAK ${Math.max(0, Number(sample.peakPsi || 0)).toFixed(1)} PSI`, 0, 174);
-  ctx.restore();
-}
-
 /* ── Style: bigdigit — huge Alvida number on a color-sweeping ground ──────── */
 function bigDigitBackground(psi) {
   /* The physical Big Digit face uses the shared 24-bucket ramp. Reuse it here
@@ -2038,6 +1889,41 @@ let colorPutTimer = null;
 
 /* Colour inputs fire continuously while dragging. Debounce so one drag is a
  * single PUT rather than fifty, each of which rebuilds the panel scene. */
+/* Fold a /themes-shaped payload into state. `fallback` supplies defaults for
+ * fields the payload omits (the cockpit refresh uses it for the hard-coded
+ * big-digit/vault defaults); without a fallback an omitted field leaves the
+ * previous state untouched. All servers currently echo every field, so the
+ * guarded form is belt-and-braces against a partial response. */
+function applyThemePayload(payload, fallback = {}) {
+  const pick = (key) => (payload[key] !== undefined ? payload[key] : fallback[key]);
+  const set = (key, value) => { if (value !== undefined) state[key] = value; };
+  const bool = (key) => { const v = pick(key); return v === undefined ? undefined : !!v; };
+
+  if (payload.themes !== undefined) state.themes = payload.themes;
+  else if (fallback.themes !== undefined) state.themes = fallback.themes;
+
+  set("bigDigitStaticBg", bool("bigDigitStaticBg"));
+  set("bigDigitColorText", bool("bigDigitColorText"));
+  set("bigDigitStaticColor", pick("bigDigitStaticColor"));
+  set("bigDigitTextColor", pick("bigDigitTextColor"));
+  set("arcGradient", bool("arcGradient"));
+  set("hudGradient", bool("hudGradient"));
+  set("hudTrueBlack", bool("hudTrueBlack"));
+  set("teSync", bool("teSync"));
+  set("regionDBuf", bool("regionDBuf"));
+  set("rotation", (() => { const v = pick("rotation"); return v === undefined ? undefined : Number(v) || 0; })());
+  set("neonMarqueeSpin", bool("neonMarqueeSpin"));
+  set("pixelShift", bool("pixelShift"));
+  set("pixelShiftSec", (() => { const v = pick("pixelShiftSec"); return v === undefined ? undefined : Number(v) || state.pixelShiftSec; })());
+  set("demoMode", bool("demoMode"));
+  set("vaultFace", pick("vaultFace"));
+  set("vaultVignette", pick("vaultVignette"));
+  set("vaultNeedleRed", bool("vaultNeedleRed"));
+  set("vaultNeedleTail", bool("vaultNeedleTail"));
+  set("neonLayout", (() => { const v = pick("neonLayout"); return v === undefined ? undefined : ([0, 1, 2].includes(Number(v)) ? Number(v) : 1); })());
+  set("neonPreset", (() => { const v = pick("neonPreset"); return v === undefined ? undefined : ([0, 1, 2, 3].includes(Number(v)) ? Number(v) : 0); })());
+}
+
 function queueThemeConfig(body, okMsg) {
   clearTimeout(colorPutTimer);
   colorPutTimer = setTimeout(async () => {
@@ -2047,24 +1933,7 @@ function queueThemeConfig(body, okMsg) {
         method: "PUT",
         body: JSON.stringify(body),
       });
-      state.themes = payload.themes || state.themes;
-      state.bigDigitStaticBg = !!payload.bigDigitStaticBg;
-      state.bigDigitColorText = !!payload.bigDigitColorText;
-      state.bigDigitStaticColor = payload.bigDigitStaticColor || state.bigDigitStaticColor;
-      state.bigDigitTextColor = payload.bigDigitTextColor || state.bigDigitTextColor;
-      state.arcGradient = !!payload.arcGradient;
-      state.hudGradient = !!payload.hudGradient;
-      state.hudTrueBlack = !!payload.hudTrueBlack;
-      state.teSync = !!payload.teSync;
-      state.regionDBuf = !!payload.regionDBuf;
-      state.rotation = Number(payload.rotation) || 0;
-      state.neonMarqueeSpin = !!payload.neonMarqueeSpin;
-      state.vaultFace = payload.vaultFace || state.vaultFace;
-      if (payload.vaultVignette !== undefined) state.vaultVignette = payload.vaultVignette;
-      if (payload.vaultNeedleRed !== undefined) state.vaultNeedleRed = !!payload.vaultNeedleRed;
-      if (payload.vaultNeedleTail !== undefined) state.vaultNeedleTail = !!payload.vaultNeedleTail;
-      if (payload.neonLayout !== undefined) state.neonLayout = [0, 1, 2].includes(Number(payload.neonLayout)) ? Number(payload.neonLayout) : 1;
-      if (payload.neonPreset !== undefined) state.neonPreset = [0, 1, 2, 3].includes(Number(payload.neonPreset)) ? Number(payload.neonPreset) : 0;
+      applyThemePayload(payload);
       const active = state.themes.find((t) => t.id === state.activeThemeId);
       if (active) setTheme(active);
       renderThemes();
@@ -2439,21 +2308,7 @@ function wireDisplayToggles() {
         method: "PUT",
         body: JSON.stringify(body),
       });
-      state.pixelShift = !!payload.pixelShift;
-      state.pixelShiftSec = Number(payload.pixelShiftSec) || state.pixelShiftSec;
-      state.teSync = !!payload.teSync;
-      state.regionDBuf = !!payload.regionDBuf;
-      state.rotation = Number(payload.rotation) || 0;
-      state.demoMode = !!payload.demoMode;
-      state.bigDigitStaticBg = !!payload.bigDigitStaticBg;
-      state.bigDigitColorText = !!payload.bigDigitColorText;
-      state.hudTrueBlack = !!payload.hudTrueBlack;
-      state.neonMarqueeSpin = !!payload.neonMarqueeSpin;
-      state.vaultNeedleRed = !!payload.vaultNeedleRed;
-      state.vaultNeedleTail = !!payload.vaultNeedleTail;
-       state.neonLayout = [0, 1, 2].includes(Number(payload.neonLayout))
-         ? Number(payload.neonLayout) : state.neonLayout;
-      state.themes = payload.themes || state.themes;
+      applyThemePayload(payload);
       syncDisplayToggles();
       showOk(label);
     } catch (error) {
@@ -2933,13 +2788,7 @@ async function refreshAll(source = ERR_USER) {
     if (IS_COCKPIT) {
       /* Keep device wall-clock aligned with the browser so dim schedules match local time. */
       try {
-        const now = new Date();
-        const tz = -now.getTimezoneOffset();
-        await api("/time", {
-          method: "POST",
-          body: JSON.stringify({ epochMs: now.getTime(), timezoneOffsetMinutes: tz }),
-        });
-        if (el.tzOffset) el.tzOffset.value = tz;
+        await syncDeviceClock(-new Date().getTimezoneOffset());
       } catch (_) {
         /* non-fatal; schedule may wait until manual Sync */
       }
@@ -2947,26 +2796,14 @@ async function refreshAll(source = ERR_USER) {
     const requests = [api("/state"), api("/config"), api("/themes"), api("/network")];
     if (IS_COCKPIT) requests.push(api("/media/status"));
     const [statePayload, config, themes, network, media] = await Promise.all(requests);
-    state.themes = themes.themes || [];
-    state.bigDigitStaticBg = !!themes.bigDigitStaticBg;
-    state.bigDigitColorText = !!themes.bigDigitColorText;
-    state.bigDigitStaticColor = themes.bigDigitStaticColor || "#000000";
-    state.bigDigitTextColor = themes.bigDigitTextColor || "#ffffff";
-    state.arcGradient = !!themes.arcGradient;
-    state.hudGradient = !!themes.hudGradient;
-    state.hudTrueBlack = !!themes.hudTrueBlack;
-    state.teSync = !!themes.teSync;
-    state.regionDBuf = !!themes.regionDBuf;
-    state.rotation = Number(themes.rotation) || 0;
-    state.demoMode = !!themes.demoMode;
-    state.vaultFace = themes.vaultFace || "#05281a";
-    state.vaultVignette = themes.vaultVignette ?? 60;
-    state.vaultNeedleRed = !!themes.vaultNeedleRed;
-    state.vaultNeedleTail = !!themes.vaultNeedleTail;
-    state.neonLayout = [0, 1, 2].includes(Number(themes.neonLayout)) ? Number(themes.neonLayout) : 1;
-    state.neonPreset = [0, 1, 2, 3].includes(Number(themes.neonPreset)) ? Number(themes.neonPreset) : 0;
-    state.pixelShift = !!themes.pixelShift;
-    state.pixelShiftSec = Number(themes.pixelShiftSec) || state.pixelShiftSec;
+    applyThemePayload(themes, {
+      themes: [],
+      bigDigitStaticColor: "#000000",
+      bigDigitTextColor: "#ffffff",
+      vaultFace: "#05281a",
+      vaultVignette: 60,
+      pixelShiftSec: state.pixelShiftSec,
+    });
     syncDisplayToggles();
     state.activeThemeId = themes.activeThemeId || statePayload.activeThemeId || state.activeThemeId;
     if (IS_COCKPIT) renderThemes();
@@ -3067,17 +2904,27 @@ function connectEvents() {
   };
 }
 
-async function syncTime() {
+/* Push the browser clock to the device. The offset comes from tzOverride when
+ * given (the cockpit refresh always sends the browser's own offset), otherwise
+ * from the timezone field when it holds a finite value, else the browser
+ * offset. Updates el.tzOffset with the device's echoed offset on success. */
+async function syncDeviceClock(tzOverride) {
   const now = new Date();
-  const timezoneOffsetMinutes = Number(el.tzOffset.value);
-  const tz = Number.isFinite(timezoneOffsetMinutes)
-    ? timezoneOffsetMinutes
-    : -now.getTimezoneOffset();
+  const tz = Number.isFinite(Number(tzOverride))
+    ? Number(tzOverride)
+    : Number.isFinite(Number(el.tzOffset?.value))
+      ? Number(el.tzOffset.value)
+      : -now.getTimezoneOffset();
   const response = await api("/time", {
     method: "POST",
     body: JSON.stringify({ epochMs: now.getTime(), timezoneOffsetMinutes: tz }),
   });
-  el.tzOffset.value = response.timezoneOffsetMinutes;
+  if (el.tzOffset) el.tzOffset.value = response.timezoneOffsetMinutes;
+  return response;
+}
+
+async function syncTime() {
+  const response = await syncDeviceClock();
   renderState(response);
   showOk("Time synchronized");
 }
@@ -3095,17 +2942,7 @@ async function saveConfig() {
     },
   };
   /* Ensure wall clock is current before evaluating the schedule window. */
-  try {
-    const now = new Date();
-    const tz = Number(el.tzOffset.value);
-    await api("/time", {
-      method: "POST",
-      body: JSON.stringify({
-        epochMs: now.getTime(),
-        timezoneOffsetMinutes: Number.isFinite(tz) ? tz : -now.getTimezoneOffset(),
-      }),
-    });
-  } catch (_) {}
+  try { await syncDeviceClock(); } catch (_) {}
   renderConfig(await api("/config", { method: "PUT", body: JSON.stringify(payload) }));
   /* Give the control task a beat to apply brightness, then refresh. */
   await new Promise((r) => setTimeout(r, 300));
@@ -3214,14 +3051,10 @@ async function exportLogs() {
 function renderMediaStatus(media) {
   if (!media || !media.present) {
     el.mediaStatus.textContent = "No GIF uploaded";
-    el.mediaPreview.hidden = true;
-    el.mediaPreview.removeAttribute("src");
     return;
   }
   const kb = Math.round((media.sizeBytes ?? media.size ?? 0) / 1024);
   el.mediaStatus.textContent = `${media.name || "active.gif"} · ${kb} KB · ${media.playbackSupported ? "playing on AMOLED" : "ready"}`;
-  el.mediaPreview.hidden = true;
-  el.mediaPreview.removeAttribute("src");
 }
 
 function setUploadControls(uploading) {

@@ -109,9 +109,9 @@ static const boost_theme_t s_defaults[] = {
         .overboost = 0xFF1500,
         .zero = 0xFFFFFF,
     },
-    /* Sport Cluster theme removed from the selectable list per user request.
-     * The BOOST_STYLE_SPORT enum + renderer remain in boost_gauge.c for
-     * potential future use, but the theme is no longer user-selectable. */
+    /* Sport Cluster was removed outright (renderer, enum member and style
+     * token) per the 2026-08-10 repo audit; its history lives in git if the
+     * design is ever revived. */
 };
 
 #define THEME_COUNT (sizeof(s_defaults) / sizeof(s_defaults[0]))
@@ -786,8 +786,6 @@ const char *boost_style_name(boost_gauge_style_t style)
             return "hud";
         case BOOST_STYLE_BIGDIGIT:
             return "bigdigit";
-        case BOOST_STYLE_SPORT:
-            return "sport";
         case BOOST_STYLE_NEON:
             return "neon";
         case BOOST_STYLE_ARC:

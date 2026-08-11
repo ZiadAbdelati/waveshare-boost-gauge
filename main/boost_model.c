@@ -44,7 +44,6 @@ static boost_log_sample_t *s_logs;
 static size_t s_log_head;
 static size_t s_log_count;
 static uint32_t s_log_divider;
-static boost_media_status_t s_media;
 
 /* Pre-zero-angle NVS payload. Keep this exact layout for in-place migration. */
 typedef struct {
@@ -344,8 +343,6 @@ esp_err_t boost_model_init(void)
     s_state.brightness = s_config.brightness_high;
     s_state.timezone_offset_minutes = s_config.timezone_offset_minutes;
     strlcpy(s_state.active_theme_id, s_config.active_theme_id, sizeof(s_state.active_theme_id));
-    memset(&s_media, 0, sizeof(s_media));
-    s_media.playback_supported = false;
     xSemaphoreGive(s_lock);
 
     ESP_LOGI(TAG, "config ready: theme=%s high=%d low=%d",
@@ -717,25 +714,5 @@ void boost_model_clear_logs(void)
     s_log_head = 0;
     s_log_count = 0;
     s_log_divider = 0;
-    xSemaphoreGive(s_lock);
-}
-
-void boost_model_set_media_status(const boost_media_status_t *status)
-{
-    if (status == NULL || s_lock == NULL) {
-        return;
-    }
-    xSemaphoreTake(s_lock, portMAX_DELAY);
-    s_media = *status;
-    xSemaphoreGive(s_lock);
-}
-
-void boost_model_get_media_status(boost_media_status_t *out)
-{
-    if (out == NULL || s_lock == NULL) {
-        return;
-    }
-    xSemaphoreTake(s_lock, portMAX_DELAY);
-    *out = s_media;
     xSemaphoreGive(s_lock);
 }

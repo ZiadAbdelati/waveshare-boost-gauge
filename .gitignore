@@ -30,10 +30,6 @@ preview/sim_*/
 # Per-agent build trees
 build*/
 
-# Neon theme mockups: the four contact sheets are the committed design
-# reference. Per-state frames are regenerable with tools/neon_mockup.py.
-preview/neon_mock/*
-!preview/neon_mock/*_sheet.png
 # Session render scratch (regenerate with sim/ --screenshot; committed set is preview/sim/)
 preview/mq_*/
 preview/device_*.png

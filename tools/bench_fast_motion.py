@@ -39,7 +39,7 @@ import statistics
 import sys
 import time
 from pathlib import Path
-from urllib.request import urlopen, Request
+from bench_common import DEFAULT_URL, api_get, api_put, api_post, wait_online
 
 # ---------------------------------------------------------------------------
 # Constants mirrored from main/boost_sim.c and main/boost_gauge.c. Keep these
@@ -100,40 +100,6 @@ def angle_slope_deg_per_psi(psi: float) -> float:
     return VAULT_BOOST_SLOPE_DEG_PER_PSI if psi >= 0 else VAULT_VAC_SLOPE_DEG_PER_PSI
 
 
-def api_get(base: str, path: str) -> dict:
-    with urlopen(f"{base}{path}", timeout=5) as r:
-        return json.load(r)
-
-
-def api_put(base: str, path: str, body: dict) -> dict:
-    data = json.dumps(body).encode()
-    req = Request(f"{base}{path}", data=data, method="PUT",
-                   headers={"Content-Type": "application/json"})
-    with urlopen(req, timeout=5) as r:
-        return json.load(r)
-
-
-def api_post(base: str, path: str) -> None:
-    req = Request(f"{base}{path}", data=b"", method="POST")
-    try:
-        urlopen(req, timeout=3)
-    except Exception:
-        pass  # device reboots before it can answer; expected
-
-
-def wait_online(base: str, timeout_s: float = 30.0) -> None:
-    deadline = time.monotonic() + timeout_s
-    last_err = None
-    while time.monotonic() < deadline:
-        try:
-            api_get(base, "/api/v1/state")
-            return
-        except Exception as e:  # noqa: BLE001
-            last_err = e
-            time.sleep(0.3)
-    raise SystemExit(f"device did not come back online: {last_err}")
-
-
 def cmd_constants(_args) -> int:
     peak_v, at_psi = trend_peak_slew_psi_per_s()
     period = 2.0 * (PSI_MAX - PSI_MIN) / abs(peak_v)
@@ -155,7 +121,7 @@ def cmd_sweep(args) -> int:
     wait_online(base)
     print(f"online, setting demoMode=true demoFastSweep=true regionDBuf={args.region_dbuf} "
           f"teSync=true teScanline={args.te_scanline} pixelShift=false", file=sys.stderr)
-    theme = args.theme or ("vault-tec" if args.set_theme else None)
+    theme = args.theme
     if theme:
         api_put(base, "/api/v1/themes/active", {"id": theme})
     if args.layout is not None:
@@ -204,7 +170,7 @@ def cmd_sweep(args) -> int:
         "n_distinct_windows": len(deduped),
         "regionDBuf": args.region_dbuf,
         "teScanline": args.te_scanline,
-        "theme": args.theme or ("vault-tec" if args.set_theme else None),
+        "theme": args.theme,
         "layout": args.layout,
         "renderFps_min": min(col(samples, "renderFps")),
         "renderFps_median": statistics.median(col(samples, "renderFps")),
@@ -534,7 +500,7 @@ def main() -> int:
     p_const.set_defaults(func=cmd_constants)
 
     p_sweep = sub.add_parser("sweep", help="controlled fast-sweep measurement (reboots the board)")
-    p_sweep.add_argument("--url", default="http://192.168.50.102")
+    p_sweep.add_argument("--url", default=DEFAULT_URL)
     p_sweep.add_argument("--settle", type=float, default=14.0)
     p_sweep.add_argument("--sample", type=float, default=20.0)
     p_sweep.add_argument("--region-dbuf", type=lambda s: s.lower() == "true", default=True,
@@ -543,11 +509,8 @@ def main() -> int:
                           help="true/false: enable the dynamic CO5300 set_tear_scanline "
                                "writeback (region-dbuf bursts wait for the scan to clear the "
                                "band instead of the next V-blank)")
-    p_sweep.add_argument("--set-theme", action="store_true",
-                          help="also PUT /themes/active id=vault-tec first")
     p_sweep.add_argument("--theme", default=None,
-                          help="theme id to PUT as active after reboot (e.g. neon); "
-                               "overrides --set-theme when both are given")
+                          help="theme id to PUT as active after reboot (e.g. vault-tec or neon)")
     p_sweep.add_argument("--layout", type=int, default=None,
                           help="neonLayout 0=tube/1=segments/2=marquee to PUT when "
                                "--theme neon is used")
@@ -557,7 +520,7 @@ def main() -> int:
     p_cross = sub.add_parser(
         "crossings",
         help="bounded boost<->overboost crossing capture, or offline re-analysis")
-    p_cross.add_argument("--url", default="http://192.168.50.102")
+    p_cross.add_argument("--url", default=DEFAULT_URL)
     p_cross.add_argument("--theme", default="neon")
     p_cross.add_argument("--layout", type=int, default=1,
                          help="neon layout (default: segments); use with --theme neon")
@@ -579,7 +542,7 @@ def main() -> int:
     p_cross.set_defaults(func=cmd_crossings)
 
     p_org = sub.add_parser("organic", help="cross-check against the normal demo waveform (no reboot)")
-    p_org.add_argument("--url", default="http://192.168.50.102")
+    p_org.add_argument("--url", default=DEFAULT_URL)
     p_org.add_argument("--duration", type=float, default=90.0)
     p_org.add_argument("--out", default="fast_motion_organic_results.json")
     p_org.set_defaults(func=cmd_organic)

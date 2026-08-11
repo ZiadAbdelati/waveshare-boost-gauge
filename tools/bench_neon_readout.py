@@ -16,25 +16,13 @@ from __future__ import annotations
 import argparse
 import json
 import time
-from urllib.request import Request, urlopen
+from bench_common import DEFAULT_URL, api_get, api_put
 
 METRICS = (
     "renderFps", "framesOverBudget", "worstRenderUs",
     "renderGapP50Us", "renderGapMaxUs", "pixelsPerSecond",
     "teWaits", "teTimeouts", "teSkips",
 )
-
-
-def api_get(base: str, path: str) -> dict:
-    with urlopen(f"{base}{path}", timeout=5) as response:
-        return json.load(response)
-
-
-def api_put(base: str, path: str, body: dict) -> dict:
-    request = Request(f"{base}{path}", data=json.dumps(body).encode(),
-                      method="PUT", headers={"Content-Type": "application/json"})
-    with urlopen(request, timeout=8) as response:
-        return json.load(response)
 
 
 def report(name: str, samples: dict[str, list]) -> None:
@@ -69,7 +57,7 @@ def capture(base: str, seconds: float) -> dict[str, list]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--url", default="http://192.168.50.102")
+    ap.add_argument("--url", default=DEFAULT_URL)
     ap.add_argument("--seconds", type=float, default=30.0)
     ap.add_argument("--settle", type=float, default=6.0)
     args = ap.parse_args()
@@ -87,12 +75,12 @@ def main() -> int:
     try:
         api_put(base, "/api/v1/themes/config",
                 {"activeThemeId": "neon", "neonLayout": 2, "neonMarqueeSpin": True,
-                 "demoMode": True, "pixelShift": False})
+                 "demoMode": True, "pixelShift": False}, timeout=8)
         time.sleep(args.settle)
         report(f"neon marquee (spin on, demo, pixelShift off) {args.seconds:.0f}s",
                capture(base, args.seconds))
     finally:
-        api_put(base, "/api/v1/themes/config", cfg0)
+        api_put(base, "/api/v1/themes/config", cfg0, timeout=8)
     return 0
 
 

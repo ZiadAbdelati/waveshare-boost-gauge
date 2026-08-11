@@ -1,6 +1,7 @@
 package dev.boostgauge
 
 import android.app.Application
+import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.boostgauge.api.BoostGaugeApi
@@ -9,7 +10,6 @@ import dev.boostgauge.api.GaugeConfig
 import dev.boostgauge.api.GaugeState
 import dev.boostgauge.api.GaugeTheme
 import dev.boostgauge.api.LogSample
-import dev.boostgauge.data.ConnectionStore
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -31,12 +31,12 @@ data class BoostGaugeUiState(
     val state: GaugeState = GaugeState(),
     val config: GaugeConfig = GaugeConfig(),
     val themes: List<GaugeTheme> = emptyList(),
-    val activeThemeId: String = "pit-lane",
+    val activeThemeId: String = "dyno-cell",
     val logs: List<LogSample> = emptyList()
 )
 
 class BoostGaugeViewModel(application: Application) : AndroidViewModel(application) {
-    private val store = ConnectionStore(application)
+    private val prefs = application.getSharedPreferences("boost-gauge", Context.MODE_PRIVATE)
     private var api: BoostGaugeApi? = null
     private var websocket: WebSocket? = null
     private var pollJob: Job? = null
@@ -45,7 +45,7 @@ class BoostGaugeViewModel(application: Application) : AndroidViewModel(applicati
 
     private val _uiState = MutableStateFlow(
         BoostGaugeUiState(
-            baseUrlInput = store.loadBaseUrl().ifBlank { "http://boostgauge.local" }
+            baseUrlInput = prefs.getString("baseUrl", null).orEmpty().ifBlank { "http://boostgauge.local" }
         )
     )
     val uiState: StateFlow<BoostGaugeUiState> = _uiState
@@ -56,7 +56,7 @@ class BoostGaugeViewModel(application: Application) : AndroidViewModel(applicati
 
     fun connect() {
         val baseUrl = BoostGaugeApi.normalizeBaseUrl(_uiState.value.baseUrlInput)
-        store.saveBaseUrl(baseUrl)
+        prefs.edit().putString("baseUrl", baseUrl).apply()
         api = BoostGaugeApi(baseUrl)
         websocket?.cancel()
         pollJob?.cancel()
@@ -306,9 +306,7 @@ class BoostGaugeViewModel(application: Application) : AndroidViewModel(applicati
     }
 }
 
-fun minutesLabel(minutes: Int): String = "%02d:%02d".format((minutes / 60).floorMod(24), minutes.floorMod(60))
-
-private fun Int.floorMod(divisor: Int): Int = ((this % divisor) + divisor) % divisor
+fun minutesLabel(minutes: Int): String = "%02d:%02d".format(Math.floorMod(minutes / 60, 24), Math.floorMod(minutes, 60))
 
 fun Long.uptimeLabel(): String {
     val seconds = this / 1_000

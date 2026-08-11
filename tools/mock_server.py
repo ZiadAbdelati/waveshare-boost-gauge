@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 import json
 import math
 import mimetypes
@@ -486,9 +487,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/csv")
             self.send_header("Content-Disposition", "attachment; filename=boost-gauge-log.csv")
             self.end_headers()
-            writer = csv.DictWriter(self.wfile_text(), fieldnames=["ts", "psi", "zone", "demo"])
+            text = self.wfile_text()
+            writer = csv.DictWriter(text, fieldnames=["ts", "psi", "zone", "demo"])
             writer.writeheader()
             writer.writerows(LOGS)
+            text.flush()
+            text.detach()
         elif path == "/api/v1/media/status":
             self.send_json(MEDIA)
         elif path == "/api/v1/network":
@@ -544,14 +548,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def wfile_text(self):
-        class Sink:
-            def __init__(self, raw):
-                self.raw = raw
-
-            def write(self, text):
-                self.raw.write(text.encode())
-
-        return Sink(self.wfile)
+        return io.TextIOWrapper(self.wfile, encoding="utf-8", newline="")
 
     def do_PUT(self) -> None:
         parsed = urlparse(self.path)

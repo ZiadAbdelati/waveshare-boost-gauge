@@ -14,7 +14,7 @@ data class GaugeState(
     val uptimeMs: Long = 0,
     val epochMs: Long = 0,
     val timezoneOffsetMinutes: Int = 0,
-    val activeThemeId: String = "pit-lane"
+    val activeThemeId: String = "dyno-cell"
 )
 
 @Serializable
@@ -23,7 +23,7 @@ data class GaugeConfig(
     val brightnessLow: Int = 20,
     val dimSchedule: DimSchedule = DimSchedule(),
     val timezoneOffsetMinutes: Int = 0,
-    val activeThemeId: String = "pit-lane"
+    val activeThemeId: String = "dyno-cell"
 )
 
 @Serializable
@@ -50,8 +50,6 @@ data class GaugeTheme(
     val id: String,
     val name: String = id,
     val colors: ThemeColors = ThemeColors(),
-    val brightnessHigh: Int? = null,
-    val brightnessLow: Int? = null
 )
 
 @Serializable
@@ -72,15 +70,11 @@ data class ActiveThemeRequest(val id: String)
 @Serializable
 data class LogResponse(
     val samples: List<LogSample> = emptyList(),
-    val count: Int = samples.size,
-    val limit: Int = samples.size
 )
 
 @Serializable
 data class LogSample(
-    val epochMs: Long = 0,
     val uptimeMs: Long = 0,
     val psi: Double = 0.0,
-    val peakPsi: Double = 0.0,
     val zone: String = ""
 )

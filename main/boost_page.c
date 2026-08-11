@@ -251,7 +251,3 @@ void boost_page_show(boost_page_id_t page)
     if (page <= BOOST_PAGE_TPMS) show_page(page);
 }
 
-lv_obj_t *boost_page_root(boost_page_id_t page)
-{
-    return page <= BOOST_PAGE_TPMS ? s_page_root[page] : NULL;
-}

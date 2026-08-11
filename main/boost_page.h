@@ -34,9 +34,6 @@ void boost_page_show(boost_page_id_t page);
 /** Process page gestures; call from LVGL input event context. */
 void boost_page_handle_event(lv_event_t *event);
 
-/** Persistent root for integrations that need to add page-local content. */
-lv_obj_t *boost_page_root(boost_page_id_t page);
-
 #ifdef __cplusplus
 }
 #endif

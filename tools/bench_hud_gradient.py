@@ -13,61 +13,14 @@ import statistics
 import sys
 import time
 from pathlib import Path
-from urllib.request import Request, urlopen
-
-
-def api_get(base: str, path: str) -> dict:
-    with urlopen(f"{base}{path}", timeout=5) as response:
-        return json.load(response)
-
-
-def api_put(base: str, path: str, body: dict) -> dict:
-    request = Request(
-        f"{base}{path}",
-        data=json.dumps(body).encode(),
-        method="PUT",
-        headers={"Content-Type": "application/json"},
-    )
-    with urlopen(request, timeout=8) as response:
-        return json.load(response)
-
-
-def api_post(base: str, path: str) -> None:
-    request = Request(f"{base}{path}", data=b"", method="POST")
-    try:
-        urlopen(request, timeout=3)
-    except Exception:
-        pass  # Restart normally drops the connection before replying.
-
-
-def wait_online(base: str, timeout_s: float = 30.0) -> None:
-    deadline = time.monotonic() + timeout_s
-    last_error = None
-    while time.monotonic() < deadline:
-        try:
-            api_get(base, "/api/v1/state")
-            return
-        except Exception as error:  # noqa: BLE001
-            last_error = error
-            time.sleep(0.3)
-    raise RuntimeError(f"device did not come back online: {last_error}")
-
-
-def wait_display_metrics(base: str, timeout_s: float = 10.0) -> dict:
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        state = api_get(base, "/api/v1/state")
-        if state["display"].get("renderFps"):
-            return state
-        time.sleep(0.25)
-    raise RuntimeError("display metrics did not resume after restart")
+from bench_common import DEFAULT_URL, api_get, api_put, api_post, wait_online, wait_display_metrics
 
 
 def collect_arm(base: str, gradient: bool, settle_s: float, sample_s: float) -> dict:
     api_post(base, "/api/v1/restart")
     time.sleep(2)
     wait_online(base)
-    api_put(base, "/api/v1/themes/active", {"id": "night-city"})
+    api_put(base, "/api/v1/themes/active", {"id": "night-city"}, timeout=8)
     config = api_put(base, "/api/v1/themes/config", {
         "demoMode": True,
         "demoFastSweep": False,
@@ -75,7 +28,7 @@ def collect_arm(base: str, gradient: bool, settle_s: float, sample_s: float) -> 
         "pixelShift": False,
         "teSync": True,
         "regionDBuf": True,
-    })
+    }, timeout=8)
     state = api_get(base, "/api/v1/state")
     if config.get("hudGradient") is not gradient:
         raise RuntimeError(f"hudGradient did not take effect: {config}")
@@ -133,7 +86,7 @@ def collect_arm(base: str, gradient: bool, settle_s: float, sample_s: float) -> 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--url", default="http://192.168.50.102")
+    parser.add_argument("--url", default=DEFAULT_URL)
     parser.add_argument("--rounds", type=int, default=3)
     parser.add_argument("--settle", type=float, default=10.0)
     parser.add_argument("--sample", type=float, default=60.0,
@@ -167,8 +120,8 @@ def main() -> int:
     finally:
         print("restoring initial board state", file=sys.stderr)
         wait_online(base)
-        api_put(base, "/api/v1/themes/config", restore_config)
-        api_put(base, "/api/v1/themes/active", {"id": initial["activeThemeId"]})
+        api_put(base, "/api/v1/themes/config", restore_config, timeout=8)
+        api_put(base, "/api/v1/themes/active", {"id": initial["activeThemeId"]}, timeout=8)
 
     output = {"initial": initial, "runs": results}
     args.out.write_text(json.dumps(output, indent=2) + "\n", encoding="utf-8")

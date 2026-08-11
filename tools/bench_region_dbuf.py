@@ -21,41 +21,7 @@ import json
 import statistics
 import sys
 import time
-from urllib.request import urlopen, Request
-
-
-def api_get(base: str, path: str) -> dict:
-    with urlopen(f"{base}{path}", timeout=5) as r:
-        return json.load(r)
-
-
-def api_put(base: str, path: str, body: dict) -> dict:
-    data = json.dumps(body).encode()
-    req = Request(f"{base}{path}", data=data, method="PUT",
-                   headers={"Content-Type": "application/json"})
-    with urlopen(req, timeout=5) as r:
-        return json.load(r)
-
-
-def api_post(base: str, path: str) -> None:
-    req = Request(f"{base}{path}", data=b"", method="POST")
-    try:
-        urlopen(req, timeout=3)
-    except Exception:
-        pass  # device reboots before it can answer; expected
-
-
-def wait_online(base: str, timeout_s: float = 30.0) -> None:
-    deadline = time.monotonic() + timeout_s
-    last_err = None
-    while time.monotonic() < deadline:
-        try:
-            api_get(base, "/api/v1/state")
-            return
-        except Exception as e:  # noqa: BLE001
-            last_err = e
-            time.sleep(0.3)
-    raise SystemExit(f"device did not come back online: {last_err}")
+from bench_common import DEFAULT_URL, api_get, api_put, api_post, wait_online
 
 
 def run_once(base: str, region_dbuf: bool, settle_s: float, sample_s: float,
@@ -134,7 +100,7 @@ def run_once(base: str, region_dbuf: bool, settle_s: float, sample_s: float,
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--url", default="http://192.168.50.102")
+    ap.add_argument("--url", default=DEFAULT_URL)
     ap.add_argument("--settle", type=float, default=14.0, help="seconds to let the face settle before sampling")
     ap.add_argument("--sample", type=float, default=20.0, help="seconds to sample /state for")
     ap.add_argument("--rounds", type=int, default=3, help="A/B rounds, interleaved OFF/ON/OFF/ON/...")

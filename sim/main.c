@@ -378,7 +378,6 @@ static int run_audit(const char *theme_id, int seconds)
     uint32_t compares = 0;
     uint64_t severe = 0;
     int reported = 0;
-#if BOOST_NEON_DRAW_STATS
     /* Flushed pixels measure the dirty AREA. These measure the work done inside
      * it: callback invocations (one per dirty region) and ring segments
      * submitted (three arc primitives each). */
@@ -388,7 +387,6 @@ static int run_audit(const char *theme_id, int seconds)
     uint64_t sign_total = 0, sprite_total = 0;
     uint32_t cb_max = 0, arc_max = 0, label_max = 0;
     uint32_t sign_max = 0, sprite_max = 0;
-#endif
 
     for (int i = 0; i < frames; ++i) {
         const float t = (float)i / 62.0f;
@@ -411,27 +409,12 @@ static int run_audit(const char *theme_id, int seconds)
         boost_gauge_update(&sample);
 
         s_flush_px = 0;
-#if BOOST_NEON_DRAW_STATS
         g_neon_cb_calls = 0; g_neon_arcs = 0; g_neon_labels = 0;
         g_neon_sign_bars = 0; g_neon_sprite_blits = 0;
-#endif
         lv_tick_inc(16);
         const double t0 = sim_now_ms();
         lv_timer_handler();
         const double dt = sim_now_ms() - t0;
-        if (s_flush_px > 0) {
-            if (cycles_n == cycles_cap) {
-                cycles_cap = cycles_cap ? cycles_cap * 2 : 1024;
-                cycles = (cycle_t *)realloc(cycles, cycles_cap * sizeof(cycle_t));
-            }
-            cycles[cycles_n].ms = dt;
-            cycles[cycles_n].px = s_flush_px;
-            cycles_n++;
-            ms_total += dt;
-            if (dt > ms_max) ms_max = dt;
-            if (dt > 16.0) over16++;
-        }
-#if BOOST_NEON_DRAW_STATS
         if (s_flush_px > 0) {
             cb_total += g_neon_cb_calls;
             arc_total += g_neon_arcs;
@@ -444,7 +427,6 @@ static int run_audit(const char *theme_id, int seconds)
             if (g_neon_sign_bars > sign_max) sign_max = g_neon_sign_bars;
             if (g_neon_sprite_blits > sprite_max) sprite_max = g_neon_sprite_blits;
         }
-#endif
         if (s_flush_px > 0) {
             px_total += s_flush_px;
             if (s_flush_px > px_max) px_max = s_flush_px;
@@ -543,7 +525,6 @@ static int run_audit(const char *theme_id, int seconds)
     printf("  flushed px/cycle   : mean %.0f  max %llu\n",
            rendered ? (double)px_total / (double)rendered : 0.0,
            (unsigned long long)px_max);
-#if BOOST_NEON_DRAW_STATS
     printf("  draw callbacks/cyc : mean %.1f  max %u  (one per dirty region)\n",
            rendered ? (double)cb_total / (double)rendered : 0.0, cb_max);
     printf("  ring segments/cyc  : mean %.1f  max %u  (x3 arc primitives each)\n",
@@ -554,7 +535,6 @@ static int run_audit(const char *theme_id, int seconds)
            rendered ? (double)sign_total / (double)rendered : 0.0, sign_max);
     printf("  sprite blits/cyc   : mean %.1f  max %u  (A8 coverage, BOOST_NEON_GLYPH_SPRITES)\n",
            rendered ? (double)sprite_total / (double)rendered : 0.0, sprite_max);
-#endif
     printf("  throughput         : %.3f Mpx/s at 62.5 Hz\n",
            (double)px_total / (double)frames * 62.5 / 1e6);
     printf("  severe mismatches  : %llu px (>1 step in any 565 channel)\n",

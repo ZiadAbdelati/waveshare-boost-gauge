@@ -97,14 +97,7 @@ static inline void boost_display_gauge_update_end(void) {}
 #define VALUE_ONES_X       (-17)
 #define VALUE_DECIMAL_X    8
 #define VALUE_TENTHS_X     30
-#define HOLD_DIM_MS   1000
 #define WELL_SIZE     DISP_SIZE
-#define TAP_SLOP_PX 12
-#define THEME_SWIPE_MIN_PX 48
-
-_Static_assert(TAP_SLOP_PX > 0 && TAP_SLOP_PX < THEME_SWIPE_MIN_PX,
-               "tap slop must be smaller than the theme swipe threshold");
-_Static_assert(THEME_SWIPE_MIN_PX == 48, "theme swipe threshold is part of the input contract");
 
 /*
  * AMOLED burn-in countermeasure.
@@ -490,22 +483,6 @@ static uint32_t s_big_text_color;
 static lv_obj_t *s_big_band[BIG_BANDS];
 static int s_big_band_next = BIG_BANDS;
 static uint32_t s_big_band_color;
-
-/* ---- sport cluster style -------------------------------------------------- */
-static void *s_sport_bg_buf;
-static lv_obj_t *s_sport_bg;
-static lv_obj_t *s_sport_face;
-static lv_obj_t *s_sport_zone;
-static lv_obj_t *s_sport_peak;
-static float s_sport_psi;
-static float s_sport_peak_value;
-
-/* Sport Cluster is deliberately a small, self-contained renderer: static
- * circular furniture and the segmented readout share one callback, while the
- * two textual status lines remain ordinary LVGL labels. */
-static void draw_sport_segments(lv_event_t *e);
-static void build_sport(lv_obj_t *scr);
-static void update_sport(const boost_sample_t *sample, const boost_theme_t *theme);
 
 /* ---- neon style ---------------------------------------------------------- */
 /* Arc `radius` in LVGL is the stroke's OUTER edge, not a centreline - so this
@@ -1411,26 +1388,8 @@ static void paint_neon_background(lv_obj_t *canvas, const boost_theme_t *theme)
      * SCALE ITSELF is unchanged - the lit run is still mapped through
      * psi_to_sweep(), so zeroAngle, psiMin and psiMax from the settings drive
      * it exactly as they drive every other face. Only the numerals are gone. */
-#if 0
-    lv_draw_label_dsc_t lbl;
-    lv_draw_label_dsc_init(&lbl);
-    lbl.font = F_COND14; lbl.align = LV_TEXT_ALIGN_CENTER;
-    /* No 0: the white zero segment is the marker, and a numeral there would
-     * sit directly under the readout. */
-    static const float ticks[] = { -15.0f, -10.0f, -5.0f, 5.0f, 10.0f };
-    for (size_t i = 0; i < sizeof(ticks) / sizeof(ticks[0]); ++i) {
-        const float a = psi_to_sweep(ticks[i], (float)ARC_START,
-                                     (float)(ARC_START + ARC_RANGE));
-        const float rad = a * (float)M_PI / 180.0f;
-        const int lx = cx + (int)lroundf(cosf(rad) * (float)NEON_LABEL_R);
-        const int ly = cy + (int)lroundf(sinf(rad) * (float)NEON_LABEL_R);
-        char buf[8]; snprintf(buf, sizeof(buf), "%d", (int)ticks[i]);
-        lbl.color = c(theme->muted);
-        lbl.text = buf; lbl.text_local = 1;
-        lv_area_t la = { lx - 22, ly - 10, lx + 22, ly + 10 };
-        lv_draw_label(&layer, &lbl, &la);
-    }
-#endif
+    /* (Numerals were removed rather than left disabled: any future revival must
+     * re-check the ring-bezel clearance measured when they were dropped.) */
 
     /* Hairline rule between the unit mark and the peak readout. It never
      * moves, so it is baked rather than drawn live. */
@@ -4178,25 +4137,6 @@ static float s_arc_peak_text_psi = NAN;
 static char s_arc_peak_text[32] = "PEAK  0.0";
 
 static bool s_ui_ready;
-static bool s_hold_dim_fired;
-typedef enum {
-    GESTURE_NONE = 0,
-    GESTURE_TAP,
-    GESTURE_SWIPE_UP,
-    GESTURE_SWIPE_DOWN,
-    GESTURE_REJECTED_DRAG,
-    GESTURE_HOLD,
-} gesture_result_t;
-
-typedef struct {
-    lv_point_t start;
-    int32_t max_dx;
-    int32_t max_dy;
-    uint32_t start_ms;
-    bool active;
-} gesture_state_t;
-
-static gesture_state_t s_gesture;
 static char s_theme_id[BOOST_THEME_ID_MAX];
 static float s_psi_min = DEFAULT_PSI_MIN;
 static float s_psi_max = DEFAULT_PSI_MAX;
@@ -4611,162 +4551,6 @@ static void reset_peak_ui(void)
 #endif
     s_peak_psi = fmaxf(s_display_psi, 0.0f);
     ESP_LOGI(TAG, "peak reset");
-}
-
-static int32_t abs_i32(int32_t value)
-{
-    return value < 0 ? -value : value;
-}
-
-static void gesture_begin(gesture_state_t *gesture, lv_point_t start, uint32_t now_ms)
-{
-    if (gesture == NULL) return;
-    gesture->start = start;
-    gesture->max_dx = 0;
-    gesture->max_dy = 0;
-    gesture->start_ms = now_ms;
-    gesture->active = true;
-}
-
-static void gesture_update(gesture_state_t *gesture, lv_point_t point)
-{
-    if (gesture == NULL || !gesture->active) return;
-    const int32_t dx = point.x - gesture->start.x;
-    const int32_t dy = point.y - gesture->start.y;
-    if (abs_i32(dx) > abs_i32(gesture->max_dx)) gesture->max_dx = dx;
-    if (abs_i32(dy) > abs_i32(gesture->max_dy)) gesture->max_dy = dy;
-}
-
-static gesture_result_t gesture_classify(const gesture_state_t *gesture,
-                                          uint32_t elapsed_ms, bool released)
-{
-    if (gesture == NULL || !gesture->active || !released) return GESTURE_NONE;
-    if (elapsed_ms >= HOLD_DIM_MS) return GESTURE_HOLD;
-
-    const int32_t ax = abs_i32(gesture->max_dx);
-    const int32_t ay = abs_i32(gesture->max_dy);
-    /* Only small jitter is a tap. A 12..47 px movement is a rejected drag,
-     * even if it returns to origin. Contract examples: (0,0)/(11,11) TAP;
-     * (0,20)/(20,0)/(0,47) REJECTED_DRAG; (0,-48) SWIPE_UP;
-     * (0,48) SWIPE_DOWN; (60,-30) REJECTED_DRAG; (0,-52)->origin SWIPE_UP;
-     * elapsed >= HOLD_DIM_MS HOLD. */
-    if (ax < TAP_SLOP_PX && ay < TAP_SLOP_PX) return GESTURE_TAP;
-    /* 4:5 is the integer form of the 1.25 vertical-dominance ratio. */
-    if (ay >= THEME_SWIPE_MIN_PX && (int64_t)ay * 4 >= (int64_t)ax * 5) {
-        return gesture->max_dy < 0 ? GESTURE_SWIPE_UP : GESTURE_SWIPE_DOWN;
-    }
-    return GESTURE_REJECTED_DRAG;
-}
-
-static void gesture_end(gesture_state_t *gesture)
-{
-    if (gesture != NULL) gesture->active = false;
-}
-
-static bool apply_swiped_theme(int direction)
-{
-#if LV_USE_GIF
-    /* Media playback owns the screen until it is explicitly deleted. */
-    if (s_media_gif != NULL) return false;
-#endif
-    const size_t count = boost_theme_count();
-    if (count == 0) return false;
-
-    const boost_theme_t *current = active_theme();
-    size_t index = 0;
-    for (; index < count; ++index) {
-        const boost_theme_t *candidate = boost_theme_at(index);
-        if (candidate != NULL && current != NULL && strcmp(candidate->id, current->id) == 0) {
-            break;
-        }
-    }
-    if (index == count) return false;
-
-    const size_t next = direction > 0 ? (index + 1u) % count
-                                     : (index + count - 1u) % count;
-    const boost_theme_t *theme = boost_theme_at(next);
-    if (theme == NULL) return false;
-
-#ifdef ESP_PLATFORM
-    if (boost_model_set_active_theme(theme->id) != ESP_OK) return false;
-    /* The event target is the persistent screen; apply_theme deletes only its
-     * children, so synchronous rebuild is safe during RELEASED dispatch. */
-    boost_gauge_apply_theme(boost_model_active_theme());
-#else
-    boost_gauge_apply_theme(theme);
-#endif
-    ESP_LOGI(TAG, "swipe theme -> %s", theme->id);
-    return true;
-}
-
-static void on_screen_event(lv_event_t *e)
-{
-    const lv_event_code_t code = lv_event_get_code(e);
-
-    if (code == LV_EVENT_PRESSED) {
-        s_gesture.active = false;
-        s_hold_dim_fired = false;
-        lv_indev_t *indev = lv_indev_get_act();
-        if (indev != NULL) {
-            lv_point_t point;
-            lv_indev_get_point(indev, &point);
-            gesture_begin(&s_gesture, point, lv_tick_get());
-        }
-        return;
-    }
-    if (code == LV_EVENT_PRESSING) {
-        lv_indev_t *indev = lv_indev_get_act();
-        if (indev != NULL) {
-            lv_point_t point;
-            lv_indev_get_point(indev, &point);
-            gesture_update(&s_gesture, point);
-        }
-        if (!s_hold_dim_fired && s_gesture.active &&
-            lv_tick_elaps(s_gesture.start_ms) >= HOLD_DIM_MS) {
-            s_hold_dim_fired = true;
-            boost_brightness_toggle_max_min();
-            ESP_LOGI(TAG, "brightness toggle -> %d%%", boost_brightness_get());
-        }
-        return;
-    }
-    if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
-        lv_indev_t *indev = lv_indev_get_act();
-        if (indev != NULL) {
-            lv_point_t point;
-            lv_indev_get_point(indev, &point);
-            gesture_update(&s_gesture, point);
-        }
-        const gesture_result_t result = gesture_classify(
-            &s_gesture, s_gesture.active ? lv_tick_elaps(s_gesture.start_ms) : 0,
-            code == LV_EVENT_RELEASED);
-        if (code == LV_EVENT_RELEASED) {
-            switch (result) {
-            case GESTURE_TAP:
-#if LV_USE_GIF
-                if (s_media_gif == NULL) reset_peak_ui();
-#else
-                reset_peak_ui();
-#endif
-                break;
-            case GESTURE_SWIPE_UP:
-                apply_swiped_theme(1);
-                break;
-            case GESTURE_SWIPE_DOWN:
-                apply_swiped_theme(-1);
-                break;
-            default:
-                break;
-            }
-        }
-        gesture_end(&s_gesture);
-        s_hold_dim_fired = false;
-        return;
-    }
-    if (code == LV_EVENT_LONG_PRESSED && !s_hold_dim_fired) {
-        s_hold_dim_fired = true;
-        boost_brightness_toggle_max_min();
-        ESP_LOGI(TAG, "brightness toggle (long_pressed) -> %d%%", boost_brightness_get());
-    }
 }
 
 #if LV_USE_GIF
@@ -6910,254 +6694,6 @@ static void update_bigdigit(const boost_sample_t *sample, const boost_theme_t *t
 }
 
 /* ========================================================================== */
-/*  Style: sport cluster (magenta/purple AMOLED circular cluster)             */
-/* ========================================================================== */
-
-static const char *sport_zone_for(float psi)
-{
-    if (psi >= s_psi_overboost) return "OVERBOOST";
-    if (psi >= 0.0f) return "BOOST";
-    return "VACUUM";
-}
-
-static void sport_segment_w(lv_layer_t *layer, lv_color_t color,
-                            float x1, float y1, float x2, float y2,
-                            lv_opa_t opa, int width)
-{
-    lv_draw_line_dsc_t line;
-    lv_draw_line_dsc_init(&line);
-    line.color = color;
-    line.width = width;
-    line.opa = opa;
-    line.round_start = true;
-    line.round_end = true;
-    line.p1.x = x1; line.p1.y = y1;
-    line.p2.x = x2; line.p2.y = y2;
-    lv_draw_line(layer, &line);
-}
-
-static void sport_digit(lv_layer_t *layer, lv_color_t color, int cx, int cy, int digit)
-{
-    static const uint8_t mask[10] = {
-        0x3F, 0x06, 0x5B, 0x4F, 0x66,
-        0x6D, 0x7D, 0x07, 0x7F, 0x6F,
-    };
-    if (digit < 0 || digit > 9) return;
-    const uint8_t m = mask[digit];
-    /* Big luminous digits: 44x80 with 14px-wide segments and a 16px glow
-     * under-stroke, matching the reference's bold retrowave readout. */
-    const int w = 44, h = 80, k = 7;
-    const int x = cx - w / 2, y = cy - h / 2;
-    static const int8_t seg[7][4] = {
-        { k, 0, w - k, 0 }, { w, k, w, h / 2 - 4 },
-        { w, h / 2 + 4, w, h - k }, { k, h, w - k, h },
-        { 0, h / 2 + 4, 0, h - k }, { 0, k, 0, h / 2 - 4 },
-        { k, h / 2, w - k, h / 2 },
-    };
-    for (int i = 0; i < 7; ++i) {
-        if ((m & (1u << i)) == 0) continue;
-        sport_segment_w(layer, color, x + seg[i][0], y + seg[i][1],
-                        x + seg[i][2], y + seg[i][3], LV_OPA_20, 16);
-        sport_segment_w(layer, color, x + seg[i][0], y + seg[i][1],
-                        x + seg[i][2], y + seg[i][3], LV_OPA_COVER, 14);
-    }
-}
-
-static uint32_t sport_ring_rgb(float angle)
-{
-    const uint32_t magenta = 0xFF2D9Bu;
-    const uint32_t purple = 0x8D4DFFu;
-    const uint32_t teal = 0x2FE0D0u;
-    float a = fmodf(angle, 360.0f);
-    if (a < 0.0f) a += 360.0f;
-    if (a >= 270.0f) return lerp_rgb(magenta, purple, (a - 270.0f) / 90.0f);
-    if (a < 90.0f) return lerp_rgb(purple, teal, a / 90.0f);
-    if (a < 180.0f) return lerp_rgb(teal, purple, (a - 90.0f) / 90.0f);
-    return lerp_rgb(purple, magenta, (a - 180.0f) / 90.0f);
-}
-
-static void paint_sport_background(lv_obj_t *canvas, const boost_theme_t *theme)
-{
-    (void)theme;
-    lv_layer_t layer;
-    lv_canvas_init_layer(canvas, &layer);
-
-    lv_draw_rect_dsc_t bg;
-    lv_draw_rect_dsc_init(&bg);
-    bg.bg_color = lv_color_black();
-    bg.bg_opa = LV_OPA_COVER;
-    lv_area_t full = { 0, 0, DISP_SIZE - 1, DISP_SIZE - 1 };
-    lv_draw_rect(&layer, &bg, &full);
-
-    /* Sparse, deterministic stars keep the AMOLED ground atmospheric without
-     * adding a per-frame draw cost. Keep them above the horizon band. */
-    static const uint32_t star_colors[] = { 0xFFFFFFu, 0xD946EFu, 0xBCA6FFu };
-    for (int i = 0; i < 40; ++i) {
-        const int x = (i * 7 + 13) % DISP_SIZE;
-        const int y = (i * 11 + 29) % 310;
-        const int size = (i % 7 == 0) ? 2 : 1;
-        lv_draw_rect_dsc_t star;
-        lv_draw_rect_dsc_init(&star);
-        star.bg_color = c(star_colors[i % 3]);
-        star.bg_opa = (lv_opa_t)(10 + (i % 3) * 10);
-        lv_area_t a = { x, y, x + size - 1, y + size - 1 };
-        lv_draw_rect(&layer, &star, &a);
-    }
-
-    /* Low synthwave horizon: broad translucent bands are intentionally soft and
-     * avoid a full-screen gradient or any live work after the cache is built. */
-    const lv_color_t horizon = c(0x19C6C6u);
-    const int bands_y[] = { 370, 390, 415, 440 };
-    const lv_opa_t bands_opa[] = { 3, 8, 15, 30 };
-    for (int i = 0; i < 4; ++i) {
-        lv_draw_rect_dsc_t band;
-        lv_draw_rect_dsc_init(&band);
-        band.bg_color = horizon;
-        band.bg_opa = bands_opa[i];
-        lv_area_t a = { 0, bands_y[i], DISP_SIZE - 1,
-                        (i == 3) ? DISP_SIZE - 1 : bands_y[i + 1] - 1 };
-        lv_draw_rect(&layer, &band, &a);
-    }
-
-    const int cx = px_icx() - s_px_dx;
-    const int cy = px_icy() - s_px_dy;
-    lv_draw_arc_dsc_t arc;
-    lv_draw_arc_dsc_init(&arc);
-    arc.center.x = cx;
-    arc.center.y = cy;
-    arc.radius = 205;
-    arc.rounded = true;
-
-    /* Halo first, then the crisp 18 px luminous ring. Each 5 degree tile gets
-     * its own colour so the gradient follows the circle rather than the canvas. */
-    for (int i = 0; i < 72; ++i) {
-        const float start = (float)i * 5.0f;
-        const float end = start + 5.0f;
-        const lv_color_t color = c(sport_ring_rgb(start + 2.5f));
-        arc.start_angle = start;
-        arc.end_angle = end;
-        arc.color = color;
-        arc.width = 30;
-        arc.opa = LV_OPA_20;
-        lv_draw_arc(&layer, &arc);
-    }
-    for (int i = 0; i < 72; ++i) {
-        const float start = (float)i * 5.0f;
-        const float end = start + 5.0f;
-        arc.start_angle = start;
-        arc.end_angle = end;
-        arc.color = c(sport_ring_rgb(start + 2.5f));
-        arc.width = 18;
-        arc.opa = LV_OPA_COVER;
-        lv_draw_arc(&layer, &arc);
-    }
-
-    /* A quiet inner line gives the dark centre a little depth without recreating
-     * the old multi-ring speedometer. */
-    arc.radius = 150;
-    arc.width = 2;
-    arc.color = c(0x8D4DFFu);
-    arc.opa = LV_OPA_30;
-    arc.start_angle = 0;
-    arc.end_angle = 360;
-    lv_draw_arc(&layer, &arc);
-
-    lv_canvas_finish_layer(canvas, &layer);
-}
-
-static void draw_sport_segments(lv_event_t *e)
-{
-    const boost_theme_t *theme = active_theme();
-    lv_layer_t *layer = lv_event_get_layer(e);
-    const int cx = px_icx();
-    const int cy = px_icy();
-    const float psi = s_sport_psi;
-    const bool over = psi >= s_psi_overboost;
-    const lv_color_t accent = c(over ? theme->overboost : (psi < 0.0f ? theme->vacuum : theme->boost));
-
-    /* Fixed slots: sign, tens, ones, decimal, tenths. The static ring lives in
-     * the PSRAM canvas below, so a digit update no longer repaints 217k pixels. */
-    const int tenths = (int)lroundf(fabsf(psi) * 10.0f);
-    const int whole = tenths / 10;
-    const int digit_y = cy - 2;
-    if (psi < -0.05f) {
-        sport_segment_w(layer, accent, cx - 122, digit_y, cx - 98, digit_y,
-                        LV_OPA_COVER, 14);
-    }
-    if (whole >= 10) sport_digit(layer, accent, cx - 60, digit_y, (whole / 10) % 10);
-    sport_digit(layer, accent, cx - 10, digit_y, whole % 10);
-    lv_draw_rect_dsc_t dot;
-    lv_draw_rect_dsc_init(&dot);
-    dot.bg_color = accent; dot.bg_opa = LV_OPA_COVER; dot.radius = LV_RADIUS_CIRCLE;
-    lv_area_t da = { cx + 15, cy + 24, cx + 25, cy + 34 };
-    lv_draw_rect(layer, &dot, &da);
-    sport_digit(layer, accent, cx + 55, digit_y, tenths % 10);
-}
-
-static void build_sport(lv_obj_t *scr)
-{
-    const boost_theme_t *theme = active_theme();
-    const uint32_t bg_bytes = LV_CANVAS_BUF_SIZE(DISP_SIZE, DISP_SIZE, 16, LV_DRAW_BUF_STRIDE_ALIGN);
-    s_sport_bg_buf = BG_ALLOC(bg_bytes);
-    if (s_sport_bg_buf != NULL) {
-        s_sport_bg = lv_canvas_create(scr);
-        lv_canvas_set_buffer(s_sport_bg, s_sport_bg_buf, DISP_SIZE, DISP_SIZE, LV_COLOR_FORMAT_RGB565);
-        lv_obj_center(s_sport_bg);
-        lv_obj_clear_flag(s_sport_bg, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
-        paint_sport_background(s_sport_bg, theme);
-    } else {
-        ESP_LOGW(TAG, "sport background cache alloc failed (%u B)", (unsigned)bg_bytes);
-    }
-
-    s_sport_face = lv_obj_create(scr);
-    lv_obj_remove_style_all(s_sport_face);
-    lv_obj_set_size(s_sport_face, DISP_SIZE, DISP_SIZE);
-    lv_obj_center(s_sport_face);
-    lv_obj_clear_flag(s_sport_face, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_event_cb(s_sport_face, draw_sport_segments, LV_EVENT_DRAW_MAIN, NULL);
-
-    s_sport_zone = lv_label_create(scr);
-    lv_label_set_text(s_sport_zone, "VACUUM");
-    lv_obj_set_style_text_font(s_sport_zone, F_COND32, 0);
-    lv_obj_set_style_text_letter_space(s_sport_zone, 3, 0);
-    lv_obj_set_style_text_color(s_sport_zone, c(0x39FF8Bu), 0);
-    lv_obj_set_style_text_align(s_sport_zone, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_size(s_sport_zone, 300, 38);
-    lv_obj_align(s_sport_zone, LV_ALIGN_CENTER, 0, -118);
-
-    s_sport_peak = lv_label_create(scr);
-    lv_label_set_text(s_sport_peak, "PEAK 0.0 PSI");
-    lv_obj_set_style_text_font(s_sport_peak, F_MONO16, 0);
-    lv_obj_set_style_text_letter_space(s_sport_peak, 1, 0);
-    lv_obj_set_style_text_color(s_sport_peak, c(theme->muted), 0);
-    lv_obj_set_style_text_align(s_sport_peak, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_size(s_sport_peak, 260, 24);
-    lv_obj_align(s_sport_peak, LV_ALIGN_CENTER, 0, 174);
-    s_sport_psi = isfinite(s_display_psi) ? s_display_psi : 0.0f;
-    s_sport_peak_value = fmaxf(s_peak_psi, 0.0f);
-}
-
-static void update_sport(const boost_sample_t *sample, const boost_theme_t *theme)
-{
-    (void)theme;
-    s_sport_psi = isfinite(sample->psi) ? sample->psi : 0.0f;
-    s_sport_peak_value = fmaxf(s_peak_psi, 0.0f);
-    const char *zone = sport_zone_for(s_sport_psi);
-    const lv_color_t zone_color = c(0x39FF8Bu);
-    if (strcmp(lv_label_get_text(s_sport_zone), zone) != 0) lv_label_set_text(s_sport_zone, zone);
-    if (!lv_color_eq(lv_obj_get_style_text_color(s_sport_zone, 0), zone_color))
-        lv_obj_set_style_text_color(s_sport_zone, zone_color, 0);
-    char buf[32];
-    snprintf(buf, sizeof(buf), "PEAK %.1f PSI", (double)s_sport_peak_value);
-    if (strcmp(lv_label_get_text(s_sport_peak), buf) != 0) lv_label_set_text(s_sport_peak, buf);
-    lv_area_t value_area = {
-        px_icx() - 140, px_icy() - 50,
-        px_icx() + 100, px_icy() + 50,
-    };
-    lv_obj_invalidate_area(s_sport_face, &value_area);
-}
-
-/* ========================================================================== */
 /*  Scene lifecycle                                                           */
 /* ========================================================================== */
 
@@ -7229,12 +6765,6 @@ static void destroy_scene(void)
 
     s_big_bg = s_big_minus = s_big_tens = s_big_ones = NULL;
     s_big_dot = s_big_tenths = s_big_unit = s_big_zone = s_big_peak = NULL;
-    if (s_sport_bg_buf != NULL) {
-        BG_FREE(s_sport_bg_buf);
-        s_sport_bg_buf = NULL;
-    }
-    s_sport_bg = NULL;
-    s_sport_face = s_sport_zone = s_sport_peak = NULL;
     /* s_neon_bg_buf and the baked sprite tiles are memoized static art, kept
      * across scene switches for the same reason s_vault_bg_buf is: rebuilding
      * them made every return to neon pause. Measured on the board before this,
@@ -7282,7 +6812,6 @@ static void build_scene(boost_gauge_style_t style)
         case BOOST_STYLE_VAULT:    build_vault(s_root); break;
         case BOOST_STYLE_HUD:      build_hud(s_root); break;
         case BOOST_STYLE_BIGDIGIT: build_bigdigit(s_root); break;
-        case BOOST_STYLE_SPORT:    build_sport(s_root); break;
         case BOOST_STYLE_NEON:     build_neon(s_root); break;
         case BOOST_STYLE_ARC:
         default:                   build_arc(s_root); break;
@@ -7300,11 +6829,6 @@ static void build_scene(boost_gauge_style_t style)
     ESP_LOGI(TAG, "scene built: style=%s", boost_style_name(style));
 }
 
-void boost_gauge_create(void)
-{
-    boost_gauge_create_in(lv_screen_active());
-}
-
 void boost_gauge_create_in(lv_obj_t *parent)
 {
     if (parent == NULL) return;
@@ -7312,18 +6836,6 @@ void boost_gauge_create_in(lv_obj_t *parent)
     load_range_from_config();
     const boost_theme_t *theme = active_theme();
     snprintf(s_theme_id, sizeof(s_theme_id), "%s", theme->id);
-
-    lv_obj_t *scr = parent;
-    if (scr == lv_screen_active()) {
-        lv_obj_remove_style_all(scr);
-        lv_obj_set_size(scr, DISP_SIZE, DISP_SIZE);
-        lv_obj_add_flag(scr, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_event_cb(scr, on_screen_event, LV_EVENT_PRESSED, NULL);
-        lv_obj_add_event_cb(scr, on_screen_event, LV_EVENT_PRESSING, NULL);
-        lv_obj_add_event_cb(scr, on_screen_event, LV_EVENT_RELEASED, NULL);
-        lv_obj_add_event_cb(scr, on_screen_event, LV_EVENT_PRESS_LOST, NULL);
-        lv_obj_add_event_cb(scr, on_screen_event, LV_EVENT_LONG_PRESSED, NULL);
-    }
 
     s_display_psi = 0.0f;
     s_peak_psi = 0.0f;
@@ -7487,7 +6999,6 @@ void boost_gauge_update(const boost_sample_t *sample)
         case BOOST_STYLE_VAULT:    update_vault(sample, theme); break;
         case BOOST_STYLE_HUD:      update_hud(sample, theme); break;
         case BOOST_STYLE_BIGDIGIT: update_bigdigit(sample, theme); break;
-        case BOOST_STYLE_SPORT:    update_sport(sample, theme); break;
         case BOOST_STYLE_NEON:     update_neon(sample, theme); break;
         case BOOST_STYLE_ARC:
         default:                   update_arc(sample, theme); break;
