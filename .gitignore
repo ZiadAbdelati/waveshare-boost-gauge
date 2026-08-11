@@ -34,6 +34,7 @@ build*/
 preview/mq_*/
 preview/device_*.png
 preview/device_*.raw
+preview/neon_*/
 .pi-subagents/
 
 # Bench capture outputs (reproducible with tools/bench_fast_motion.py and

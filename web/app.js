@@ -588,16 +588,34 @@ function drawNeonGauge(sample, psi, g) {
   const range = psiRange();
   const layout = Number.isInteger(Number(state.neonLayout)) ? Number(state.neonLayout) : 1;
   const S = g.scale;
-  const nseg = 54;
+  const nseg = 45;
   const ringR = 228;
   const segmentW = 30;
-  const tubeW = 26;
   const capW = 6;
-  /* The inner (dimmed) band matches the body width (NEON_BODY_W = W - CAP + 1
-   * on the panel), so the full lit depth is 2W - CAP: 46 px tube / 54 px
-   * segments. The unlit track stays at the body width with the same outer
-   * edge. One formula here and in boost_gauge.c so they cannot drift. */
-  const bandDepth = (w) => 2 * w - capW;
+  /* Segment slots are 6 degrees (270/45). The lit wedge is step - gap with the
+   * ORIGINAL 2-degree gap restored (NEON_SEG_GAP 2.0), so the segments are a
+   * third wider (4 degrees) without eating the space between them. Keep the
+   * mirror's literal in lockstep with the firmware define - the parity test
+   * checks the span. */
+  const NEON_SEG_GAP = 2.0;
+  /* Tube only: the lit run is FOUR bands - the innermost dark halo (20 px),
+   * the track split into an inner half (bloomed, 16 px) and a lighter outer
+   * half (16 px, NEON_TUBE_TRACK_LIFT 0.4 toward white), and the skinny
+   * white cap (6 px) back at ringR. Radii are the band OUTER edges, matching
+   * k_neon_tube_band_geom in boost_gauge.c; each track half (16) is less
+   * than the halo (20), so the track (32) is under twice it. */
+  const tubeHaloW = 20, tubeTrackHalf = 16;
+  const tubeTrackOuterR = ringR - capW + 1;                     /* 223 */
+  const tubeTrackInnerR = tubeTrackOuterR - tubeTrackHalf + 1;  /* 208 */
+  const tubeHaloR = tubeTrackInnerR - tubeTrackHalf + 1;        /* 193 */
+  const tubeBandDepth = ringR - tubeHaloR + tubeHaloW;          /* 55 (halo inner edge to 228) */
+  /* Segments: the inner dark halo (NEON_SEG_HALO_W 20) is narrower than the
+   * body (W - CAP + 1 = 25) - it used to match at 25/25 - so the full lit
+   * depth is 20 + 25 + 6 - 2 shared px = 49. The mirror draws the dim band at
+   * this depth and the body/cap cover it, exactly as the panel abuts them. */
+  const segHaloW = 20;
+  const segBodyW = segmentW - capW + 1;
+  const segBandDepth = segHaloW + segBodyW + capW - 2;   /* 49 */
   const start = ARC_START;
   const sweep = ARC_RANGE;
   const zero = psiToSweep(0, start, start + sweep, range);
@@ -605,6 +623,7 @@ function drawNeonGauge(sample, psi, g) {
   const zone = psi >= range.psiOverboost ? "OVERBOOST" : psi > 0.05 ? "BOOST" : "VACUUM";
   const accent = psi >= range.psiOverboost ? p.overboost : psi > 0.05 ? p.boost : p.vacuum;
   const lit = neonLitColor(accent);
+  const trackOuter = neonTrackOuter(accent);
   const marquee = layout === 2;
   const tube = layout === 0;
   /* Marquee shares the ring layouts' readout metrics and lower-stack rhythm
@@ -647,6 +666,15 @@ function drawNeonGauge(sample, psi, g) {
     ctx.strokeStyle = color; ctx.lineWidth = width; ctx.lineCap = "butt";
     ctx.beginPath();
     ctx.arc(0, 0, ringR - width / 2, degToRad(a0), degToRad(a1));
+    ctx.stroke();
+  };
+  /* Variant for bands with an explicit OUTER edge instead of ringR: the tube's
+   * four bands each stack at their own outer radius (halo 199, track inner
+   * 211, track outer 223, cap 228), matching k_neon_tube_band_geom. */
+  const arcAt = (outer, a0, a1, width, color) => {
+    ctx.strokeStyle = color; ctx.lineWidth = width; ctx.lineCap = "butt";
+    ctx.beginPath();
+    ctx.arc(0, 0, outer - width / 2, degToRad(a0), degToRad(a1));
     ctx.stroke();
   };
   const step = sweep / nseg;
@@ -718,35 +746,43 @@ function drawNeonGauge(sample, psi, g) {
     ctx.fillStyle = "#ffffff"; roundRectPath(x0 - 3.5 * mq, 62.5 * mq, 7 * mq, 27 * mq, 3.5 * mq); ctx.fill();
   } else {
     /* The unlit track shares the same outer edge as the lit bands, and stays
-     * at the body width while the lit run extends further in. */
-    arc(start, start + sweep, tube ? tubeW : segmentW, p.track);
+     * at the body width while the lit run extends further in. The tube's track
+     * is a bit wider now (ringR down to the halo's outer edge) to match the
+     * lit footprint. */
+    arc(start, start + sweep, tube ? (ringR - tubeHaloR + 1) : segmentW, p.track);
     const lo = Math.min(zero, value), hi = Math.max(zero, value);
     const zeroSeg = Math.floor((zero - start) / step);
     if (tube) {
       if (hi - lo > 2) {
-        arc(lo, hi, bandDepth(tubeW), neonDim(accent));
-        arc(lo, hi, tubeW, lit);
-        arc(lo, hi, capW, "#ffffff");
+        /* White cap + three tones, drawn inner to outer: dark halo, bloomed
+         * track inner half, then the lighter track outer half (the run the
+         * panel paints via neon_tube_band_color). */
+        arcAt(tubeHaloR, lo, hi, tubeHaloW, neonDim(accent));
+        arcAt(tubeTrackInnerR, lo, hi, tubeTrackHalf, lit);
+        arcAt(tubeTrackOuterR, lo, hi, tubeTrackHalf, trackOuter);
+        arcAt(ringR, lo, hi, capW, "#ffffff");
       }
-      /* After the run, and +-3 degrees: the panel's run starts exactly at zero
-       * and sweeps outward at this same radius and width, so drawing the
-       * marker first would leave only half of it - which is what used to
-       * happen on the panel itself (NEON_TUBE_ZERO_DEG). */
-      arc(zero - 3, zero + 3, bandDepth(tubeW), "#ffffff");
+      /* After the run, and +-NEON_TUBE_ZERO_DEG (2.25): the panel's run starts
+       * exactly at zero and sweeps outward at this same radius and width, so
+       * drawing the marker first would leave only half of it - which is what
+       * used to happen on the panel itself. The marker spans the full band
+       * depth (tubeBandDepth). Canvas arcs are symmetric, so the mirror needs
+       * no centring compensation (the panel applies NEON_TUBE_ZERO_CENTER). */
+      arc(zero - 2.25, zero + 2.25, tubeBandDepth, "#ffffff");
     } else {
       /* Index by floor at BOTH ends, exactly as boost_neon_lit_span() does, so
        * a value landing mid-segment lights that segment whole. Testing each
        * segment's START angle against the span instead dropped the segment
-       * containing zero, because zero sits at 101.25 degrees and the step is 5. */
+       * containing zero, because zero sits at 101.25 degrees and the step is 6. */
       const litRun = hi - lo >= step * 0.5;
       const first = Math.max(0, Math.floor((lo - start) / step));
       const last = Math.min(nseg - 1, Math.floor((hi - start) / step));
       for (let i = 0; i < nseg; i++) {
-        const a0 = start + i * step + 1;
-        const a1 = a0 + step - 2;
-        if (i === zeroSeg) { arc(a0, a1, bandDepth(segmentW), "#ffffff"); continue; }
+        const a0 = start + i * step + NEON_SEG_GAP / 2;
+        const a1 = a0 + step - NEON_SEG_GAP;
+        if (i === zeroSeg) { arc(a0, a1, segBandDepth, "#ffffff"); continue; }
         if (!litRun || i < first || i > last) continue;
-        arc(a0, a1, bandDepth(segmentW), neonDim(accent));
+        arc(a0, a1, segBandDepth, neonDim(accent));
         arc(a0, a1, segmentW, lit);
         arc(a0, a1, capW, "#ffffff");
       }
@@ -925,6 +961,48 @@ function neonLitColor(hex, factor = 1) {
     r += (255 - r) * w; g += (255 - g) * w; b += (255 - b) * w;
   }
   return `rgb(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)})`;
+}
+
+/* The tube's track OUTER half colour: the bloomed body LIGHTENED via HSL
+ * lightness (hue and saturation preserved), mirroring neon_hsl_lighten() in
+ * boost_gauge.c with NEON_TUBE_TRACK_LIGHT 0.20. The band stack must read as a
+ * smooth gradient dark -> bloomed -> lighter -> white, so the outer half is
+ * lighter than the middle - a deeper outer turns it into a dark-bright-dark
+ * sandwich, and a white-lift washes it toward the cap. */
+function rgbToHsl(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+  const d = mx - mn;
+  let h = 0, s = 0;
+  const l = (mx + mn) / 2;
+  if (d > 0) {
+    s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
+    if (mx === r) h = (g - b) / d + (g < b ? 6 : 0);
+    else if (mx === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h *= 60;
+  }
+  return [h, s, l];
+}
+function hslHue2rgb(p, q, t) {
+  if (t < 0) t += 1;
+  if (t > 1) t -= 1;
+  if (t < 1 / 6) return p + (q - p) * 6 * t;
+  if (t < 0.5) return q;
+  if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+  return p;
+}
+function neonTrackOuter(hex) {
+  const [r, g, b] = neonLitColor(hex).match(/\d+/g).map(Number);
+  const [h, s, l] = rgbToHsl(r, g, b);
+  const nl = Math.min(1, l + 0.20);
+  const q = nl < 0.5 ? nl * (1 + s) : nl + s - nl * s;
+  const p = 2 * nl - q;
+  const hk = h / 360;
+  const nr = Math.round(hslHue2rgb(p, q, hk + 1 / 3) * 255);
+  const ng = Math.round(hslHue2rgb(p, q, hk) * 255);
+  const nb = Math.round(hslHue2rgb(p, q, hk - 1 / 3) * 255);
+  return `rgb(${nr}, ${ng}, ${nb})`;
 }
 
 /* Rounded-rect path helper for the themed faces (466-space). */

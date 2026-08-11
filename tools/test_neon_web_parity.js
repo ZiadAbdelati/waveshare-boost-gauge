@@ -79,9 +79,11 @@ const body = [
   extractConstLine("NEON_MARQUEE_SPIN_MS"),
   extract("neonDim"),
   extract("psiToSweep"), extract("neonLitColor"), extract("neonBulbColor"),
+  extract("rgbToHsl"), extract("hslHue2rgb"),
+  extract("neonTrackOuter"),
   extract("drawNeonGauge"),
 ].join("\n");
-const run = new Function(...Object.keys(scope), body + "\nreturn { drawNeonGauge, psiToSweep, neonLitColor };");
+const run = new Function(...Object.keys(scope), body + "\nreturn { drawNeonGauge, psiToSweep, neonLitColor, neonTrackOuter, rgbToHsl };");
 const api = run(...Object.values(scope));
 
 function render(layout, psi, peak = 0) {
@@ -112,14 +114,16 @@ function withTextState(callsArr) {
 }
 
 /* --- the ring lights whole segments, indexed by floor at BOTH ends --------- */
-const step = ARC_RANGE / 54;
+const step = ARC_RANGE / 45;
+const cSeg = fs.readFileSync(path.join(__dirname, "..", "main", "boost_gauge.c"), "utf8");
+const segGap = Number(/^#define[ \t]+NEON_SEG_GAP[ \t]+([0-9.]+)f/m.exec(cSeg)[1]);
 const zeroAng = api.psiToSweep(0, ARC_START, ARC_START + ARC_RANGE);
 assert.notStrictEqual(zeroAng, ARC_START + ARC_RANGE / 2, "zero must not be at sweep midpoint");
 assert.ok((zeroAng - ARC_START) < (ARC_RANGE / 2), "vacuum share must differ from boost share");
 assert.ok((zeroAng - ARC_START) / ARC_RANGE < 0.5 &&
   (ARC_START + ARC_RANGE - zeroAng) > (zeroAng - ARC_START), "boost side must be larger");
 const zeroSeg = Math.floor((zeroAng - ARC_START) / step);
-assert.strictEqual(zeroSeg, 20, `zero segment ${zeroSeg}`);
+assert.strictEqual(zeroSeg, 16, `zero segment ${zeroSeg}`);
 
 for (const psi of [-12, -3, 2.5, 8.5]) {
   const c = render(1, psi);
@@ -130,13 +134,13 @@ for (const psi of [-12, -3, 2.5, 8.5]) {
   const drawn = new Set();
   for (const k of c) {
     if (k.op !== "arc") continue;
-    /* Only the lit segments, which span step-2 degrees. The unlit track is one
-     * full-sweep arc and the bulbs are tiny circles; both would otherwise be
-     * mistaken for segment 0. */
+    /* Only the lit segments, which span step - NEON_SEG_GAP degrees. The
+     * unlit track is one full-sweep arc and the bulbs are tiny circles; both
+     * would otherwise be mistaken for segment 0. */
     const span = (k.args[4] - k.args[3]) / DEG;
-    if (Math.abs(span - (step - 2)) > 0.01) continue;
-    const i = Math.round((k.args[3] / DEG - 1 - ARC_START) / step);
-    if (i >= 0 && i < 54) drawn.add(i);
+    if (Math.abs(span - (step - segGap)) > 0.01) continue;
+    const i = Math.round((k.args[3] / DEG - segGap / 2 - ARC_START) / step);
+    if (i >= 0 && i < 45) drawn.add(i);
   }
   for (let i = first; i <= last; i++) {
     assert.ok(drawn.has(i), `psi ${psi}: segment ${i} in span ${first}..${last} not drawn`);
@@ -509,10 +513,11 @@ console.log("neon web parity: all assertions passed");
   assert.ok(widths.includes(6), "white cap band missing");
   const cap = bands.find((b) => b.w === 6);
   const body = bands.find((b) => b.w === 30);
-  /* The inner band matches the body width (NEON_BODY_W = W - CAP + 1), so the
-   * mirror's full-depth dim band is 2W - CAP = 54 px for segments. */
-  const inner = bands.find((b) => b.w === 54);
-  assert.ok(cap && body && inner, "expected 6/30/54 px bands");
+  /* The inner halo (NEON_SEG_HALO_W 20) is narrower than the body now, so the
+   * mirror's full-depth dim band is NEON_SEG_BAND_DEPTH = 49 px for segments
+   * (halo 20 + body 25 + cap 6, minus two shared pixels). */
+  const inner = bands.find((b) => b.w === 49);
+  assert.ok(cap && body && inner, "expected 6/30/49 px bands");
   assert.ok(cap.r > body.r && body.r > inner.r,
     "bands must stack inward: cap outermost, then body, then the raw palette");
 }
@@ -552,20 +557,28 @@ console.log("neon web parity: all assertions passed");
 
 console.log("neon web parity: band stacking and sign shear verified");
 
-/* --- tube: the zero marker matches the firmware's widened band ------------- */
-/* Firmware widened the tube zero marker to span the full band width -
- * NEON_BAND_DEPTH(NEON_TUBE_W) = 2*26 - 6 = 46 - instead of the old bare
- * NEON_TUBE_W. The inner (dimmed) band now matches the body width, so the
- * marker tracks the full lit depth on every layout. Its outer edge must land
- * on the same ring radius (NEON_R, 228) as every other band, using the
- * identical ringR - width/2 compensation the rest of the ring uses.
+/* --- tube: the zero marker matches the firmware's full band depth ---------- */
+/* The tube zero marker spans the full lit band depth - NEON_TUBE_BAND_DEPTH
+ * (50 px: dark halo 21 + two-tone track 13+13 + skinny cap 6) - so it reads
+ * as the ring's marker at every radial band. Its outer edge must land on the
+ * ring radius (NEON_R, 228) using the identical ringR - width/2 compensation
+ * the rest of the ring uses.
  *
- * It also spans 6 degrees now, not 4: the panel's lit run starts exactly at
- * zero and sweeps outward over this same band, so half the marker used to be
- * buried and the surviving half swapped sides at the zero crossing
- * (NEON_TUBE_ZERO_DEG). */
+ * It spans 2 x NEON_TUBE_ZERO_DEG (4.5 degrees, narrowed 25% from the old 6):
+ * the panel's lit run starts exactly at zero and sweeps outward over this
+ * same band, so half the marker used to be buried and the surviving half
+ * swapped sides at the zero crossing (NEON_TUBE_ZERO_DEG). */
 {
   const c = render(0, -12);
+  const zSrc = fs.readFileSync(path.join(__dirname, "..", "main", "boost_gauge.c"), "utf8");
+  const zDeg = Number(/^#define[ \t]+NEON_TUBE_ZERO_DEG[ \t]+([0-9.]+)f/m.exec(zSrc)[1]);
+  const defN = (name) => Number(new RegExp("^#define[ \\t]+" + name + "[ \\t]+([0-9]+)", "m").exec(zSrc)[1]);
+  const rN = defN("NEON_R"), capN = defN("NEON_CAP_W"), halfN = defN("NEON_TUBE_TRACK_HALF");
+  const trackOuterR = rN - capN + 1;
+  const trackInnerR = trackOuterR - halfN + 1;
+  const haloR = trackInnerR - halfN + 1;
+  /* depth = NEON_R - halo_inner_edge + 1, where halo_inner_edge = haloR - haloW + 1 */
+  const tubeDepth = rN - haloR + defN("NEON_TUBE_HALO_W");
   let stroke = null, lw = null;
   const bands = [];
   for (const k of c) {
@@ -573,19 +586,97 @@ console.log("neon web parity: band stacking and sign shear verified");
     if (k.op === "set:lineWidth") lw = k.args[0];
     if (k.op === "arc" && lw > 4) bands.push({ r: k.args[2], w: lw, stroke, a0: k.args[3], a1: k.args[4] });
   }
-  /* The zero marker is the only white band spanning exactly 6 degrees
-   * (zero - 3 .. zero + 3). The lit run's own outer (accent-coloured) band
-   * shares the same 46 px width, so width alone cannot identify it. */
+  /* The zero marker is the only white band spanning exactly 2 x zDeg degrees
+   * (zero - zDeg .. zero + zDeg). The lit run's own white cap shares the
+   * angular span of the whole run, so the short span identifies the marker. */
   const zeroMarker = bands.find((b) => b.stroke === "#ffffff" &&
-    Math.abs((b.a1 - b.a0) / DEG - 6) < 0.01);
+    Math.abs((b.a1 - b.a0) / DEG - 2 * zDeg) < 0.01);
   assert.ok(zeroMarker, "tube zero marker band not found");
-  assert.strictEqual(zeroMarker.w, 46,
-    `tube zero marker width ${zeroMarker.w}, expected NEON_BAND_DEPTH(26) = 46`);
+  assert.strictEqual(zeroMarker.w, tubeDepth,
+    `tube zero marker width ${zeroMarker.w}, expected NEON_TUBE_BAND_DEPTH = ${tubeDepth}`);
   assert.ok(Math.abs((zeroMarker.r + zeroMarker.w / 2) - 228) < 0.001,
     `tube zero marker outer edge ${zeroMarker.r + zeroMarker.w / 2}, expected ring radius 228`);
 }
 
 console.log("neon web parity: tube zero marker band verified");
+
+/* --- tube: white cap + three tones, each band at its own outer edge -------- */
+/* The tube's lit run is FOUR bands stacked at their own OUTER edges (canvas
+ * centres a stroke, LVGL anchors at the outer edge - so the mirror must draw
+ * each band with the firmware's radius): dark halo 20 px at r193, bloomed
+ * track inner half 16 px at r208, lighter track outer half 16 px at r223,
+ * and the skinny white cap 6 px back at ringR 228. The track halves (16) must
+ * be narrower than the halo (20), so the track (32) is less than twice it. */
+{
+  const c = render(0, 8.5);
+  let lw = null;
+  const bands = [];
+  for (const k of c) {
+    if (k.op === "set:lineWidth") lw = k.args[0];
+    if (k.op === "arc" && lw > 4) bands.push({ r: k.args[2], w: lw });
+  }
+  const want = [
+    [193, 20], [208, 16], [223, 16], [228, 6],
+  ];
+  for (const [r, w] of want) {
+    assert.ok(bands.some((b) => Math.abs((b.r + b.w / 2) - r) < 0.001 && b.w === w),
+      `tube band outer edge ${r} width ${w} missing (got ${JSON.stringify(bands)})`);
+  }
+  const halo = bands.find((b) => b.w === 20);
+  const inner = bands.find((b) => b.w === 16);
+  assert.ok(Math.abs((halo.r + halo.w / 2) - 193) < 0.001 &&
+    Math.abs((inner.r + inner.w / 2) - 208) < 0.001,
+    "track inner half must sit between halo and track outer");
+}
+
+console.log("neon web parity: tube cap + three tones verified");
+
+/* --- the tube's outer track half is an HSL-lightened version of the middle -- */
+/* The outer band must be the bloomed middle colour with HSL lightness RAISED
+ * by NEON_TUBE_TRACK_LIGHT (hue AND saturation preserved) - the band stack
+ * reads dark -> bloomed -> lighter -> white, a gradient. A deeper outer makes
+ * it a dark-bright-dark sandwich and a white-lift washes it toward the cap.
+ * Check the mirror's neonTrackOuter against an independent HSL reference so a
+ * drift back to a white-lift (or a deepen) fails here. */
+{
+  const oSrc = fs.readFileSync(path.join(__dirname, "..", "main", "boost_gauge.c"), "utf8");
+  const light = Number(/^#define[ \t]+NEON_TUBE_TRACK_LIGHT[ \t]+([0-9.]+)f/m.exec(oSrc)[1]);
+  const rgb = (s) => s.match(/\d+/g).map(Number);
+  const hue2 = (p, q, t) => {
+    if (t < 0) t += 1; if (t > 1) t -= 1;
+    if (t < 1 / 6) return p + (q - p) * 6 * t;
+    if (t < 0.5) return q;
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+    return p;
+  };
+  const refLighten = (hex) => {
+    const [r, g, b] = rgb(api.neonLitColor(hex));
+    const [h, s, l] = api.rgbToHsl(r, g, b);
+    const nl = Math.min(1, l + light);
+    const q = nl < 0.5 ? nl * (1 + s) : nl + s - nl * s;
+    const p = 2 * nl - q;
+    const hk = h / 360;
+    return `rgb(${Math.round(hue2(p, q, hk + 1 / 3) * 255)}, ${Math.round(hue2(p, q, hk) * 255)}, ${Math.round(hue2(p, q, hk - 1 / 3) * 255)})`;
+  };
+  for (const c of ["#7B00FF", "#00E5FF", "#39FF14", "#FF2BD6", "#FF6A00"]) {
+    assert.strictEqual(api.neonTrackOuter(c), refLighten(c),
+      `outer half for ${c}: mirror ${api.neonTrackOuter(c)} != HSL lighten ${refLighten(c)} (step ${light})`);
+  }
+  /* The property the calculation exists for: outer is LIGHTER than the middle
+   * (luma up) yet keeps its HUE - the white-lift drifts hue and collapses
+   * toward the cap. */
+  const luma = (s) => { const [r, g, b] = rgb(s); return 0.299 * r + 0.587 * g + 0.114 * b; };
+  for (const c of ["#7B00FF", "#00E5FF", "#39FF14"]) {
+    const mid = api.neonLitColor(c), out = api.neonTrackOuter(c);
+    assert.ok(luma(out) > luma(mid), `${c}: outer luma ${luma(out).toFixed(1)} must exceed middle ${luma(mid).toFixed(1)}`);
+    const midH = api.rgbToHsl(...rgb(mid))[0];
+    const outH = api.rgbToHsl(...rgb(out))[0];
+    assert.ok(Math.abs(outH - midH) < 1.5,
+      `${c}: outer hue ${outH.toFixed(1)} must match middle ${midH.toFixed(1)} (a white-lift would drift it)`);
+  }
+}
+
+console.log("neon web parity: outer band is an HSL lighten (gradient, not a sandwich)");
 
 /* --- the mirror's numbers ARE the firmware's numbers ---------------------- */
 /* Every assertion above this point hard-codes the value it expects, so the
@@ -617,6 +708,7 @@ console.log("neon web parity: tube zero marker band verified");
     zeroDeg: def("NEON_TUBE_ZERO_DEG"),
     mqScale: def("NEON_MARQUEE_CENTER_SCALE"),
     segW: def("NEON_SEG_W"), tubeW: def("NEON_TUBE_W"), capW: def("NEON_CAP_W"),
+    haloW: def("NEON_TUBE_HALO_W"),
   };
 
   for (const [layout, dy, slot, dotw, fontPx] of [
@@ -667,11 +759,13 @@ console.log("neon web parity: tube zero marker band verified");
     }
   }
 
-  /* Band depths: the inner (dimmed) band matches the body, so the full lit
-   * depth is 2W - CAP on each ring layout, and the mirror's deepest band must
-   * carry exactly that width. */
+  /* Band depths: on the tube the deepest band is the dark halo
+   * (NEON_TUBE_HALO_W = 20); on the segments the inner (dimmed) band is
+   * NEON_SEG_BAND_DEPTH (halo 20 + body 25 + cap 6, minus two shared px = 49).
+   * The mirror's deepest band must carry exactly that width. */
   {
-    const expect = [2 * F.tubeW - F.capW, 2 * F.segW - F.capW];
+    const segDepth = F.haloW + (F.segW - F.capW + 1) + F.capW - 2;
+    const expect = [F.haloW, segDepth];
     for (let layout = 0; layout <= 1; layout++) {
       const c = render(layout, 8.5);
       let lw = null;
@@ -681,7 +775,7 @@ console.log("neon web parity: tube zero marker band verified");
         if (k.op === "arc" && lw > 4) widths.push(lw);
       }
       assert.ok(widths.includes(expect[layout]),
-        `layout ${layout}: no ${expect[layout]} px band - mirror inner band must be 2*NEON_${layout ? "SEG" : "TUBE"}_W - NEON_CAP_W`);
+        `layout ${layout}: no ${expect[layout]} px band - tube halo must be NEON_TUBE_HALO_W, segments inner 2*NEON_SEG_W - NEON_CAP_W`);
     }
   }
 
@@ -712,6 +806,9 @@ console.log("neon web parity: tube zero marker band verified");
       if (k.op === "arc" && stroke === "#ffffff" && lw > 30) {
         const span = (k.args[4] - k.args[3]) / DEG;
         if (Math.abs(span - 2 * F.zeroDeg) < 0.01) marker = span;
+        else console.log("DBG marker arc span", span, "vs", 2 * F.zeroDeg, "stroke", stroke, "lw", lw);
+      } else if (k.op === "arc" && (k.args[4] - k.args[3]) / DEG > 4 && (k.args[4] - k.args[3]) / DEG < 5) {
+        console.log("DBG 4.5-ish arc: stroke", stroke, "lw", lw);
       }
     }
     assert.ok(marker !== null,

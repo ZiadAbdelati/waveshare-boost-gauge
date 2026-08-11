@@ -489,15 +489,18 @@ static uint32_t s_big_band_color;
  * is exactly how far from centre the brightest pixel of the ring sits. Panel
  * radius is 233; 228 leaves a 5px margin to the bezel, matching marquee's own
  * outermost bulb ring's tips (centreline 224, tips at 228) closely enough to
- * carry no new risk. The lit band depth is NEON_BAND_DEPTH(W) = 2W - CAP (46
- * tube / 54 segments), so segments' inner edge becomes 228-54=174; the widest
- * readout (-12.0, measured ink reaching ~170px at the current NEON_FONT_PX /
- * NEON_SLOT_W / NEON_SIGN_W) clears it by ~4px, measured on the rendered
- * -12.0 screenshot. */
+ * carry no new risk. The tube's lit depth is NEON_TUBE_BAND_DEPTH (55, inner
+ * edge 174) and the segments' NEON_SEG_BAND_DEPTH (49, inner edge 179); the
+ * widest readout (-12.0, measured ink reaching ~170px at the current
+ * NEON_FONT_PX / NEON_SLOT_W / NEON_SIGN_W) clears both. */
 #define NEON_R          228     /* ring centre radius */
 #define NEON_SEG_W      30      /* segment stroke width */
-#define NEON_TUBE_W     26      /* tube stroke width */
-#define NEON_NSEG       54
+#define NEON_TUBE_W     26      /* nominal tube stroke width (halo is its own literal now) */
+/* Segments: 45 slots x 6 degrees over the 270 sweep. The lit wedge is
+ * step - NEON_SEG_GAP; with the original 2-degree gap restored, each lit
+ * segment is 4.0 degrees - a third wider than the original 3 (the requested
+ * 35% is limited by the integer slot count; 45 gives step 6.0 exactly). */
+#define NEON_NSEG       45
 /* Glow reach. The mockup's bloom was a gaussian blur composited additively,
  * which this pipeline cannot afford per frame - alpha is its most expensive
  * operation. It is approximated with concentric OPAQUE strokes of falling
@@ -505,15 +508,38 @@ static uint32_t s_big_band_color;
  * the body. Both feed the clip guard and the invalidation bounds, so widening
  * the glow automatically widens the dirty region. */
 #define NEON_GLOW_OUT   0       /* no outward bleed: the segment is three flat bands */
-#define NEON_CAP_W      6       /* white tip, the outermost of the three bands */
+#define NEON_CAP_W      6       /* white tip, the outermost of the four tube bands */
 /* The inner (dimmed) band is the SAME width as the bloomed body, extending
  * inward from the body's inner edge - so the lit three-tone band is
  * symmetric about the body and its full depth is 2W - CAP. The unlit track
  * stays at the body width W with the same outer edge. One formula feeds the
  * draw, the bakes, the invalidation and the web mirror so they cannot drift. */
-#define NEON_BODY_W(W)      ((W) - NEON_CAP_W + 1)   /* 21 tube / 25 segments */
-#define NEON_BAND_DEPTH(W)  (2 * (W) - NEON_CAP_W)   /* 46 tube / 54 segments */
-#define NEON_SEG_GAP    2.0f    /* 270/54 = 5 exact degrees; equal 3-degree lit segments */
+/* The inner (dimmed) band used to match the body width, so the lit depth was
+ * 2W - CAP; the tube's halo is its own literal now (NEON_TUBE_HALO_W 20) and
+ * the segments' is NEON_SEG_HALO_W 20 against a 25 px body. */
+#define NEON_SEG_HALO_W     20
+#define NEON_SEG_BAND_DEPTH (NEON_SEG_HALO_W + (NEON_SEG_W - NEON_CAP_W + 1) + NEON_CAP_W - 2)  /* 49 */
+/* The tube's lit run is FOUR bands, one more than the segments: white cap
+ * (skinny, back at NEON_R), then the TRACK split into two tones - the outer
+ * half is lighter than the inner half, which keeps the current bloomed body
+ * colour - and the innermost dark halo, which stays as it was. The track
+ * half-width NEON_TUBE_TRACK_HALF is deliberately less than the halo
+ * thickness (16 < 21), so the whole track (32) is less than twice the halo.
+ * All radii are the band's OUTER edge (LVGL), abutting with the +1s. */
+#define NEON_TUBE_TRACK_LIGHT 0.20f    /* outer half: HSL lightness step (keeps hue+saturation) */
+#define NEON_TUBE_TRACK_HALF 16        /* each track half, < NEON_TUBE_HALO_W (20) */
+#define NEON_TUBE_HALO_W     20        /* innermost dark ring (was NEON_BODY_W = 21) */
+#define NEON_TUBE_TRACK_OUTER_R (NEON_R - NEON_CAP_W + 1)                    /* 223 */
+#define NEON_TUBE_TRACK_INNER_R (NEON_TUBE_TRACK_OUTER_R - NEON_TUBE_TRACK_HALF + 1)  /* 208 */
+#define NEON_TUBE_HALO_R        (NEON_TUBE_TRACK_INNER_R - NEON_TUBE_TRACK_HALF + 1)  /* 193 */
+/* Full lit depth on the tube: 228 outer to 174 inner = 55 px. The halo's
+ * inner edge is haloR - haloW + 1, so depth = NEON_R - that + 1. */
+#define NEON_TUBE_BAND_DEPTH (NEON_R - NEON_TUBE_HALO_R + NEON_TUBE_HALO_W)
+/* 270/45 = 6 exact degrees per segment slot. The lit wedge is
+ * step - NEON_SEG_GAP and the gap the dark remainder; 2.0 is the ORIGINAL
+ * gap, restored so widening the segments does not eat the space between
+ * them (4-degree lit wedges, 2-degree gaps). */
+#define NEON_SEG_GAP    2.0f
 /* Tube run tiles: the continuous run is drawn as a_zero-aligned A8 wedge
  * tiles (NEON_TUBE_TILE_STEP each) plus a live arc for the partial tip, so a
  * zone flip that recolours the whole run repaints as blits instead of
@@ -568,8 +594,8 @@ static uint32_t s_big_band_color;
 #define NEON_SIGN_W     42
 /* The negative readout (-12.0) is the widest the face ever gets. Measured on
  * the rendered screenshot at 118 px: readout ink reaches ~170 px against the
- * ring's 174 px inner edge (NEON_R 228 minus NEON_BAND_DEPTH(NEON_SEG_W)),
- * clearing by ~4 px. */
+ * segments' 179 px inner edge (NEON_R 228 minus NEON_SEG_BAND_DEPTH 49),
+ * clearing by ~9 px. */
 #define NEON_FONT_PX    118
 /* Half the slack the draw box adds around each cell. The box must be at least
  * the glyph's ADVANCE wide, because lv_draw_label centres on the advance and a
@@ -642,9 +668,21 @@ static uint32_t s_big_band_color;
  * the surviving half appeared to JUMP sideways between vacuum and boost. That
  * is the shift on the panel, and it is also why widening the bake alone never
  * looked any wider. The fix is to redraw the marker live after the run, which
- * costs one arc per frame in this layout only. 3 gives a 6 degree marker,
- * triple the 2 degrees that used to survive. */
-#define NEON_TUBE_ZERO_DEG 3.0f
+ * costs one arc per frame in this layout only. 3 gave a 6 degree marker; 2.25
+ * makes it 25% narrower (4.5 degrees) as a visual tweak.
+ *
+ * The arc rasterizer does not paint an angle span exactly symmetric about its
+ * midpoint: lv_draw_arc's trig-table quantises each edge to the nearest table
+ * entry. Measured on the sim's atmo render, an uncompensated [zero-2.55,
+ * zero+2.55] marker paints its centroid at 235.495 while the run that sweeps
+ * out of the notch starts at ~236.00 (both ~0.25-0.75 deg shy of the nominal
+ * 236.25) - so the marker read ~0.5 deg toward the vacuum side of the visible
+ * zero. NEON_TUBE_ZERO_CENTER (+0.25 deg) shifts the drawn span so the
+ * painted centroid lands on the run start; re-measured after the fix at
+ * 235.981 vs the run start 236.00. The web mirror does NOT apply it: canvas
+ * arcs are symmetric, so its marker is already centred on the true zero. */
+#define NEON_TUBE_ZERO_DEG    2.25f
+#define NEON_TUBE_ZERO_CENTER 0.25f
 /* Bulb border. Three concentric rings, one zone each - innermost vacuum,
  * middle boost, outermost overboost. The dots are two-tone: most bulbs are
  * baked dead track, and every ring carries 24 ACCENT bulbs (every sixth pair)
@@ -980,7 +1018,7 @@ static bool s_neon_seg_sprites_ready;
 /* Tube layout only, same shape as the segment tiles: a_zero-aligned wedges,
  * direction 0 counterclockwise (boost side), 1 clockwise (vacuum side). */
 #define NEON_TUBE_TILES NEON_NSEG
-static neon_seg_band_tile_t s_neon_tube_tile[2][NEON_TUBE_TILES][3];
+static neon_seg_band_tile_t s_neon_tube_tile[2][NEON_TUBE_TILES][4];
 static void *s_neon_tube_buf;
 static bool s_neon_tube_sprites_ready;
 static lv_area_t s_neon_tube_box[2][NEON_TUBE_TILES];
@@ -1008,21 +1046,28 @@ static uint32_t s_neon_grad_key[NEON_GRAD_ZONES];
  * (5 px for the 54-deep band). 8 px covers both so a segment whose fringe
  * falls inside a dirty region is submitted and repaints it. */
 #define NEON_BAND_SPR_MARGIN 8
-/* The three bands' geometry, one source for the bake and the blit path so
- * they cannot drift from each other (or from the constants the fallback arcs
- * still spell out inline). Index order inner, body, cap - the draw order. The
- * inner band is NEON_BODY_W(W) wide, the same as the body, so the bands abut
- * 1:1:1 (inner:body:cap at 25:25:6 for segments, 21:21:6 for tube). */
+/* The segments' three bands' geometry, one source for the bake and the blit
+ * path so they cannot drift from each other (or from the constants the
+ * fallback arcs still spell out inline). Index order inner, body, cap - the
+ * draw order. The inner halo (NEON_SEG_HALO_W 20) is narrower than the body
+ * (25) - the user asked for it shorter than the middle band - so the bands
+ * abut 20:25:6. The tube has its own four-band table below. */
 typedef struct { int radius; int width; } neon_seg_band_geom_t;
 static const neon_seg_band_geom_t k_neon_seg_band_geom[3] = {
-    { NEON_R - NEON_SEG_W + 1, NEON_BODY_W(NEON_SEG_W) },        /* inner */
+    { NEON_R - NEON_SEG_W + 1, NEON_SEG_HALO_W },          /* inner (halo, shorter than body) */
     { NEON_R - NEON_CAP_W + 1, NEON_SEG_W - NEON_CAP_W + 1 },    /* body  */
     { NEON_R, NEON_CAP_W },                                      /* cap   */
 };
-static const neon_seg_band_geom_t k_neon_tube_band_geom[3] = {
-    { NEON_R - NEON_TUBE_W + 1, NEON_BODY_W(NEON_TUBE_W) },      /* inner */
-    { NEON_R - NEON_CAP_W + 1, NEON_TUBE_W - NEON_CAP_W + 1 },   /* body  */
-    { NEON_R, NEON_CAP_W },                                      /* cap   */
+/* The tube's four bands' geometry, one source for the bake, the gradient
+ * image and the blit path so they cannot drift from each other (or from the
+ * constants the fallback arcs still spell out inline). Index order inner to
+ * outer - the draw order. The halo stays NEON_TUBE_HALO_W, the track is split
+ * into two equal halves, and the cap is skinny at NEON_R again. */
+static const neon_seg_band_geom_t k_neon_tube_band_geom[4] = {
+    { NEON_TUBE_HALO_R, NEON_TUBE_HALO_W },                 /* inner dark halo */
+    { NEON_TUBE_TRACK_INNER_R, NEON_TUBE_TRACK_HALF },      /* track inner half */
+    { NEON_TUBE_TRACK_OUTER_R, NEON_TUBE_TRACK_HALF },      /* track outer half */
+    { NEON_R, NEON_CAP_W },                                 /* cap (skinny)    */
 };
 
 /* The zone word (VACUUM / BOOST / OVERBOOST) gets the same treatment.
@@ -1099,6 +1144,7 @@ static void build_neon(lv_obj_t *scr);
 static void update_neon(const boost_sample_t *sample, const boost_theme_t *theme);
 static lv_color_t c(uint32_t rgb);
 static uint32_t lerp_rgb(uint32_t a, uint32_t b, float t);
+static uint32_t neon_hsl_lighten(uint32_t rgb, float d_light);
 static float clampf(float v, float lo, float hi);
 static uint32_t scale_rgb(uint32_t rgb, float k);
 /* The approved look is the mockup's BLOOMED appearance, not the raw palette
@@ -1197,6 +1243,68 @@ static inline uint32_t neon_lit(uint32_t rgb)
     return ((uint32_t)lroundf(r) << 16) | ((uint32_t)lroundf(g) << 8)
          | (uint32_t)lroundf(b);
 }
+
+/* The tube's lit run is white + three tones, one colour per band (index order
+ * inner to outer): dim halo, bloomed body, then the track's OUTER half
+ * LIGHTENED via HSL lightness (hue and saturation preserved) - the band stack
+ * must read as a smooth gradient dark -> bloomed -> lighter -> white, so the
+ * outer half goes lighter than the middle, never darker (a deeper outer turns
+ * the stack into a dark-bright-dark sandwich). One function feeds the live
+ * arcs, the gradient bake and the tile blits so they cannot drift. */
+static uint32_t neon_tube_band_color(uint32_t accent_rgb, int band)
+{
+    switch (band) {
+        case 0: return scale_rgb(accent_rgb, NEON_HALO_DIM);
+        case 1: return neon_lit(accent_rgb);
+        case 2: return neon_hsl_lighten(neon_lit(accent_rgb), NEON_TUBE_TRACK_LIGHT);
+        default: return 0xFFFFFFu;
+    }
+}
+
+/* HSL hue-to-rgb component (the standard p/q/t algorithm). `t` may wrap. */
+static float neon_hsl_hue2rgb(float p, float q, float t)
+{
+    if (t < 0.0f) t += 1.0f;
+    if (t > 1.0f) t -= 1.0f;
+    if (t < 1.0f / 6.0f) return p + (q - p) * 6.0f * t;
+    if (t < 0.5f) return q;
+    if (t < 2.0f / 3.0f) return p + (q - p) * (2.0f / 3.0f - t) * 6.0f;
+    return p;
+}
+
+/* Raise a colour's HSL lightness by d_light, keeping hue AND saturation. This
+ * is how the tube's outer track half is made lighter than the bloomed middle
+ * without washing it out: the rejected white-lift desaturated toward the cap,
+ * which is what read as "too pale" and is also why a fixed lerp cannot work
+ * for every user colour. Lightness is (max+min)/2, so a saturated colour still
+ * has room to brighten even when one channel is already 255. Pure black/white
+ * have no hue and just scale to the same neutral. */
+static uint32_t neon_hsl_lighten(uint32_t rgb, float d_light)
+{
+    const float r = (float)((rgb >> 16) & 0xFFu) / 255.0f;
+    const float g = (float)((rgb >> 8) & 0xFFu) / 255.0f;
+    const float b = (float)(rgb & 0xFFu) / 255.0f;
+    const float mx = fmaxf(r, fmaxf(g, b));
+    const float mn = fminf(r, fminf(g, b));
+    const float d = mx - mn;
+    float h = 0.0f, s = 0.0f;
+    const float l = (mx + mn) * 0.5f;
+    if (d > 0.0f) {
+        s = (l > 0.5f) ? d / (2.0f - mx - mn) : d / (mx + mn);
+        if (mx == r) h = (g - b) / d + (g < b ? 6.0f : 0.0f);
+        else if (mx == g) h = (b - r) / d + 2.0f;
+        else h = (r - g) / d + 4.0f;
+        h *= 60.0f;
+    }
+    const float nl = clampf(l + d_light, 0.0f, 1.0f);
+    const float q = (nl < 0.5f) ? nl * (1.0f + s) : nl + s - nl * s;
+    const float p = 2.0f * nl - q;
+    const float hk = h / 360.0f;
+    const int nr = (int)lroundf(neon_hsl_hue2rgb(p, q, hk + 1.0f / 3.0f) * 255.0f);
+    const int ng = (int)lroundf(neon_hsl_hue2rgb(p, q, hk) * 255.0f);
+    const int nb = (int)lroundf(neon_hsl_hue2rgb(p, q, hk - 1.0f / 3.0f) * 255.0f);
+    return ((uint32_t)nr << 16) | ((uint32_t)ng << 8) | (uint32_t)nb;
+}
 static uint32_t neon_zone_rgb(const boost_theme_t *t, float psi);
 static float s_psi_min;
 static float s_psi_max;
@@ -1285,7 +1393,7 @@ static void neon_build_seg_boxes(void)
         const float s = (float)ARC_START + (float)i * step + NEON_SEG_GAP * 0.5f;
         lv_draw_arc_get_area(px_icx(), px_icy(), (uint16_t)NEON_R,
                              s, s + step - NEON_SEG_GAP,
-                             (uint16_t)NEON_BAND_DEPTH(NEON_SEG_W),
+                             (uint16_t)NEON_SEG_BAND_DEPTH,
                              false, &s_neon_seg_box[i]);
         /* Inflate by NEON_BAND_SPR_MARGIN so a dirty region that reaches only
          * the segment's AA fringe (the angle mask paints ~1-2 px past the
@@ -1360,18 +1468,20 @@ static void paint_neon_background(lv_obj_t *canvas, const boost_theme_t *theme)
         arc.start_angle = (float)ARC_START;
         arc.end_angle = (float)(ARC_START + ARC_RANGE);
         arc.color = c(theme->track);
-        arc.width = NEON_TUBE_W;
+        /* Unlit track spans the track + cap footprint (NEON_R down to the
+         * halo's outer edge), a bit wider than the old body width. */
+        arc.width = NEON_R - NEON_TUBE_HALO_R + 1;
         lv_draw_arc(&layer, &arc);
         const float zero = psi_to_sweep(0.0f, (float)ARC_START,
                                         (float)(ARC_START + ARC_RANGE));
-        arc.start_angle = zero - NEON_TUBE_ZERO_DEG;
-        arc.end_angle = zero + NEON_TUBE_ZERO_DEG;
+        arc.start_angle = zero - NEON_TUBE_ZERO_DEG + NEON_TUBE_ZERO_CENTER;
+        arc.end_angle = zero + NEON_TUBE_ZERO_DEG + NEON_TUBE_ZERO_CENTER;
         arc.color = lv_color_white();
-        /* Match the lit run's innermost band so the marker reaches the same
+        /* Match the lit run's full band so the marker reaches the same
          * radial depth as the ring it marks. Baked here so the marker still
          * shows when nothing is lit and the live pass never runs; the live
          * pass in draw_neon_live() redraws it on top of the run. */
-        arc.width = NEON_BAND_DEPTH(NEON_TUBE_W);
+        arc.width = NEON_TUBE_BAND_DEPTH;
         lv_draw_arc(&layer, &arc);
     } else for (int i = 0; i < NEON_NSEG; ++i) {
         arc.start_angle = (float)ARC_START + (float)i * step + NEON_SEG_GAP * 0.5f;
@@ -1380,7 +1490,7 @@ static void paint_neon_background(lv_obj_t *canvas, const boost_theme_t *theme)
          * length and shape as a coloured segment and reads as a marker
          * rather than as a brighter piece of track. */
         arc.color = (i == zero_seg) ? lv_color_white() : c(theme->track);
-        arc.width = (i == zero_seg) ? NEON_BAND_DEPTH(NEON_SEG_W) : NEON_SEG_W;
+        arc.width = (i == zero_seg) ? NEON_SEG_BAND_DEPTH : NEON_SEG_W;
         lv_draw_arc(&layer, &arc);
     }
     /* No scale numerals. Inside the ring the lit segments' inner band reaches
@@ -2534,7 +2644,7 @@ static void neon_build_tube_boxes(void)
             const float s1 = a_zero + d * (((float)k + 1.0f) * tstep + ov);
             lv_draw_arc_get_area(px_icx(), px_icy(), (uint16_t)NEON_R,
                                  fminf(s0, s1), fmaxf(s0, s1),
-                                 (uint16_t)NEON_BAND_DEPTH(NEON_TUBE_W),
+                                 (uint16_t)NEON_TUBE_BAND_DEPTH,
                                  false, &s_neon_tube_box[dir][k]);
             /* Same fringe inflation as the segment boxes: a region reaching
              * only the tile's AA fringe must still overlap the box or the
@@ -2588,7 +2698,7 @@ static void neon_bake_tube_sprites(lv_obj_t *scr)
         for (int k = 0; k < NEON_TUBE_TILES; ++k) {
             const float lo = a_zero + d * ((float)k * tstep);
             const float hi = a_zero + d * (((float)k + 1.0f) * tstep);
-            for (int b = 0; b < 3; ++b) {
+            for (int b = 0; b < 4; ++b) {
                 lv_area_t bb;
                 lv_draw_arc_get_area(nom_cx, nom_cy,
                                      (uint16_t)k_neon_tube_band_geom[b].radius,
@@ -2636,7 +2746,7 @@ static void neon_bake_tube_sprites(lv_obj_t *scr)
 
     uint8_t *out = (uint8_t *)s_neon_tube_buf;
     uint8_t covwin[128 * 128];
-    for (int b = 0; b < 3; ++b) {
+    for (int b = 0; b < 4; ++b) {
         /* Bake the band once as a full ring - only radial AA, no angular
          * edges - then extract every tile of that band from the one ring. */
         neon_scratch_clear(scratch, 0, 0, DISP_SIZE, DISP_SIZE);
@@ -2813,12 +2923,10 @@ static void neon_bake_grad(lv_obj_t *scr, int zone_id, uint32_t accent_rgb)
     arc.center.x = size / 2; arc.center.y = size / 2;
     arc.start_angle = 0; arc.end_angle = 360;
     arc.opa = LV_OPA_COVER;
-    for (int b = 0; b < 3; ++b) {
+    for (int b = 0; b < 4; ++b) {
         arc.radius = (uint16_t)k_neon_tube_band_geom[b].radius;
         arc.width = (uint16_t)k_neon_tube_band_geom[b].width;
-        arc.color = (b == 2) ? lv_color_white()
-                             : c((b == 0) ? scale_rgb(accent_rgb, NEON_HALO_DIM)
-                                          : neon_lit(accent_rgb));
+        arc.color = c(neon_tube_band_color(accent_rgb, b));
         lv_draw_arc(&layer, &arc);
     }
     lv_canvas_finish_layer(cv, &layer);
@@ -2972,12 +3080,13 @@ static void draw_neon_live(lv_event_t *e)
 
     /* Guard on the GLOW's inner edge, not the body's. The glow reaches furthest
      * in, so a dirty region touching only that band would otherwise skip the
-     * ring entirely and strand its pixels. Per layout: the inner band now
-     * matches the body width, so the inner edge is NEON_R - (2W - CAP). */
+     * ring entirely and strand its pixels. Per layout: the inner edge is
+     * NEON_R minus the full lit depth (NEON_TUBE_BAND_DEPTH on the tube,
+     * NEON_SEG_BAND_DEPTH on the segments). */
     if (s_neon_layout != BOOST_NEON_MARQUEE && clip_reaches_radius(layer, (float)cx, (float)cy,
                             (float)(NEON_R - ((s_neon_layout == BOOST_NEON_TUBE)
-                                ? NEON_BAND_DEPTH(NEON_TUBE_W)
-                                : NEON_BAND_DEPTH(NEON_SEG_W))))) {
+                                ? NEON_TUBE_BAND_DEPTH
+                                : NEON_SEG_BAND_DEPTH)))) {
         lv_draw_arc_dsc_t arc; lv_draw_arc_dsc_init(&arc);
         arc.center.x = cx; arc.center.y = cy; arc.opa = LV_OPA_COVER;
         const float step = (float)ARC_RANGE / (float)NEON_NSEG;
@@ -3026,12 +3135,12 @@ static void draw_neon_live(lv_event_t *e)
                      * to the live arcs for the remainder of the run. */
                     if (s_neon_tube_tile[dir][k][0].img.data == NULL ||
                         s_neon_tube_tile[dir][k][1].img.data == NULL ||
-                        s_neon_tube_tile[dir][k][2].img.data == NULL) break;
-                    neon_blit_tube_tile(layer, cx, cy, dir, k, 0,
-                                        scale_rgb(accent_rgb, NEON_HALO_DIM));
-                    neon_blit_tube_tile(layer, cx, cy, dir, k, 1,
-                                        neon_lit(accent_rgb));
-                    neon_blit_tube_tile(layer, cx, cy, dir, k, 2, 0xFFFFFFu);
+                        s_neon_tube_tile[dir][k][2].img.data == NULL ||
+                        s_neon_tube_tile[dir][k][3].img.data == NULL) break;
+                    for (int b = 0; b < 4; ++b) {
+                        neon_blit_tube_tile(layer, cx, cy, dir, k, b,
+                                            neon_tube_band_color(accent_rgb, b));
+                    }
                     ++k;
                 }
             }
@@ -3077,25 +3186,21 @@ static void draw_neon_live(lv_event_t *e)
                      * image's own baked edges supply the ring's AA; a mask
                      * exactly on the band would double-AA the edges. */
                     arc.radius = NEON_R + NEON_GRAD_MARGIN;
-                    arc.width = NEON_BAND_DEPTH(NEON_TUBE_W) + 2 * NEON_GRAD_MARGIN;
+                    arc.width = NEON_TUBE_BAND_DEPTH + 2 * NEON_GRAD_MARGIN;
                     lv_draw_arc(layer, &arc);
                     arc.img_src = NULL;
                 }                 else
 #endif
                 {
-                    /* Abutting bands, same reasoning as the segments loop below. */
-                    arc.radius = NEON_R - NEON_TUBE_W + 1;
-                    arc.width = NEON_BODY_W(NEON_TUBE_W);
-                    arc.color = c(scale_rgb(accent_rgb, NEON_HALO_DIM));
-                    lv_draw_arc(layer, &arc);
-                    arc.radius = NEON_R - NEON_CAP_W + 1;
-                    arc.width = NEON_BODY_W(NEON_TUBE_W);
-                    arc.color = c(neon_lit(accent_rgb));
-                    lv_draw_arc(layer, &arc);
-                    arc.radius = NEON_R;
-                    arc.width = NEON_CAP_W;
-                    arc.color = lv_color_white();
-                    lv_draw_arc(layer, &arc);
+                    /* Abutting bands, same reasoning as the segments loop below.
+                     * Four bands now: dim halo, track inner (bloomed), track
+                     * outer (lighter), white cap - see neon_tube_band_color. */
+                    for (int b = 0; b < 4; ++b) {
+                        arc.radius = (uint16_t)k_neon_tube_band_geom[b].radius;
+                        arc.width = (uint16_t)k_neon_tube_band_geom[b].width;
+                        arc.color = c(neon_tube_band_color(accent_rgb, b));
+                        lv_draw_arc(layer, &arc);
+                    }
                 }
             }
             /* Zero marker last, so the run that just swept over it cannot bury
@@ -3105,8 +3210,8 @@ static void draw_neon_live(lv_event_t *e)
              * such seam to leave alone and the marker has to be repainted.
              * Only reached when something is lit; with nothing lit the baked
              * copy underneath is already correct and untouched. */
-            arc.start_angle = a_zero - NEON_TUBE_ZERO_DEG;
-            arc.end_angle = a_zero + NEON_TUBE_ZERO_DEG;
+            arc.start_angle = a_zero - NEON_TUBE_ZERO_DEG + NEON_TUBE_ZERO_CENTER;
+            arc.end_angle = a_zero + NEON_TUBE_ZERO_DEG + NEON_TUBE_ZERO_CENTER;
             /* Explicit radius: after the gradient path above, `arc.radius`
              * still holds NEON_R + NEON_GRAD_MARGIN from the mask, which would
              * shift this marker 4 px outboard and leave the ring's inner band
@@ -3115,7 +3220,7 @@ static void draw_neon_live(lv_event_t *e)
              * and baked markers are the same geometry whether or not the
              * gradient bake is active. */
             arc.radius = NEON_R;
-            arc.width = NEON_BAND_DEPTH(NEON_TUBE_W);
+            arc.width = NEON_TUBE_BAND_DEPTH;
             arc.color = lv_color_white();
             lv_draw_arc(layer, &arc);
         } else if (lit_n > 0) {
@@ -3185,7 +3290,7 @@ static void draw_neon_live(lv_event_t *e)
                  * edges meeting instead of abutting exactly, where neither
                  * arc fully covers and a faint seam can show. */
                 arc.radius = NEON_R - NEON_SEG_W + 1;
-                arc.width = NEON_BODY_W(NEON_SEG_W);
+                arc.width = NEON_SEG_HALO_W;
                 arc.color = c(scale_rgb(accent_rgb, NEON_HALO_DIM)); /* inner  */
                 lv_draw_arc(layer, &arc);
                 arc.radius = NEON_R - NEON_CAP_W + 1;
@@ -3501,12 +3606,13 @@ static void neon_inv_span(float a0, float a1)
         lv_area_t area;
         /* Span the live painted band: NEON_GLOW_OUT outside the ring through
          * to the inner band's inner edge, so widening the glow cannot outrun
-         * the bounds. The radial width is per-layout - the tube and the
-         * segments each paint NEON_BAND_DEPTH(W) = 2W - CAP (46 vs 54). */
+         * the bounds. The radial width is per-layout - the tube's four-band
+         * depth is NEON_TUBE_BAND_DEPTH (55), the segments' NEON_SEG_BAND_DEPTH
+         * (49). */
         const uint16_t band_w = (uint16_t)(NEON_GLOW_OUT +
             ((s_neon_layout == BOOST_NEON_TUBE)
-                ? NEON_BAND_DEPTH(NEON_TUBE_W)
-                : NEON_BAND_DEPTH(NEON_SEG_W)));
+                ? NEON_TUBE_BAND_DEPTH
+                : NEON_SEG_BAND_DEPTH));
         lv_draw_arc_get_area(px_icx(), px_icy(), (uint16_t)(NEON_R + NEON_GLOW_OUT),
                              seg, seg_end,
                              band_w,

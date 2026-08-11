@@ -49,7 +49,7 @@ typedef struct {
 static const shot_state_t k_states[] = {
     { -12.0f, 0.0f, "vac" },
     { 0.0f, 0.0f, "atmo" },
-    { 8.5f, 8.5f, "boost" },
+    { 5.0f, 5.0f, "boost" },
     { 19.5f, 19.5f, "over" },
 };
 
