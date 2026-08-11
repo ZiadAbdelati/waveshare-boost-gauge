@@ -80,10 +80,10 @@ const body = [
   extract("neonDim"),
   extract("psiToSweep"), extract("neonLitColor"), extract("neonBulbColor"),
   extract("rgbToHsl"), extract("hslHue2rgb"),
-  extract("neonTrackOuter"),
+  extract("neonTrackMiddle"), extract("neonTrackOuter"),
   extract("drawNeonGauge"),
 ].join("\n");
-const run = new Function(...Object.keys(scope), body + "\nreturn { drawNeonGauge, psiToSweep, neonLitColor, neonTrackOuter, rgbToHsl };");
+const run = new Function(...Object.keys(scope), body + "\nreturn { drawNeonGauge, psiToSweep, neonLitColor, neonTrackMiddle, neonTrackOuter, rgbToHsl };");
 const api = run(...Object.values(scope));
 
 function render(layout, psi, peak = 0) {
@@ -114,33 +114,35 @@ function withTextState(callsArr) {
 }
 
 /* --- the ring lights whole segments, indexed by floor at BOTH ends --------- */
-const step = ARC_RANGE / 45;
 const cSeg = fs.readFileSync(path.join(__dirname, "..", "main", "boost_gauge.c"), "utf8");
 const segGap = Number(/^#define[ \t]+NEON_SEG_GAP[ \t]+([0-9.]+)f/m.exec(cSeg)[1]);
+const segPitch = Number(/^#define[ \t]+NEON_SEG_PITCH[ \t]+([0-9.]+)f/m.exec(cSeg)[1]);
+const nseg = Number(/^#define[ \t]+NEON_NSEG[ \t]+([0-9]+)/m.exec(cSeg)[1]);
+const segStart = ARC_START + (ARC_RANGE - nseg * segPitch) / 2;
 const zeroAng = api.psiToSweep(0, ARC_START, ARC_START + ARC_RANGE);
 assert.notStrictEqual(zeroAng, ARC_START + ARC_RANGE / 2, "zero must not be at sweep midpoint");
 assert.ok((zeroAng - ARC_START) < (ARC_RANGE / 2), "vacuum share must differ from boost share");
 assert.ok((zeroAng - ARC_START) / ARC_RANGE < 0.5 &&
   (ARC_START + ARC_RANGE - zeroAng) > (zeroAng - ARC_START), "boost side must be larger");
-const zeroSeg = Math.floor((zeroAng - ARC_START) / step);
+const zeroSeg = Math.floor((zeroAng - segStart) / segPitch);
 assert.strictEqual(zeroSeg, 16, `zero segment ${zeroSeg}`);
 
 for (const psi of [-12, -3, 2.5, 8.5]) {
   const c = render(1, psi);
   const valAng = api.psiToSweep(psi, ARC_START, ARC_START + ARC_RANGE);
   const lo = Math.min(zeroAng, valAng), hi = Math.max(zeroAng, valAng);
-  const first = Math.floor((lo - ARC_START) / step);
-  const last = Math.floor((hi - ARC_START) / step);
+  const first = Math.floor((lo - segStart) / segPitch);
+  const last = Math.floor((hi - segStart) / segPitch);
   const drawn = new Set();
   for (const k of c) {
     if (k.op !== "arc") continue;
-    /* Only the lit segments, which span step - NEON_SEG_GAP degrees. The
+    /* Only the lit segments, which span segPitch - NEON_SEG_GAP degrees. The
      * unlit track is one full-sweep arc and the bulbs are tiny circles; both
      * would otherwise be mistaken for segment 0. */
     const span = (k.args[4] - k.args[3]) / DEG;
-    if (Math.abs(span - (step - segGap)) > 0.01) continue;
-    const i = Math.round((k.args[3] / DEG - segGap / 2 - ARC_START) / step);
-    if (i >= 0 && i < 45) drawn.add(i);
+    if (Math.abs(span - (segPitch - segGap)) > 0.01) continue;
+    const i = Math.round((k.args[3] / DEG - segGap / 2 - segStart) / segPitch);
+    if (i >= 0 && i < nseg) drawn.add(i);
   }
   for (let i = first; i <= last; i++) {
     assert.ok(drawn.has(i), `psi ${psi}: segment ${i} in span ${first}..${last} not drawn`);
@@ -641,6 +643,7 @@ console.log("neon web parity: tube cap + three tones verified");
 {
   const oSrc = fs.readFileSync(path.join(__dirname, "..", "main", "boost_gauge.c"), "utf8");
   const light = Number(/^#define[ \t]+NEON_TUBE_TRACK_LIGHT[ \t]+([0-9.]+)f/m.exec(oSrc)[1]);
+  const midScale = Number(/^#define[ \t]+NEON_TUBE_MID_SCALE[ \t]+([0-9.]+)f/m.exec(oSrc)[1]);
   const rgb = (s) => s.match(/\d+/g).map(Number);
   const hue2 = (p, q, t) => {
     if (t < 0) t += 1; if (t > 1) t -= 1;
@@ -650,7 +653,7 @@ console.log("neon web parity: tube cap + three tones verified");
     return p;
   };
   const refLighten = (hex) => {
-    const [r, g, b] = rgb(api.neonLitColor(hex));
+    const [r, g, b] = rgb(api.neonTrackMiddle(hex));
     const [h, s, l] = api.rgbToHsl(r, g, b);
     const nl = Math.min(1, l + light);
     const q = nl < 0.5 ? nl * (1 + s) : nl + s - nl * s;
@@ -660,14 +663,15 @@ console.log("neon web parity: tube cap + three tones verified");
   };
   for (const c of ["#7B00FF", "#00E5FF", "#39FF14", "#FF2BD6", "#FF6A00"]) {
     assert.strictEqual(api.neonTrackOuter(c), refLighten(c),
-      `outer half for ${c}: mirror ${api.neonTrackOuter(c)} != HSL lighten ${refLighten(c)} (step ${light})`);
+      `outer half for ${c}: mirror ${api.neonTrackOuter(c)} != HSL lighten ${refLighten(c)} (step ${light} mid ${midScale})`);
   }
-  /* The property the calculation exists for: outer is LIGHTER than the middle
-   * (luma up) yet keeps its HUE - the white-lift drifts hue and collapses
-   * toward the cap. */
+  /* The property the calculation exists for: outer is LIGHTER than the scaled
+   * middle (luma up) yet keeps its HUE - the white-lift drifts hue and
+   * collapses toward the cap. The middle is the bloom scaled to
+   * NEON_TUBE_MID_SCALE, which is what gives the lighten step chroma room. */
   const luma = (s) => { const [r, g, b] = rgb(s); return 0.299 * r + 0.587 * g + 0.114 * b; };
   for (const c of ["#7B00FF", "#00E5FF", "#39FF14"]) {
-    const mid = api.neonLitColor(c), out = api.neonTrackOuter(c);
+    const mid = api.neonTrackMiddle(c), out = api.neonTrackOuter(c);
     assert.ok(luma(out) > luma(mid), `${c}: outer luma ${luma(out).toFixed(1)} must exceed middle ${luma(mid).toFixed(1)}`);
     const midH = api.rgbToHsl(...rgb(mid))[0];
     const outH = api.rgbToHsl(...rgb(out))[0];

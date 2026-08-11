@@ -592,11 +592,11 @@ function drawNeonGauge(sample, psi, g) {
   const ringR = 228;
   const segmentW = 30;
   const capW = 6;
-  /* Segment slots are 6 degrees (270/45). The lit wedge is step - gap with the
-   * ORIGINAL 2-degree gap restored (NEON_SEG_GAP 2.0), so the segments are a
-   * third wider (4 degrees) without eating the space between them. Keep the
-   * mirror's literal in lockstep with the firmware define - the parity test
-   * checks the span. */
+  /* Segment pitch is FIXED at 6 degrees (4 lit + 2 gap), an exact division of
+   * the 270 sweep (45 x 6 = 270) with every boundary a whole degree, because
+   * LVGL rasterizes arcs at whole-degree resolution and a fractional slot
+   * renders as a mix of widths. Keep in lockstep with the firmware's
+   * NEON_SEG_PITCH / NEON_SEG_START. */
   const NEON_SEG_GAP = 2.0;
   /* Tube only: the lit run is FOUR bands - the innermost dark halo (20 px),
    * the track split into an inner half (bloomed, 16 px) and a lighter outer
@@ -623,6 +623,7 @@ function drawNeonGauge(sample, psi, g) {
   const zone = psi >= range.psiOverboost ? "OVERBOOST" : psi > 0.05 ? "BOOST" : "VACUUM";
   const accent = psi >= range.psiOverboost ? p.overboost : psi > 0.05 ? p.boost : p.vacuum;
   const lit = neonLitColor(accent);
+  const tubeMid = neonTrackMiddle(accent);
   const trackOuter = neonTrackOuter(accent);
   const marquee = layout === 2;
   const tube = layout === 0;
@@ -677,7 +678,8 @@ function drawNeonGauge(sample, psi, g) {
     ctx.arc(0, 0, outer - width / 2, degToRad(a0), degToRad(a1));
     ctx.stroke();
   };
-  const step = sweep / nseg;
+  const segPitch = 6.0;
+  const segStart = start + (sweep - nseg * segPitch) / 2;
   if (marquee) {
     ctx.fillStyle = p.track; roundRectPath(-132 * mq, 68 * mq, 264 * mq, 16 * mq, 8); ctx.fill();
     /* Three concentric bulb rings, one zone each - innermost vacuum, middle
@@ -751,14 +753,14 @@ function drawNeonGauge(sample, psi, g) {
      * lit footprint. */
     arc(start, start + sweep, tube ? (ringR - tubeHaloR + 1) : segmentW, p.track);
     const lo = Math.min(zero, value), hi = Math.max(zero, value);
-    const zeroSeg = Math.floor((zero - start) / step);
+    const zeroSeg = Math.floor((zero - segStart) / segPitch);
     if (tube) {
       if (hi - lo > 2) {
         /* White cap + three tones, drawn inner to outer: dark halo, bloomed
          * track inner half, then the lighter track outer half (the run the
          * panel paints via neon_tube_band_color). */
         arcAt(tubeHaloR, lo, hi, tubeHaloW, neonDim(accent));
-        arcAt(tubeTrackInnerR, lo, hi, tubeTrackHalf, lit);
+        arcAt(tubeTrackInnerR, lo, hi, tubeTrackHalf, tubeMid);
         arcAt(tubeTrackOuterR, lo, hi, tubeTrackHalf, trackOuter);
         arcAt(ringR, lo, hi, capW, "#ffffff");
       }
@@ -773,13 +775,13 @@ function drawNeonGauge(sample, psi, g) {
       /* Index by floor at BOTH ends, exactly as boost_neon_lit_span() does, so
        * a value landing mid-segment lights that segment whole. Testing each
        * segment's START angle against the span instead dropped the segment
-       * containing zero, because zero sits at 101.25 degrees and the step is 6. */
-      const litRun = hi - lo >= step * 0.5;
-      const first = Math.max(0, Math.floor((lo - start) / step));
-      const last = Math.min(nseg - 1, Math.floor((hi - start) / step));
+       * containing zero, because zero sits at 101.25 degrees and the pitch is 6. */
+      const litRun = hi - lo >= segPitch * 0.5;
+      const first = Math.max(0, Math.floor((lo - segStart) / segPitch));
+      const last = Math.min(nseg - 1, Math.floor((hi - segStart) / segPitch));
       for (let i = 0; i < nseg; i++) {
-        const a0 = start + i * step + NEON_SEG_GAP / 2;
-        const a1 = a0 + step - NEON_SEG_GAP;
+        const a0 = segStart + i * segPitch + NEON_SEG_GAP / 2;
+        const a1 = a0 + segPitch - NEON_SEG_GAP;
         if (i === zeroSeg) { arc(a0, a1, segBandDepth, "#ffffff"); continue; }
         if (!litRun || i < first || i > last) continue;
         arc(a0, a1, segBandDepth, neonDim(accent));
@@ -963,11 +965,11 @@ function neonLitColor(hex, factor = 1) {
   return `rgb(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)})`;
 }
 
-/* The tube's track OUTER half colour: the bloomed body LIGHTENED via HSL
- * lightness (hue and saturation preserved), mirroring neon_hsl_lighten() in
- * boost_gauge.c with NEON_TUBE_TRACK_LIGHT 0.20. The band stack must read as a
- * smooth gradient dark -> bloomed -> lighter -> white, so the outer half is
- * lighter than the middle - a deeper outer turns it into a dark-bright-dark
+/* The tube's track OUTER half colour: the bloomed+scaled MIDDLE lightened via
+ * HSL lightness (hue and saturation preserved), mirroring neon_hsl_lighten()
+ * in boost_gauge.c with NEON_TUBE_TRACK_LIGHT 0.26. The band stack must read
+ * as a smooth gradient dark -> bloomed -> lighter -> white, so the outer half
+ * is lighter than the middle - a deeper outer turns it into a dark-bright-dark
  * sandwich, and a white-lift washes it toward the cap. */
 function rgbToHsl(r, g, b) {
   r /= 255; g /= 255; b /= 255;
@@ -992,10 +994,20 @@ function hslHue2rgb(p, q, t) {
   if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
   return p;
 }
-function neonTrackOuter(hex) {
+/* The tube's track INNER half (the bloomed middle): the accent bloomed then
+ * scaled to NEON_TUBE_MID_SCALE 0.88, mirroring neon_tube_band_color() in
+ * boost_gauge.c. The scale keeps the middle vivid while giving the outer
+ * lighten step chroma headroom - without it the bright zone colours (yellow,
+ * magenta, cyan) bloomed so near-white that lightening them toward the cap
+ * collapsed into the "too pale" wash. */
+function neonTrackMiddle(hex) {
   const [r, g, b] = neonLitColor(hex).match(/\d+/g).map(Number);
+  return `rgb(${Math.round(r * 0.88)}, ${Math.round(g * 0.88)}, ${Math.round(b * 0.88)})`;
+}
+function neonTrackOuter(hex) {
+  const [r, g, b] = neonTrackMiddle(hex).match(/\d+/g).map(Number);
   const [h, s, l] = rgbToHsl(r, g, b);
-  const nl = Math.min(1, l + 0.20);
+  const nl = Math.min(1, l + 0.26);
   const q = nl < 0.5 ? nl * (1 + s) : nl + s - nl * s;
   const p = 2 * nl - q;
   const hk = h / 360;

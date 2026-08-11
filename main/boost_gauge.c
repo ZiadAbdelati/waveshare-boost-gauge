@@ -496,10 +496,12 @@ static uint32_t s_big_band_color;
 #define NEON_R          228     /* ring centre radius */
 #define NEON_SEG_W      30      /* segment stroke width */
 #define NEON_TUBE_W     26      /* nominal tube stroke width (halo is its own literal now) */
-/* Segments: 45 slots x 6 degrees over the 270 sweep. The lit wedge is
- * step - NEON_SEG_GAP; with the original 2-degree gap restored, each lit
- * segment is 4.0 degrees - a third wider than the original 3 (the requested
- * 35% is limited by the integer slot count; 45 gives step 6.0 exactly). */
+/* Segments: 45 wedges at a FIXED 6-degree pitch (4 lit + 2 gap). The pitch is
+ * an exact division of the 270 sweep (45 x 6 = 270, no bare track at the
+ * ends), and it must be whole degrees because LVGL rasterizes arcs at
+ * whole-degree resolution: a fractional slot (270/41) rendered as a visible
+ * mix of 4 and 5 degree wedges. Every segment boundary below is a whole
+ * degree, so the ring is uniform. */
 #define NEON_NSEG       45
 /* Glow reach. The mockup's bloom was a gaussian blur composited additively,
  * which this pipeline cannot afford per frame - alpha is its most expensive
@@ -526,7 +528,14 @@ static uint32_t s_big_band_color;
  * half-width NEON_TUBE_TRACK_HALF is deliberately less than the halo
  * thickness (16 < 21), so the whole track (32) is less than twice the halo.
  * All radii are the band's OUTER edge (LVGL), abutting with the +1s. */
-#define NEON_TUBE_TRACK_LIGHT 0.20f    /* outer half: HSL lightness step (keeps hue+saturation) */
+#define NEON_TUBE_TRACK_LIGHT 0.26f    /* outer half: HSL lightness step (keeps hue+saturation) */
+/* The middle band is the bloomed accent scaled to 0.88 so the OUTER half has
+ * chroma headroom. The bloom keeps hue+saturation at 1.0 and already pushes
+ * the bright zone colours (yellow, magenta, cyan) near the top of the RGB
+ * range, so lightening them toward the cap collapses into white - the "too
+ * pale" wash. Scaling the middle down ~12% keeps it vivid while giving the
+ * lighten step room to land as a clearly lighter, still-hued band. */
+#define NEON_TUBE_MID_SCALE 0.88f
 #define NEON_TUBE_TRACK_HALF 16        /* each track half, < NEON_TUBE_HALO_W (20) */
 #define NEON_TUBE_HALO_W     20        /* innermost dark ring (was NEON_BODY_W = 21) */
 #define NEON_TUBE_TRACK_OUTER_R (NEON_R - NEON_CAP_W + 1)                    /* 223 */
@@ -535,11 +544,21 @@ static uint32_t s_big_band_color;
 /* Full lit depth on the tube: 228 outer to 174 inner = 55 px. The halo's
  * inner edge is haloR - haloW + 1, so depth = NEON_R - that + 1. */
 #define NEON_TUBE_BAND_DEPTH (NEON_R - NEON_TUBE_HALO_R + NEON_TUBE_HALO_W)
-/* 270/45 = 6 exact degrees per segment slot. The lit wedge is
- * step - NEON_SEG_GAP and the gap the dark remainder; 2.0 is the ORIGINAL
- * gap, restored so widening the segments does not eat the space between
- * them (4-degree lit wedges, 2-degree gaps). */
+/* The dark remainder between lit wedges. 2.0 is the ORIGINAL gap, kept
+ * exactly: with the fixed NEON_SEG_PITCH below the lit wedge is 4.0 and the
+ * gap 2.0, and both stay whole degrees so the ring renders uniformly. */
 #define NEON_SEG_GAP    2.0f
+/* Fixed segment pitch (slot = lit + gap), and the grid offset that centres
+ * NSEG x PITCH within the 270-degree sweep. NEON_SEG_START is the leading
+ * edge of segment 0's slot; each segment's LIT wedge is
+ * NEON_SEG_START + i*PITCH + GAP/2 .. + NEON_SEG_LIT. */
+#define NEON_SEG_PITCH  6.0f
+#define NEON_SEG_LIT    (NEON_SEG_PITCH - NEON_SEG_GAP)                       /* 4.0 */
+#define NEON_SEG_START  ((float)ARC_START + ((float)ARC_RANGE - NEON_SEG_PITCH * (float)NEON_NSEG) * 0.5f)  /* 135.0 */
+static inline float neon_seg_start(int i)
+{
+    return NEON_SEG_START + (float)i * NEON_SEG_PITCH + NEON_SEG_GAP * 0.5f;
+}
 /* Tube run tiles: the continuous run is drawn as a_zero-aligned A8 wedge
  * tiles (NEON_TUBE_TILE_STEP each) plus a live arc for the partial tip, so a
  * zone flip that recolours the whole run repaints as blits instead of
@@ -547,7 +566,7 @@ static uint32_t s_big_band_color;
  * edges and the tip arc starts the same overlap early, so adjacent AA
  * fringes always land under a neighbour's full-coverage interior and the run
  * reads as one continuous band. */
-#define NEON_TUBE_TILE_STEP   (ARC_RANGE / (float)NEON_NSEG)   /* 5.0 */
+#define NEON_TUBE_TILE_STEP   (ARC_RANGE / (float)NEON_NSEG)   /* 270/45 = 6.0 (tube tiles only; not the segments' pitch) */
 /* The tube tiles carry NO angular AA (they are cut from a full-ring radial
  * bake in neon_bake_tube_sprites), so they tile exactly with no overlap; the
  * live tip arc starts at the tile boundary. This constant is the tip
@@ -1253,10 +1272,11 @@ static inline uint32_t neon_lit(uint32_t rgb)
  * arcs, the gradient bake and the tile blits so they cannot drift. */
 static uint32_t neon_tube_band_color(uint32_t accent_rgb, int band)
 {
+    const uint32_t mid = scale_rgb(neon_lit(accent_rgb), NEON_TUBE_MID_SCALE);
     switch (band) {
         case 0: return scale_rgb(accent_rgb, NEON_HALO_DIM);
-        case 1: return neon_lit(accent_rgb);
-        case 2: return neon_hsl_lighten(neon_lit(accent_rgb), NEON_TUBE_TRACK_LIGHT);
+        case 1: return mid;
+        case 2: return neon_hsl_lighten(mid, NEON_TUBE_TRACK_LIGHT);
         default: return 0xFFFFFFu;
     }
 }
@@ -1388,11 +1408,10 @@ static inline bool neon_area_overlaps(const lv_area_t *a, const lv_area_t *b)
 
 static void neon_build_seg_boxes(void)
 {
-    const float step = (float)ARC_RANGE / (float)NEON_NSEG;
     for (int i = 0; i < NEON_NSEG; ++i) {
-        const float s = (float)ARC_START + (float)i * step + NEON_SEG_GAP * 0.5f;
+        const float s = neon_seg_start(i);
         lv_draw_arc_get_area(px_icx(), px_icy(), (uint16_t)NEON_R,
-                             s, s + step - NEON_SEG_GAP,
+                             s, s + NEON_SEG_LIT,
                              (uint16_t)NEON_SEG_BAND_DEPTH,
                              false, &s_neon_seg_box[i]);
         /* Inflate by NEON_BAND_SPR_MARGIN so a dirty region that reaches only
@@ -1429,7 +1448,6 @@ static void paint_neon_background(lv_obj_t *canvas, const boost_theme_t *theme)
     lv_draw_arc_dsc_init(&arc);
     arc.center.x = cx; arc.center.y = cy; arc.radius = NEON_R;
     arc.rounded = false; arc.opa = LV_OPA_COVER;
-    const float step = (float)ARC_RANGE / (float)NEON_NSEG;
     /* The zero marker is the zero segment itself, painted white, rather than a
      * tick outside the ring. It reads at a glance and costs nothing extra. */
     const int zero_seg = neon_seg_index(psi_to_sweep(0.0f, (float)ARC_START,
@@ -1484,8 +1502,8 @@ static void paint_neon_background(lv_obj_t *canvas, const boost_theme_t *theme)
         arc.width = NEON_TUBE_BAND_DEPTH;
         lv_draw_arc(&layer, &arc);
     } else for (int i = 0; i < NEON_NSEG; ++i) {
-        arc.start_angle = (float)ARC_START + (float)i * step + NEON_SEG_GAP * 0.5f;
-        arc.end_angle = arc.start_angle + step - NEON_SEG_GAP;
+        arc.start_angle = neon_seg_start(i);
+        arc.end_angle = arc.start_angle + NEON_SEG_LIT;
         /* The zero marker is drawn at the LIT width so it has the same
          * length and shape as a coloured segment and reads as a marker
          * rather than as a brighter piece of track. */
@@ -2471,7 +2489,6 @@ static void neon_bake_seg_sprites(lv_obj_t *scr)
     }
     memset(s_neon_seg_tile, 0, sizeof(s_neon_seg_tile));
 
-    const float step = (float)ARC_RANGE / (float)NEON_NSEG;
     const int nom_cx = DISP_SIZE / 2, nom_cy = DISP_SIZE / 2;
 
     /* Pass 1: windowed dims per band tile and the packed total. The window is
@@ -2480,12 +2497,12 @@ static void neon_bake_seg_sprites(lv_obj_t *scr)
     size_t total = 0;
     int max_w = 0, max_h = 0;
     for (int i = 0; i < NEON_NSEG; ++i) {
-        const float s = (float)ARC_START + (float)i * step + NEON_SEG_GAP * 0.5f;
+        const float s = neon_seg_start(i);
         for (int b = 0; b < 3; ++b) {
             lv_area_t bb;
             lv_draw_arc_get_area(nom_cx, nom_cy,
                                  (uint16_t)k_neon_seg_band_geom[b].radius,
-                                 s, s + step - NEON_SEG_GAP,
+                                 s, s + NEON_SEG_LIT,
                                  (uint16_t)k_neon_seg_band_geom[b].width,
                                  false, &bb);
             const int w = bb.x2 - bb.x1 + 1 + 2 * NEON_SEG_SPR_MARGIN;
@@ -2524,12 +2541,12 @@ static void neon_bake_seg_sprites(lv_obj_t *scr)
 
     uint8_t *out = (uint8_t *)s_neon_seg_buf;
     for (int i = 0; i < NEON_NSEG; ++i) {
-        const float s = (float)ARC_START + (float)i * step + NEON_SEG_GAP * 0.5f;
+        const float s = neon_seg_start(i);
         for (int b = 0; b < 3; ++b) {
             lv_area_t bb;
             lv_draw_arc_get_area(nom_cx, nom_cy,
                                  (uint16_t)k_neon_seg_band_geom[b].radius,
-                                 s, s + step - NEON_SEG_GAP,
+                                 s, s + NEON_SEG_LIT,
                                  (uint16_t)k_neon_seg_band_geom[b].width,
                                  false, &bb);
             const int wx0 = bb.x1 - NEON_SEG_SPR_MARGIN;
@@ -2549,7 +2566,7 @@ static void neon_bake_seg_sprites(lv_obj_t *scr)
             arc.radius = (uint16_t)k_neon_seg_band_geom[b].radius;
             arc.width = (uint16_t)k_neon_seg_band_geom[b].width;
             arc.start_angle = s;
-            arc.end_angle = s + step - NEON_SEG_GAP;
+            arc.end_angle = s + NEON_SEG_LIT;
             arc.color = lv_color_white();
             arc.opa = LV_OPA_COVER;
             lv_draw_arc(&layer, &arc);
@@ -3089,10 +3106,9 @@ static void draw_neon_live(lv_event_t *e)
                                 : NEON_SEG_BAND_DEPTH)))) {
         lv_draw_arc_dsc_t arc; lv_draw_arc_dsc_init(&arc);
         arc.center.x = cx; arc.center.y = cy; arc.opa = LV_OPA_COVER;
-        const float step = (float)ARC_RANGE / (float)NEON_NSEG;
         int first = 0, last = 0;
-        const int lit_n = boost_neon_lit_span(a_zero, a_val, (float)ARC_START,
-                                              (float)ARC_RANGE, NEON_NSEG,
+        const int lit_n = boost_neon_lit_span(a_zero, a_val, NEON_SEG_START,
+                                              NEON_SEG_PITCH * (float)NEON_NSEG, NEON_NSEG,
                                               &first, &last);
         /* The peak overlay is drawn at body width with no white cap, so when it
          * lands on a segment that is already lit it erases that segment's cap -
@@ -3264,8 +3280,8 @@ static void draw_neon_live(lv_event_t *e)
                     continue;
                 }
 #endif
-                const float s = (float)ARC_START + (float)i * step + NEON_SEG_GAP * 0.5f;
-                arc.start_angle = s; arc.end_angle = s + step - NEON_SEG_GAP;
+                const float s = neon_seg_start(i);
+                arc.start_angle = s; arc.end_angle = s + NEON_SEG_LIT;
                 NEON_STAT_ARC();
                 /* An additive gaussian bloom does two things a dim halo does
                  * not: it spreads light outward AND it lifts the lit body
@@ -3305,10 +3321,10 @@ static void draw_neon_live(lv_event_t *e)
         }
         if (s_neon_peak_value > 0.2f && !(peak_in_run)) {
             const float ap = psi_to_sweep(s_neon_peak_value, (float)ARC_START, (float)(ARC_START + ARC_RANGE));
-            const int pi = (int)floorf((ap - (float)ARC_START) / step);
+            const int pi = (int)floorf((ap - NEON_SEG_START) / NEON_SEG_PITCH);
             if (pi >= 0 && pi < NEON_NSEG) {
-                const float s = (float)ARC_START + (float)pi * step + NEON_SEG_GAP * 0.5f;
-                arc.start_angle = s; arc.end_angle = s + step - NEON_SEG_GAP;
+                const float s = neon_seg_start(pi);
+                arc.start_angle = s; arc.end_angle = s + NEON_SEG_LIT;
                 arc.color = c(neon_lit(neon_zone_rgb(theme, s_neon_peak_value)));
                 arc.width = NEON_SEG_W;
                 arc.radius = NEON_R;
@@ -3594,9 +3610,8 @@ static void neon_inv_span(float a0, float a1)
      * paints one continuous arc at the exact span, so it keeps its precise
      * angular extent; only the common sweep clamp below applies to both. */
     if (s_neon_layout == BOOST_NEON_SEGMENTS) {
-        const float step = (float)ARC_RANGE / (float)NEON_NSEG;
-        a0 = (float)ARC_START + floorf((a0 - (float)ARC_START) / step) * step;
-        a1 = (float)ARC_START + ceilf((a1 - (float)ARC_START) / step) * step;
+        a0 = NEON_SEG_START + floorf((a0 - NEON_SEG_START) / NEON_SEG_PITCH) * NEON_SEG_PITCH;
+        a1 = NEON_SEG_START + ceilf((a1 - NEON_SEG_START) / NEON_SEG_PITCH) * NEON_SEG_PITCH;
     }
     if (a0 < (float)ARC_START) a0 = (float)ARC_START;
     if (a1 > (float)(ARC_START + ARC_RANGE)) a1 = (float)(ARC_START + ARC_RANGE);
@@ -3626,8 +3641,7 @@ static void neon_inv_span(float a0, float a1)
 /* Segment index carrying a given angle, or -1 when it falls outside the sweep. */
 static int neon_seg_index(float angle)
 {
-    const float step = (float)ARC_RANGE / (float)NEON_NSEG;
-    const int i = (int)floorf((angle - (float)ARC_START) / step);
+    const int i = (int)floorf((angle - NEON_SEG_START) / NEON_SEG_PITCH);
     return (i >= 0 && i < NEON_NSEG) ? i : -1;
 }
 
@@ -3639,9 +3653,8 @@ static int neon_seg_index(float angle)
 static void neon_inv_seg_range(int first, int last)
 {
     if (first < 0 || last < first || last >= NEON_NSEG) return;
-    const float step = (float)ARC_RANGE / (float)NEON_NSEG;
-    neon_inv_span((float)ARC_START + (float)first * step,
-                  (float)ARC_START + (float)(last + 1) * step);
+    neon_inv_span(NEON_SEG_START + (float)first * NEON_SEG_PITCH,
+                  NEON_SEG_START + (float)(last + 1) * NEON_SEG_PITCH);
 }
 
 static void neon_inv_seg(int index)
@@ -3845,7 +3858,8 @@ static void update_neon(const boost_sample_t *sample, const boost_theme_t *theme
          * cannot disagree with what draw_neon_live() actually painted. */
         boost_neon_seg_diff_t d;
         const int dn = boost_neon_seg_diff(a_zero, a_old, a_new,
-                                           (float)ARC_START, (float)ARC_RANGE,
+                                           NEON_SEG_START,
+                                           NEON_SEG_PITCH * (float)NEON_NSEG,
                                            NEON_NSEG, &d);
         for (int i = 0; i < dn; ++i)
             neon_inv_seg_range(d.first[i], d.last[i]);
@@ -3863,7 +3877,8 @@ static void update_neon(const boost_sample_t *sample, const boost_theme_t *theme
          * keeps the precise delta wedge. */
         float lo, hi;
         if (boost_neon_tube_dirty_span(a_zero, a_old, a_new,
-                                       (float)ARC_START, (float)ARC_RANGE,
+                                       NEON_SEG_START,
+                                       NEON_SEG_PITCH * (float)NEON_NSEG,
                                        NEON_NSEG, &lo, &hi)) {
             neon_inv_span(lo, hi);
         } else {
@@ -3899,8 +3914,8 @@ static void update_neon(const boost_sample_t *sample, const boost_theme_t *theme
      * value about to be drawn - so the invalidation and the draw cannot
      * disagree about whether the overlay is showing. */
     int pf = 0, pl = 0;
-    const int peak_lit_n = boost_neon_lit_span(a_zero, a_new, (float)ARC_START,
-                                               (float)ARC_RANGE, NEON_NSEG,
+    const int peak_lit_n = boost_neon_lit_span(a_zero, a_new, NEON_SEG_START,
+                                               NEON_SEG_PITCH * (float)NEON_NSEG, NEON_NSEG,
                                                &pf, &pl);
     const bool peak_in_run = (peak_lit_n > 0 && peak_idx >= pf && peak_idx <= pl);
     if (peak_idx != s_neon_peak_idx || peak_color_flip ||
