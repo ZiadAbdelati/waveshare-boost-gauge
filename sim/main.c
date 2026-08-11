@@ -383,6 +383,17 @@ static int run_audit(const char *theme_id, int seconds)
      * submitted (three arc primitives each). */
     extern uint32_t g_neon_cb_calls, g_neon_arcs, g_neon_labels;
     extern uint32_t g_neon_sign_bars, g_neon_sprite_blits;
+    extern bool g_neon_flip_pending;
+    /* The neon ring band is exempted from the stale check on the frame where a
+     * zone flip DEFERRED the full-run recolor (word-first, arc-next-frame):
+     * that frame intentionally renders the old-colour ring for exactly one
+     * sample. Everything outside the band, and every other frame, must still
+     * be byte-clean. Band radii follow boost_gauge.c: inner edge of the halo
+     * to the cap outer edge (tube halo inner 174..NEON_R 228, segments
+     * NEON_R - NEON_SEG_BAND_DEPTH 179..228), padded 2 px for AA fringes. */
+    const boost_neon_layout_t n_layout = boost_theme_neon_layout();
+    const double n_lo = (n_layout == BOOST_NEON_SEGMENTS) ? 177.0 : 172.0;
+    const double n_hi = 231.0;
     uint64_t cb_total = 0, arc_total = 0, label_total = 0;
     uint64_t sign_total = 0, sprite_total = 0;
     uint32_t cb_max = 0, arc_max = 0, label_max = 0;
@@ -407,6 +418,11 @@ static int run_audit(const char *theme_id, int seconds)
         sample.peak_psi = psi > 0.0f ? psi : 0.0f;
         sample.demo = true;
         boost_gauge_update(&sample);
+        /* Was this sample a deferred zone flip? The update sets the flag when
+         * it defers the run recolor; the render then shows the old-colour ring
+         * for this frame. Snapshot after render with the flag still set means
+         * the ring-band mismatch is the DESIGNED one-frame lag, not a trail. */
+        const bool n_deferred = g_neon_flip_pending;
 
         s_flush_px = 0;
         g_neon_cb_calls = 0; g_neon_arcs = 0; g_neon_labels = 0;
@@ -431,6 +447,21 @@ static int run_audit(const char *theme_id, int seconds)
             px_total += s_flush_px;
             if (s_flush_px > px_max) px_max = s_flush_px;
             rendered++;
+            /* Record this cycle's (ms, px) so the cost report below has real
+             * data (this array was declared but never populated). */
+            if (cycles_n == cycles_cap) {
+                size_t nc = cycles_cap ? cycles_cap * 2 : 4096;
+                cycle_t *n = (cycle_t *)realloc(cycles, nc * sizeof(cycle_t));
+                if (n == NULL) { fprintf(stderr, "cycle buf alloc failed\n"); exit(1); }
+                cycles = n;
+                cycles_cap = nc;
+            }
+            cycles[cycles_n].ms = dt;
+            cycles[cycles_n].px = s_flush_px;
+            cycles_n++;
+            if (dt > ms_max) ms_max = dt;
+            if (dt > 16.0) over16++;
+            ms_total += dt;
         }
 
         if ((i % 3) == 0) {
@@ -454,6 +485,17 @@ static int run_audit(const char *theme_id, int seconds)
                     const uint16_t b565 = (uint16_t)(((b[2] & 0xF8) << 8) |
                                                      ((b[1] & 0xFC) << 3) | (b[0] >> 3));
                     if (a565 != b565) {
+                        /* Deferred-flip frame: the ring shows the old zone
+                         * colour for this one frame by design (see above). Skip
+                         * mismatches inside the ring band - but nothing else,
+                         * and on any other frame skip nothing at all. */
+                        if (n_deferred) {
+                            const int32_t x = p % DISP_W, y = p / DISP_W;
+                            const double dx = x - (DISP_W / 2.0);
+                            const double dy = y - (DISP_H / 2.0);
+                            const double r = sqrt(dx * dx + dy * dy);
+                            if (r >= n_lo && r <= n_hi) continue;
+                        }
                         bad++;
                         /* Severity, not just a count. A trail is unrepainted
                          * *content* - a needle's worth of ink left behind, many
@@ -520,6 +562,21 @@ static int run_audit(const char *theme_id, int seconds)
             printf("(px=%llu ms=%.2f) ", (unsigned long long)bp[i].px, bp[i].ms);
         printf("\n");
         free(tmp); free(bp);
+        /* Flip cycles (a zone crossing recolors the whole lit run, so flushed
+         * px jumps to a large multiple of a normal tick) are the cost that
+         * matters on the tube face. Report them separately so a draw-path
+         * change can be judged on the worst cycle rather than the mean. */
+        const uint64_t f_thresh = px_max * 3 / 4;
+        size_t fn = 0; double f_ms = 0.0, f_ms_max = 0.0; uint64_t f_px = 0;
+        for (size_t i = 0; i < cycles_n; ++i) {
+            if (cycles[i].px < f_thresh) continue;
+            fn++; f_ms += cycles[i].ms; f_px += cycles[i].px;
+            if (cycles[i].ms > f_ms_max) f_ms_max = cycles[i].ms;
+        }
+        printf("  flip cycles        : %zu of %zu (px>=%llu) mean %.2f ms  max %.2f ms  mean px %.0f\n",
+               fn, cycles_n, (unsigned long long)f_thresh,
+               fn ? f_ms / (double)fn : 0.0, f_ms_max,
+               fn ? (double)f_px / (double)fn : 0.0);
     }
     free(cycles);
     printf("  flushed px/cycle   : mean %.0f  max %llu\n",

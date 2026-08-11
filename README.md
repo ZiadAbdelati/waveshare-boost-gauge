@@ -174,6 +174,27 @@ segments; fast-motion tenths sample-and-hold on the marquee; slower spin
 cadence; vault peak-mark shrink; vault needle-gate raise) — none implemented,
 all awaiting the user's call.
 
+### Neon flip deferral (2026-08-11)
+
+The neon zone flip recolors the whole lit run in one frame — the widest dirty
+region on the tube/segments faces. The run repaint is now deferred to the next
+sample (word-first, arc-next-frame): the word/readout/peak flip immediately,
+and the ring repaints in the new zone colour one frame later. One 16 ms frame
+of old-colour ring at each crossing is the accepted visual lag — a single-frame
+transition, not a multi-frame sweep (the banded sweep was rejected by the user
+on 2026-08-10). Host audit (0 stale / 0 severe, deferral-aware exemption) and
+hardware constant-slew sweeps:
+
+| Layout | Baseline (2026-08-09) | With deferral |
+|---|---|---:|
+| tube | 45/56 | **54/58** |
+| segments | 29/45 | **56/60** |
+| marquee spin-off | 56/59 | 55/59 (unaffected as designed) |
+
+All arms `teTimeouts 0`, demand coverage 1.0. A fresh visual tear check on the
+physical panel is still required — the deferral changes ring timing at the
+crossing, and the TE-scanline write-ahead touches the same path.
+
 ### Measured strip-height boundary
 
 The original 20-line setting is the production configuration. We tested larger

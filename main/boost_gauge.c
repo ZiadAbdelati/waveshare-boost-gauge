@@ -860,6 +860,16 @@ static float s_neon_peak_value;
  * lit segment restyles and the whole run has to be repainted, not just the
  * segments the value moved across. Mirrors s_arc_color_psi. */
 static float s_neon_color_psi;
+/* Colour-flip deferral (word-first, arc-next-frame): the zone word updates on
+ * the flip frame (cheap, now that its invalidation box is cropped to the word
+ * sprite and no longer reaches the ring), and the full-run recolor is deferred
+ * to the next sample. The flip frame therefore carries the word + readout +
+ * peak but NOT the arc repaint, so its dirty region is smaller. DELIBERATE
+ * one-frame visual lag (the ring shows the old zone colour for one frame after
+ * the word flips) - NOT byte-identical, so the sim stale-pixel audit reports
+ * those transition frames as mismatches by design. */
+bool g_neon_flip_pending;
+static float s_neon_flip_lo, s_neon_flip_hi;
 /* Segment index currently carrying the peak tell-tale, -1 for none. The peak
  * sits outside the run between the notch and the value, so it is invalidated
  * on its own when it moves. */
@@ -3615,8 +3625,18 @@ static void neon_inv_span(float a0, float a1)
     }
     if (a0 < (float)ARC_START) a0 = (float)ARC_START;
     if (a1 > (float)(ARC_START + ARC_RANGE)) a1 = (float)(ARC_START + ARC_RANGE);
+    /* The arc is invalidated in angular chunks so each box hugs the ring band
+     * instead of the arc's full bounding box, which would otherwise include the
+     * empty dial interior on a long run (the boost/overboost zone flip recolors
+     * the whole run and is the widest dirty region on the face). The tube runs
+     * are split finer than the 90-degree quadrants the segments already snap
+     * to: measured on the host audit, a 30-degree split is the knee (30 and 15
+     * degrees both floor at the same flushed-pixel total; 90 lands ~12% higher
+     * on the flip's worst cycle). Byte-identical pixels; the box count stays
+     * far under LVGL's 32-area invalidation buffer on the longest run. */
     for (float seg = a0; seg < a1;) {
-        const float boundary = (floorf(seg / 90.0f) + 1.0f) * 90.0f;
+        const float step = (s_neon_layout == BOOST_NEON_TUBE) ? 30.0f : 90.0f;
+        const float boundary = (floorf(seg / step) + 1.0f) * step;
         const float seg_end = fminf(a1, boundary);
         lv_area_t area;
         /* Span the live painted band: NEON_GLOW_OUT outside the ring through
@@ -3798,6 +3818,14 @@ static void neon_y_fold(int top, int glyph, int lo_box, int hi_box,
 
 static void update_neon(const boost_sample_t *sample, const boost_theme_t *theme)
 {
+    /* A colour flip from the previous sample deferred its full-run recolor to
+     * NOW (word-first, arc-next-frame): this frame repaints the run in the new
+     * zone colour. Runs before the live logic so the pending span and this
+     * sample's own delta union correctly. */
+    if (g_neon_flip_pending) {
+        neon_inv_span(s_neon_flip_lo, s_neon_flip_hi);
+        g_neon_flip_pending = false;
+    }
     const float psi = isfinite(sample->psi) ? sample->psi : 0.0f;
     const float old_psi = s_neon_psi;
     s_neon_psi = psi;
@@ -3821,12 +3849,34 @@ static void update_neon(const boost_sample_t *sample, const boost_theme_t *theme
         if (wi != s_neon_word_drawn) {
             int bx, by;
             neon_word_box_origin(px_icx(), px_icy(), &bx, &by);
-            lv_area_t wa = {
-                bx - NEON_SPR_GLOW_MARGIN, by - NEON_SPR_GLOW_MARGIN,
-                bx + NEON_WORD_BOX_W - 1 + NEON_SPR_GLOW_MARGIN,
-                by + NEON_WORD_BOX_H - 1 + NEON_SPR_GLOW_MARGIN,
-            };
-            lv_obj_invalidate_area(s_neon_face, &wa);
+            /* Invalidate only the painted word pixels. Each word's sprite is
+             * cropped to its ink + glow at bake time (s_neon_word_dx/dy + the
+             * image's own w/h), so the union of the outgoing and incoming
+             * sprites is the exact dirty area. The layout box (300x34 + glow,
+             * ~328x62) was 2-3x wider than the widest word and reached past
+             * the ring's inner edge (r~187 vs the band's r=173), pulling the
+             * ring into the word's repaint. BOOST (117x45) <-> OVERBOOST
+             * (190x45) unions to ~190x45 with corners at r~158 - inside the
+             * ring. */
+            lv_area_t wa = { INT32_MAX, INT32_MAX, INT32_MIN, INT32_MIN };
+            const int idx[2] = { s_neon_word_drawn, wi };
+            for (int i = 0; i < 2; ++i) {
+                const int w = idx[i];
+                if (w < 0 || w >= NEON_WORD_COUNT) continue;
+                const lv_image_dsc_t *wimg = &s_neon_word_img[w];
+                if (wimg->data == NULL) continue;
+                const int wx = bx + s_neon_word_dx[w];
+                const int wy = by + s_neon_word_dy[w];
+                const int wx2 = wx + (int)wimg->header.w - 1;
+                const int wy2 = wy + (int)wimg->header.h - 1;
+                if (wx < wa.x1) wa.x1 = wx;
+                if (wy < wa.y1) wa.y1 = wy;
+                if (wx2 > wa.x2) wa.x2 = wx2;
+                if (wy2 > wa.y2) wa.y2 = wy2;
+            }
+            if (wa.x1 <= wa.x2 && wa.y1 <= wa.y2) {
+                lv_obj_invalidate_area(s_neon_face, &wa);
+            }
             s_neon_word_drawn = wi;
         }
     }
@@ -3840,13 +3890,32 @@ static void update_neon(const boost_sample_t *sample, const boost_theme_t *theme
     const bool color_flip = neon_zone_rgb(theme, s_neon_color_psi) != neon_zone_rgb(theme, psi);
     const bool side_flip = (old_psi < 0.0f) != (psi < 0.0f);
     if (side_flip) {
-        /* Runs on opposite sides of the notch are disjoint. */
-        neon_inv_span(a_zero, a_old);
-        neon_inv_span(a_zero, a_new);
+        /* Runs on opposite sides of the notch are disjoint. Invalidate each
+         * side only if that side's run is actually painted - the draw gates on
+         * boost_neon_lit_span()'s half-tile threshold, so a side below that
+         * threshold shows nothing and needs no repaint (and repainting it can
+         * only widen the dirty region). Same helper and arguments the draw
+         * uses, so threshold behaviour cannot disagree with what was painted. */
+        int f, l;
+        if (boost_neon_lit_span(a_zero, a_old, NEON_SEG_START,
+                                NEON_SEG_PITCH * (float)NEON_NSEG, NEON_NSEG,
+                                &f, &l) > 0)
+            neon_inv_span(a_zero, a_old);
+        if (boost_neon_lit_span(a_zero, a_new, NEON_SEG_START,
+                                NEON_SEG_PITCH * (float)NEON_NSEG, NEON_NSEG,
+                                &f, &l) > 0)
+            neon_inv_span(a_zero, a_new);
     } else if (color_flip) {
-        /* Every lit segment restyles, so repaint the union of both full runs. */
-        neon_inv_span(fminf(a_zero, fminf(a_old, a_new)),
-                      fmaxf(a_zero, fmaxf(a_old, a_new)));
+        /* Every lit segment restyles, so the whole run must repaint - but NOT
+         * this frame. Deferred to the next sample (word-first, arc-next-frame)
+         * so the flip frame carries only the cheap word/readout/peak repaints,
+         * and this frame's dirty region is smaller. The pending span covers
+         * the union of both full runs; the draw repaints it next frame in the
+         * new zone colour. One frame of old-colour ring after the word flips
+         * is the accepted visual lag. */
+        g_neon_flip_pending = true;
+        s_neon_flip_lo = fminf(a_zero, fminf(a_old, a_new));
+        s_neon_flip_hi = fmaxf(a_zero, fmaxf(a_old, a_new));
     } else if (s_neon_layout == BOOST_NEON_SEGMENTS) {
         /* Segments light whole and in the same colour, so only the segments
          * whose painted state flipped need a repaint - the symmetric
