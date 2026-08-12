@@ -49,6 +49,8 @@ typedef struct {
 static const shot_state_t k_states[] = {
     { -12.0f, 0.0f, "vac" },
     { 0.0f, 0.0f, "atmo" },
+    { -12.0f, 0.0f, "vac" },
+    { -5.5f, 0.0f, "v55" },
     { 5.0f, 5.0f, "boost" },
     { 19.5f, 19.5f, "over" },
 };
@@ -317,6 +319,7 @@ static void setup_headless_display(void)
  */
 static int run_audit(const char *theme_id, int seconds)
 {
+    float s_audit_peak = 0.0f;   /* ratcheted synthetic peak, see the sample loop */
     boost_sim_init();
     boost_page_create();
     if (theme_id != NULL) {
@@ -415,7 +418,13 @@ static int run_audit(const char *theme_id, int seconds)
 
         boost_sample_t sample = { 0 };
         sample.psi = psi;
-        sample.peak_psi = psi > 0.0f ? psi : 0.0f;
+        /* Ratchet the synthetic peak like the firmware's running max (a tap
+         * reset is gesture-only), so the tube peak tell-tale HOLDS past the
+         * descending run tip and the audit exercises the marker's VISIBLE
+         * path, not just the ascent where peak == psi and the marker is
+         * clamped under the run. */
+        if (psi > s_audit_peak) s_audit_peak = psi;
+        sample.peak_psi = s_audit_peak > 0.0f ? s_audit_peak : 0.0f;
         sample.demo = true;
         boost_gauge_update(&sample);
         /* Was this sample a deferred zone flip? The update sets the flag when

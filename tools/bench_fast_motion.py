@@ -50,7 +50,9 @@ from bench_common import DEFAULT_URL, api_get, api_put, api_post, wait_online
 # rather than assuming the PUT took effect).
 # ---------------------------------------------------------------------------
 PSI_MIN = -14.5
-PSI_MAX = 9.6
+# fast-sweep ceiling (FAST_SWEEP_MAX in main/boost_sim.c); the organic demo
+# waveform still clamps at PSI_MAX (9.6)
+PSI_MAX = 10.0
 
 # Vault face geometry (VAULT_A0/A1, DEFAULT_ZERO_ANGLE/PSI_MIN/PSI_MAX,
 # ARC_START/RANGE) from main/boost_gauge.c, used only to convert measured

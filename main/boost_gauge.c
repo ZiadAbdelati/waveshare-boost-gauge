@@ -544,6 +544,14 @@ static uint32_t s_big_band_color;
 /* Full lit depth on the tube: 228 outer to 174 inner = 55 px. The halo's
  * inner edge is haloR - haloW + 1, so depth = NEON_R - that + 1. */
 #define NEON_TUBE_BAND_DEPTH (NEON_R - NEON_TUBE_HALO_R + NEON_TUBE_HALO_W)
+/* Unlit track width on the tube (track + cap footprint, excluding the dark
+ * halo): 228 - 193 + 1 = 36. This is the width of the unlit track bake AND
+ * of the tube peak tell-tale: the peak marker must stay fully contained
+ * within the track (user's 2026-08-11/12 bench requirement - it must NOT
+ * bleed into the dark halo the way the white zero marker does). The zero
+ * marker draws the full lit depth (NEON_TUBE_BAND_DEPTH, 55). The lit run
+ * also paints the full depth. */
+#define NEON_TUBE_TRACK_W (NEON_R - NEON_TUBE_HALO_R + 1)
 /* The dark remainder between lit wedges. 2.0 is the ORIGINAL gap, kept
  * exactly: with the fixed NEON_SEG_PITCH below the lit wedge is 4.0 and the
  * gap 2.0, and both stay whole degrees so the ring renders uniformly. */
@@ -702,6 +710,27 @@ static inline float neon_seg_start(int i)
  * arcs are symmetric, so its marker is already centred on the true zero. */
 #define NEON_TUBE_ZERO_DEG    2.25f
 #define NEON_TUBE_ZERO_CENTER 0.25f
+/* Half-width, in degrees, of the tube layout's peak tell-tale. The marker is
+ * drawn from the CONTINUOUS peak angle - no segment snapping - and centred
+ * exactly on it, so no NEON_TUBE_ZERO_CENTER-style compensation is needed
+ * (that offset exists because the RUN that sweeps out of the notch starts at
+ * a quantised edge; the peak marker has no anchored neighbour). The old
+ * segment-quantised marker sat up to a full 6-degree pitch off the actual
+ * measurement, which is what read as the tube never reaching the marked
+ * point. Half-width 2.25 matches the white zero marker's NEON_TUBE_ZERO_DEG
+ * exactly, so the two landmarks have the same TOTAL angular width (4.5 deg)
+ * - the user's definition of the peak marker's "width" is how many degrees
+ * it extends left/right of its centre line, and the 2026-08-12 bench
+ * comparison against the 0 marker was about that angular span, not the
+ * radial depth. The marker's RADIAL depth stays NEON_TUBE_TRACK_W (36,
+ * contained in the track); only the angular span matches the zero marker. At
+ * psiMax the dial clamp cuts the drawn band in half, the same natural
+ * cut-off the user accepted at the end of the track. */
+#define NEON_TUBE_PEAK_DEG 2.25f
+/* Invalidation padding around the exact arc sector bbox: the tube's gradient
+ * mask runs 4 px inside the geometric inner edge (NEON_GRAD_MARGIN) plus ~2 px
+ * arc-mask AA fringe plus 2 px margin. See the use site for the full argument. */
+#define NEON_INV_PAD 7
 /* Bulb border. Three concentric rings, one zone each - innermost vacuum,
  * middle boost, outermost overboost. The dots are two-tone: most bulbs are
  * baked dead track, and every ring carries 24 ACCENT bulbs (every sixth pair)
@@ -870,17 +899,24 @@ static float s_neon_color_psi;
  * those transition frames as mismatches by design. */
 bool g_neon_flip_pending;
 static float s_neon_flip_lo, s_neon_flip_hi;
-/* Segment index currently carrying the peak tell-tale, -1 for none. The peak
- * sits outside the run between the notch and the value, so it is invalidated
- * on its own when it moves. */
+/* Segment index currently carrying the peak tell-tale on the SEGMENTS layout,
+ * -1 for none. The peak sits outside the run between the notch and the value,
+ * so it is invalidated on its own when it moves. The tube layout tracks its
+ * own continuous marker state (s_neon_tube_peak_angle) instead - see below. */
 static int s_neon_peak_idx = -1;
-/* The peak keeps its own colour reference: it can cross a zone threshold
- * without moving segment, and then it restyles in place. */
-static float s_neon_peak_color_psi;
-/* Whether the lit run covered the peak segment last frame. The overlay is
- * suppressed while it does, so this transition changes the segment's
- * appearance without changing its index - the one case a
- * "did the index move?" test would miss. */
+/* Tube layout: the peak tell-tale is a continuous arc centred exactly on the
+ * peak's sweep angle (no segment snapping), always drawn while a peak is
+ * recorded. These two hold where it was last drawn so update_neon() can
+ * invalidate exactly the old/new spans when it moves. */
+static bool s_neon_tube_peak_vis;
+static float s_neon_tube_peak_angle = NAN;
+/* Whether the lit run covered the peak segment last frame (segments layout
+ * only). The overlay is suppressed while it does, so this transition changes
+ * the segment's appearance without changing its index - the one case a
+ * "did the index move?" test would miss. The tube never suppresses: its
+ * marker is a permanent landmark in a fixed dim colour, and popping it in
+ * and out as the run crossed a segment boundary was the flicker at the
+ * peak. */
 static bool s_neon_peak_in_run;
 /* Last readout composition actually painted. The tenths cell changes every
  * sample while the higher cells almost never do, so repainting the whole
@@ -1498,17 +1534,20 @@ static void paint_neon_background(lv_obj_t *canvas, const boost_theme_t *theme)
         arc.color = c(theme->track);
         /* Unlit track spans the track + cap footprint (NEON_R down to the
          * halo's outer edge), a bit wider than the old body width. */
-        arc.width = NEON_R - NEON_TUBE_HALO_R + 1;
+        arc.width = NEON_TUBE_TRACK_W;
         lv_draw_arc(&layer, &arc);
         const float zero = psi_to_sweep(0.0f, (float)ARC_START,
                                         (float)(ARC_START + ARC_RANGE));
         arc.start_angle = zero - NEON_TUBE_ZERO_DEG + NEON_TUBE_ZERO_CENTER;
         arc.end_angle = zero + NEON_TUBE_ZERO_DEG + NEON_TUBE_ZERO_CENTER;
         arc.color = lv_color_white();
-        /* Match the lit run's full band so the marker reaches the same
-         * radial depth as the ring it marks. Baked here so the marker still
-         * shows when nothing is lit and the live pass never runs; the live
-         * pass in draw_neon_live() redraws it on top of the run. */
+        /* Full lit depth (NEON_TUBE_BAND_DEPTH): the zero marker is a bright
+         * full-band landmark spanning the whole ring width, restored to its
+         * original design (the 2026-08-12 "inside the track" request was
+         * about the PEAK/max marker only - shortening the zero marker was a
+         * mistake). Baked here so the marker still shows when nothing is lit
+         * and the live pass never runs; the live pass in draw_neon_live()
+         * redraws it on top of the run. */
         arc.width = NEON_TUBE_BAND_DEPTH;
         lv_draw_arc(&layer, &arc);
     } else for (int i = 0; i < NEON_NSEG; ++i) {
@@ -1553,6 +1592,19 @@ static uint32_t neon_zone_rgb(const boost_theme_t *t, float psi)
 {
     return (psi >= s_psi_overboost) ? t->overboost
          : (psi > 0.05f) ? t->boost : t->vacuum;
+}
+
+/* The peak tell-tale's fixed ink, shared by the tube and segments layouts:
+ * the DARKER of the vacuum state's inner-ring colours (scale_rgb(vacuum,
+ * NEON_HALO_DIM) - the same dim factor the halo band uses). Deliberately NOT
+ * the peak value's zone colour: a marker in the live zone colour stood out
+ * jarringly against the track and re-tinted every time the peak crossed a
+ * zone threshold. The constant vacuum tone makes the marker read as a
+ * reference mark rather than as another lit band, and it never restyles, so
+ * its invalidation has no colour-flip case. */
+static uint32_t neon_peak_color(const boost_theme_t *t)
+{
+    return scale_rgb(t->vacuum, NEON_HALO_DIM);
 }
 
 /* Draw-cost counters. The audit measures FLUSHED pixels, which is the dirty
@@ -3113,23 +3165,65 @@ static void draw_neon_live(lv_event_t *e)
     if (s_neon_layout != BOOST_NEON_MARQUEE && clip_reaches_radius(layer, (float)cx, (float)cy,
                             (float)(NEON_R - ((s_neon_layout == BOOST_NEON_TUBE)
                                 ? NEON_TUBE_BAND_DEPTH
-                                : NEON_SEG_BAND_DEPTH)))) {
+                                : NEON_SEG_BAND_DEPTH) - 3))) {
         lv_draw_arc_dsc_t arc; lv_draw_arc_dsc_init(&arc);
         arc.center.x = cx; arc.center.y = cy; arc.opa = LV_OPA_COVER;
         int first = 0, last = 0;
         const int lit_n = boost_neon_lit_span(a_zero, a_val, NEON_SEG_START,
                                               NEON_SEG_PITCH * (float)NEON_NSEG, NEON_NSEG,
                                               &first, &last);
-        /* The peak overlay is drawn at body width with no white cap, so when it
-         * lands on a segment that is already lit it erases that segment's cap -
-         * which is what removed the white tip from the leading segment whenever
-         * peak equalled the current value. Inside the run it shows nothing the
-         * lit segment does not already show, so skip it. */
+        /* The peak's segment index (segments layout), used by the in-run
+         * suppression test below. The marker is drawn after the run (see the
+         * marker block at the end of this guard), so the suppression is what
+         * stops it from painting over the run's own lit segment. */
         const int peak_i = (s_neon_peak_value > 0.2f)
             ? neon_seg_index(psi_to_sweep(s_neon_peak_value, (float)ARC_START,
                                           (float)(ARC_START + ARC_RANGE)))
             : -1;
-        const bool peak_in_run = (lit_n > 0 && peak_i >= first && peak_i <= last);
+        /* Segments only: the whole-segment marker is suppressed while the run
+         * itself fills the peak's segment - the lit segment IS the indicator
+         * then, and the old body-width overlay additionally erased the run's
+         * white cap. The tube's marker is continuous and ALWAYS drawn (it is a
+         * permanent landmark in a fixed dim colour, distinct from the run's
+         * zone tones), so suppressing it here would recreate the pop-in/out
+         * flicker at the peak as the value hovered around the segment
+         * boundary. */
+        const bool peak_in_run = (s_neon_layout == BOOST_NEON_SEGMENTS &&
+                                  lit_n > 0 && peak_i >= first && peak_i <= last);
+        /* TUBE peak tell-tale, drawn BEFORE the run so the lit arc sweeps
+         * OVER it - the old after-the-run order painted the marker on top,
+         * so the run appeared to stop at the marker's near edge instead of
+         * passing it. Continuous arc centred EXACTLY on the peak's sweep
+         * angle (no segment snapping), always drawn while a peak exists (no
+         * in-run suppression -> no pop-in/out flicker), drawn at the unlit
+         * track's own width (NEON_TUBE_TRACK_W, r 192-228) so it stays
+         * FULLY CONTAINED within the track - it must never bleed into the
+         * dark halo the way the white zero marker does - and clamped to the
+         * dial so it can never overshoot psiMax. Its ANGULAR span is
+         * NEON_TUBE_PEAK_DEG = NEON_TUBE_ZERO_DEG (2.25), so the two
+         * landmarks have the same total width in degrees - the user's
+         * "width" is the left/right angular extent, not the radial depth.
+         * Skipped only when it would overlap the white zero marker - a peak
+         * on the notch is indistinguishable from the notch itself. Ink is
+         * the dimmed VACUUM inner-ring tone (neon_peak_color): a constant
+         * reference mark that never re-tints at zone thresholds. */
+        if (s_neon_layout == BOOST_NEON_TUBE && s_neon_peak_value > 0.2f) {
+            const float ap = psi_to_sweep(s_neon_peak_value, (float)ARC_START,
+                                          (float)(ARC_START + ARC_RANGE));
+            if (fabsf(ap - a_zero) > NEON_TUBE_PEAK_DEG + NEON_TUBE_ZERO_DEG) {
+                const float lo = fmaxf(ap - NEON_TUBE_PEAK_DEG, (float)ARC_START);
+                const float hi = fminf(ap + NEON_TUBE_PEAK_DEG,
+                                       (float)(ARC_START + ARC_RANGE));
+                if (hi - lo > 0.1f) {
+                    arc.start_angle = lo;
+                    arc.end_angle = hi;
+                    arc.color = c(neon_peak_color(theme));
+                    arc.width = NEON_TUBE_TRACK_W;
+                    arc.radius = NEON_R;
+                    lv_draw_arc(layer, &arc);
+                }
+            }
+        }
         if (s_neon_layout == BOOST_NEON_TUBE && lit_n > 0) {
             float lo = a_zero;
             float hi = a_val;
@@ -3242,8 +3336,8 @@ static void draw_neon_live(lv_event_t *e)
              * still holds NEON_R + NEON_GRAD_MARGIN from the mask, which would
              * shift this marker 4 px outboard and leave the ring's inner band
              * (the baked marker's innermost depth) uncovered on its inner
-             * edge. Match the baked copy (NEON_R / NEON_BAND_DEPTH) so live
-             * and baked markers are the same geometry whether or not the
+             * edge. Match the baked copy (NEON_R / NEON_TUBE_BAND_DEPTH) so
+             * live and baked markers are the same geometry whether or not the
              * gradient bake is active. */
             arc.radius = NEON_R;
             arc.width = NEON_TUBE_BAND_DEPTH;
@@ -3329,13 +3423,29 @@ static void draw_neon_live(lv_event_t *e)
                 lv_draw_arc(layer, &arc);
             }
         }
-        if (s_neon_peak_value > 0.2f && !(peak_in_run)) {
-            const float ap = psi_to_sweep(s_neon_peak_value, (float)ARC_START, (float)(ARC_START + ARC_RANGE));
+        /* SEGMENTS peak tell-tale, drawn after the run and suppressed while
+         * the run fills its segment (peak_in_run) - the lit segment IS the
+         * indicator then, and the overlay would paint over the run's white
+         * cap. Marks the segment whose slot contains the peak (same floor()
+         * the draw's boost_neon_lit_span() uses, so it cannot disagree with
+         * the lit run), at the track's OWN width NEON_SEG_W - the full-depth
+         * (NEON_SEG_BAND_DEPTH) extension was reverted at the user's review:
+         * the marker should be the width of the track, no more. The
+         * full-depth arc is deliberately avoided - it is the geometry that
+         * produces the corner AA seam in the stale-pixel audit. Ink is the
+         * same dimmed vacuum tone as the tube. Skipped when the peak segment
+         * is the zero segment (pi == zseg), so the dim tone never smudges the
+         * baked white zero marker. */
+        if (s_neon_layout == BOOST_NEON_SEGMENTS &&
+            s_neon_peak_value > 0.2f && !peak_in_run) {
+            const float ap = psi_to_sweep(s_neon_peak_value, (float)ARC_START,
+                                          (float)(ARC_START + ARC_RANGE));
             const int pi = (int)floorf((ap - NEON_SEG_START) / NEON_SEG_PITCH);
-            if (pi >= 0 && pi < NEON_NSEG) {
+            const int zseg = neon_seg_index(a_zero);
+            if (pi >= 0 && pi < NEON_NSEG && pi != zseg) {
                 const float s = neon_seg_start(pi);
                 arc.start_angle = s; arc.end_angle = s + NEON_SEG_LIT;
-                arc.color = c(neon_lit(neon_zone_rgb(theme, s_neon_peak_value)));
+                arc.color = c(neon_peak_color(theme));
                 arc.width = NEON_SEG_W;
                 arc.radius = NEON_R;
                 lv_draw_arc(layer, &arc);
@@ -3581,12 +3691,19 @@ static void build_neon(lv_obj_t *scr)
     s_neon_psi = isfinite(s_display_psi) ? s_display_psi : 0.0f;
     s_neon_peak_value = fmaxf(s_peak_psi, 0.0f);
     s_neon_color_psi = s_neon_psi;
-    s_neon_peak_color_psi = s_neon_peak_value;
     s_neon_cell_n = 0;   /* force a full readout paint on the first update */
     s_neon_peak_idx = (s_neon_peak_value > 0.2f)
         ? neon_seg_index(psi_to_sweep(s_neon_peak_value, (float)ARC_START,
                                       (float)(ARC_START + ARC_RANGE)))
         : -1;
+    /* Tube marker state: the scene build repaints the whole face, so the
+     * marker is already on screen; these just need to agree with what was
+     * drawn so the first update does not invalidate a phantom old span. */
+    s_neon_tube_peak_vis = s_neon_peak_value > 0.2f;
+    s_neon_tube_peak_angle = s_neon_tube_peak_vis
+        ? psi_to_sweep(s_neon_peak_value, (float)ARC_START,
+                       (float)(ARC_START + ARC_RANGE))
+        : NAN;
     /* Always logged, not gated behind BOOST_NEON_DRAW_STATS: this is one line
      * per scene build, and the split between background and bake is what says
      * whether a slow theme switch is worth chasing. It is also the only
@@ -3628,14 +3745,13 @@ static void neon_inv_span(float a0, float a1)
     /* The arc is invalidated in angular chunks so each box hugs the ring band
      * instead of the arc's full bounding box, which would otherwise include the
      * empty dial interior on a long run (the boost/overboost zone flip recolors
-     * the whole run and is the widest dirty region on the face). The tube runs
-     * are split finer than the 90-degree quadrants the segments already snap
-     * to: measured on the host audit, a 30-degree split is the knee (30 and 15
-     * degrees both floor at the same flushed-pixel total; 90 lands ~12% higher
-     * on the flip's worst cycle). Byte-identical pixels; the box count stays
+     * the whole run and is the widest dirty region on the face). Both layouts
+     * split at 30 degrees - measured on the host audit, 30 is the knee (30 and
+     * 15 both floor at the same flushed-pixel total; 90 lands ~12% higher on
+     * the flip's worst cycle). Byte-identical pixels; the box count stays
      * far under LVGL's 32-area invalidation buffer on the longest run. */
     for (float seg = a0; seg < a1;) {
-        const float step = (s_neon_layout == BOOST_NEON_TUBE) ? 30.0f : 90.0f;
+        const float step = 30.0f;
         const float boundary = (floorf(seg / step) + 1.0f) * step;
         const float seg_end = fminf(a1, boundary);
         lv_area_t area;
@@ -3652,7 +3768,14 @@ static void neon_inv_span(float a0, float a1)
                              seg, seg_end,
                              band_w,
                              false, &area);
-        area.x1 -= 14; area.y1 -= 14; area.x2 += 14; area.y2 += 14;
+        /* Pad the exact sector bbox by the painted extent it does not cover:
+         * the tube's gradient mask runs 4 px inside the geometric inner edge
+         * (NEON_GRAD_MARGIN, the image is NEON_R+4 with width BAND_DEPTH+8),
+         * plus ~2 px of arc-mask AA fringe, plus 2 px margin. lv_draw_arc_get_area
+         * already includes the end-corner rays, so 14 px (as shipped) was pure
+         * slack beyond that. */
+        area.x1 -= NEON_INV_PAD; area.y1 -= NEON_INV_PAD;
+        area.x2 += NEON_INV_PAD; area.y2 += NEON_INV_PAD;
         lv_obj_invalidate_area(s_neon_face, &area);
         seg = seg_end;
     }
@@ -3951,7 +4074,7 @@ static void update_neon(const boost_sample_t *sample, const boost_theme_t *theme
                                        NEON_NSEG, &lo, &hi)) {
             neon_inv_span(lo, hi);
         } else {
-            neon_inv_span(a_old, a_new);
+            neon_inv_span(fminf(a_old, a_new), fmaxf(a_old, a_new));
         }
     } else {
         /* Only the moving end moved. */
@@ -3959,42 +4082,63 @@ static void update_neon(const boost_sample_t *sample, const boost_theme_t *theme
     }
     s_neon_color_psi = psi;
 
-    /* The peak tell-tale sits outside every run above. */
-    const int peak_idx = (s_neon_peak_value > 0.2f)
-        ? neon_seg_index(psi_to_sweep(s_neon_peak_value, (float)ARC_START,
-                                      (float)(ARC_START + ARC_RANGE)))
-        : -1;
-    const bool peak_color_flip = neon_zone_rgb(theme, s_neon_peak_color_psi)
-                              != neon_zone_rgb(theme, s_neon_peak_value);
-    /* The peak overlay changes appearance in three ways, and this invalidates
-     * for exactly those three.
+    /* The peak tell-tale. Its ink is FIXED (neon_peak_color - the dimmed
+     * vacuum inner-ring tone), so it never restyles at a zone threshold; the
+     * only changes are its position (a new peak or a tap reset) and, on the
+     * segments layout, the in-run suppression state.
      *
-     * It used to carry a fourth disjunct, `peak_idx >= 0`, which is true on
-     * every frame once any peak has been recorded - so this fired every frame
-     * whether or not the overlay looked any different, queueing two more
-     * invalidations (each able to split again at the 90 degree boundaries in
-     * neon_inv_span). It was there for a real reason, stated in the comment it
-     * replaced: the overlay is SUPPRESSED once the lit run reaches it, and
-     * that transition changes the segment without changing its index. But the
-     * blanket condition was a proxy for that transition, not a test of it.
+     * Segments: index-tracked, suppressed while the run fills its segment
+     * (peak_in_run, computed with the same helper and arguments the draw
+     * uses, so the invalidation and the draw cannot disagree about whether
+     * the overlay is showing - the old blanket `peak_idx >= 0` fired every
+     * frame once any peak existed, queueing two extra invalidations per
+     * cycle).
      *
-     * Testing it directly instead. peak_in_run is computed the same way
-     * draw_neon_live() computes it - same helper, same arguments, against the
-     * value about to be drawn - so the invalidation and the draw cannot
-     * disagree about whether the overlay is showing. */
-    int pf = 0, pl = 0;
-    const int peak_lit_n = boost_neon_lit_span(a_zero, a_new, NEON_SEG_START,
-                                               NEON_SEG_PITCH * (float)NEON_NSEG, NEON_NSEG,
-                                               &pf, &pl);
-    const bool peak_in_run = (peak_lit_n > 0 && peak_idx >= pf && peak_idx <= pl);
-    if (peak_idx != s_neon_peak_idx || peak_color_flip ||
-        peak_in_run != s_neon_peak_in_run) {
-        neon_inv_seg(s_neon_peak_idx);
-        neon_inv_seg(peak_idx);
-        s_neon_peak_idx = peak_idx;
-        s_neon_peak_color_psi = s_neon_peak_value;
+     * Tube: a continuous arc at the exact peak angle, ALWAYS drawn, so its
+     * only change is the angle itself - when the marker moves (or appears /
+     * disappears across the 0.2 psi gate), invalidate exactly the old and
+     * new spans. */
+    if (s_neon_layout == BOOST_NEON_TUBE) {
+        const bool vis = s_neon_peak_value > 0.2f;
+        const float ap = vis
+            ? psi_to_sweep(s_neon_peak_value, (float)ARC_START,
+                           (float)(ARC_START + ARC_RANGE))
+            : NAN;
+        const bool moved = vis && fabsf(ap - s_neon_tube_peak_angle) > 0.01f;
+        if (vis != s_neon_tube_peak_vis || moved) {
+            if (s_neon_tube_peak_vis) {
+                neon_inv_span(fmaxf(s_neon_tube_peak_angle - NEON_TUBE_PEAK_DEG,
+                                    (float)ARC_START),
+                              fminf(s_neon_tube_peak_angle + NEON_TUBE_PEAK_DEG,
+                                    (float)(ARC_START + ARC_RANGE)));
+            }
+            if (vis) {
+                /* Same dial clamps the draw uses, so a peak at psiMax cannot
+                 * invalidate a span past the dial end. */
+                neon_inv_span(fmaxf(ap - NEON_TUBE_PEAK_DEG, (float)ARC_START),
+                              fminf(ap + NEON_TUBE_PEAK_DEG,
+                                    (float)(ARC_START + ARC_RANGE)));
+            }
+            s_neon_tube_peak_vis = vis;
+            s_neon_tube_peak_angle = ap;
+        }
+    } else {
+        const int peak_idx = (s_neon_peak_value > 0.2f)
+            ? neon_seg_index(psi_to_sweep(s_neon_peak_value, (float)ARC_START,
+                                          (float)(ARC_START + ARC_RANGE)))
+            : -1;
+        int pf = 0, pl = 0;
+        const int peak_lit_n = boost_neon_lit_span(a_zero, a_new, NEON_SEG_START,
+                                                   NEON_SEG_PITCH * (float)NEON_NSEG, NEON_NSEG,
+                                                   &pf, &pl);
+        const bool peak_in_run = (peak_lit_n > 0 && peak_idx >= pf && peak_idx <= pl);
+        if (peak_idx != s_neon_peak_idx || peak_in_run != s_neon_peak_in_run) {
+            neon_inv_seg(s_neon_peak_idx);
+            neon_inv_seg(peak_idx);
+            s_neon_peak_idx = peak_idx;
+        }
+        s_neon_peak_in_run = peak_in_run;
     }
-    s_neon_peak_in_run = peak_in_run;
     /* Repaint only the digit cells whose glyph actually changed. Cell x
      * positions shift when the digit count changes, so any change of count
      * falls back to the union of the old and new compositions. */
@@ -6966,6 +7110,8 @@ static void destroy_scene(void)
     s_neon_word_drawn = -1;
     s_neon_peak_idx = -1;
     s_neon_peak_in_run = false;
+    s_neon_tube_peak_vis = false;
+    s_neon_tube_peak_angle = NAN;
     s_big_bg_step = -1;
     s_big_text_step = -1;
     for (int k = 0; k < BIG_BANDS; ++k) s_big_band[k] = NULL;

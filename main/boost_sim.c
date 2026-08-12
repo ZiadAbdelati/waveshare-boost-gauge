@@ -17,6 +17,14 @@
 static const float PSI_MIN = -14.5f;
 static const float PSI_MAX = 9.6f;
 
+/* The LINEAR fast-sweep triangle (demoFastSweep) deliberately tops out at
+ * 10.0 psi - the default face's psiMax - so the lit run sweeps all the way
+ * to the dial's end instead of stopping 0.4 psi short. 9.789 psi/s over the
+ * wider span simply lengthens the triangle period; the slew itself is
+ * unchanged, so fast-motion bench results stay comparable (the fixed
+ * 9.789 psi/s figure is the contract, not the period). */
+#define FAST_SWEEP_MAX 10.0f
+
 static float s_peak;
 static int64_t s_t0_us;
 static bool s_fast_sweep;
@@ -32,7 +40,7 @@ static bool s_fast_sweep;
  */
 #define FAST_SWEEP_SLEW_PSI_PER_S 9.789f
 #define FAST_SWEEP_PERIOD_S \
-    (2.0f * (PSI_MAX - PSI_MIN) / FAST_SWEEP_SLEW_PSI_PER_S)
+    (2.0f * (FAST_SWEEP_MAX - PSI_MIN) / FAST_SWEEP_SLEW_PSI_PER_S)
 
 static int64_t now_us(void)
 {
@@ -75,8 +83,8 @@ boost_sample_t boost_sim_tick(void)
     float psi;
 
     if (s_fast_sweep) {
-        /* Constant-slew symmetric triangle, full PSI_MIN..PSI_MAX span, no
-         * flutter - a sustained, clean isolation of the envelope waveform's
+        /* Constant-slew symmetric triangle, full PSI_MIN..FAST_SWEEP_MAX span,
+         * no flutter - a sustained, clean isolation of the envelope waveform's
          * own peak trend slew rate (see FAST_SWEEP_SLEW_PSI_PER_S above),
          * for measuring fast-motion render cadence without waiting on or
          * hand-picking the brief fast segments of the organic sweep. */
@@ -84,7 +92,7 @@ boost_sample_t boost_sim_tick(void)
         const float tt = fmodf(t, period);
         const float half = period * 0.5f;
         const float frac = (tt < half) ? (tt / half) : (2.0f - tt / half);
-        psi = PSI_MIN + (PSI_MAX - PSI_MIN) * frac;
+        psi = PSI_MIN + (FAST_SWEEP_MAX - PSI_MIN) * frac;
     } else {
         /*
          * Idle → spool → pull → lift: layered sines so the needle
@@ -106,8 +114,8 @@ boost_sample_t boost_sim_tick(void)
 
     if (psi < PSI_MIN) {
         psi = PSI_MIN;
-    } else if (psi > PSI_MAX) {
-        psi = PSI_MAX;
+    } else if (psi > (s_fast_sweep ? FAST_SWEEP_MAX : PSI_MAX)) {
+        psi = s_fast_sweep ? FAST_SWEEP_MAX : PSI_MAX;
     }
 
     if (psi > s_peak) {
