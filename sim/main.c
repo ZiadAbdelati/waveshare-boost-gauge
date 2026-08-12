@@ -411,7 +411,9 @@ static int run_audit(const char *theme_id, int seconds)
          * actually CROSSES the overboost threshold: that zone flip recolours
          * the whole lit run in one frame, and the full-run recolor can only be
          * stale-pixel-validated when the flip happens. */
-        const float span = (theme_id != NULL && strcmp(theme_id, "neon") == 0)
+        const float span = (theme_id != NULL &&
+                            (strcmp(theme_id, "neon") == 0 ||
+                             strcmp(theme_id, "dyno-cell") == 0))
             ? 22.0f : 19.0f;
         float psi = -14.0f + span * (0.5f + 0.5f * sinf(t * 1.35f));
         psi += 0.9f * sinf(t * 11.0f) + 0.35f * sinf(t * 23.0f);

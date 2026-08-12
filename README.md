@@ -195,6 +195,25 @@ All arms `teTimeouts 0`, demand coverage 1.0. A fresh visual tear check on the
 physical panel is still required — the deferral changes ring timing at the
 crossing, and the TE-scanline write-ahead touches the same path.
 
+### Boost↔overboost crossing is at the hardware floor (2026-08-12)
+
+The crossing recolors the **entire lit run** in one frame (every run pixel
+changes zone colour), so it is the widest dirty region on any face. Measured on
+the board with `tools/bench_fast_motion.py crossings` (linear sweep,
+teScanline/regionDBuf ON), the crossing-window `worstRenderUs` median is
+**dyno-cell 41.5 ms / tube 48 ms / segments 40 ms** with 3-5 frames over budget
+each. The ~85k-px dirty region is the rect-invalidation floor for a ~135° run
+(30° chunks are the measured knee; 90°/15°/6° chunks and per-segment boxes all
+land 85-106k), and the S3's masked-blend/arc-mask rate (~0.5-0.75 Mpx/s) makes a
+~30k-px recolor inherently ~40 ms. Opaque RGB565 blits (the only faster
+primitive, ~3.16 Mpx/s) cannot represent a curved ring without painting its
+bbox corners. The dyno value-arc invalidation was tightened from 90° rounded
+boxes to 30° flat boxes with end-cap pads (`invalidate_value_arc`), cutting the
+dyno crossing worst from 52 ms to 41.5 ms. Sub-20 ms ("no frames over budget")
+at the crossing is not reachable for a single-frame full-run recolor on this
+hardware; it requires spreading the recolor across frames, the visible
+two-tone transition rejected for neon on 2026-08-10.
+
 ### Measured strip-height boundary
 
 The original 20-line setting is the production configuration. We tested larger

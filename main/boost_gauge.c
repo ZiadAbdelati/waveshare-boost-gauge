@@ -5017,12 +5017,31 @@ static void draw_value_arc(lv_event_t *event)
 
 static void invalidate_value_arc(float start, float end)
 {
+    /* The arc is invalidated in angular chunks so each box hugs the ring band
+     * instead of the arc's full bounding box, which would otherwise include the
+     * empty dial interior on a long run (the boost/overboost zone flip recolors
+     * the whole run and is the widest dirty region on the face).
+     *
+     * The bbox is computed with `rounded = false` - the arc's rounded caps sit
+     * only at the run's two ends, so inflating every chunk by the cap reach (as
+     * `rounded = true` does) padded even a 30 deg chunk to nearly the size of a
+     * 90 deg one and the flush never tightened. The end chunks get an explicit
+     * cap pad (w/2 + AA) instead; interior chunks need only the radial-AA
+     * margin. 30 deg is the neon ring's measured knee (30 and 15 both floor at
+     * the same flushed-pixel total; 90 lands measurably higher). Byte-identical
+     * pixels; the box count stays far under LVGL's 32-area buffer. */
+    const int cap_pad = ARC_WIDTH / 2 + 2;
+    const int aa_pad = 3;
     for (float segment_start = start; segment_start < end;) {
-        const float boundary = (floorf(segment_start / 90.0f) + 1.0f) * 90.0f;
+        const float boundary = (floorf(segment_start / 30.0f) + 1.0f) * 30.0f;
         const float segment_end = fminf(end, boundary);
         lv_area_t area;
         lv_draw_arc_get_area(px_icx(), px_icy(), ARC_DIAMETER / 2,
-                             segment_start, segment_end, ARC_WIDTH, true, &area);
+                             segment_start, segment_end, ARC_WIDTH, false, &area);
+        const bool end_chunk = (segment_start <= start + 0.01f) ||
+                               (segment_end >= end - 0.01f);
+        const int pad = end_chunk ? cap_pad : aa_pad;
+        area.x1 -= pad; area.y1 -= pad; area.x2 += pad; area.y2 += pad;
         lv_obj_invalidate_area(s_arc_value_canvas, &area);
         segment_start = segment_end;
     }
