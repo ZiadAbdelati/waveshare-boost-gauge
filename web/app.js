@@ -109,6 +109,7 @@ const state = {
   pixelShift: true,
   pixelShiftSec: 90,
   demoMode: false,
+  demoFastSweep: false,
   rotation: 0,
   vaultNeedleRed: false,
   vaultNeedleTail: false,
@@ -2008,6 +2009,7 @@ function applyThemePayload(payload, fallback = {}) {
   set("pixelShift", bool("pixelShift"));
   set("pixelShiftSec", (() => { const v = pick("pixelShiftSec"); return v === undefined ? undefined : Number(v) || state.pixelShiftSec; })());
   set("demoMode", bool("demoMode"));
+  set("demoFastSweep", bool("demoFastSweep"));
   set("vaultFace", pick("vaultFace"));
   set("vaultVignette", pick("vaultVignette"));
   set("vaultNeedleRed", bool("vaultNeedleRed"));
@@ -2390,7 +2392,10 @@ function syncDisplayToggles() {
   if (el.regionDBuf) el.regionDBuf.checked = !!state.regionDBuf;
   if (el.teScanline) el.teScanline.checked = !!state.teScanline;
   if (el.rotation) el.rotation.value = String(state.rotation ?? 0);
-  if (el.demoMode) el.demoMode.checked = !!state.demoMode;
+  if (el.demoMode) {
+    el.demoMode.value = state.demoFastSweep ? "sweep"
+      : (state.demoMode ? "demo" : "off");
+  }
 }
 
 function wireDisplayToggles() {
@@ -2438,10 +2443,19 @@ function wireDisplayToggles() {
     );
   }
   if (el.demoMode) {
-    el.demoMode.addEventListener("change", () =>
-      send({ demoMode: el.demoMode.checked },
-           el.demoMode.checked ? "Demo mode on" : "Demo mode off (live sensors)"),
-    );
+    el.demoMode.addEventListener("change", () => {
+      const v = el.demoMode.value;
+      if (v === "off") {
+        send({ demoMode: false, demoFastSweep: false },
+             "Demo off (live sensors)");
+      } else if (v === "sweep") {
+        send({ demoMode: true, demoFastSweep: true },
+             "Demo on + linear sweep");
+      } else {
+        send({ demoMode: true, demoFastSweep: false },
+             "Demo mode on");
+      }
+    });
   }
   if (el.pixelShiftMode) {
     el.pixelShiftMode.addEventListener("change", () => {

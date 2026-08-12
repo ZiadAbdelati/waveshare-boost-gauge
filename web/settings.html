@@ -110,13 +110,20 @@
 
       <section class="panel display-panel">
         <div class="section-title"><span>Display</span></div>
-        <label class="toggle-field">
-          <input id="demoMode" type="checkbox">
-          <span>Demo mode (simulated sweep)</span>
+        <label class="field">
+          <span>Demo source</span>
+          <select id="demoMode">
+            <option value="off">Off (live sensors)</option>
+            <option value="demo">Demo (simulated sweep)</option>
+            <option value="sweep">Demo + linear sweep</option>
+          </select>
         </label>
         <p class="hint-text">Off drives the gauge from the real MAP and ambient
-          sensors and hides the DEMO marker. On replays the synthetic idle-to-boost
-          sweep and shows DEMO on every face &mdash; handy with no engine running.</p>
+          sensors and hides the DEMO marker. Demo replays the synthetic idle-to-boost
+          sweep and shows DEMO on every face &mdash; handy with no engine running.
+          &ldquo;Linear sweep&rdquo; adds the constant-slew bench triangle (demoFastSweep,
+          9.789&nbsp;psi/s, transient &mdash; it does not survive a reboot) for
+          fast-motion testing.</p>
         <label class="toggle-field">
           <input id="teSync" type="checkbox">
           <span>Tear sync (reduce needle tearing)</span>

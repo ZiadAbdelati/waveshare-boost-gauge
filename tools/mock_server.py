@@ -436,6 +436,7 @@ def themes_payload() -> dict:
         "teScanline": bool(CONFIG.get("teScanline", False)),
         "rotation": int(CONFIG.get("rotation", 0)),
         "demoMode": bool(CONFIG.get("demoMode", False)),
+        "demoFastSweep": bool(CONFIG.get("demoFastSweep", False)),
         "vaultFace": str(CONFIG.get("vaultFace", "#05281a")),
         "vaultVignette": int(CONFIG.get("vaultVignette", 60)),
         "vaultNeedleRed": bool(CONFIG.get("vaultNeedleRed", False)),
@@ -478,6 +479,8 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/v1/config":
             self.send_json(CONFIG)
         elif path == "/api/v1/themes":
+            self.send_json(themes_payload())
+        elif path == "/api/v1/themes/config":
             self.send_json(themes_payload())
         elif path == "/api/v1/logs":
             limit = int(parse_qs(parsed.query).get("limit", ["120"])[0])
@@ -643,6 +646,8 @@ class Handler(BaseHTTPRequestHandler):
                 CONFIG["rotation"] = int(payload["rotation"])
             if "demoMode" in payload:
                 CONFIG["demoMode"] = bool(payload["demoMode"])
+            if "demoFastSweep" in payload:
+                CONFIG["demoFastSweep"] = bool(payload["demoFastSweep"])
             if "vaultFace" in payload:
                 CONFIG["vaultFace"] = str(payload["vaultFace"])
             if "vaultVignette" in payload:
