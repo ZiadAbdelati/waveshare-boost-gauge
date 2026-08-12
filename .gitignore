@@ -41,6 +41,8 @@ preview/neon_*/
 # tools/bench_theme_matrix.py; the summaries live in AGENTS.md). Keeping them
 # tracked made a plain `git status`/branch diff show +10k lines of telemetry.
 crossings-*.json
+fast_motion_sweep_results.json
+fast_motion_organic_results.json
 baselines/
 after/
 *.o
