@@ -1215,6 +1215,7 @@ Bahnschrift/Consolas are Microsoft fonts and cannot be embedded):
 | `font_mono_16/40` | IBM Plex Mono SemiBold | readouts, telemetry |
 | `font_cond_14/18/22/32` | Saira Condensed SemiBold | labels |
 | `font_cond_96` | IBM Plex Sans Condensed BoldItalic | Night City readout |
+| `archivo_black_56` (56 px) | Archivo Black (Google Fonts) | Dyno Cell readout |
 | `font_wide_22/32` | Saira SemiCondensed Bold | Big Digit labels |
 | `neon_big` (118 px) | SF Alien Encounters Italic (user supplied) | neon readout, all three layouts |
 | `neon_label` (24 px) | SF Alien Encounters **regular** | neon zone word and `P S I` |

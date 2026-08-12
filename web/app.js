@@ -7,8 +7,8 @@ const DEFAULT_PSI_OVERBOOST = 8;
 const ARC_START = 135;
 const ARC_RANGE = 270;
 const DEFAULT_ZERO_ANGLE = 236.25;
-const ZERO_GAP_VAC = 3.6;
-const ZERO_GAP_BOOST = 4.0;
+const ZERO_GAP_VAC = 5.0;
+const ZERO_GAP_BOOST = 5.0;
 const sampleHistory = [];
 const HISTORY_WINDOW_MS = 60_000;
 const GAUGE_GAP_RESET_MS = 1000;
@@ -502,7 +502,7 @@ function drawGauge(sample) {
 function drawArcGauge(sample, psi, g) {
   const { cx, cy, scale, size } = g;
   const outerR = (410 / 2) * scale;
-  const stroke = 45 * scale;
+  const stroke = 54 * scale;
   const radius = outerR - stroke / 2;
   const { start, end } = valueArcAngles(psi);
 
@@ -547,7 +547,7 @@ function drawArcGauge(sample, psi, g) {
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillStyle = state.palette.muted;
-  ctx.font = `700 ${Math.max(12, 16 * scale)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
+  ctx.font = `700 ${Math.max(14, 19 * scale)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
   for (const value of tickValues(range.psiMin, range.psiMax, range.psiOverboost, range.zeroAngle)) {
     let r = 140 * scale;
     if (Math.abs(value) < 0.01) r = 122 * scale;
@@ -559,28 +559,28 @@ function drawArcGauge(sample, psi, g) {
   const zone = sample.zone || zoneFor(psi);
   const peak = Math.max(0, Number(sample.peakPsi || 0));
   ctx.fillStyle = colorFor(psi);
-  ctx.font = `700 ${Math.max(12, 15 * scale)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
+  ctx.font = `700 ${Math.max(13, 17 * scale)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
   ctx.fillText(zone, cx, cy - 88 * scale);
 
   ctx.fillStyle = psi >= range.psiOverboost ? state.palette.overboost : state.palette.text;
-  ctx.font = `700 ${Math.max(40, 58 * scale)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
-  drawFixedPsi(psi, cx, cy - 16 * scale, scale);
+  ctx.font = `700 ${Math.max(50, 72 * scale)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
+  drawFixedPsi(psi, cx + 8 * scale, cy + 2 * scale, scale);
 
   ctx.fillStyle = state.palette.muted;
-  ctx.font = `700 ${Math.max(12, 15 * scale)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
-  ctx.fillText("PSI", cx, cy + 28 * scale);
+  ctx.font = `700 ${Math.max(13, 17 * scale)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
+  ctx.fillText("PSI", cx, cy + 55 * scale);
 
   ctx.fillStyle = peak >= range.psiOverboost ? state.palette.overboost : state.palette.boost;
-  ctx.font = `700 ${Math.max(12, 14 * scale)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
-  ctx.fillText(`PEAK  ${peak.toFixed(1)}`, cx, cy + 56 * scale);
+  ctx.font = `700 ${Math.max(13, 16 * scale)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
+  ctx.fillText(`PEAK  ${peak.toFixed(1)}`, cx, cy + 83 * scale);
 
   /* DEMO only in demo. The panel sets this label to "" on the real-sensor path
    * (boost_gauge.c), so drawing "LIVE" here made the mirror disagree with the
    * device. Skip the draw entirely rather than painting an empty string. */
   if (sample.demo) {
     ctx.fillStyle = state.palette.muted;
-    ctx.font = `700 ${Math.max(11, 12 * scale)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
-    ctx.fillText("DEMO", cx, cy + 84 * scale);
+    ctx.font = `700 ${Math.max(13, 14 * scale)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
+    ctx.fillText("DEMO", cx, cy + 111 * scale);
   }
 }
 

@@ -84,19 +84,30 @@ static inline void boost_display_gauge_update_end(void) {}
 
 #define DISP_SIZE     466
 #define ARC_DIAMETER  462
-#define ARC_WIDTH     45
+#define ARC_WIDTH     54
 #define ZERO_LINE_W   20
-#define ZERO_GAP_VAC_DEG   3.6f
-#define ZERO_GAP_BOOST_DEG 4.00f
-#define TICK_FONT     (&lv_font_montserrat_20)
+/* The arc's rounded caps extend ~(width/2)/center_r = 7.5 deg past the nominal
+ * span. The 0 marker only covers +-~2.5 deg, so the 45 px-era gaps (4.0/3.6)
+ * let the wider 54 px arc's cap poke ~0.4 deg past the marker's far edge.
+ * Raised to 5.0 so the cap sits fully behind the marker again on both sides. */
+#define ZERO_GAP_VAC_DEG   5.00f
+#define ZERO_GAP_BOOST_DEG 5.00f
+#define TICK_FONT     (&lv_font_montserrat_24)
 #define TICK_RADIUS   160.0f
-#define VALUE_SLOT_WIDTH   26
+#define VALUE_SLOT_WIDTH   40
 #define VALUE_SLOT_HEIGHT  64
-#define VALUE_SIGN_X       (-69)
-#define VALUE_TENS_X       (-43)
-#define VALUE_ONES_X       (-17)
+/* Archivo Black (Google Fonts, single weight) is a wide heavy display face,
+ * so the readout needs no size hack to stop looking skinny. At 56 px its digit
+ * advance is ~37 px; the pitch below is widened from 34 to 37 to match, and the
+ * slot to 40 px so the widest glyph box (~36 px) stays inside the slot's own
+ * invalidation. Readout ink is top-aligned in the slot (LVGL label), so its
+ * top edge sits at slot_top and the below-stack offsets are set to mirror the
+ * zone-to-readout ink gap for symmetric spacing. */
+#define VALUE_SIGN_X       (-99)
+#define VALUE_TENS_X       (-62)
+#define VALUE_ONES_X       (-25)
 #define VALUE_DECIMAL_X    8
-#define VALUE_TENTHS_X     30
+#define VALUE_TENTHS_X     41
 #define WELL_SIZE     DISP_SIZE
 
 /*
@@ -275,6 +286,7 @@ LV_FONT_DECLARE(font_cond_18);
 LV_FONT_DECLARE(font_cond_22);
 LV_FONT_DECLARE(font_cond_32);
 LV_FONT_DECLARE(font_cond_96);
+LV_FONT_DECLARE(archivo_black_56);
 LV_FONT_DECLARE(font_wide_22);
 LV_FONT_DECLARE(font_wide_32);
 LV_FONT_DECLARE(neon_big);
@@ -5133,13 +5145,13 @@ static void paint_arc_background(lv_obj_t *canvas, const boost_theme_t *theme)
     {
         static const char *const unit_text = "PSI";
         lv_point_t size;
-        lv_text_get_size(&size, unit_text, &lv_font_montserrat_16, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+        lv_text_get_size(&size, unit_text, &lv_font_montserrat_18, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
         const float x = cx - (float)size.x * 0.5f;
-        const float y = cy + 26.0f - (float)size.y * 0.5f;
+        const float y = cy + 55.0f - (float)size.y * 0.5f;
 
         lv_draw_label_dsc_t d;
         lv_draw_label_dsc_init(&d);
-        d.font = &lv_font_montserrat_16;
+        d.font = &lv_font_montserrat_18;
         d.text = unit_text;
         d.color = c(theme->muted);
         d.align = LV_TEXT_ALIGN_LEFT;
@@ -5159,10 +5171,10 @@ static lv_obj_t *add_value_slot(lv_obj_t *scr, const char *text, int x)
     lv_obj_t *slot = lv_label_create(scr);
     lv_label_set_text(slot, text);
     lv_obj_set_size(slot, VALUE_SLOT_WIDTH, VALUE_SLOT_HEIGHT);
-    lv_obj_set_style_text_font(slot, &lv_font_montserrat_48, 0);
+    lv_obj_set_style_text_font(slot, &archivo_black_56, 0);
     lv_obj_set_style_text_color(slot, c(theme->text), 0);
     lv_obj_set_style_text_align(slot, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(slot, LV_ALIGN_CENTER, x, -22);
+    lv_obj_align(slot, LV_ALIGN_CENTER, x, -4);
     lv_obj_clear_flag(slot, LV_OBJ_FLAG_CLICKABLE);
     return slot;
 }
@@ -5223,7 +5235,7 @@ static void build_arc(lv_obj_t *scr)
 
     s_zone_label = lv_label_create(scr);
     lv_label_set_text(s_zone_label, "ATMO");
-    lv_obj_set_style_text_font(s_zone_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(s_zone_label, &lv_font_montserrat_18, 0);
     lv_obj_set_style_text_color(s_zone_label, c(theme->text), 0);
     lv_obj_align(s_zone_label, LV_ALIGN_CENTER, 0, -88);
     lv_obj_clear_flag(s_zone_label, LV_OBJ_FLAG_CLICKABLE);
@@ -5236,16 +5248,16 @@ static void build_arc(lv_obj_t *scr)
 
     s_peak_label = lv_label_create(scr);
     lv_label_set_text(s_peak_label, "PEAK  0.0");
-    lv_obj_set_style_text_font(s_peak_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(s_peak_label, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(s_peak_label, c(theme->boost), 0);
-    lv_obj_align(s_peak_label, LV_ALIGN_CENTER, 0, 54);
+    lv_obj_align(s_peak_label, LV_ALIGN_CENTER, 0, 83);
     lv_obj_clear_flag(s_peak_label, LV_OBJ_FLAG_CLICKABLE);
 
     s_mode_label = lv_label_create(scr);
     lv_label_set_text(s_mode_label, "DEMO");
-    lv_obj_set_style_text_font(s_mode_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(s_mode_label, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_mode_label, c(theme->muted), 0);
-    lv_obj_align(s_mode_label, LV_ALIGN_CENTER, 0, 82);
+    lv_obj_align(s_mode_label, LV_ALIGN_CENTER, 0, 111);
 }
 
 static void update_arc(const boost_sample_t *sample, const boost_theme_t *theme)
