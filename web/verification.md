@@ -120,9 +120,9 @@ at **2**. On the demo waveform, collect ten seconds of browser samples and requi
 approximately 50 ms WebSocket target spacing; compare target-to-render error with
 the prior 10 Hz / 90 ms EMA baseline rather than using physical-display FPS.
 
-Background logging is independent of transport cadence: firmware stores every
-fifth 16 ms model sample (**12.5 Hz**), so the 1,800-row ring covers **2 minutes
-24 seconds**. CSV export must preserve that full retained window.
+Background logging is independent of transport cadence: firmware stores one
+sample every 200 ms (**5 Hz**), so the 18,000-row ring covers **1 hour**. CSV
+export must preserve that full retained window.
 
 Close or block the WebSocket and verify the browser starts HTTP
 `GET /api/v1/state` fallback at **4 Hz** (every 250 ms). A successful fallback

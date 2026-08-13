@@ -34,16 +34,17 @@ static const char *TAG = "boost_model";
 static SemaphoreHandle_t s_lock;
 static boost_config_t s_config;
 static boost_state_t s_state;
-/* The 1,800-entry ring is 43,200 bytes. As static .bss that is internal DRAM,
- * more than the firmware has free at peak Wi-Fi usage (see the ledger row on
- * the 24.5 kB GIF decoder that boot-looped the radio). It is written at 12.5 Hz
- * and read only for CSV export - no DMA, no ISR, not latency-critical - so it
- * lives in PSRAM. NULL means the allocation failed and logging is disabled;
- * every access is guarded rather than the device refusing to boot. */
+/* The 18,000-entry ring (5 Hz for one hour) is 432,000 bytes. As static .bss
+ * that is internal DRAM, more than the firmware has free at peak Wi-Fi usage
+ * (see the ledger row on the 24.5 kB GIF decoder that boot-looped the radio).
+ * It is written at 5 Hz and read only for CSV export - no DMA, no ISR, not
+ * latency-critical - so it lives in PSRAM. NULL means the allocation failed and
+ * logging is disabled; every access is guarded rather than the device refusing
+ * to boot. */
 static boost_log_sample_t *s_logs;
 static size_t s_log_head;
 static size_t s_log_count;
-static uint32_t s_log_divider;
+static uint32_t s_log_last_ms;
 
 /* Pre-zero-angle NVS payload. Keep this exact layout for in-place migration. */
 typedef struct {
@@ -56,7 +57,12 @@ typedef struct {
     float psi_max;
     float psi_overboost;
 } boost_config_v1_t;
-static int s_last_schedule_minute = -1;
+/* Last dim-schedule desired level actually applied: -1 = unknown (apply on
+ * first evaluation), 0 = high (day), 1 = low (night). Tracking the level
+ * rather than a minute counter means the schedule re-applies only when its
+ * own desired state transitions, so a manual hold-to-dim is never clobbered
+ * by the once-a-minute heartbeat the old minute guard produced. */
+static int s_last_schedule_low = -1;
 static int s_pending_brightness = -1;
 static int clamp_percent(int v)
 {
@@ -372,8 +378,7 @@ void boost_model_publish_sample(const boost_sample_t *sample)
     s_state.timezone_offset_minutes = s_config.timezone_offset_minutes;
     strlcpy(s_state.active_theme_id, s_config.active_theme_id, sizeof(s_state.active_theme_id));
 
-    if (s_logs != NULL && ++s_log_divider >= 5) {
-        s_log_divider = 0;
+    if (s_logs != NULL && s_state.uptime_ms - s_log_last_ms >= BOOST_LOG_INTERVAL_MS) {
         boost_log_sample_t *dst = &s_logs[s_log_head];
         dst->t_ms = (uint32_t)s_state.uptime_ms;
         dst->psi = s_state.psi;
@@ -384,6 +389,7 @@ void boost_model_publish_sample(const boost_sample_t *sample)
         if (s_log_count < BOOST_LOG_CAPACITY) {
             ++s_log_count;
         }
+        s_log_last_ms = (uint32_t)s_state.uptime_ms;
     }
     xSemaphoreGive(s_lock);
 }
@@ -563,7 +569,7 @@ esp_err_t boost_model_update_config(const boost_config_t *patch, uint32_t fields
          * hard-coded 12%. Cheap and lock-free; no SPI happens here. */
         boost_brightness_set_levels(high, low);
         if (schedule_enabled) {
-            s_last_schedule_minute = -1;
+            s_last_schedule_low = -1;
             /* Defer SPI brightness to control task — never block httpd. */
             s_pending_brightness = -2; /* re-evaluate schedule */
         } else if (fields & (BOOST_CONFIG_DIM_ENABLED | BOOST_CONFIG_BRIGHTNESS_HIGH |
@@ -691,19 +697,17 @@ void boost_model_apply_schedule(void)
         return;
     }
 
-    const int minutes_day = 24 * 60;
-    int local_min = (int)((now_ms / 60000LL + cfg.timezone_offset_minutes) % minutes_day);
-    if (local_min < 0) {
-        local_min += minutes_day;
-    }
-
-    /* Re-apply at most once per local minute, or when forced via pending=-2. */
-    if (local_min == s_last_schedule_minute && s_pending_brightness != -2) {
+    /* Apply only on a real day/night transition (or a forced re-eval via
+     * pending=-2). A fixed re-apply cadence clobbered a manual hold-to-dim at
+     * the next minute edge; tracking the desired level instead lets a manual
+     * override persist until the schedule itself transitions. */
+    const int wants_low = boost_model_schedule_wants_low() ? 1 : 0;
+    if (wants_low == s_last_schedule_low && s_pending_brightness != -2) {
         return;
     }
-    s_last_schedule_minute = local_min;
+    s_last_schedule_low = wants_low;
 
-    const int target = boost_model_schedule_wants_low() ? cfg.brightness_low : cfg.brightness_high;
+    const int target = wants_low ? cfg.brightness_low : cfg.brightness_high;
     if (boost_brightness_get() != target) {
         boost_brightness_set(target);
     }
@@ -736,6 +740,6 @@ void boost_model_clear_logs(void)
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_log_head = 0;
     s_log_count = 0;
-    s_log_divider = 0;
+    s_log_last_ms = 0;
     xSemaphoreGive(s_lock);
 }

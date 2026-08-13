@@ -16,7 +16,9 @@ extern "C" {
 #endif
 
 #define BOOST_ZONE_MAX 8
-#define BOOST_LOG_CAPACITY 1800
+/* Background log ring: 5 Hz for one hour. Capacity / interval = 18000 / 5 = 3600 s. */
+#define BOOST_LOG_INTERVAL_MS 200
+#define BOOST_LOG_CAPACITY 18000
 
 typedef struct {
     bool enabled;
