@@ -281,6 +281,28 @@ minimum-ever (9,535 B). It is comfortable. The largest free block being 63.5 kB
 rather than 7.7 kB also means the heap is no longer fragmented into scraps,
 which is what killed every other ordering.
 
+## Follow-up (2026-08-13): the active-connection case, tested
+
+The OBD2 BLE central went live and the "active connection + notifications in
+flight" gap above was finally exercised, with a vLinker FD+ as the peripheral.
+Findings (full detail in the AGENTS.md ledger):
+
+- The FD+ negotiates a **7.5–15 ms** connection interval via the **L2CAP**
+  connection-parameter-update path (`BLE_GAP_EVENT_L2CAP_UPDATE_REQ`), which
+  NimBLE auto-accepts when unhandled. This is the aggressive case this spike
+  could not reach with advertising alone.
+- The web-mirror "lag" is real WiFi/BLE coexistence, but the physical gauge is
+  unaffected (renderFps 56–62, display path, not the radio).
+- **Both candidate fixes failed and were reverted:** (1) forcing a slower
+  30–50 ms interval made the FD+ bunch its ELM traffic into longer bursts that
+  blocked the radio longer (WS frames 939→~700/15 s, HTTP p50 27→~95–115 ms);
+  (2) `esp_coex_preference_set(ESP_COEX_PREFER_WIFI)` is deprecated and also
+  degraded WiFi. The baseline (20–40 ms request, FD+ L2CAP-updates to 7.5–15 ms,
+  BALANCE coexistence) is the best measured state.
+- Net conclusion: the lag is the inherent cost of a chatty BLE central on the
+  S3's single 2.4 GHz radio. It does not apply in the car (no LAN), and the
+  bench `SEARCHING`/`NO DATA` spam is a worst case a real car does not produce.
+
 ## What I could NOT test
 
 Stated plainly, because these are real gaps, not caveats:
