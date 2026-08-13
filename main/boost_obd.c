@@ -21,6 +21,7 @@ static const char *TAG = "boost_obd";
 
 #define OBD_STALE_MS      15000u  /* web readout considered stale after this */
 #define OBD_HEADER_TPMS   "720"   /* Mazda MX-5 ND TPMS module diagnostic ID */
+#define OBD_HEADER_ECU    "7DF"   /* ISO 15765-4 functional request (mode 01) */
 #define OBD_SETTLE_MS     20      /* vLinker serial settle after each reply */
 
 static SemaphoreHandle_t s_lock;          /* guards s_state */
@@ -133,13 +134,19 @@ static bool query_pid(const obd_pid_def_t *def, uint32_t timeout_ms)
 {
     char reply[96];
     if (!boost_obd_elm_request(def->cmd, reply, sizeof(reply), timeout_ms)) return false;
-    if (reply[0] == '\0' || reply_is_error(reply)) return false;
+    if (reply[0] == '\0' || reply_is_error(reply)) {
+        ESP_LOGI(TAG, "PID %s -> '%s'", def->cmd, reply);
+        return false;
+    }
 
     uint8_t bytes[64];
     const size_t n = hex_to_bytes(reply, bytes, sizeof(bytes));
     const uint8_t *data;
     size_t data_len = 0;
-    if (!find_mode_bytes(bytes, n, 0x41, def->pid, &data, &data_len)) return false;
+    if (!find_mode_bytes(bytes, n, 0x41, def->pid, &data, &data_len)) {
+        ESP_LOGI(TAG, "PID %s: undecoded '%s'", def->cmd, reply);
+        return false;
+    }
 
     const float v = def->dec(data, data_len);
     if (isnan(v)) return false;
@@ -168,7 +175,10 @@ static bool query_tpms_did(uint16_t did, uint16_t *out_raw, uint32_t timeout_ms)
 
     char reply[96];
     if (!boost_obd_elm_request(cmd, reply, sizeof(reply), timeout_ms)) return false;
-    if (reply[0] == '\0' || reply_is_error(reply)) return false;
+    if (reply[0] == '\0' || reply_is_error(reply)) {
+        ESP_LOGI(TAG, "DID %04X -> '%s'", did, reply);
+        return false;
+    }
 
     uint8_t bytes[64];
     const size_t n = hex_to_bytes(reply, bytes, sizeof(bytes));
@@ -281,7 +291,12 @@ static void poll_task(void *arg)
         char reply[96];
         const bool want_tpms_header = (phase == 0);
         if (want_tpms_header != header_is_tpms) {
-            const char *hc = want_tpms_header ? "ATSH " OBD_HEADER_TPMS : "ATSH";
+            /* Explicitly set the header for each phase. A bare "ATSH" reset is
+             * not reliable on the FD+ - it leaves the header at the previous
+             * value, so mode-01 PIDs would be sent to 0x720 (the TPMS module)
+             * and never answered. */
+            const char *hc = want_tpms_header ? "ATSH " OBD_HEADER_TPMS
+                                              : "ATSH " OBD_HEADER_ECU;
             if (boost_obd_elm_request(hc, reply, sizeof(reply), 500)) {
                 header_is_tpms = want_tpms_header;
             }
