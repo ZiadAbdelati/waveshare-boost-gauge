@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
@@ -26,6 +27,7 @@ static uint8_t s_rx_buf[BOOST_OBD_ELM_RX_MAX];
 static size_t s_rx_len;
 static bool s_active;                /* a request is waiting for '>' */
 static bool s_had_traffic;           /* any byte seen since request start */
+static uint32_t s_last_reply_ms;     /* when the last complete reply arrived */
 
 static void on_rx(const uint8_t *data, size_t len, void *ctx)
 {
@@ -99,6 +101,9 @@ bool boost_obd_elm_request(const char *cmd, char *reply, size_t reply_size,
     }
 
     const bool ok = xSemaphoreTake(s_reply, pdMS_TO_TICKS(timeout_ms)) == pdTRUE;
+    if (ok) {
+        s_last_reply_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
+    }
 
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     s_active = false;
@@ -126,4 +131,9 @@ void boost_obd_elm_reset(void)
     s_had_traffic = false;
     xSemaphoreGive(s_mutex);
     xSemaphoreTake(s_reply, 0);
+}
+
+uint32_t boost_obd_elm_last_reply_ms(void)
+{
+    return s_last_reply_ms;
 }

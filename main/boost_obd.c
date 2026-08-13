@@ -37,7 +37,6 @@ static float s_last_throttle;
 static float s_last_maf;
 static float s_last_fuel;
 static float s_last_battery;
-static uint32_t s_last_ok_ms;
 
 /* --- decoders ------------------------------------------------------------ */
 
@@ -201,9 +200,10 @@ static void publish_state(void)
     default: st.state = 0; break;
     }
 
-    const uint32_t age = (s_last_ok_ms != 0 && now_ms >= s_last_ok_ms) ? now_ms - s_last_ok_ms : 0;
+    const uint32_t elm_last = boost_obd_elm_last_reply_ms();
+    const uint32_t age = (elm_last != 0 && now_ms >= elm_last) ? now_ms - elm_last : 0;
     st.age_ms = age;
-    st.valid = s_last_ok_ms != 0 && age <= OBD_STALE_MS;
+    st.valid = elm_last != 0 && age <= OBD_STALE_MS;
     st.rpm = s_last_rpm;
     st.speed_kph = s_last_speed;
     st.coolant_c = s_last_coolant;
@@ -291,10 +291,10 @@ static void poll_task(void *arg)
 
         bool ok;
         if (phase == 0) {
-            ok = query_tpms_did(dids[tpms_idx], &pending_raw[tpms_idx], 800);
+            ok = query_tpms_did(dids[tpms_idx], &pending_raw[tpms_idx], 2000);
         } else {
-            ok = (pid_idx == OBD_PID_COUNT) ? query_battery(800)
-                                            : query_pid(&s_pids[pid_idx], 800);
+            ok = (pid_idx == OBD_PID_COUNT) ? query_battery(2000)
+                                            : query_pid(&s_pids[pid_idx], 2000);
         }
 
         const uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
@@ -306,7 +306,6 @@ static void poll_task(void *arg)
                     boost_tpms_publish_raw(now_ms, pending_raw);
                 }
             }
-            s_last_ok_ms = now_ms;
         }
         /* Always advance so a permanently failing DID/PID cannot starve the
          * rest of the rotation. A DID that never answers simply never sets its

@@ -727,6 +727,15 @@ overwrites the stored MAC. Verified on the bench (2026-08-12): the FD+ links up,
 `ATZ`…`ATSP0` init completes, and `ATRV` reads the 12 V supply; mode-01 PIDs and
 TPMS DIDs correctly return `NO DATA` with no car attached.
 
+`obd.valid` and `obd.ageMs` track **link liveness**, not decode success: they are
+driven by the ELM reply timestamp (any complete `>`-terminated reply, including
+`NO DATA`), so the readouts stay populated while the link answers and blank only
+when the link is actually down/stale (>15 s). A `NO DATA` value reads `0` on the
+bench; in the car the PIDs answer instantly so the values are live and the
+freshness window never lapses. DID/PID/battery query timeouts are 2 s, sized above
+the FD+'s worst-case "searching" delay so a slow `NO DATA` reply is consumed
+cleanly instead of arriving as a stray that corrupts the next request.
+
 The simulator snapshots one TPMS scenario with:
 
 ```bash

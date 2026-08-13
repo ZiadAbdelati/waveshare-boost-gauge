@@ -33,6 +33,11 @@ bool boost_obd_elm_request(const char *cmd, char *reply, size_t reply_size,
  * reset/re-init; an outstanding request will simply time out. */
 void boost_obd_elm_reset(void);
 
+/* Uptime (ms) of the last complete ELM reply ("prompt '>' seen"), 0 if none.
+ * This tracks link/ELM liveness independently of whether a query decoded a
+ * value - "NO DATA" is still a valid reply. */
+uint32_t boost_obd_elm_last_reply_ms(void);
+
 #ifdef __cplusplus
 }
 #endif
