@@ -409,6 +409,29 @@ void boost_model_publish_tpms(const float psi[4], const bool valid[4], int statu
     xSemaphoreGive(s_lock);
 }
 
+void boost_model_publish_obd(const boost_obd_state_t *obd)
+{
+    if (obd == NULL || s_lock == NULL) return;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_state.obd_state = obd->state;
+    s_state.obd_last_error = obd->last_error;
+    s_state.obd_uptime_ms = obd->uptime_ms;
+    s_state.obd_age_ms = obd->age_ms;
+    s_state.obd_valid = obd->valid;
+    s_state.obd_rpm = obd->rpm;
+    s_state.obd_speed_kph = obd->speed_kph;
+    s_state.obd_coolant_c = obd->coolant_c;
+    s_state.obd_map_kpa = obd->map_kpa;
+    s_state.obd_iat_c = obd->iat_c;
+    s_state.obd_throttle_pct = obd->throttle_pct;
+    s_state.obd_maf_gps = obd->maf_gps;
+    s_state.obd_fuel_pct = obd->fuel_pct;
+    s_state.obd_battery_v = obd->battery_v;
+    strlcpy(s_state.obd_peer, obd->peer, sizeof(s_state.obd_peer));
+    strlcpy(s_state.obd_peer_addr, obd->peer_addr, sizeof(s_state.obd_peer_addr));
+    xSemaphoreGive(s_lock);
+}
+
 void boost_model_set_display_metrics(const boost_display_metrics_t *metrics)
 {
     if (metrics == NULL || s_lock == NULL) {

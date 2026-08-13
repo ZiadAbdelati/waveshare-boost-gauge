@@ -398,6 +398,47 @@ def state_payload() -> dict[str, float | int | str | bool]:
             "ambientKpa": ambient_kpa,
         },
     }
+    # Mirror the firmware /state OBD section. With the BLE link enabled the
+    # mock fakes a connected adapter and live PID readings so the dashboard's
+    # OBD readout can be exercised without hardware.
+    if bool(CONFIG.get("tpmsBle", False)):
+        payload["obd"] = {
+            "state": 3,
+            "lastError": 0,
+            "peer": "vlinker fd+",
+            "peerAddr": "11:22:33:44:55:66",
+            "uptimeMs": int((time.time() - STARTED_AT) * 1000),
+            "ageMs": 120,
+            "valid": True,
+            "rpm": round(900 + 600 * abs(psi), 1),
+            "speedKph": 0.0,
+            "coolantC": 88.0,
+            "mapKpa": 33.0 + 6.9 * psi,
+            "iatC": 31.0,
+            "throttlePct": 18.0,
+            "mafGps": 5.2,
+            "fuelPct": 62.0,
+            "batteryV": 12.4,
+        }
+    else:
+        payload["obd"] = {
+            "state": 0,
+            "lastError": 0,
+            "peer": "",
+            "peerAddr": "",
+            "uptimeMs": 0,
+            "ageMs": 0,
+            "valid": False,
+            "rpm": 0.0,
+            "speedKph": 0.0,
+            "coolantC": 0.0,
+            "mapKpa": 0.0,
+            "iatC": 0.0,
+            "throttlePct": 0.0,
+            "mafGps": 0.0,
+            "fuelPct": 0.0,
+            "batteryV": 0.0,
+        }
     LOGS.append({"ts": payload["epochMs"], "psi": psi, "zone": payload["zone"], "demo": demo})
     del LOGS[:-3600]
     return payload
@@ -437,6 +478,7 @@ def themes_payload() -> dict:
         "rotation": int(CONFIG.get("rotation", 0)),
         "demoMode": bool(CONFIG.get("demoMode", False)),
         "demoFastSweep": bool(CONFIG.get("demoFastSweep", False)),
+        "tpmsBle": bool(CONFIG.get("tpmsBle", False)),
         "vaultFace": str(CONFIG.get("vaultFace", "#05281a")),
         "vaultVignette": int(CONFIG.get("vaultVignette", 60)),
         "vaultNeedleRed": bool(CONFIG.get("vaultNeedleRed", False)),
@@ -648,6 +690,8 @@ class Handler(BaseHTTPRequestHandler):
                 CONFIG["demoMode"] = bool(payload["demoMode"])
             if "demoFastSweep" in payload:
                 CONFIG["demoFastSweep"] = bool(payload["demoFastSweep"])
+            if "tpmsBle" in payload:
+                CONFIG["tpmsBle"] = bool(payload["tpmsBle"])
             if "vaultFace" in payload:
                 CONFIG["vaultFace"] = str(payload["vaultFace"])
             if "vaultVignette" in payload:

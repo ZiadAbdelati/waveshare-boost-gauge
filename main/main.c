@@ -14,6 +14,7 @@
 #include "boost_sensors.h"
 #include "boost_tpms.h"
 #include "boost_tpms_mock.h"
+#include "boost_obd.h"
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
 #include "boost_web.h"
@@ -45,13 +46,17 @@ static void gauge_timer_cb(lv_timer_t *timer)
 
 /* TPMS runs on its own slow cadence: tire pressures change in seconds, not
  * milliseconds, so a 250 ms tick keeps the page fresh without sharing the
- * 16 ms gauge path. The mock provider stands in for the BLE transport until
- * the vLinker FD+ profile is verified; the service/snapshot contract is the
- * same either way. */
+ * 16 ms gauge path. With the OBD2 BLE link enabled the OBD driver publishes
+ * real vehicle data and the mock provider stays idle; otherwise the mock
+ * stands in so the page stays lively on the bench. */
 static void tpms_timer_cb(lv_timer_t *timer)
 {
     LV_UNUSED(timer);
-    boost_tpms_mock_tick(lv_tick_get());
+    if (!boost_theme_tpms_ble()) {
+        boost_tpms_mock_tick(lv_tick_get());
+    } else {
+        boost_tpms_age(lv_tick_get());
+    }
     boost_tpms_snapshot_t snapshot;
     boost_tpms_get_snapshot(&snapshot);
     boost_page_update_tpms(&snapshot);
@@ -162,6 +167,12 @@ void app_main(void)
     if (web_err != ESP_OK) {
         ESP_LOGE(TAG, "web control plane failed: %s", esp_err_to_name(web_err));
     }
+
+    /* OBD2 BLE link. Brought up AFTER the web control plane so a BLE init
+     * failure can never precede OTA recovery (the RAM boot-loop class). Starts
+     * only when the persisted tpmsBle toggle is on; default off. */
+    boost_obd_init();
+    boost_obd_set_enabled(boost_theme_tpms_ble());
 
     /* OTA rollback gate. With CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE, a freshly
      * OTA'd image boots in PENDING_VERIFY and must confirm itself healthy or the

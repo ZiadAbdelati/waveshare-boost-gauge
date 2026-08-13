@@ -35,6 +35,7 @@
 #define NVS_KEY_NEONLAY "neon_layout"
 #define NVS_KEY_NEONPRE "neon_preset"
 #define NVS_KEY_DEMO    "demo_mode"
+#define NVS_KEY_TPMSBLE "tpms_ble"
 
 /* Palettes/styles here MUST match tools/mock_server.py and the web renderers so
  * the physical panel and the dashboard mirror agree. */
@@ -229,6 +230,9 @@ static uint16_t s_pixel_shift_sec = BOOST_PXSHIFT_SEC_DEFAULT;
 /* Real sensors by default: an absent NVS key must not silently put a fresh
  * panel into the synthetic sweep. */
 static bool s_demo_mode = false;
+/* OBD2 BLE link for the TPMS page is opt-in: absent NVS key = off, so a fresh
+ * panel keeps the mock provider and never touches the radio. */
+static bool s_tpms_ble = false;
 
 /* Persisted as one blob keyed by id rather than per-theme NVS keys: ids run to
  * 24 chars and NVS keys cap at 15, and a single blob keeps the whole set
@@ -296,6 +300,7 @@ static void persist(void)
     nvs_set_u8(h, NVS_KEY_NEONLAY, s_neon_layout);
     nvs_set_u8(h, NVS_KEY_NEONPRE, s_neon_preset);
     nvs_set_u8(h, NVS_KEY_DEMO, s_demo_mode ? 1 : 0);
+    nvs_set_u8(h, NVS_KEY_TPMSBLE, s_tpms_ble ? 1 : 0);
     nvs_commit(h);
     nvs_close(h);
 #endif
@@ -421,6 +426,11 @@ void boost_theme_init(void)
     uint8_t dm = 0;
     if (nvs_get_u8(h, NVS_KEY_DEMO, &dm) == ESP_OK) {
         s_demo_mode = (dm != 0);
+    }
+
+    uint8_t tb = 0;
+    if (nvs_get_u8(h, NVS_KEY_TPMSBLE, &tb) == ESP_OK) {
+        s_tpms_ble = (tb != 0);
     }
 
     size_t len = 0;
@@ -697,6 +707,18 @@ void boost_theme_set_demo_mode(bool enabled)
 {
     ensure_loaded();
     s_demo_mode = enabled;
+    persist();
+}
+
+bool boost_theme_tpms_ble(void)
+{
+    return s_tpms_ble;
+}
+
+void boost_theme_set_tpms_ble(bool enabled)
+{
+    ensure_loaded();
+    s_tpms_ble = enabled;
     persist();
 }
 

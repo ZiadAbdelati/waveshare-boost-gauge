@@ -1,3 +1,15 @@
+# OBD2 BLE central: the source files are gated on BOOST_TPMS_BLE_ENABLED, but
+# the `bt` component is REQUIRED unconditionally. main's CMakeLists runs twice
+# (a discovery pass before Kconfig is populated, then the real pass); a
+# CONFIG_-gated REQUIRES is evaluated empty in the first pass and that empty
+# registration wins, stranding the NimBLE include dirs. bt contributes nothing
+# to the binary when CONFIG_BT_ENABLED=n.
+if(CONFIG_BOOST_TPMS_BLE_ENABLED)
+    set(OBD_SRCS "boost_obd_ble.c" "boost_obd_elm.c" "boost_obd.c")
+else()
+    set(OBD_SRCS "boost_obd_stub.c")
+endif()
+
 idf_component_register(
     SRCS
         "main.c"
@@ -17,6 +29,7 @@ idf_component_register(
         "boost_web.c"
         "boost_media_store.c"
         "boost_network.c"
+        ${OBD_SRCS}
         "generated_web_assets.c"
         # Vendored GIF playback layer. The upstream copies under
         # managed_components/lvgl__lvgl/src/libs/gif/ are excluded from the
@@ -51,4 +64,5 @@ idf_component_register(
         esp_wifi
         json
         nvs_flash
+        bt
 )

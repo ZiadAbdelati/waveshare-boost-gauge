@@ -546,8 +546,16 @@ static void te_wait_for_vblank(void)
  * write bandwidth/cache behaviour for the ORIGINAL idea (LVGL rasterising
  * into PSRAM directly) was never measured either, because the adapter
  * block above makes that measurement moot for this panel interface.
+ *
+ * Two scratch buffers, not the SPI queue depth. region_dbuf_writeback() calls
+ * esp_lcd_panel_draw_bitmap() sequentially and that call is functionally
+ * blocking (tx_param() drains in-flight transactions before its own transmit),
+ * so transfers never pipeline beyond depth 1. Two buffers give correct
+ * double-buffering (memcpy into one strip while the other transmits); the old
+ * four were over-provisioned and held ~37 kB of DMA-capable internal RAM that
+ * the BLE controller needs. Rendered pixels are identical.
  */
-#define BOOST_REGION_DBUF_QUEUE_DEPTH CONFIG_BSP_LCD_TRANS_QUEUE_DEPTH
+#define BOOST_REGION_DBUF_QUEUE_DEPTH 2
 
 /* Needle + a handful of digit/peak labels is the realistic worst case for one
  * vault tick; 8 is generous headroom over that. Exceeding it degrades to

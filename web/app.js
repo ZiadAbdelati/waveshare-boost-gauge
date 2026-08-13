@@ -160,6 +160,13 @@ const el = {
   teScanline: document.getElementById("teScanline"),
   rotation: document.getElementById("rotation"),
   demoMode: document.getElementById("demoMode"),
+  tpmsBle: document.getElementById("tpmsBle"),
+  obdStateText: document.getElementById("obdStateText"),
+  obdPeer: document.getElementById("obdPeer"),
+  obdRpm: document.getElementById("obdRpm"),
+  obdSpeed: document.getElementById("obdSpeed"),
+  obdCoolant: document.getElementById("obdCoolant"),
+  obdBattery: document.getElementById("obdBattery"),
   loadLogsBtn: document.getElementById("loadLogsBtn"),
   clearLogsBtn: document.getElementById("clearLogsBtn"),
   logSummary: document.getElementById("logSummary"),
@@ -1892,7 +1899,29 @@ function renderState(sample) {
       if (IS_COCKPIT) renderThemes();
     }
   }
+  if (sample.obd) renderObd(sample.obd);
   pushSample(sample);
+}
+
+/* OBD2 BLE link readout: link state on both pages, live PIDs on the cockpit.
+ * Values stay dashed until a fresh (non-stale) reading exists. */
+const OBD_STATE_LABEL = ["Off", "Scanning", "Connecting", "Live", "Disconnected"];
+
+function renderObd(obd) {
+  const label = OBD_STATE_LABEL[obd.state] || "--";
+  if (el.obdStateText) {
+    el.obdStateText.textContent = label;
+    el.obdStateText.dataset.state = String(obd.state);
+  }
+  if (el.obdPeer) {
+    el.obdPeer.textContent = obd.state >= 3 ? (obd.peer || obd.peerAddr || "--") : "--";
+  }
+  if (el.obdRpm) el.obdRpm.textContent = obd.valid ? Math.round(obd.rpm || 0) : "--";
+  if (el.obdSpeed) el.obdSpeed.textContent = obd.valid ? `${Math.round(obd.speedKph || 0)} km/h` : "--";
+  if (el.obdCoolant) el.obdCoolant.textContent = obd.valid ? `${Math.round(obd.coolantC || 0)}°C` : "--";
+  if (el.obdBattery) {
+    el.obdBattery.textContent = obd.valid && obd.batteryV > 0 ? `${obd.batteryV.toFixed(1)} V` : "--";
+  }
 }
 
 function renderConfig(config) {
@@ -2010,6 +2039,7 @@ function applyThemePayload(payload, fallback = {}) {
   set("pixelShiftSec", (() => { const v = pick("pixelShiftSec"); return v === undefined ? undefined : Number(v) || state.pixelShiftSec; })());
   set("demoMode", bool("demoMode"));
   set("demoFastSweep", bool("demoFastSweep"));
+  set("tpmsBle", bool("tpmsBle"));
   set("vaultFace", pick("vaultFace"));
   set("vaultVignette", pick("vaultVignette"));
   set("vaultNeedleRed", bool("vaultNeedleRed"));
@@ -2396,6 +2426,7 @@ function syncDisplayToggles() {
     el.demoMode.value = state.demoFastSweep ? "sweep"
       : (state.demoMode ? "demo" : "off");
   }
+  if (el.tpmsBle) el.tpmsBle.checked = !!state.tpmsBle;
 }
 
 function wireDisplayToggles() {
@@ -2456,6 +2487,12 @@ function wireDisplayToggles() {
              "Demo mode on");
       }
     });
+  }
+  if (el.tpmsBle) {
+    el.tpmsBle.addEventListener("change", () =>
+      send({ tpmsBle: el.tpmsBle.checked },
+           el.tpmsBle.checked ? "OBD2 BLE link on" : "OBD2 BLE link off"),
+    );
   }
   if (el.pixelShiftMode) {
     el.pixelShiftMode.addEventListener("change", () => {

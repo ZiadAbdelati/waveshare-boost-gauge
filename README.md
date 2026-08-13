@@ -103,6 +103,11 @@ clean full-frame update.
 `sdkconfig.defaults` also keeps Wi‑Fi/LWIP out of the internal DMA pool
 (`CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP`, `CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536`).
 That reservation exists so display DMA and Wi‑Fi can run **at the same time**.
+The BT controller (BLE central) draws from the same DMA-internal pool, so the
+OBD2 build moves the NimBLE host pools to PSRAM
+(`CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL`), turns off the Wi-Fi IRAM opts, and
+sizes the controller for one connection (`CONFIG_BT_CTRL_BLE_MAX_ACT=1`);
+region-dbuf uses **two** internal DMA scratch strips, not four.
 
 Hardware check after flash: serial must show
 `boost_disp: ... internal DMA buffers` and **zero** `ESP_ERR_NO_MEM` /
@@ -685,11 +690,42 @@ protocol/conversion/ISO-TP layer. For the 2019/2020 Mazda MX-5 ND, UDS
 `pressure_kPa = raw * 1.373 + additive replacement-sensor offset`, then
 `pressure_psi = kPa * 0.145037738`.
 
-BLE central support is feature-flagged off by default (`BOOST_TPMS_BLE_ENABLED=0`)
-pending the vLinker FD+ adapter. ESP32-S3 is BLE-only, not Classic/SPP, so the
-adapter must expose a BLE GATT service. Its UUIDs are unpublished; firmware
-must discover services and characteristics at runtime and require a verified
-adapter profile before sending vehicle commands.
+BLE central support is implemented as a runtime toggle and compile gate:
+`main/boost_obd_ble.c/.h` is a NimBLE central transport (scan by advertised
+name `VLINK`/`OBD`/`ELM` or OBD service UUID `0x18F0`/`0xFFF0`/`0xFFE0`,
+unauthenticated connect, runtime service/characteristic discovery with a
+known-UUID table plus a first-writable/first-notify fallback because adapter
+UUIDs are unpublished, CCCD-write subscription, and an NVS-persisted peer for
+fast reconnect). `main/boost_obd_elm.c/.h` frames ELM327 request/reply on that
+byte stream (`>`-paced, one command in flight). `main/boost_obd.c/.h` runs the
+poll loop: the standard init sequence (`ATZ`, `ATE0`, `ATL0`, `ATS0`, `ATH0`,
+`ATSP0`), the MX-5 ND TPMS DID reads (`ATSH 720` + `22 2A xx`, published through
+the conversion path above), and generic mode-01 PIDs plus `ATRV` battery voltage
+for the web cockpit. ESP32-S3 is BLE-only, not Classic/SPP, so the adapter must
+expose a BLE GATT service — the vLinker FD+ does; the FS family (Classic BT) does
+not. The firmware is intentionally adapter-agnostic: it discovers at runtime and
+requires a verified profile before trusting vehicle responses.
+
+The link is controlled by the persisted `tpmsBle` setting (default **off**, so a
+fresh boot never touches the radio). Flipping it in Settings or via
+`PUT /api/v1/themes/config` starts/stops the BLE central immediately and survives
+reboots. When enabled and an adapter answers, the TPMS page switches from the
+simulated provider to real vehicle data and `/state.obd` carries the live PIDs;
+when disabled, the mock runs as before. `BOOST_TPMS_BLE_ENABLED` in
+`main/Kconfig.projbuild` (default `y`) is the compile gate: set it `n` to build a
+BLE-less image (the `bt` component is still required by `main` because the
+discovery pass runs before Kconfig, but it contributes nothing with
+`CONFIG_BT_ENABLED=n`).
+
+The link is **adapter-agnostic** — any BLE ELM327 adapter (vLinker FD+, Veepeak,
+OBDLink MX+, cheap HM-10-style dongles) is picked up by the name/UUID scan and the
+runtime first-writable/first-notify discovery. Only the TPMS DID set is vehicle
+specific (Mazda MX-5 ND); the mode-01 PIDs and `ATRV` work on any OBD-II car.
+The remembered adapter MAC is a convenience, not a binding: if a direct connect to
+it fails, the firmware falls back to scanning, and the first adapter that answers
+overwrites the stored MAC. Verified on the bench (2026-08-12): the FD+ links up,
+`ATZ`…`ATSP0` init completes, and `ATRV` reads the 12 V supply; mode-01 PIDs and
+TPMS DIDs correctly return `NO DATA` with no car attached.
 
 The simulator snapshots one TPMS scenario with:
 
@@ -698,9 +734,11 @@ The simulator snapshots one TPMS scenario with:
 ```
 
 The default `--screenshot` mode also emits `tpms_*.raw` for all three scenarios.
-On hardware, `main/main.c` calls `boost_tpms_init()` / `boost_tpms_start()`, sets
-the mock scenario, and runs a 250 ms LVGL timer that ticks the mock provider and
-feeds `boost_page_update_tpms()`.
+On hardware, `main/main.c` calls `boost_tpms_init()` / `boost_tpms_start()` and
+runs a 250 ms LVGL timer that ticks the mock provider (when the BLE link is off)
+or ages the BLE-published snapshot, then feeds `boost_page_update_tpms()`. The
+OBD poll task is started after the web control plane so a BLE init failure can
+never precede OTA recovery.
 
 
 ## UI design tokens

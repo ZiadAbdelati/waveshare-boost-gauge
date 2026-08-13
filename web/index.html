@@ -63,6 +63,21 @@
       </section>
 
       <div class="console-cards">
+        <section class="panel obd-panel">
+          <div class="section-title"><span>OBD2</span></div>
+          <div class="status-grid obd-grid">
+            <div><span>Link</span><strong id="obdStateText">--</strong></div>
+            <div><span>Adapter</span><strong id="obdPeer">--</strong></div>
+            <div><span>RPM</span><strong id="obdRpm">--</strong></div>
+            <div><span>Speed</span><strong id="obdSpeed">--</strong></div>
+            <div><span>Coolant</span><strong id="obdCoolant">--</strong></div>
+            <div><span>Battery</span><strong id="obdBattery">--</strong></div>
+          </div>
+          <p class="hint-text">Drives the TPMS page from real vehicle data when
+            the OBD2 BLE link is enabled in Settings. No adapter = this panel
+            stays at &ldquo;Off&rdquo;.</p>
+        </section>
+
         <section class="panel">
           <div class="section-title">
             <span>Time sync</span>

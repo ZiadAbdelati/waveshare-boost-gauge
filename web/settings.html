@@ -179,6 +179,26 @@
           gentler on the panel; less often is fewer repaints.</p>
       </section>
 
+      <section class="panel obd-panel">
+        <div class="section-title"><span>OBD2 BLE (TPMS + live PIDs)</span></div>
+        <label class="toggle-field">
+          <input id="tpmsBle" type="checkbox">
+          <span>Enable OBD2 BLE link</span>
+        </label>
+        <p class="hint-text">Connects the gauge as a BLE central to an ELM327
+          adapter in the OBD port (vLinker FD+ and similar serial-UART adapters).
+          When live, the TPMS page shows real tire pressures from the vehicle
+          (Mazda MX-5 ND UDS DIDs) instead of the simulated provider, and generic
+          PIDs (RPM, speed, coolant, battery) appear on the cockpit. Off leaves
+          the simulated TPMS running. The link takes effect immediately and
+          survives a reboot.</p>
+        <div class="status-grid obd-grid">
+          <div><span>Link</span><strong id="obdStateText">--</strong></div>
+          <div><span>Adapter</span><strong id="obdPeer">--</strong></div>
+          <div><span>Battery</span><strong id="obdBattery">--</strong></div>
+        </div>
+      </section>
+
       <section class="panel network-panel">
         <div class="section-title">
           <span>Network</span>

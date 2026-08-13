@@ -173,6 +173,15 @@ void boost_theme_set_rotation(uint16_t degrees);
 bool boost_theme_demo_mode(void);
 void boost_theme_set_demo_mode(bool enabled);
 
+/*
+ * OBD2 BLE link for the TPMS page. OFF (the default) leaves the BLE central
+ * idle and the TPMS page on the mock provider; ON starts the BLE central and,
+ * once an adapter answers, switches the TPMS page to live vehicle data.
+ * Persisted; flipping it does not require a reboot.
+ */
+bool boost_theme_tpms_ble(void);
+void boost_theme_set_tpms_ble(bool enabled);
+
 /* Vault-Tec dial glow: the face colour the dial fills with and the vignette
  * darkens from, plus the vignette depth as a percentage (0 = flat, higher =
  * darker edges). Both re-bake the cached face on change. Defaults are the

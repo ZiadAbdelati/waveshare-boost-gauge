@@ -9,6 +9,7 @@
 #include "boost_sim.h"
 #include "boost_theme.h"
 #include "boost_display.h"
+#include "boost_obd.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -63,6 +64,25 @@ typedef struct {
     float tpms_psi[4];
     bool tpms_valid[4];
     int tpms_status;
+    /* OBD2 BLE link (generic mode-01 PIDs + TPMS source). state: 0 disabled,
+     * 1 scanning, 2 connecting, 3 ready, 4 error. valid=false until the first
+     * successful reading ages within the staleness window. */
+    int obd_state;
+    uint16_t obd_last_error;
+    char obd_peer[24];
+    char obd_peer_addr[32];
+    uint32_t obd_uptime_ms;
+    uint32_t obd_age_ms;
+    bool obd_valid;
+    float obd_rpm;
+    float obd_speed_kph;
+    float obd_coolant_c;
+    float obd_map_kpa;
+    float obd_iat_c;
+    float obd_throttle_pct;
+    float obd_maf_gps;
+    float obd_fuel_pct;
+    float obd_battery_v;
 } boost_state_t;
 
 typedef struct {
@@ -76,6 +96,7 @@ typedef struct {
 esp_err_t boost_model_init(void);
 void boost_model_publish_sample(const boost_sample_t *sample);
 void boost_model_publish_tpms(const float psi[4], const bool valid[4], int status);
+void boost_model_publish_obd(const boost_obd_state_t *obd);
 void boost_model_get_state(boost_state_t *out);
 /** Refresh web-visible clocks/brightness; call outside the LVGL worker. */
 void boost_model_refresh_status(void);

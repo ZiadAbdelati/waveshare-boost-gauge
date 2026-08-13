@@ -34,6 +34,7 @@
 #include "boost_display.h"
 #include "boost_network.h"
 #include "boost_media_store.h"
+#include "boost_obd.h"
 #include "generated_web_assets.h"
 
 #define API_BASE "/api/v1"
@@ -189,7 +190,10 @@ static int state_json(char *json, size_t len)
                      * possible without the display. */
                     "\"sensors\":{\"adsPresent\":%s,\"bmpPresent\":%s,\"fault\":%s,"
                     "\"mapVolts\":%.4f,\"mapAbsKpa\":%.2f,\"ambientKpa\":%.2f},"
-                    "\"tpms\":{\"status\":%d,\"wheels\":[{\"psi\":%.1f,\"valid\":%s},{\"psi\":%.1f,\"valid\":%s},{\"psi\":%.1f,\"valid\":%s},{\"psi\":%.1f,\"valid\":%s}]}}",
+                    "\"tpms\":{\"status\":%d,\"wheels\":[{\"psi\":%.1f,\"valid\":%s},{\"psi\":%.1f,\"valid\":%s},{\"psi\":%.1f,\"valid\":%s},{\"psi\":%.1f,\"valid\":%s}]},"
+                    "\"obd\":{\"state\":%d,\"lastError\":%u,\"peer\":\"%s\",\"peerAddr\":\"%s\",\"uptimeMs\":%lu,\"ageMs\":%lu,\"valid\":%s,"
+                    "\"rpm\":%.1f,\"speedKph\":%.1f,\"coolantC\":%.1f,\"mapKpa\":%.1f,\"iatC\":%.1f,"
+                    "\"throttlePct\":%.1f,\"mafGps\":%.1f,\"fuelPct\":%.1f,\"batteryV\":%.1f}}",
                     (double)st.psi, (double)st.peak_psi, st.zone, st.demo ? "true" : "false",
                     st.brightness, st.firmware_version, (unsigned long long)st.uptime_ms,
                     (long long)st.epoch_ms, st.timezone_offset_minutes, st.active_theme_id, st.active_page,
@@ -214,12 +218,19 @@ static int state_json(char *json, size_t len)
                     (double)st.tpms_psi[0], st.tpms_valid[0] ? "true" : "false",
                     (double)st.tpms_psi[1], st.tpms_valid[1] ? "true" : "false",
                     (double)st.tpms_psi[2], st.tpms_valid[2] ? "true" : "false",
-                    (double)st.tpms_psi[3], st.tpms_valid[3] ? "true" : "false");
+                    (double)st.tpms_psi[3], st.tpms_valid[3] ? "true" : "false",
+                    st.obd_state, (unsigned)st.obd_last_error, st.obd_peer, st.obd_peer_addr,
+                    (unsigned long)st.obd_uptime_ms, (unsigned long)st.obd_age_ms,
+                    st.obd_valid ? "true" : "false",
+                    (double)st.obd_rpm, (double)st.obd_speed_kph, (double)st.obd_coolant_c,
+                    (double)st.obd_map_kpa, (double)st.obd_iat_c,
+                    (double)st.obd_throttle_pct, (double)st.obd_maf_gps,
+                    (double)st.obd_fuel_pct, (double)st.obd_battery_v);
 }
 
 static esp_err_t state_get(httpd_req_t *req)
 {
-    char json[1024];
+    char json[1280];
     const int n = state_json(json, sizeof(json));
     return n > 0 && n < (int)sizeof(json) ? send_json(req, json) : ESP_FAIL;
 }
@@ -403,10 +414,10 @@ static void state_ws_push(void *arg)
 {
     (void)arg;
     /* Static: this runs only on the single boost_ws task, once per loop
-     * iteration, so there is no reentrancy. Keeping the 1 KB serialization
-     * buffer off the task stack is what stops the TPMS-augmented payload from
-     * overflowing it (the stack was sized for the pre-TPMS 768 B buffer). */
-    static char current[1024];
+     * iteration, so there is no reentrancy. Keeping the 1.25 KB serialization
+     * buffer off the task stack is what stops the TPMS/OBD-augmented payload
+     * from overflowing it (the stack was sized for the pre-TPMS 768 B buffer). */
+    static char current[1280];
     const int n = state_json(current, sizeof(current));
     if (n <= 0 || n >= (int)sizeof(current)) return;
     for (int slot = 0; slot < STATE_WS_MAX_CLIENTS; ++slot) {
@@ -735,6 +746,7 @@ static esp_err_t themes_get(httpd_req_t *req)
              "\"rotation\":%u,"
              "\"vaultFace\":\"#%06lx\",\"vaultVignette\":%u,\"vaultNeedleRed\":%s,"
               "\"vaultNeedleTail\":%s,\"neonLayout\":%u,\"neonPreset\":%u,\"demoMode\":%s,\"demoFastSweep\":%s,"
+             "\"tpmsBle\":%s,"
              "\"pixelShift\":%s,\"pixelShiftSec\":%u,\"themes\":[",
              cfg.active_theme_id,
              boost_theme_bigdigit_static_bg() ? "true" : "false",
@@ -757,6 +769,7 @@ static esp_err_t themes_get(httpd_req_t *req)
               (unsigned)boost_theme_neon_preset(),
              boost_theme_demo_mode() ? "true" : "false",
              boost_sim_fast_sweep() ? "true" : "false",
+             boost_theme_tpms_ble() ? "true" : "false",
              boost_theme_pixel_shift() ? "true" : "false",
              (unsigned)boost_theme_pixel_shift_sec());
     for (size_t i = 0; i < boost_theme_count(); ++i) {
@@ -930,6 +943,14 @@ static esp_err_t themes_config_put(httpd_req_t *req)
     const cJSON *fsweep = cJSON_GetObjectItemCaseSensitive(root, "demoFastSweep");
     if (cJSON_IsBool(fsweep)) {
         boost_sim_set_fast_sweep(cJSON_IsTrue(fsweep));
+    }
+
+    /* OBD2 BLE link for the TPMS page. Runtime, persisted, no reboot needed:
+     * enable starts the BLE central, disable tears the link down. */
+    const cJSON *tble = cJSON_GetObjectItemCaseSensitive(root, "tpmsBle");
+    if (cJSON_IsBool(tble)) {
+        boost_theme_set_tpms_ble(cJSON_IsTrue(tble));
+        boost_obd_set_enabled(cJSON_IsTrue(tble));
     }
 
     const cJSON *vface = cJSON_GetObjectItemCaseSensitive(root, "vaultFace");

@@ -1,0 +1,21 @@
+menu "Boost Gauge"
+
+config BOOST_TPMS_BLE_ENABLED
+    bool "OBD2 BLE central (TPMS + mode-01 PIDs)"
+    default y
+    help
+        Compile the NimBLE BLE-central transport that talks to a serial-UART
+        OBD-II adapter (vLinker FD+ and other ELM327-over-GATT adapters) for
+        the TPMS page and generic mode-01 PIDs.
+
+        Disable to build a BLE-less image that omits the NimBLE controller and
+        host entirely. Runtime on/off of the link is a separate persisted
+        setting (tpmsBle, default off) exposed on the web dashboard; flipping
+        it starts/stops the BLE central without a reboot.
+
+        NOTE: TPMS data needs the vehicle UDS DID read path, which requires a
+        verified adapter profile (the research/2026-08-09 vLinker GATT profile
+        doc). Keep this OFF for a pure-bench release until the link is verified
+        against a real adapter.
+
+endmenu

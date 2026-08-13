@@ -32,6 +32,33 @@ CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=6
 CONFIG_ESP_WIFI_CACHE_TX_BUFFER_NUM=8
 CONFIG_ESP_WIFI_RX_BA_WIN=6
 CONFIG_ESP_WIFI_MGMT_SBUF_NUM=8
+# Wi-Fi IRAM speed opts are off: they park Wi-Fi hot code in DIRAM, and that is
+# exactly the internal DRAM the BT controller (BLE central) needs a contiguous
+# block of at runtime. The WebSocket pool (62.5 Hz x 3) and 4 Hz HTTP poll are
+# nowhere near the throughput these opts buy; see the 2026-07-26 coexistence
+# spike. LWIP stays in PSRAM via SPIRAM_TRY_ALLOCATE_WIFI_LWIP above.
+CONFIG_ESP_WIFI_IRAM_OPT=n
+CONFIG_ESP_WIFI_RX_IRAM_OPT=n
+
+# NimBLE host + controller (BLE central for the OBD2/TPMS transport). The
+# controller runs from flash to keep internal DRAM headroom; BLE+Wi-Fi
+# coexistence was proven in the 2026-07-26 spike once LVGL IRAM moved out of
+# the way (LV_ATTRIBUTE_FAST_MEM_USE_IRAM=n, now the default). The compile-time
+# BOOST_TPMS_BLE_ENABLED gate and the persisted tpmsBle runtime toggle control
+# whether the link is actually used. See docs/research/2026-07-26-ble-wifi-coexistence.md.
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_CTRL_RUN_IN_FLASH_ONLY=y
+CONFIG_BT_CTRL_BLE_MASTER=y
+# One central connection, but the scan->connect handoff briefly holds two
+# controller "activity instances" (scan + connection). Each instance is only
+# 828 bytes, so 3 costs ~2.5 kB and avoids the connect-time
+# "Memory Capacity Exceeded" (HCI 0x07) that a value of 1 caused.
+CONFIG_BT_CTRL_BLE_MAX_ACT=3
+# Internal DRAM is shared with Wi-Fi, the QSPI display double-buffer and the
+# region-dbuf scratch strips. Park the NimBLE host mempools (msys/ACL) in PSRAM
+# so the BT controller's own internal block is the only new internal demand.
+CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y
 
 # The LVGL worker and HTTP server do not perform flash writes; keep their stacks in PSRAM.
 CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=y
