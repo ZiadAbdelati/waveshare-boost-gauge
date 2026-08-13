@@ -326,12 +326,12 @@ intentionally **4 Hz**. These are separate contracts: a smooth browser canvas
 does not imply 60 Hz network packets, and GIF playback is exclusive to the
 display path.
 
-Background history logging is a separate **12.5 Hz** producer: the 1,800-sample
-RAM ring retains **2 minutes 24 seconds** regardless of whether the dashboard is
-receiving 62.5 Hz WebSocket telemetry or 4 Hz HTTP fallback.
+Background history logging is a separate **5 Hz** producer: the 18,000-sample
+RAM ring retains **1 hour** regardless of whether the dashboard is receiving
+62.5 Hz WebSocket telemetry or 4 Hz HTTP fallback.
 
-The ring is **43,200 bytes and lives in PSRAM**, allocated once in
-`boost_model_init()` with `MALLOC_CAP_SPIRAM`. It is written at 12.5 Hz and read
+The ring is **432,000 bytes and lives in PSRAM**, allocated once in
+`boost_model_init()` with `MALLOC_CAP_SPIRAM`. It is written at 5 Hz and read
 only for export - no DMA, no ISR, not latency-critical - so it has no business in
 internal DRAM, which is shared with Wi-Fi and display DMA. A failed allocation
 leaves the pointer NULL and disables logging rather than failing boot; every
@@ -438,9 +438,9 @@ path performs no RTC or NTP resynchronization, so merely opening the dashboard
 does not sync the device; use **Sync Time** explicitly.
 
 CSV `timestamp_local` is formatted as `%Y-%m-%dT%H:%M:%S` with no timezone
-suffix. `utc_offset_minutes` remains a separate CSV field. Hardware CSV
-verification produced **1,800 rows**, `badTimestampCount: 0`, and offset
-`-300` minutes.
+suffix. `utc_offset_minutes` remains a separate CSV field. The CSV export now
+returns up to **18,000 rows** (1 hour at 5 Hz); hardware verification must show
+`badTimestampCount: 0` and offset `-300` minutes as in the prior 1,800-row run.
 ***
 
 ### GIF upload behavior
@@ -1281,7 +1281,7 @@ Bahnschrift/Consolas are Microsoft fonts and cannot be embedded):
 | `font_mono_16/40` | IBM Plex Mono SemiBold | readouts, telemetry |
 | `font_cond_14/18/22/32` | Saira Condensed SemiBold | labels |
 | `font_cond_96` | IBM Plex Sans Condensed BoldItalic | Night City readout |
-| `archivo_black_56` (56 px) | Archivo Black (Google Fonts) | Dyno Cell readout |
+| `archivo_black_65` (65 px) | Archivo Black (Google Fonts) | Dyno Cell readout (56/60/75 px variants retired) |
 | `font_wide_22/32` | Saira SemiCondensed Bold | Big Digit labels |
 | `neon_big` (118 px) | SF Alien Encounters Italic (user supplied) | neon readout, all three layouts |
 | `neon_label` (24 px) | SF Alien Encounters **regular** | neon zone word and `P S I` |

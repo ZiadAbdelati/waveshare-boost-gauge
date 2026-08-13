@@ -94,20 +94,36 @@ static inline void boost_display_gauge_update_end(void) {}
 #define ZERO_GAP_BOOST_DEG 5.00f
 #define TICK_FONT     (&lv_font_montserrat_24)
 #define TICK_RADIUS   160.0f
-#define VALUE_SLOT_WIDTH   40
-#define VALUE_SLOT_HEIGHT  64
+#define VALUE_SLOT_HEIGHT  58
 /* Archivo Black (Google Fonts, single weight) is a wide heavy display face,
- * so the readout needs no size hack to stop looking skinny. At 56 px its digit
- * advance is ~37 px; the pitch below is widened from 34 to 37 to match, and the
- * slot to 40 px so the widest glyph box (~36 px) stays inside the slot's own
- * invalidation. Readout ink is top-aligned in the slot (LVGL label), so its
- * top edge sits at slot_top and the below-stack offsets are set to mirror the
- * zone-to-readout ink gap for symmetric spacing. */
-#define VALUE_SIGN_X       (-99)
-#define VALUE_TENS_X       (-62)
-#define VALUE_ONES_X       (-25)
-#define VALUE_DECIMAL_X    8
-#define VALUE_TENTHS_X     41
+ * so the readout needs no size hack to stop looking skinny. At 65 px its digit
+ * advance is ~43 px and the widest glyph box is 41 px; the integer pitch below
+ * is 43 and the fractional pitch 36. */
+#define VALUE_SIGN_X_ONE  (-59)   /* minus directly left of a single left-of-decimal digit */
+#define VALUE_SIGN_X_TWO  (-102)  /* ... or of the tens digit when there are two */
+#define VALUE_TENS_X       (-70)
+#define VALUE_ONES_X       (-27)
+#define VALUE_DECIMAL_X    9
+#define VALUE_TENTHS_X     45
+#define VALUE_READOUT_Y    6      /* readout slot centre (moved up 10 px from 16) */
+/* Arc readout cells. s_arc_slot_text[] indexes these; the sign's x is dynamic
+ * (it hugs the tens digit when the tens cell is occupied). */
+enum {
+    ARC_SLOT_SIGN = 0,
+    ARC_SLOT_TENS,
+    ARC_SLOT_ONES,
+    ARC_SLOT_DEC,
+    ARC_SLOT_TENTHS,
+    ARC_SLOT_COUNT,
+};
+/* Top of the readout's line box, face-local: the old label objects were
+ * VALUE_SLOT_HEIGHT-tall boxes centred at VALUE_READOUT_Y, and label ink
+ * starts at the box top. Kept so the custom-draw readout lands byte-identically. */
+#define ARC_READOUT_LINE_TOP (VALUE_READOUT_Y - VALUE_SLOT_HEIGHT / 2)
+/* Container bounds that cover every cell's ink box (+AA margin); a tighter box
+ * would let lv_obj_invalidate_area() clip the sign cell's far edge. */
+#define ARC_READOUT_W 230
+#define ARC_READOUT_H 66
 #define WELL_SIZE     DISP_SIZE
 
 /*
@@ -286,7 +302,7 @@ LV_FONT_DECLARE(font_cond_18);
 LV_FONT_DECLARE(font_cond_22);
 LV_FONT_DECLARE(font_cond_32);
 LV_FONT_DECLARE(font_cond_96);
-LV_FONT_DECLARE(archivo_black_56);
+LV_FONT_DECLARE(archivo_black_65);
 LV_FONT_DECLARE(font_wide_22);
 LV_FONT_DECLARE(font_wide_32);
 LV_FONT_DECLARE(neon_big);
@@ -355,14 +371,18 @@ static lv_obj_t *s_arc_bg;
 static uint8_t *s_arc_bg_buf;
 static lv_obj_t *s_arc_value_canvas;
 static lv_obj_t *s_zero_notch;
-static lv_obj_t *s_value_sign_label;
-static lv_obj_t *s_value_tens_label;
-static lv_obj_t *s_value_ones_label;
-static lv_obj_t *s_value_decimal_label;
-static lv_obj_t *s_value_tenths_label;
+/* One styleless draw object owns the five value cells (sign, tens, ones,
+ * decimal, tenths). Tight per-glyph ink-box invalidation replaces five
+ * fixed-size label objects whose 47x58 boxes flushed more pixels than the
+ * glyph ink every time a digit changed. */
+static lv_obj_t *s_arc_readout;
+static char s_arc_slot_text[ARC_SLOT_COUNT][2];
+static lv_color_t s_arc_readout_color;
+static bool s_arc_readout_color_valid;
 static lv_obj_t *s_peak_label;
 static lv_obj_t *s_mode_label;
 static lv_obj_t *s_zone_label;
+static int16_t s_arc_sign_x;
 
 /* ---- vault style --------------------------------------------------------- */
 /* Fixed readout slots (montserrat_40: digit advance ~23 px, '.' ~11, '-' ~15)
@@ -5166,7 +5186,7 @@ static void paint_arc_background(lv_obj_t *canvas, const boost_theme_t *theme)
         lv_point_t size;
         lv_text_get_size(&size, unit_text, &lv_font_montserrat_18, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
         const float x = cx - (float)size.x * 0.5f;
-        const float y = cy + 55.0f - (float)size.y * 0.5f;
+        const float y = cy + 85.0f - (float)size.y * 0.5f;
 
         lv_draw_label_dsc_t d;
         lv_draw_label_dsc_init(&d);
@@ -5184,18 +5204,128 @@ static void paint_arc_background(lv_obj_t *canvas, const boost_theme_t *theme)
     lv_canvas_finish_layer(canvas, &layer);
 }
 
-static lv_obj_t *add_value_slot(lv_obj_t *scr, const char *text, int x)
+/* Face-local x of a cell's slot centre (the sign hugs the leftmost digit). */
+static int arc_readout_slot_x(int slot)
 {
-    const boost_theme_t *theme = active_theme();
-    lv_obj_t *slot = lv_label_create(scr);
-    lv_label_set_text(slot, text);
-    lv_obj_set_size(slot, VALUE_SLOT_WIDTH, VALUE_SLOT_HEIGHT);
-    lv_obj_set_style_text_font(slot, &archivo_black_56, 0);
-    lv_obj_set_style_text_color(slot, c(theme->text), 0);
-    lv_obj_set_style_text_align(slot, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(slot, LV_ALIGN_CENTER, x, -4);
-    lv_obj_clear_flag(slot, LV_OBJ_FLAG_CLICKABLE);
-    return slot;
+    switch (slot) {
+        case ARC_SLOT_SIGN: return s_arc_sign_x;
+        case ARC_SLOT_TENS: return VALUE_TENS_X;
+        case ARC_SLOT_ONES: return VALUE_ONES_X;
+        case ARC_SLOT_DEC:  return VALUE_DECIMAL_X;
+        default:            return VALUE_TENTHS_X;
+    }
+}
+
+/* Exact ink footprint (screen coords, +1 px AA margin) of `glyph` in `slot`
+ * whose centre is at face-local `slot_x`. Mirrors lv_draw_label()'s own
+ * letter_coords math (lv_draw_label.c:610-613) with the pen centred on the
+ * slot by the glyph advance, so the invalidation can never be smaller than
+ * what the draw paints. Blank (' ') and unsupported glyphs have no ink. */
+static void arc_readout_ink_box(int slot, int slot_x, char glyph, lv_area_t *a)
+{
+    a->x1 = a->y1 = a->x2 = a->y2 = 0;
+    if (glyph == ' ' || glyph == '\0') return;
+    lv_font_glyph_dsc_t g;
+    if (!lv_font_get_glyph_dsc(&archivo_black_65, &g, (uint32_t)glyph, 0) || g.box_w == 0) return;
+    const int32_t pen_x = px_icx() + slot_x - g.adv_w / 2;
+    const int32_t baseline = px_icy() + ARC_READOUT_LINE_TOP +
+                             archivo_black_65.line_height - archivo_black_65.base_line;
+    a->x1 = pen_x + g.ofs_x - 1;
+    a->y1 = baseline - g.box_h - g.ofs_y - 1;
+    a->x2 = pen_x + g.ofs_x + g.box_w;
+    a->y2 = baseline - g.ofs_y;
+}
+
+static void arc_readout_union(lv_area_t *dst, const lv_area_t *a)
+{
+    if (dst->x1 > a->x1) dst->x1 = a->x1;
+    if (dst->y1 > a->y1) dst->y1 = a->y1;
+    if (dst->x2 < a->x2) dst->x2 = a->x2;
+    if (dst->y2 < a->y2) dst->y2 = a->y2;
+}
+
+/* Draw every cell whose ink box reaches the dirty region, each at its fixed
+ * slot centre. A skipped cell's ink is inside its own tight box, so it cannot
+ * reach this dirty region (same clip-rejection the vault readout uses). */
+static void draw_arc_readout(lv_event_t *e)
+{
+    if (s_arc_readout == NULL) return;
+    lv_layer_t *layer = lv_event_get_layer(e);
+    lv_draw_label_dsc_t d;
+    lv_draw_label_dsc_init(&d);
+    d.font = &archivo_black_65;
+    d.color = s_arc_readout_color_valid ? s_arc_readout_color : c(active_theme()->text);
+    d.align = LV_TEXT_ALIGN_LEFT;
+    d.text_local = 1;
+    const int32_t line_top = px_icy() + ARC_READOUT_LINE_TOP;
+    for (int i = 0; i < ARC_SLOT_COUNT; ++i) {
+        const char c = s_arc_slot_text[i][0];
+        if (c == ' ' || c == '\0') continue;
+        const int slot_x = arc_readout_slot_x(i);
+        lv_area_t ink;
+        arc_readout_ink_box(i, slot_x, c, &ink);
+        if (!neon_area_overlaps(&ink, &layer->_clip_area)) continue;
+        lv_font_glyph_dsc_t g;
+        if (!lv_font_get_glyph_dsc(&archivo_black_65, &g, (uint32_t)c, 0)) continue;
+        const int32_t pen_x = px_icx() + slot_x - g.adv_w / 2;
+        lv_area_t line_area = {
+            pen_x, line_top,
+            pen_x + g.adv_w - 1, line_top + archivo_black_65.line_height - 1,
+        };
+        char buf[2] = { c, '\0' };
+        d.text = buf;
+        lv_draw_label(layer, &d, &line_area);
+    }
+}
+
+static void update_arc_readout(float psi, bool over, const boost_theme_t *theme)
+{
+    char sign[2] = {0}, tens[2] = {0}, ones[2] = {0}, tenths[2] = {0};
+    format_value_slots(sign, tens, ones, tenths, psi);
+
+    const int sign_x = tens[0] != ' ' ? VALUE_SIGN_X_TWO : VALUE_SIGN_X_ONE;
+    const char *slot_txt[ARC_SLOT_COUNT] = { sign, tens, ones, ".", tenths };
+
+    /* Union the old and new ink of every changed cell, so a glyph swap or the
+     * sign's x move never strands pixels; blank (' ') cells contribute none. */
+    lv_area_t dirty = { INT32_MAX, INT32_MAX, INT32_MIN, INT32_MIN };
+    bool have_dirty = false;
+    for (int i = 0; i < ARC_SLOT_COUNT; ++i) {
+        const int old_x = (i == ARC_SLOT_SIGN) ? s_arc_sign_x : arc_readout_slot_x(i);
+        const int new_x = (i == ARC_SLOT_SIGN) ? sign_x : arc_readout_slot_x(i);
+        if (s_arc_slot_text[i][0] == slot_txt[i][0] && old_x == new_x) continue;
+        lv_area_t a;
+        arc_readout_ink_box(i, old_x, s_arc_slot_text[i][0], &a);
+        if (a.x1 <= a.x2 && a.y1 <= a.y2) {
+            if (!have_dirty) { dirty = a; have_dirty = true; }
+            else arc_readout_union(&dirty, &a);
+        }
+        arc_readout_ink_box(i, new_x, slot_txt[i][0], &a);
+        if (a.x1 <= a.x2 && a.y1 <= a.y2) {
+            if (!have_dirty) { dirty = a; have_dirty = true; }
+            else arc_readout_union(&dirty, &a);
+        }
+        memcpy(s_arc_slot_text[i], slot_txt[i], 2);
+    }
+    s_arc_sign_x = (int16_t)sign_x;
+
+    /* Zone-colour flip (overboost boundary) repaints every visible cell. */
+    const lv_color_t vc = over ? c(theme->overboost) : c(theme->text);
+    if (!s_arc_readout_color_valid || !lv_color_eq(s_arc_readout_color, vc)) {
+        s_arc_readout_color = vc;
+        s_arc_readout_color_valid = true;
+        for (int i = 0; i < ARC_SLOT_COUNT; ++i) {
+            const char c = s_arc_slot_text[i][0];
+            if (c == ' ' || c == '\0') continue;
+            lv_area_t a;
+            arc_readout_ink_box(i, arc_readout_slot_x(i), c, &a);
+            if (!have_dirty) { dirty = a; have_dirty = true; }
+            else arc_readout_union(&dirty, &a);
+        }
+    }
+    if (have_dirty && s_arc_readout != NULL) {
+        lv_obj_invalidate_area(s_arc_readout, &dirty);
+    }
 }
 
 static void refresh_zero_notch(void)
@@ -5254,29 +5384,40 @@ static void build_arc(lv_obj_t *scr)
 
     s_zone_label = lv_label_create(scr);
     lv_label_set_text(s_zone_label, "ATMO");
-    lv_obj_set_style_text_font(s_zone_label, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(s_zone_label, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(s_zone_label, c(theme->text), 0);
     lv_obj_align(s_zone_label, LV_ALIGN_CENTER, 0, -88);
     lv_obj_clear_flag(s_zone_label, LV_OBJ_FLAG_CLICKABLE);
 
-    s_value_sign_label = add_value_slot(scr, " ", VALUE_SIGN_X);
-    s_value_tens_label = add_value_slot(scr, " ", VALUE_TENS_X);
-    s_value_ones_label = add_value_slot(scr, "0", VALUE_ONES_X);
-    s_value_decimal_label = add_value_slot(scr, ".", VALUE_DECIMAL_X);
-    s_value_tenths_label = add_value_slot(scr, "0", VALUE_TENTHS_X);
+    s_arc_readout = lv_obj_create(scr);
+    lv_obj_remove_style_all(s_arc_readout);
+    lv_obj_set_size(s_arc_readout, ARC_READOUT_W, ARC_READOUT_H);
+    lv_obj_align(s_arc_readout, LV_ALIGN_CENTER, 0, VALUE_READOUT_Y);
+    lv_obj_clear_flag(s_arc_readout, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(s_arc_readout, draw_arc_readout, LV_EVENT_DRAW_MAIN, NULL);
+    /* Initialise like the old labels did (" 0.0") so the first update only
+     * repaints what actually changes. */
+    memset(s_arc_slot_text, 0, sizeof(s_arc_slot_text));
+    s_arc_slot_text[ARC_SLOT_SIGN][0] = ' ';
+    s_arc_slot_text[ARC_SLOT_TENS][0] = ' ';
+    s_arc_slot_text[ARC_SLOT_ONES][0] = '0';
+    s_arc_slot_text[ARC_SLOT_DEC][0] = '.';
+    s_arc_slot_text[ARC_SLOT_TENTHS][0] = '0';
+    s_arc_sign_x = VALUE_SIGN_X_TWO;
+    s_arc_readout_color_valid = false;
 
     s_peak_label = lv_label_create(scr);
     lv_label_set_text(s_peak_label, "PEAK  0.0");
     lv_obj_set_style_text_font(s_peak_label, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(s_peak_label, c(theme->boost), 0);
-    lv_obj_align(s_peak_label, LV_ALIGN_CENTER, 0, 83);
+    lv_obj_align(s_peak_label, LV_ALIGN_CENTER, 0, 113);
     lv_obj_clear_flag(s_peak_label, LV_OBJ_FLAG_CLICKABLE);
 
     s_mode_label = lv_label_create(scr);
     lv_label_set_text(s_mode_label, "DEMO");
     lv_obj_set_style_text_font(s_mode_label, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_mode_label, c(theme->muted), 0);
-    lv_obj_align(s_mode_label, LV_ALIGN_CENTER, 0, 111);
+    lv_obj_align(s_mode_label, LV_ALIGN_CENTER, 0, 141);
 }
 
 static void update_arc(const boost_sample_t *sample, const boost_theme_t *theme)
@@ -5293,23 +5434,8 @@ static void update_arc(const boost_sample_t *sample, const boost_theme_t *theme)
     if (strcmp(lv_label_get_text(s_zone_label), zone) != 0) {
         lv_label_set_text(s_zone_label, zone);
     }
-    const lv_color_t value_color = sample->psi >= s_psi_overboost ? c(theme->overboost) : c(theme->text);
-    lv_obj_t *value_slots[] = {
-        s_value_sign_label, s_value_tens_label, s_value_ones_label,
-        s_value_decimal_label, s_value_tenths_label,
-    };
-    for (size_t i = 0; i < sizeof(value_slots) / sizeof(value_slots[0]); ++i) {
-        if (!lv_color_eq(lv_obj_get_style_text_color(value_slots[i], 0), value_color)) {
-            lv_obj_set_style_text_color(value_slots[i], value_color, 0);
-        }
-    }
-
     char sign[2] = {0}, tens[2] = {0}, ones[2] = {0}, tenths[2] = {0};
-    format_value_slots(sign, tens, ones, tenths, sample->psi);
-    if (strcmp(lv_label_get_text(s_value_sign_label), sign) != 0) lv_label_set_text(s_value_sign_label, sign);
-    if (strcmp(lv_label_get_text(s_value_tens_label), tens) != 0) lv_label_set_text(s_value_tens_label, tens);
-    if (strcmp(lv_label_get_text(s_value_ones_label), ones) != 0) lv_label_set_text(s_value_ones_label, ones);
-    if (strcmp(lv_label_get_text(s_value_tenths_label), tenths) != 0) lv_label_set_text(s_value_tenths_label, tenths);
+    update_arc_readout(sample->psi, sample->psi >= s_psi_overboost, theme);
 
     /* Only regenerate the "PEAK  x.x" text when the peak value actually
      * moves; the soft-float double conversion in `%.1f` is otherwise wasted
@@ -7091,8 +7217,9 @@ static void destroy_scene(void)
     s_root = NULL;
     s_arc_value_canvas = NULL;
     s_zero_notch = NULL;
-    s_value_sign_label = s_value_tens_label = s_value_ones_label = NULL;
-    s_value_decimal_label = s_value_tenths_label = NULL;
+    s_arc_readout = NULL;
+    memset(s_arc_slot_text, 0, sizeof(s_arc_slot_text));
+    s_arc_readout_color_valid = false;
     s_peak_label = s_mode_label = s_zone_label = NULL;
 
     if (s_arc_bg_buf != NULL) {

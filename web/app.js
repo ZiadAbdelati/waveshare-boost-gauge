@@ -424,8 +424,8 @@ function drawFixedPsi(psi, decimalX, baselineY, scale) {
   const absoluteTenths = Math.round(Math.abs(value) * 10);
   const whole = Math.floor(absoluteTenths / 10);
   const tenth = absoluteTenths % 10;
-  const gap = 5 * scale;
-  const fractionalGap = 11 * scale;
+  const gap = 16 * scale;
+  const fractionalGap = 16 * scale;
 
   /* The integer's right edge and the fractional digit's left edge are fixed.
    * A tens digit grows left instead of shifting the value as a whole. */
@@ -508,7 +508,7 @@ function drawGauge(sample) {
 /* ── Style: arc — the classic Dyno Cell dual-climate face ────────────────── */
 function drawArcGauge(sample, psi, g) {
   const { cx, cy, scale, size } = g;
-  const outerR = (410 / 2) * scale;
+  const outerR = 231 * scale;
   const stroke = 54 * scale;
   const radius = outerR - stroke / 2;
   const { start, end } = valueArcAngles(psi);
@@ -556,8 +556,8 @@ function drawArcGauge(sample, psi, g) {
   ctx.fillStyle = state.palette.muted;
   ctx.font = `700 ${Math.max(14, 19 * scale)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
   for (const value of tickValues(range.psiMin, range.psiMax, range.psiOverboost, range.zeroAngle)) {
-    let r = 140 * scale;
-    if (Math.abs(value) < 0.01) r = 122 * scale;
+    let r = 160 * scale;
+    if (Math.abs(value) < 0.01) r = 142 * scale;
     const a = degToRad(psiToAngle(value));
     ctx.fillText(formatTickLabel(value), cx + r * Math.cos(a), cy + r * Math.sin(a));
   }
@@ -566,20 +566,20 @@ function drawArcGauge(sample, psi, g) {
   const zone = sample.zone || zoneFor(psi);
   const peak = Math.max(0, Number(sample.peakPsi || 0));
   ctx.fillStyle = colorFor(psi);
-  ctx.font = `700 ${Math.max(13, 17 * scale)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
+  ctx.font = `700 ${Math.max(14, 20 * scale)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
   ctx.fillText(zone, cx, cy - 88 * scale);
 
   ctx.fillStyle = psi >= range.psiOverboost ? state.palette.overboost : state.palette.text;
-  ctx.font = `700 ${Math.max(50, 72 * scale)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
-  drawFixedPsi(psi, cx + 8 * scale, cy + 2 * scale, scale);
+  ctx.font = `400 ${Math.max(40, 56 * scale)}px "Archivo Black", sans-serif`;
+  drawFixedPsi(psi, cx + 8 * scale, cy - 6 * scale, scale);
 
   ctx.fillStyle = state.palette.muted;
   ctx.font = `700 ${Math.max(13, 17 * scale)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
-  ctx.fillText("PSI", cx, cy + 55 * scale);
+  ctx.fillText("PSI", cx, cy + 85 * scale);
 
   ctx.fillStyle = peak >= range.psiOverboost ? state.palette.overboost : state.palette.boost;
   ctx.font = `700 ${Math.max(13, 16 * scale)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
-  ctx.fillText(`PEAK  ${peak.toFixed(1)}`, cx, cy + 83 * scale);
+  ctx.fillText(`PEAK  ${peak.toFixed(1)}`, cx, cy + 113 * scale);
 
   /* DEMO only in demo. The panel sets this label to "" on the real-sensor path
    * (boost_gauge.c), so drawing "LIVE" here made the mirror disagree with the
@@ -587,7 +587,7 @@ function drawArcGauge(sample, psi, g) {
   if (sample.demo) {
     ctx.fillStyle = state.palette.muted;
     ctx.font = `700 ${Math.max(13, 14 * scale)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
-    ctx.fillText("DEMO", cx, cy + 111 * scale);
+    ctx.fillText("DEMO", cx, cy + 141 * scale);
   }
 }
 
@@ -1606,6 +1606,7 @@ if (typeof document !== "undefined" && document.fonts) {
     document.fonts.load('italic 154px "SF Alien Encounters"'),
     document.fonts.load('italic 24px "SF Alien Encounters"'),
     document.fonts.load('24px "SF Alien Encounters"'),
+    document.fonts.load('400 56px "Archivo Black"'),
   ]).then(() => scheduleGaugeRender()).catch(() => { /* fallback face is fine */ });
 }
 
