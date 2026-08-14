@@ -192,6 +192,7 @@ static int state_json(char *json, size_t len)
                     "\"mapVolts\":%.4f,\"mapAbsKpa\":%.2f,\"ambientKpa\":%.2f},"
                     "\"tpms\":{\"status\":%d,\"wheels\":[{\"psi\":%.1f,\"valid\":%s},{\"psi\":%.1f,\"valid\":%s},{\"psi\":%.1f,\"valid\":%s},{\"psi\":%.1f,\"valid\":%s}]},"
                     "\"obd\":{\"state\":%d,\"lastError\":%u,\"peer\":\"%s\",\"peerAddr\":\"%s\",\"uptimeMs\":%lu,\"ageMs\":%lu,\"valid\":%s,"
+                    "\"lastReply\":\"%s\",\"protocol\":\"%s\","
                     "\"rpm\":%.1f,\"speedKph\":%.1f,\"coolantC\":%.1f,\"mapKpa\":%.1f,\"iatC\":%.1f,"
                     "\"throttlePct\":%.1f,\"mafGps\":%.1f,\"fuelPct\":%.1f,\"batteryV\":%.1f}}",
                     (double)st.psi, (double)st.peak_psi, st.zone, st.demo ? "true" : "false",
@@ -222,6 +223,7 @@ static int state_json(char *json, size_t len)
                     st.obd_state, (unsigned)st.obd_last_error, st.obd_peer, st.obd_peer_addr,
                     (unsigned long)st.obd_uptime_ms, (unsigned long)st.obd_age_ms,
                     st.obd_valid ? "true" : "false",
+                    st.obd_last_reply, st.obd_protocol,
                     (double)st.obd_rpm, (double)st.obd_speed_kph, (double)st.obd_coolant_c,
                     (double)st.obd_map_kpa, (double)st.obd_iat_c,
                     (double)st.obd_throttle_pct, (double)st.obd_maf_gps,
@@ -230,7 +232,7 @@ static int state_json(char *json, size_t len)
 
 static esp_err_t state_get(httpd_req_t *req)
 {
-    char json[1280];
+    char json[1536];
     const int n = state_json(json, sizeof(json));
     return n > 0 && n < (int)sizeof(json) ? send_json(req, json) : ESP_FAIL;
 }
@@ -414,10 +416,10 @@ static void state_ws_push(void *arg)
 {
     (void)arg;
     /* Static: this runs only on the single boost_ws task, once per loop
-     * iteration, so there is no reentrancy. Keeping the 1.25 KB serialization
+     * iteration, so there is no reentrancy. Keeping the 1.5 KB serialization
      * buffer off the task stack is what stops the TPMS/OBD-augmented payload
      * from overflowing it (the stack was sized for the pre-TPMS 768 B buffer). */
-    static char current[1280];
+    static char current[1536];
     const int n = state_json(current, sizeof(current));
     if (n <= 0 || n >= (int)sizeof(current)) return;
     for (int slot = 0; slot < STATE_WS_MAX_CLIENTS; ++slot) {

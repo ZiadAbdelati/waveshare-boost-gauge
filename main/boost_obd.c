@@ -130,10 +130,19 @@ static bool reply_is_error(const char *reply)
            strstr(reply, "?") != NULL;
 }
 
+static char s_last_reply[48];   /* last query's raw reply, for /state diagnostics */
+static char s_protocol[24];     /* ATDP result after init */
+
+static void record_reply(const char *cmd, const char *reply)
+{
+    snprintf(s_last_reply, sizeof(s_last_reply), "%s='%s'", cmd, reply);
+}
+
 static bool query_pid(const obd_pid_def_t *def, uint32_t timeout_ms)
 {
     char reply[96];
     if (!boost_obd_elm_request(def->cmd, reply, sizeof(reply), timeout_ms)) return false;
+    record_reply(def->cmd, reply);
     if (reply[0] == '\0' || reply_is_error(reply)) {
         ESP_LOGI(TAG, "PID %s -> '%s'", def->cmd, reply);
         return false;
@@ -158,6 +167,7 @@ static bool query_battery(uint32_t timeout_ms)
 {
     char reply[32];
     if (!boost_obd_elm_request("ATRV", reply, sizeof(reply), timeout_ms)) return false;
+    record_reply("ATRV", reply);
     if (reply[0] == '\0' || reply_is_error(reply)) return false;
     char *end = NULL;
     const float v = strtof(reply, &end);
@@ -175,6 +185,7 @@ static bool query_tpms_did(uint16_t did, uint16_t *out_raw, uint32_t timeout_ms)
 
     char reply[96];
     if (!boost_obd_elm_request(cmd, reply, sizeof(reply), timeout_ms)) return false;
+    record_reply(cmd, reply);
     if (reply[0] == '\0' || reply_is_error(reply)) {
         ESP_LOGI(TAG, "DID %04X -> '%s'", did, reply);
         return false;
@@ -223,6 +234,8 @@ static void publish_state(void)
     st.maf_gps = s_last_maf;
     st.fuel_pct = s_last_fuel;
     st.battery_v = s_last_battery;
+    strlcpy(st.last_reply, s_last_reply, sizeof(st.last_reply));
+    strlcpy(st.protocol, s_protocol, sizeof(st.protocol));
 
     if (s_lock != NULL) xSemaphoreTake(s_lock, portMAX_DELAY);
     s_state = st;
@@ -244,6 +257,8 @@ static void poll_task(void *arg)
     unsigned pid_idx = 0;
     unsigned tpms_idx = 0;
     bool elm_ready = false;
+    bool prime_done = false;        /* 0100 priming request has locked a protocol */
+    unsigned prime_tries = 0;
     bool header_is_tpms = false;   /* true when the ELM header is set to 0x720 */
     unsigned phase = 0;            /* 0 = TPMS DID, 1 = mode-01 PID */
 
@@ -254,6 +269,8 @@ static void poll_task(void *arg)
         }
         if (boost_obd_ble_state() != BOOST_OBD_BLE_READY) {
             elm_ready = false;
+            prime_done = false;
+            prime_tries = 0;
             init_idx = 0;         /* re-run the ELM init on the next link */
             header_is_tpms = false;
             pending_mask = 0;
@@ -264,9 +281,15 @@ static void poll_task(void *arg)
         }
 
         if (!elm_ready) {
+            /* Auto-detect the protocol (ATSP0) so one firmware works on both a
+             * pre-CAN car (ISO 9141-2 K-line, e.g. the 2003 Camry test mule)
+             * and a CAN car (ISO 15765-4, e.g. the MX-5 ND). ATCAF1 turns on
+             * CAN auto-formatting (harmless on K-line). Do NOT hard-lock ATSP6:
+             * that fixes CAN cars and breaks K-line cars. */
             static const struct { const char *cmd; uint32_t tmo; } k_init[] = {
                 { "ATZ", 2500 }, { "ATE0", 500 }, { "ATL0", 500 },
-                { "ATS0", 500 }, { "ATH0", 500 }, { "ATSP0", 1000 },
+                { "ATS0", 500 }, { "ATH0", 500 }, { "ATCAF1", 500 },
+                { "ATSP0", 1000 },
             };
             if (init_idx < sizeof(k_init) / sizeof(k_init[0])) {
                 char reply[96];
@@ -284,7 +307,45 @@ static void poll_task(void *arg)
                 continue;
             }
             elm_ready = true;
+            {
+                char reply[96];
+                if (boost_obd_elm_request("ATDP", reply, sizeof(reply), 500)) {
+                    strlcpy(s_protocol, reply, sizeof(s_protocol));
+                    ESP_LOGI(TAG, "ELM protocol: %s", reply);
+                }
+            }
             ESP_LOGI(TAG, "ELM init complete");
+            continue;
+        }
+
+        /* Prime the protocol auto-detect with a standard mode-01 request
+         * (0x00 = "PIDs supported") on the default 7DF header. The auto-detect
+         * search takes several seconds (it probes every protocol, including the
+         * slow K-line 5-baud init), so the timeout is long - a short timeout
+         * interrupts the search and the ELM answers STOPPED without locking. */
+        if (!prime_done) {
+            char reply[96];
+            bool primed = false;
+            if (boost_obd_elm_request("0100", reply, sizeof(reply), 10000)) {
+                record_reply("0100", reply);
+                uint8_t bytes[64];
+                const size_t n = hex_to_bytes(reply, bytes, sizeof(bytes));
+                const uint8_t *data;
+                size_t data_len = 0;
+                primed = !reply_is_error(reply) &&
+                         find_mode_bytes(bytes, n, 0x41, 0x00, &data, &data_len);
+            }
+            prime_tries++;
+            if (primed) {
+                ESP_LOGI(TAG, "protocol primed: %s", s_last_reply);
+                prime_done = true;
+            } else if (prime_tries >= 3) {
+                ESP_LOGW(TAG, "prime gave up after %u tries; continuing", prime_tries);
+                prime_done = true;
+            } else {
+                ESP_LOGW(TAG, "prime attempt %u: '%s'", prime_tries, s_last_reply);
+                vTaskDelay(pdMS_TO_TICKS(500));
+            }
             continue;
         }
 

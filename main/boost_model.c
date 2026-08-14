@@ -435,6 +435,8 @@ void boost_model_publish_obd(const boost_obd_state_t *obd)
     s_state.obd_battery_v = obd->battery_v;
     strlcpy(s_state.obd_peer, obd->peer, sizeof(s_state.obd_peer));
     strlcpy(s_state.obd_peer_addr, obd->peer_addr, sizeof(s_state.obd_peer_addr));
+    strlcpy(s_state.obd_last_reply, obd->last_reply, sizeof(s_state.obd_last_reply));
+    strlcpy(s_state.obd_protocol, obd->protocol, sizeof(s_state.obd_protocol));
     xSemaphoreGive(s_lock);
 }
 

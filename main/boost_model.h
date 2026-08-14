@@ -85,6 +85,8 @@ typedef struct {
     float obd_maf_gps;
     float obd_fuel_pct;
     float obd_battery_v;
+    char obd_last_reply[48];
+    char obd_protocol[24];
 } boost_state_t;
 
 typedef struct {

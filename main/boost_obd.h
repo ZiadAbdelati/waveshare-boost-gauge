@@ -35,6 +35,8 @@ typedef struct {
     float maf_gps;
     float fuel_pct;
     float battery_v;
+    char last_reply[48];          /* raw ELM reply of the last query, e.g. "010C='NO DATA'" */
+    char protocol[24];            /* ELM ATDP result after init, e.g. "ISO 15765-4 (CAN 11/500)" */
 } boost_obd_state_t;
 
 /* Create the poll task (idle until enabled). Call once from app_main after the
