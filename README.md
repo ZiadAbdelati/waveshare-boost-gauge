@@ -439,6 +439,14 @@ checkpoint and advances it only by the monotonic delta when applicable. This
 path performs no RTC or NTP resynchronization, so merely opening the dashboard
 does not sync the device; use **Sync Time** explicitly.
 
+A full power cycle freezes the restored clock at the last sync (the monotonic
+checkpoint does not survive power-off), so the dim schedule treats a restored
+but unadvanced clock as **unknown time** and defaults to bright. The schedule
+engages on the next dashboard Sync (the cockpit refresh auto-syncs) or a manual
+Sync Time; a soft reset that preserves the monotonic timer keeps the schedule
+live across reboot. This prevents a board synced last night from booting dim the
+next afternoon.
+
 CSV `timestamp_local` is formatted as `%Y-%m-%dT%H:%M:%S` with no timezone
 suffix. `utc_offset_minutes` remains a separate CSV field. The CSV export now
 returns up to **18,000 rows** (1 hour at 5 Hz); hardware verification must show

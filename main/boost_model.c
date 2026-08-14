@@ -64,6 +64,12 @@ typedef struct {
  * by the once-a-minute heartbeat the old minute guard produced. */
 static int s_last_schedule_low = -1;
 static int s_pending_brightness = -1;
+/* True only when the wall clock reflects real time: set by a browser Sync
+ * (boost_model_set_time) or by a boot restore whose monotonic delta survived
+ * (soft reset). A full power cycle freezes the clock at the last sync, so the
+ * dim schedule must NOT trust it - a board synced last night would otherwise
+ * boot dim the next afternoon. */
+static bool s_clock_trusted = false;
 static int clamp_percent(int v)
 {
     if (v < 0) {
@@ -303,6 +309,9 @@ static void load_config(void)
             const int64_t now_mono_ms = esp_timer_get_time() / 1000LL;
             if (now_mono_ms >= saved_mono_ms) {
                 epoch_ms += now_mono_ms - saved_mono_ms;
+                /* The monotonic timer survived (soft reset), so the elapsed
+                 * time since the sync is known and the clock is still valid. */
+                s_clock_trusted = true;
             }
         }
         struct timeval tv = {
@@ -634,6 +643,7 @@ esp_err_t boost_model_set_time(int64_t epoch_ms, int timezone_offset_minutes)
     if (settimeofday(&tv, NULL) != 0) {
         return ESP_FAIL;
     }
+    s_clock_trusted = true;
 
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_config.timezone_offset_minutes = clamp_tz_offset(timezone_offset_minutes);
@@ -663,6 +673,13 @@ bool boost_model_schedule_wants_low(void)
     boost_config_t cfg;
     boost_model_get_config(&cfg);
     if (!cfg.dim_schedule.enabled) {
+        return false;
+    }
+    /* A wall clock that only exists as a frozen NVS restore cannot tell us
+     * whether it is night or day (no RTC/NTP; a power cycle loses the elapsed
+     * time). Treat it as "unknown" and default to day/bright - the schedule
+     * engages once a dashboard Sync supplies the real time. */
+    if (!s_clock_trusted) {
         return false;
     }
     const int64_t now_ms = epoch_ms_now();
