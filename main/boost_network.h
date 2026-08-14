@@ -37,6 +37,10 @@ typedef struct {
 
 #define BOOST_WIFI_SCAN_MAX_RECORDS 16
 
+/* SoftAP password. Single source of truth - the QR overlay encodes this same
+ * literal so the on-screen code always matches the real AP credential. */
+#define BOOST_AP_PASSWORD "boost1234"
+
 typedef struct {
     char ssid[33];
     int rssi;

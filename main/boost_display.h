@@ -75,7 +75,7 @@ typedef struct {
     uint32_t te_scanline_waits;
 } boost_display_metrics_t;
 
-lv_display_t *boost_display_start(void);
+lv_display_t *boost_display_start(int initial_brightness);
 
 /**
  * Set panel brightness, 0-100.
@@ -137,6 +137,10 @@ static inline void boost_display_gauge_update_end(void) {}
 
 /** Snapshot the raw CST9217 IRQ/read/contact timing captured by the adapter callbacks. */
 void boost_display_get_touch_timing(boost_touch_timing_t *out);
+
+/** Number of touch points reported by the last CST9217 read (0 = released,
+ * up to 2). Drives the two-finger-hold gesture (>= 2 = both fingers down). */
+uint32_t boost_display_touch_point_count(void);
 
 #ifdef __cplusplus
 }

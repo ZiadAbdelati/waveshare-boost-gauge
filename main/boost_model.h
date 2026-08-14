@@ -113,6 +113,10 @@ const boost_theme_t *boost_model_active_theme(void);
 esp_err_t boost_model_set_time(int64_t epoch_ms, int timezone_offset_minutes);
 void boost_model_apply_schedule(void);
 bool boost_model_schedule_wants_low(void);
+/** Brightness the panel should boot at (dim-schedule night level if the
+ * schedule is enabled and the wall clock is valid, else the daytime level).
+ * No SPI/display access - safe to call before boost_display_start(). */
+int boost_model_boot_brightness(void);
 
 size_t boost_model_copy_logs(boost_log_sample_t *out, size_t max_count);
 void boost_model_clear_logs(void);

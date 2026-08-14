@@ -11,6 +11,8 @@ The live MAP path reads a GM 3-bar sensor through an ADS1115, with an optional B
 - Big signed PSI, zone label (`VAC` / `ATMO` / `BOOST` / `OVER`)
 - Peak hold; **short tap** resets peak
 - **Hold ~1s** toggles the configured max/min brightness levels.
+- **Two-finger hold ~4s** shows a QR code to join the SoftAP
+  (`BoostGauge-XXXX` / `boost1234`); any fresh tap dismisses it.
 - Vault-Tec supports persisted needle color and counterweight-tail options; red
   changes only the needle body, and the green hub remains unchanged.
 - A deliberate vertical swipe cycles themes in dashboard order. Swipe up
@@ -666,7 +668,11 @@ page 1 is the TPMS view. On the boost page, swipe **LEFT** to TPMS; on TPMS,
 swipe **RIGHT** to return to boost. There is no wrap-around: outward swipes at
 either end are ignored. Vertical theme swipes work only on page 0, and a tap
 resets peak only on page 0. A one-second hold toggles brightness on either
-page. Pointer-device events own the hold deadline independently of target jitter,
+page. A two-finger tap-and-hold (both fingers down) for four seconds shows a
+full-screen QR code that joins the SoftAP (`BoostGauge-XXXX` / `boost1234`);
+the 1 s hold-to-dim is suppressed while both fingers are down, and the QR is
+dismissed by any fresh tap. Pointer-device events own
+the hold deadline independently of target jitter,
 and the brightness state is committed only after the panel command succeeds. The
 page coordinator forwards MAP samples only to the boost scene
 and TPMS snapshots only to the active TPMS scene.

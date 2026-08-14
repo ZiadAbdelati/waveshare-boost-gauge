@@ -113,6 +113,8 @@ CONFIG_LV_USE_FONT_COMPRESSED=y
 CONFIG_LV_TXT_BREAK_CHARS=" ,.;:-_"
 # GIF playback reads a variable image descriptor mapped from the raw media partition.
 CONFIG_LV_USE_GIF=y
+# QR overlay for the two-finger "join AP" gesture (lv_qrcode widget).
+CONFIG_LV_USE_QRCODE=y
 
 # Web control plane
 CONFIG_ESP_WIFI_SOFTAP_SUPPORT=y

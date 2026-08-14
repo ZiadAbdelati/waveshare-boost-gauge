@@ -103,7 +103,11 @@ void app_main(void)
     boost_config_t cfg;
     boost_model_get_config(&cfg);
 
-    lv_display_t *disp = boost_display_start();
+    const int boot_pct = boost_model_boot_brightness();
+    /* Boot the panel fully dark (0%) and ramp to the schedule brightness only
+     * after the first gauge frame is on screen, so the uninitialized white GRAM
+     * never flashes - not even at the dim night level. */
+    lv_display_t *disp = boost_display_start(0);
     if (disp == NULL) {
         ESP_LOGE(TAG, "boost_display_start failed");
         return;
@@ -117,9 +121,9 @@ void app_main(void)
 
     /* Start from persisted config. Long-press toggles between the configured
      * high/low pair - the same brightnessLow the dim schedule uses - rather
-     * than the compile-time fallbacks. */
+     * than the compile-time fallbacks. Brightness stays 0% until the first
+     * frame renders below, then ramps to boot_pct. */
     boost_brightness_set_levels(cfg.brightness_high, cfg.brightness_low);
-    boost_brightness_init(cfg.brightness_high);
 
     boost_sim_init();
 
@@ -157,6 +161,11 @@ void app_main(void)
         ESP_LOGE(TAG, "display lock failed during UI create");
         return;
     }
+    /* The first frame is on screen now (dark gauge over a dark panel): ramp to
+     * the schedule brightness. The short delay lets the LVGL worker finish the
+     * first render so the white boot GRAM is never shown at any brightness. */
+    vTaskDelay(pdMS_TO_TICKS(100));
+    boost_brightness_init(boot_pct);
     const BaseType_t sample_task_ok = xTaskCreatePinnedToCore(
         sample_task, "boost_sample", 4096, NULL, 4, NULL, 0);
     if (sample_task_ok != pdPASS) {

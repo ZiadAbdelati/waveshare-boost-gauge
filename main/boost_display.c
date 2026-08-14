@@ -158,6 +158,7 @@ static esp_lcd_touch_handle_t s_touch;
  * contact transitions. Word-sized fields keep the diagnostic snapshot simple. */
 static volatile uint32_t s_touch_irq_sequence;
 static volatile int64_t s_touch_irq_us;
+static volatile uint32_t s_touch_point_count;
 static boost_touch_timing_t s_touch_timing;
 static boost_display_metrics_t s_metrics;
 static bool s_gauge_update_active;
@@ -1297,7 +1298,12 @@ static void display_metrics_event_cb(lv_event_t *e)
 
 /* Vendored from the Waveshare BSP's bsp_display_new(). Identical apart from
  * pclk_hz and the queue depth; kept here so the clock is owned by this repo. */
-static const co5300_lcd_init_cmd_t k_lcd_init_cmds[] = {
+/* Brightness byte for the 0x51 init command, patched by panel_new() so the
+ * panel powers on at the boot brightness rather than a hard-coded 100% (the
+ * source of the pre-schedule bright flash on a fresh boot). */
+static uint8_t s_init_brightness_byte = 0xFF;
+
+static co5300_lcd_init_cmd_t k_lcd_init_cmds[] = {
     {0xFE, (uint8_t[]){0x20}, 1, 0},
     {0x19, (uint8_t[]){0x10}, 1, 0},
     {0x1C, (uint8_t[]){0xA0}, 1, 0},
@@ -1314,16 +1320,20 @@ static const co5300_lcd_init_cmd_t k_lcd_init_cmds[] = {
                        (uint8_t)(BOOST_LCD_TE_SCANLINE & 0xFF)}, 2, 0},
 #endif
     {0x53, (uint8_t[]){0x20}, 1, 0},
-    {0x51, (uint8_t[]){0xFF}, 1, 0},
+    {0x51, &s_init_brightness_byte, 1, 0},
     {0x63, (uint8_t[]){0xFF}, 1, 0},
     {0x2A, (uint8_t[]){0x00, 0x06, 0x01, 0xD7}, 4, 0},
-    {0x2B, (uint8_t[]){0x00, 0x00, 0x01, 0xD1}, 4, 600},
-    {0x11, NULL, 0, 600},
+    {0x2B, (uint8_t[]){0x00, 0x00, 0x01, 0xD1}, 4, 0},
+    {0x11, NULL, 0, 120},
     {0x29, NULL, 0, 0},
 };
 
-static esp_err_t panel_new(void)
+static esp_err_t panel_new(int initial_brightness)
 {
+    if (initial_brightness < 0) initial_brightness = 0;
+    if (initial_brightness > 100) initial_brightness = 100;
+    s_init_brightness_byte = (uint8_t)(initial_brightness * 255 / 100);
+
     const spi_bus_config_t buscfg = CO5300_PANEL_BUS_QSPI_CONFIG(
         BSP_LCD_PCLK, BSP_LCD_DATA0, BSP_LCD_DATA1, BSP_LCD_DATA2, BSP_LCD_DATA3,
         (int)BOOST_LVGL_STRIP_BYTES);
@@ -1455,9 +1465,9 @@ static esp_lv_adapter_rotation_t rotation_setting(void)
     }
 }
 
-static lv_display_t *register_display(void)
+static lv_display_t *register_display(int initial_brightness)
 {
-    ESP_RETURN_ON_FALSE(panel_new() == ESP_OK, NULL, TAG, "panel_new failed");
+    ESP_RETURN_ON_FALSE(panel_new(initial_brightness) == ESP_OK, NULL, TAG, "panel_new failed");
 
     esp_lv_adapter_display_config_t adapter_disp = {
         .panel = s_panel,
@@ -1510,6 +1520,79 @@ static lv_display_t *register_display(void)
     ESP_LOGI(TAG, "TE sync disabled at compile time (BOOST_LCD_USE_TE=0)");
 #endif
     return disp;
+}
+
+/*
+ * CST9217 two-point read, vendored from the Waveshare demo's TouchDrvCST92xx
+ * (SensorLib). The stock esp_lcd_touch_cst9217 driver caps touch to one point
+ * (CST9217_MAX_TOUCH_POINTS 1) and does not write the read ACK; the chip
+ * actually reports two simultaneous points (CST92XX_MAX_FINGER_NUM 2). This
+ * overrides the driver's read_data/get_xy after bsp_touch_new() to perform the
+ * full two-point protocol: read 2*5+5 = 15 bytes from 0xD000, then write back
+ * the ACK {0xD0, 0x00, 0xAB}. The framework still applies mirror_x/mirror_y in
+ * esp_lcd_touch_get_data(). Point N layout: offset N*5 + (N?2:0); byte 0 =
+ * finger_id (high nibble) | status (low nibble, 0x06 = pressed); [5] = count.
+ */
+#define BOOST_TOUCH_MAX_POINTS 2
+#define BOOST_TOUCH_DATA_REG 0xD000
+#define BOOST_TOUCH_DATA_ACK 0xAB
+#define BOOST_TOUCH_DATA_LEN (BOOST_TOUCH_MAX_POINTS * 5 + 5)
+
+static esp_err_t boost_touch_read_data(esp_lcd_touch_handle_t tp)
+{
+    uint8_t data[BOOST_TOUCH_DATA_LEN] = {0};
+    const uint8_t reg_lo = (uint8_t)(BOOST_TOUCH_DATA_REG & 0xFF);
+    esp_err_t err = esp_lcd_panel_io_tx_param(tp->io, BOOST_TOUCH_DATA_REG >> 8, &reg_lo, 1);
+    if (err == ESP_OK) {
+        vTaskDelay(pdMS_TO_TICKS(2));
+        err = esp_lcd_panel_io_rx_param(tp->io, -1, data, sizeof(data));
+    }
+    if (err == ESP_OK) {
+        const uint8_t ack[2] = {reg_lo, BOOST_TOUCH_DATA_ACK};
+        err = esp_lcd_panel_io_tx_param(tp->io, BOOST_TOUCH_DATA_REG >> 8, ack, sizeof(ack));
+    }
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (data[6] != BOOST_TOUCH_DATA_ACK) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    uint8_t points = data[5] & 0x7F;
+    if (points > BOOST_TOUCH_MAX_POINTS) {
+        points = BOOST_TOUCH_MAX_POINTS;
+    }
+
+    portENTER_CRITICAL(&tp->data.lock);
+    tp->data.points = 0;
+    for (int i = 0; i < points; ++i) {
+        uint8_t *p = &data[i * 5 + (i ? 2 : 0)];
+        if ((p[0] & 0x0F) == 0x06) {
+            tp->data.coords[i].x = (uint16_t)((p[1] << 4) | (p[3] >> 4));
+            tp->data.coords[i].y = (uint16_t)((p[2] << 4) | (p[3] & 0x0F));
+            ++tp->data.points;
+        }
+    }
+    portEXIT_CRITICAL(&tp->data.lock);
+
+    s_touch_point_count = tp->data.points;
+    return ESP_OK;
+}
+
+static bool boost_touch_get_xy(esp_lcd_touch_handle_t tp, uint16_t *x, uint16_t *y,
+                               uint16_t *strength, uint8_t *point_num, uint8_t max_point_num)
+{
+    portENTER_CRITICAL(&tp->data.lock);
+    *point_num = (tp->data.points > max_point_num) ? max_point_num : tp->data.points;
+    for (size_t i = 0; i < *point_num; ++i) {
+        x[i] = tp->data.coords[i].x;
+        y[i] = tp->data.coords[i].y;
+        if (strength != NULL) {
+            strength[i] = 1;
+        }
+    }
+    portEXIT_CRITICAL(&tp->data.lock);
+    return (*point_num > 0);
 }
 
 static void IRAM_ATTR touch_irq_cb(esp_lcd_touch_handle_t tp, void *user_ctx)
@@ -1570,6 +1653,12 @@ static lv_indev_t *register_touch(lv_display_t *disp)
         ESP_LOGE(TAG, "bsp_touch_new failed");
         return NULL;
     }
+    /* Swap in the two-point read so the two-finger gesture can see the raw
+     * point count. read_data/get_xy are the driver's only contract with the
+     * esp_lcd_touch framework, so this is a complete replacement, not an edit
+     * to the vendored component. */
+    s_touch->read_data = boost_touch_read_data;
+    s_touch->get_xy = boost_touch_get_xy;
 
     esp_lv_adapter_touch_config_t touch_indev =
         ESP_LV_ADAPTER_TOUCH_DEFAULT_CONFIG(disp, s_touch);
@@ -1584,7 +1673,7 @@ static lv_indev_t *register_touch(lv_display_t *disp)
     return indev;
 }
 
-lv_display_t *boost_display_start(void)
+lv_display_t *boost_display_start(int initial_brightness)
 {
     if (s_disp != NULL) {
         return s_disp;
@@ -1600,7 +1689,7 @@ lv_display_t *boost_display_start(void)
         esp_lv_adapter_init(&adapter_cfg) == ESP_OK,
         NULL, TAG, "esp_lv_adapter_init failed");
 
-    s_disp = register_display();
+    s_disp = register_display(initial_brightness);
     if (s_disp == NULL) {
         return NULL;
     }
@@ -1609,10 +1698,6 @@ lv_display_t *boost_display_start(void)
     if (s_indev == NULL) {
         ESP_LOGW(TAG, "touch init failed; continuing without input");
     }
-
-    ESP_RETURN_ON_FALSE(
-        boost_display_set_brightness(100) == ESP_OK,
-        NULL, TAG, "brightness init failed");
 
     ESP_RETURN_ON_FALSE(
         esp_lv_adapter_start() == ESP_OK,
@@ -1662,4 +1747,9 @@ void boost_display_get_touch_timing(boost_touch_timing_t *out)
         out->irq_sequence = s_touch_irq_sequence;
         out->irq_us = s_touch_irq_us;
     }
+}
+
+uint32_t boost_display_touch_point_count(void)
+{
+    return s_touch_point_count;
 }

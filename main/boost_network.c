@@ -121,7 +121,7 @@ static esp_err_t apply_ap_config(void)
 {
     wifi_config_t ap = {0};
     strlcpy((char *)ap.ap.ssid, s_ap_ssid, sizeof(ap.ap.ssid));
-    strlcpy((char *)ap.ap.password, "boost1234", sizeof(ap.ap.password));
+    strlcpy((char *)ap.ap.password, BOOST_AP_PASSWORD, sizeof(ap.ap.password));
     ap.ap.ssid_len = strlen(s_ap_ssid);
     ap.ap.channel = 6;
     ap.ap.max_connection = 4;

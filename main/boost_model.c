@@ -715,6 +715,16 @@ void boost_model_apply_schedule(void)
     }
 }
 
+int boost_model_boot_brightness(void)
+{
+    boost_config_t cfg = {0};
+    boost_model_get_config(&cfg);
+    if (cfg.dim_schedule.enabled && boost_model_schedule_wants_low()) {
+        return cfg.brightness_low;
+    }
+    return cfg.brightness_high;
+}
+
 size_t boost_model_copy_logs(boost_log_sample_t *out, size_t max_count)
 {
     if (out == NULL || max_count == 0 || s_lock == NULL) {

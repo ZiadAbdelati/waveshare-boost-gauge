@@ -1,5 +1,6 @@
 #include "boost_page.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -10,10 +11,10 @@
 #ifdef ESP_PLATFORM
 #include "boost_display.h"
 #include "boost_model.h"
+#include "boost_network.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #else
-#include <stdio.h>
 #define ESP_LOGI(tag, fmt, ...) printf("[I][%s] " fmt "\n", tag, ##__VA_ARGS__)
 #define ESP_LOGW(tag, fmt, ...) printf("[W][%s] " fmt "\n", tag, ##__VA_ARGS__)
 #endif
@@ -24,6 +25,10 @@
 /* Calibrated from repeated on-glass tests rather than inferred from the panel
  * command timestamp. Keep this explicit so the physical feel stays intentional. */
 #define HOLD_DIM_MS 1000
+/* Two fingers held this long shows the AP-join QR, distinct from the 1 s
+ * hold-to-dim (suppressed while both fingers are down). */
+#define QR_HOLD_MS 4000
+#define QR_POLL_MS 100
 
 static const char *TAG = "boost_page";
 static lv_obj_t *s_page_root[2];
@@ -39,6 +44,10 @@ static bool s_hold_fired;
 static int64_t s_lvgl_press_us;
 #endif
 static bool s_tpms_built;
+static lv_obj_t *s_qr_overlay;
+static bool s_qr_active;
+static uint32_t s_qr_hold_start_ms;
+static bool s_two_finger_seen;
 
 static bool media_active(void);
 
@@ -65,6 +74,90 @@ static void show_page(boost_page_id_t page)
      * for the partial-refresh adapter so no pixels from the hidden page survive
      * until one of the destination page's narrow live regions changes. */
     if (s_screen != NULL) lv_obj_invalidate(s_screen);
+}
+
+static void hide_qr(void)
+{
+    if (s_qr_overlay != NULL) {
+        lv_obj_delete(s_qr_overlay);
+        s_qr_overlay = NULL;
+    }
+    s_qr_active = false;
+}
+
+static void qr_click_cb(lv_event_t *event)
+{
+    (void)event;
+    hide_qr();
+}
+
+/* Full-screen QR overlay for joining the SoftAP. Dismissed by any fresh tap
+ * (the overlay is CLICKABLE and covers the whole screen, so the release that
+ * ended the two-finger hold does not count - its press target predates the
+ * overlay). The opaque black cover hides the gauge underneath; boost_page_update
+ * is gated on s_qr_active so the 16 ms path stops invalidating under it. */
+static void show_qr(void)
+{
+    if (s_qr_active) return;
+#ifdef ESP_PLATFORM
+    boost_net_status_t net;
+    boost_network_get_status(&net);
+
+    s_qr_overlay = lv_obj_create(s_screen);
+    lv_obj_remove_style_all(s_qr_overlay);
+    lv_obj_set_size(s_qr_overlay, PAGE_SIZE, PAGE_SIZE);
+    lv_obj_set_pos(s_qr_overlay, 0, 0);
+    lv_obj_set_style_bg_color(s_qr_overlay, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(s_qr_overlay, LV_OPA_COVER, 0);
+    lv_obj_add_flag(s_qr_overlay, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(s_qr_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(s_qr_overlay, qr_click_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *qr = lv_qrcode_create(s_qr_overlay);
+    lv_qrcode_set_size(qr, 320);
+    lv_qrcode_set_dark_color(qr, lv_color_black());
+    lv_qrcode_set_light_color(qr, lv_color_white());
+    char payload[64];
+    snprintf(payload, sizeof(payload), "WIFI:T:WPA;S:%s;P:%s;;", net.ap_ssid, BOOST_AP_PASSWORD);
+    lv_qrcode_update(qr, payload, (uint32_t)strlen(payload));
+    lv_obj_center(qr);
+
+    lv_obj_t *label = lv_label_create(s_qr_overlay);
+    lv_label_set_text(label, net.ap_ssid);
+    lv_obj_set_style_text_color(label, lv_color_white(), 0);
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_20, 0);
+    lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, -36);
+
+    s_qr_active = true;
+    ESP_LOGI(TAG, "QR shown for AP %s", net.ap_ssid);
+#else
+    s_qr_active = true;
+#endif
+}
+
+static void qr_hold_timer_cb(lv_timer_t *timer)
+{
+    LV_UNUSED(timer);
+    if (s_qr_active) return;
+
+    bool holding = false;
+#ifdef ESP_PLATFORM
+    if (boost_display_touch_point_count() >= 2) {
+        holding = true;
+        s_two_finger_seen = true;
+    }
+#endif
+
+    if (holding) {
+        if (s_qr_hold_start_ms == 0) {
+            s_qr_hold_start_ms = lv_tick_get();
+        } else if (lv_tick_elaps(s_qr_hold_start_ms) >= QR_HOLD_MS) {
+            s_qr_hold_start_ms = 0;
+            show_qr();
+        }
+    } else {
+        s_qr_hold_start_ms = 0;
+    }
 }
 
 static void apply_theme_delta(int direction)
@@ -107,7 +200,7 @@ static void finish_press(bool released)
 {
     const int32_t ax = abs_i32(s_max_dx);
     const int32_t ay = abs_i32(s_max_dy);
-    const bool act = released && !s_hold_fired && !media_active();
+    const bool act = released && !s_hold_fired && !media_active() && !s_two_finger_seen;
 
     if (act && ax < TAP_SLOP_PX && ay < TAP_SLOP_PX) {
         if (s_active == BOOST_PAGE_BOOST) boost_gauge_reset_peak();
@@ -136,6 +229,7 @@ static void finish_press(bool released)
 static void boost_page_indev_event(lv_event_t *event)
 {
     if (event == NULL) return;
+    if (s_qr_active) return;
     lv_indev_t *indev = (lv_indev_t *)lv_event_get_target(event);
     const lv_event_code_t code = lv_event_get_code(event);
 
@@ -148,6 +242,7 @@ static void boost_page_indev_event(lv_event_t *event)
         s_max_dx = s_max_dy = 0;
         s_press_active = true;
         s_hold_fired = false;
+        s_two_finger_seen = false;
 #ifdef ESP_PLATFORM
         s_lvgl_press_us = esp_timer_get_time();
         boost_touch_timing_t touch;
@@ -162,6 +257,11 @@ static void boost_page_indev_event(lv_event_t *event)
 #endif
     } else if (code == LV_EVENT_LONG_PRESSED && s_press_active &&
                indev == s_press_indev && !s_hold_fired) {
+        /* A second finger turns the hold into the two-finger QR gesture, not a
+         * dim toggle - suppress the 1 s hold so the QR hold never dims first. */
+#ifdef ESP_PLATFORM
+        if (boost_display_touch_point_count() >= 2) return;
+#endif
         update_press_motion(indev);
         s_hold_fired = true;
         boost_brightness_toggle_max_min_locked();
@@ -198,6 +298,10 @@ void boost_page_create(void)
     s_press_active = false;
     s_hold_fired = false;
     s_press_indev = NULL;
+    s_qr_overlay = NULL;
+    s_qr_active = false;
+    s_two_finger_seen = false;
+    s_qr_hold_start_ms = 0;
     s_screen = lv_screen_active();
     lv_obj_remove_style_all(s_screen);
     lv_obj_set_size(s_screen, PAGE_SIZE, PAGE_SIZE);
@@ -233,16 +337,19 @@ void boost_page_create(void)
      * otherwise be traversed every LVGL tick even while hidden, adding
      * measurable overhead to the 16 ms gauge path. */
     s_tpms_built = false;
+    lv_timer_create(qr_hold_timer_cb, QR_POLL_MS, NULL);
     show_page(BOOST_PAGE_BOOST);
 }
 
 void boost_page_update(const boost_sample_t *sample)
 {
+    if (s_qr_active) return;
     if (s_active == BOOST_PAGE_BOOST) boost_gauge_update(sample);
 }
 
 void boost_page_update_tpms(const boost_tpms_snapshot_t *snapshot)
 {
+    if (s_qr_active) return;
     if (s_active == BOOST_PAGE_TPMS) boost_tpms_ui_update(snapshot);
 }
 
