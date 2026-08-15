@@ -629,8 +629,20 @@ poll loop: the standard init sequence (`ATZ`, `ATE0`, `ATL0`, `ATS0`, `ATH0`,
 the conversion path above), and generic mode-01 PIDs plus `ATRV` battery voltage
 for the web cockpit. ESP32-S3 is BLE-only, not Classic/SPP, so the adapter must
 expose a BLE GATT service — the vLinker FD+ does; the FS family (Classic BT) does
-not. The firmware is intentionally adapter-agnostic: it discovers at runtime and
-requires a verified profile before trusting vehicle responses.
+ not. The firmware is intentionally adapter-agnostic: it discovers at runtime and
+ requires a verified profile before trusting vehicle responses.
+
+ The header switching (`ATSH 720` for TPMS DIDs, `ATSH 7DF` for mode-01 PIDs) is
+ **CAN-only**: `720`/`7DF` are ISO 15765 CAN identifiers, and issuing them as
+ `ATSH` on a K-line bus (ISO 9141-2 / ISO 14230) corrupts the ELM header so the
+ ECU never answers. The poll loop re-queries `ATDP` after the `0100` prime locks
+ the protocol (the init-time read reports `AUTO` because `ATSP0` has not locked
+ anything yet), and then only switches headers when the locked protocol is
+ `ISO 15765` (CAN). On a legacy K-line/J1850 bus it keeps the auto-detected
+ default header for the mode-01 PIDs (so a pre-CAN car like the 2003 Toyota
+ Camry reads rpm/speed/coolant correctly) and skips the Mazda TPMS DID phase
+ entirely (no Mazda TPMS module on such a bus). The Mazda MX-5 ND is CAN, so its
+ TPMS path is unchanged.
 
 The link is controlled by the persisted `tpmsBle` setting (default **off**, so a
 fresh boot never touches the radio). Flipping it in Settings or via

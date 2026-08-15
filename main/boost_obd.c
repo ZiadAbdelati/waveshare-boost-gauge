@@ -261,6 +261,8 @@ static void poll_task(void *arg)
     unsigned prime_tries = 0;
     bool header_is_tpms = false;   /* true when the ELM header is set to 0x720 */
     unsigned phase = 0;            /* 0 = TPMS DID, 1 = mode-01 PID */
+    bool proto_is_can = false;     /* locked protocol is ISO 15765 (CAN) */
+    bool proto_checked = false;    /* ATDP re-queried after the prime locked a protocol */
 
     for (;;) {
         if (!s_enabled) {
@@ -273,6 +275,8 @@ static void poll_task(void *arg)
             prime_tries = 0;
             init_idx = 0;         /* re-run the ELM init on the next link */
             header_is_tpms = false;
+            proto_is_can = false;
+            proto_checked = false;
             pending_mask = 0;
             boost_obd_elm_reset();
             publish_state();
@@ -319,10 +323,11 @@ static void poll_task(void *arg)
         }
 
         /* Prime the protocol auto-detect with a standard mode-01 request
-         * (0x00 = "PIDs supported") on the default 7DF header. The auto-detect
-         * search takes several seconds (it probes every protocol, including the
-         * slow K-line 5-baud init), so the timeout is long - a short timeout
-         * interrupts the search and the ELM answers STOPPED without locking. */
+         * (0x00 = "PIDs supported") on the ELM's auto-detected default header.
+         * The auto-detect search takes several seconds (it probes every
+         * protocol, including the slow K-line 5-baud init), so the timeout is
+         * long - a short timeout interrupts the search and the ELM answers
+         * STOPPED without locking. */
         if (!prime_done) {
             char reply[96];
             bool primed = false;
@@ -349,8 +354,27 @@ static void poll_task(void *arg)
             continue;
         }
 
+        /* The init-time ATDP reports "AUTO" because ATSP0 has not locked a
+         * protocol until a request has been answered. Re-query it after the
+         * prime so we know whether the locked bus is CAN (ISO 15765) or a
+         * legacy K-line/J1850 bus. The header switching below is only valid
+         * on CAN: "7DF"/"720" are ISO 15765 CAN identifiers, and sending them
+         * as ATSH on ISO 9141-2 (the Camry) corrupts the K-line header so the
+         * ECU never answers. */
+        if (!proto_checked) {
+            char reply[96];
+            if (boost_obd_elm_request("ATDP", reply, sizeof(reply), 500)) {
+                strlcpy(s_protocol, reply, sizeof(s_protocol));
+                proto_is_can = strstr(reply, "CAN") != NULL;
+                ESP_LOGI(TAG, "ELM protocol locked: %s (CAN=%d)",
+                         reply, proto_is_can ? 1 : 0);
+            }
+            proto_checked = true;
+            continue;
+        }
+
         char reply[96];
-        const bool want_tpms_header = (phase == 0);
+        const bool want_tpms_header = (phase == 0) && proto_is_can;
         if (want_tpms_header != header_is_tpms) {
             /* Explicitly set the header for each phase. A bare "ATSH" reset is
              * not reliable on the FD+ - it leaves the header at the previous
@@ -366,7 +390,11 @@ static void poll_task(void *arg)
         }
 
         bool ok;
-        if (phase == 0) {
+        if (phase == 0 && !proto_is_can) {
+            /* No Mazda TPMS module on a K-line/legacy bus; skip the DID phase
+             * entirely instead of burning 2 s per DID on a guaranteed NO DATA. */
+            ok = false;
+        } else if (phase == 0) {
             ok = query_tpms_did(dids[tpms_idx], &pending_raw[tpms_idx], 2000);
         } else {
             ok = (pid_idx == OBD_PID_COUNT) ? query_battery(2000)
