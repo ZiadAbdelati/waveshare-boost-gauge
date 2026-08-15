@@ -1436,54 +1436,6 @@ static esp_err_t restart_post(httpd_req_t *req)
     return send_json(req, "{\"ok\":true,\"restartingInMs\":400}");
 }
 
-static esp_err_t events_get(httpd_req_t *req)
-{
-    /* Retained for API compatibility. HTTPD has one request worker, so a
-     * long-lived response would starve the control APIs. The dashboard uses
-     * short-interval polling instead. */
-    boost_state_t st;
-    boost_model_get_state(&st);
-    char event[448];
-    int n = snprintf(event, sizeof(event),
-             "data: {\"psi\":%.2f,\"peakPsi\":%.2f,\"zone\":\"%s\",\"demo\":%s,"
-             "\"brightness\":%d,\"firmwareVersion\":\"%s\",\"uptimeMs\":%llu,\"epochMs\":%lld,"
-             "\"timezoneOffsetMinutes\":%d,\"activeThemeId\":\"%s\"}\n\n",
-             (double)st.psi, (double)st.peak_psi, st.zone, st.demo ? "true" : "false",
-             st.brightness, st.firmware_version ? st.firmware_version : "",
-             (unsigned long long)st.uptime_ms, (long long)st.epoch_ms,
-             st.timezone_offset_minutes, st.active_theme_id);
-    set_common_headers(req, "text/event-stream");
-    httpd_resp_set_hdr(req, "retry", "1000");
-    return (n > 0 && n < (int)sizeof(event))
-        ? httpd_resp_send(req, event, n)
-        : ESP_FAIL;
-}
-
-
-static esp_err_t fallback_root_get(httpd_req_t *req)
-{
-    static const char html[] =
-        "<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'>"
-        "<title>Boost Gauge</title><style>body{margin:0;background:#090A0D;color:#E8ECF2;"
-        "font:16px system-ui,sans-serif}.wrap{display:grid;gap:18px;padding:22px;"
-        "grid-template-columns:minmax(260px,5fr) minmax(240px,3fr)}.g{aspect-ratio:1;"
-        "border:18px solid #20242C;border-radius:50%;display:grid;place-items:center}"
-        ".psi{font-size:74px;font-weight:800}.rail{display:grid;gap:10px}"
-        "button{padding:10px;background:#20242C;color:#E8ECF2;border:1px solid #3A3F4A}"
-        "pre{white-space:pre-wrap;color:#8C95A3}@media(max-width:760px){.wrap{display:block}}</style>"
-        "<div class=wrap><div class=g><div><div id=z>ATMO</div><div class=psi id=p>+0.0</div>"
-        "<div>PSI</div></div></div><div class=rail><h1>Boost Gauge</h1><pre id=s></pre>"
-        "<button onclick='syncTime()'>Sync time</button></div></div><script>"
-        "async function syncTime(){await fetch('/api/v1/time',{method:'POST',headers:{'Content-Type':'application/json'},"
-        "body:JSON.stringify({epochMs:Date.now(),timezoneOffsetMinutes:-new Date().getTimezoneOffset()})})}"
-        "function draw(x){p.textContent=(x.psi>=0?'+':'')+x.psi.toFixed(1);z.textContent=x.zone;"
-        "s.textContent=JSON.stringify(x,null,2)}"
-        "new EventSource('/api/v1/events').onmessage=e=>draw(JSON.parse(e.data));"
-        "fetch('/api/v1/state').then(r=>r.json()).then(draw)</script>";
-    set_common_headers(req, "text/html");
-    return httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
-}
-
 static esp_err_t root_get(httpd_req_t *req)
 {
     const char *uri = req->uri;
@@ -1498,6 +1450,7 @@ static esp_err_t root_get(httpd_req_t *req)
     }
     if (strstr(uri, "..") != NULL) return send_err(req, HTTPD_400, "bad_path");
     const boost_web_asset_t *asset = boost_web_asset_find(uri);
+    if (asset == NULL && strcmp(uri, "/index.html") == 0) asset = boost_web_asset_find("/");
     if (asset != NULL) {
         httpd_resp_set_type(req, asset->content_type);
         httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
@@ -1505,7 +1458,6 @@ static esp_err_t root_get(httpd_req_t *req)
         httpd_resp_set_hdr(req, "Cache-Control", "no-store");
         return httpd_resp_send(req, (const char *)asset->gzip_data, asset->gzip_size);
     }
-    if (strcmp(uri, "/") == 0 || strcmp(uri, "/index.html") == 0) return fallback_root_get(req);
     return send_err(req, HTTPD_404, "not_found");
 }
 
@@ -1755,7 +1707,6 @@ esp_err_t boost_web_start(void)
     register_uri(API_BASE "/network", HTTP_PUT, network_put);
     register_uri(API_BASE "/network/reconnect", HTTP_POST, network_reconnect_post);
     register_uri(API_BASE "/network/scan", HTTP_GET, network_scan_get);
-    register_uri(API_BASE "/events", HTTP_GET, events_get);
 #if LV_USE_SNAPSHOT
     register_uri(API_BASE "/debug/snapshot", HTTP_GET, debug_snapshot_get);
 #endif

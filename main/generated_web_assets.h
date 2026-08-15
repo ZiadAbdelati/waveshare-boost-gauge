@@ -13,6 +13,5 @@ typedef struct {
 } boost_web_asset_t;
 
 const boost_web_asset_t *boost_web_asset_find(const char *path);
-size_t boost_web_asset_count(void);
 
 #endif

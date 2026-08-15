@@ -23,8 +23,3 @@ const boost_web_asset_t *boost_web_asset_find(const char *path)
     }
     return NULL;
 }
-
-size_t boost_web_asset_count(void)
-{
-    return sizeof(s_assets) / sizeof(s_assets[0]);
-}

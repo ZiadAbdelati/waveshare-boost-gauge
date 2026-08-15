@@ -300,7 +300,6 @@ LV_FONT_DECLARE(font_mono_40);
 LV_FONT_DECLARE(font_cond_14);
 LV_FONT_DECLARE(font_cond_18);
 LV_FONT_DECLARE(font_cond_22);
-LV_FONT_DECLARE(font_cond_32);
 LV_FONT_DECLARE(font_cond_96);
 LV_FONT_DECLARE(archivo_black_65);
 LV_FONT_DECLARE(font_wide_22);
@@ -313,7 +312,6 @@ LV_FONT_DECLARE(neon_label);
 #define F_COND14 (&font_cond_14)
 #define F_COND18 (&font_cond_18)
 #define F_COND22 (&font_cond_22)
-#define F_COND32 (&font_cond_32)
 #define F_COND96 (&font_cond_96)
 #define F_WIDE22 (&font_wide_22)
 #define F_WIDE32 (&font_wide_32)

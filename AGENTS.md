@@ -20,7 +20,7 @@ Current verified release is **`v0.7.1`** (ESP-IDF 5.5.1, app image ~1.5 MB in `r
 - `main/boost_web.c`: HTTP/WebSocket API and upload/delete request serialization.
 - `main/boost_model.c/.h`: sensor/model state and publication.
 - `web/`: dashboard source (cockpit + settings views). `main/generated_web_assets.c/.h` are generated outputs only.
-- `tools/embed_web.py`, `web.mk`: web asset regeneration. `tools/mock_server.py` mirrors config/network APIs. `release/`: explicitly produced release artifacts only.
+- `tools/embed_web.py`: web asset regeneration. `tools/mock_server.py` mirrors config/network APIs. `release/`: explicitly produced release artifacts only.
 
 ## Cadence contract
 

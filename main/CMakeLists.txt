@@ -42,7 +42,6 @@ idf_component_register(
         "fonts/font_cond_14.c"
         "fonts/font_cond_18.c"
         "fonts/font_cond_22.c"
-        "fonts/font_cond_32.c"
         "fonts/font_cond_96.c"
         "fonts/archivo_black_65.c"
         "fonts/neon_big.c"

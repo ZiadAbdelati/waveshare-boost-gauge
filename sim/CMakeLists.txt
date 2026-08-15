@@ -41,7 +41,6 @@ add_executable(boost_gauge_sim
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/font_cond_14.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/font_cond_18.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/font_cond_22.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/font_cond_32.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/font_cond_96.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/archivo_black_65.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/font_wide_22.c

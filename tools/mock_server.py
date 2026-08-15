@@ -559,20 +559,6 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"busUp": True, "recoveries": 0, "found": found})
         elif path == "/api/v1/mock/sensors":
             self.send_json(MOCK)
-        elif path == "/api/v1/events":
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Connection", "keep-alive")
-            self.end_headers()
-            try:
-                while True:
-                    payload = json.dumps(state_payload())
-                    self.wfile.write(f"data: {payload}\n\n".encode())
-                    self.wfile.flush()
-                    time.sleep(0.1)
-            except (BrokenPipeError, ConnectionResetError):
-                return
         else:
             self.serve_static(path)
 

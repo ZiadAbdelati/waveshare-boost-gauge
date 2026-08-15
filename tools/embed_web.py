@@ -48,7 +48,7 @@ def main() -> int:
     guard = "BOOST_GENERATED_WEB_ASSETS_H"
     args.out_h.parent.mkdir(parents=True, exist_ok=True)
     args.out_h.write_text(
-        f"""#ifndef {guard}\n#define {guard}\n\n#include <stddef.h>\n#include <stdint.h>\n\ntypedef struct {{\n    const char *path;\n    const char *content_type;\n    const uint8_t *gzip_data;\n    size_t gzip_size;\n    const char *etag;\n}} boost_web_asset_t;\n\nconst boost_web_asset_t *boost_web_asset_find(const char *path);\nsize_t boost_web_asset_count(void);\n\n#endif\n"""
+        f"""#ifndef {guard}\n#define {guard}\n\n#include <stddef.h>\n#include <stdint.h>\n\ntypedef struct {{\n    const char *path;\n    const char *content_type;\n    const uint8_t *gzip_data;\n    size_t gzip_size;\n    const char *etag;\n}} boost_web_asset_t;\n\nconst boost_web_asset_t *boost_web_asset_find(const char *path);\n\n#endif\n"""
     )
 
     lines = ['#include "generated_web_assets.h"', "#include <string.h>", ""]
@@ -70,11 +70,6 @@ def main() -> int:
         "        if (strcmp(path, s_assets[i].path) == 0) return &s_assets[i];",
         "    }",
         "    return NULL;",
-        "}",
-        "",
-        "size_t boost_web_asset_count(void)",
-        "{",
-        "    return sizeof(s_assets) / sizeof(s_assets[0]);",
         "}",
         "",
     ]
