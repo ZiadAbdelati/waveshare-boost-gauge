@@ -6,8 +6,8 @@ The live MAP path reads a GM 3-bar sensor through an ADS1115, with an optional B
 
 ## What you should see
 
-- Full-screen dark cabin gauge (“Pit Lane Night”)
-- Dual-climate arc: **teal** vacuum · **amber** boost · **flare red** overboost (default ≥ **8 psi**, configurable)
+- Full-screen dark cabin gauge
+- Dual-climate arc: **teal** vacuum · **lime** boost · **flare red** overboost (default ≥ **8 psi**, configurable)
 - Big signed PSI, zone label (`VAC` / `ATMO` / `BOOST` / `OVER`)
 - Peak hold; **short tap** resets peak
 - **Hold ~1s** toggles the configured max/min brightness levels.
@@ -16,11 +16,11 @@ The live MAP path reads a GM 3-bar sensor through an ADS1115, with an optional B
 - Vault-Tec supports persisted needle color and counterweight-tail options; red
   changes only the needle body, and the green hub remains unchanged.
 - A deliberate vertical swipe cycles themes in dashboard order. Swipe up
-  advances (`Dyno Cell` -> `Vault-Tec` -> `Night City` -> `Big Digit` ->
+  advances (`Dyno Cell` -> `Vault-Tec` -> `Night City` -> `Big Digit` -> `Neon` ->
   `Dyno Cell`); swipe down moves backward. Taps and the brightness hold retain
   their behavior.
-- The Sport Cluster renderer remains in the source for possible future use but
-  is intentionally absent from the selectable theme order.
+- The Sport Cluster renderer was removed outright in the 2026-08-10 repo audit
+  and is intentionally absent from the selectable theme order.
 - Top chip reads `DEMO` until a live sensor path sets `sample.demo = false`
 - Samples, the unified-color filled arc, center PSI, and peak hold update every 16 ms (~60 Hz). The physical gauge remains on that cadence while network telemetry is intentionally decoupled from the display loop.
 
@@ -28,12 +28,11 @@ This firmware **replaces** the factory app launcher.
 
 Theme swipes use the ordered `boost_theme_at()` table, which is also the order
 emitted by `/api/v1/themes` and consumed by the web picker. The classifier
-tracks maximum movement during the press: only movement within the 48 px tap
-12 px of movement is the tap slop: only smaller jitter resets peak. Movement
-from 12 through 47 px is a rejected drag; a valid predominantly vertical drag
-at 48 px or more changes one theme, and horizontal or ambiguous drags do
-nothing. Returning to the start after a meaningful drag is still a drag, not a
-tap.
+tracks maximum movement during the press, not only the release coordinate:
+only movement within the 12 px tap slop resets peak, movement from 12 through
+47 px is a rejected drag, a valid predominantly vertical drag at 48 px or more
+changes one theme, and horizontal or ambiguous drags do nothing. Returning to
+the start after a meaningful drag is still a drag, not a tap.
 Theme changes persist through the active-theme model path and rebuild the LVGL
 scene in the existing locked LVGL context.
 
@@ -67,6 +66,9 @@ two raw slots. Uploads erase only the required aligned range in the inactive
 slot, stream the payload with CRC, and write the committed header last. Boot
 scans CRC-valid headers and selects the newest generation; playback uses an LVGL
 variable descriptor over the selected slot.
+
+### Critical: AMOLED display path
+
 **Symptom of the bug we fixed:** panel stuck half-white / half-green, serial spam:
 
 ```
@@ -160,26 +162,16 @@ never be implemented as a display divider or render throttle.
 
 ### Theme optimization campaign (2026-08-09)
 
-Four no-visual-change wins are integrated on `main`:
-
-| Theme | Commit | Change | Host audit | Hardware (sweep 30 s) |
-|---|---|---:|---:|---|
-| dyno-cell | `df35958` | Peak-label soft-float formatting cached; `set_value_arc()` early-outs on committed dwell ticks. Wedge geometry untouched. | 0 severe / 0 stale | 56/60 → 56/60 (win is organic-demo dwell; organic 59/60 PASS) |
-| vault-tec | `9402ff2` | Needle invalidation pad follows the tapered wedge (shared `VAULT_NEEDLE_TIP_HALF`); flush −8% | 0 severe / 3 isolated AA seams (documented baseline) | 59/60 → 58/60, worstUs 17689 → 16906 (−4%) |
-| vault-tec | `f0c0c32` | Readout draw skips slots whose box misses the dirty region (clip-test); fewer LVGL draw tasks, byte-identical pixels | 0 severe / 4 isolated AA seams (documented baseline); combined flush 10786 → 9862 (−8.6%) | sweep median 60, worstUs median 17.9 ms, over-budget median 0, teTimeouts 0 (flat vs baseline) |
-| night-city | `ad49e8f` | HUD fill invalidation uses the flat stroke box + 3 px AA margin (was rounded, over-covered every edge); flush −6.8% | 0 severe / 0 stale | min 41 → 43, over-budget 77 → 70 (−9%), median 60 |
-
-The constant-slew campaign established median 60 for dyno, vault, night-city,
-and big-digit; the neon layouts remained below (marquee 56/59, tube 45/56,
-segments 29/45). Those sweep tails remain direct capacity gaps. Raw organic
-`renderFps` floors (big-digit ~21-27, marquee 25-36, segments 36-56) mix idle
-dwell windows, where quantized visible state did not change, with genuine
-demanded-render shortfalls; the organic gate now measures the latter directly.
-Six **visual-vs-performance proposals** are recorded
-in the AGENTS.md ledger (big-digit boundary hysteresis; fewer/wider neon
-segments; fast-motion tenths sample-and-hold on the marquee; slower spin
-cadence; vault peak-mark shrink; vault needle-gate raise) — none implemented,
-all awaiting the user's call.
+Four no-visual-change wins are integrated on `main`: dyno-cell peak-label
+formatting cache + `set_value_arc()` early-out (`df35958`); vault-tec needle
+invalidation pad following the tapered wedge (`9402ff2`) and readout
+clip-rejection (`f0c0c32`); night-city HUD fill invalidation using the flat
+stroke box (`ad49e8f`). All four rendered byte-identical pixels and reduced
+flushed pixels/cycle; the sweep medians moved within run-to-run noise. Six
+**visual-vs-performance proposals** are recorded in the ledger (big-digit
+boundary hysteresis; fewer/wider neon segments; fast-motion tenths
+sample-and-hold on the marquee; slower spin cadence; vault peak-mark shrink;
+vault needle-gate raise) — none implemented, all awaiting the user's call.
 
 ### Neon flip deferral (2026-08-11)
 
@@ -189,18 +181,11 @@ sample (word-first, arc-next-frame): the word/readout/peak flip immediately,
 and the ring repaints in the new zone colour one frame later. One 16 ms frame
 of old-colour ring at each crossing is the accepted visual lag — a single-frame
 transition, not a multi-frame sweep (the banded sweep was rejected by the user
-on 2026-08-10). Host audit (0 stale / 0 severe, deferral-aware exemption) and
-hardware constant-slew sweeps:
-
-| Layout | Baseline (2026-08-09) | With deferral |
-|---|---|---:|
-| tube | 45/56 | **54/58** |
-| segments | 29/45 | **56/60** |
-| marquee spin-off | 56/59 | 55/59 (unaffected as designed) |
-
-All arms `teTimeouts 0`, demand coverage 1.0. A fresh visual tear check on the
-physical panel is still required — the deferral changes ring timing at the
-crossing, and the TE-scanline write-ahead touches the same path.
+on 2026-08-10). Hardware constant-slew sweeps improved segments 29/45 → 56/60
+and tube 45/56 → 54/58; marquee was unaffected as designed. All arms
+`teTimeouts 0`, demand coverage 1.0. A fresh visual tear check on the physical
+panel is still required — the deferral changes ring timing at the crossing, and
+the TE-scanline write-ahead touches the same path.
 
 ### Boost↔overboost crossing is at the hardware floor (2026-08-12)
 
@@ -280,7 +265,7 @@ cadence guard does not apply while media is active.
 
 ## Fast path: flash prebuilt (no ESP-IDF)
 
-A verified **v0.3.2** build (firmware `0.3.0-web`, ESP-IDF **5.5.1**, app size ~1.38 MB) is available in [`release/`](release/) and on the [latest GitHub release](https://github.com/ZiadAbdelati/waveshare-boost-gauge/releases/latest).
+A verified **v0.7.1** build (ESP-IDF **5.5.1**, app size ~1.5 MB) is available in [`release/`](release/) and on the [latest GitHub release](https://github.com/ZiadAbdelati/waveshare-boost-gauge/releases/latest).
 
 ```bash
 git clone https://github.com/ZiadAbdelati/waveshare-boost-gauge.git
@@ -497,17 +482,12 @@ pins are entirely GPIO-matrix routed (PCLK=GPIO38 is not an SPI2 IOMUX pin), but
 that costs nothing here — the IOMUX-vs-matrix frequency penalty is **ESP32-only**
 and does not apply to the S3 at or below 80 MHz.
 
-> **Three earlier revisions of this paragraph were wrong**, each in a way the
-> next one failed to catch. The first two quoted arithmetic as though it were a
-> measurement — once for a 60 MHz clock that was never active (see the ledger row
-> "Documented a setting that was never in effect"), then for 80 MHz. The third
-> over-corrected: it reported a genuinely-taken but unreproducible measurement of
-> 999 µs per strip / 18.7 MB/s / 23.3 ms per frame, and built a "the hardware
-> does not deliver the arithmetic" conclusion on top of it. That figure does not
-> reproduce — the same strip size at the same clock and queue depth measures
-> 575.9 µs, consistently, under both quiet-boot and fully-loaded conditions. The
-> original measurement was never committed as inspectable code, only described in
-> a commit message, so the cause could not be found. **The lesson is not "measure
+> **Three earlier revisions of this paragraph were wrong.** The first two quoted
+> arithmetic as though it were measurement (once for a 60 MHz clock that was
+> never active, then for 80 MHz); the third reported a genuinely-taken but
+> unreproducible 999 µs/strip figure and built a "the hardware does not deliver
+> the arithmetic" conclusion on it. The 999 µs figure was never committed as
+> inspectable code, so its cause could not be found. **The lesson is not "measure
 > instead of calculating" — it is that a measurement nobody can re-run is not
 > evidence.** The table above comes from a harness that was committed before its
 > numbers were quoted.
@@ -536,103 +516,35 @@ For smoother animation, reduce frame rate, palette complexity, changed-pixel
 area, or use a purpose-built low-area LVGL animation. Native 466×466 GIFs avoid
 additional scaling work, but still need to fit the decode/render budget.
 
-### Fast-motion cadence on vault-tec (regionDBuf ON)
+### Fast-motion cadence (regionDBuf ON)
 
-The whole-run `dyno-cell`/demo cadence guard (min ≥60) averages over a demo
-sweep whose slew rate varies continuously, which hides exactly the regime a
-user actually watches the needle react to: the fast segments. Isolated with
-`tools/bench_fast_motion.py` (two independent methods — a controlled
-constant-slew triangle sweep, and empirical velocity correlation against the
-unmodified organic demo waveform; both committed, both reproducible):
+The whole-run `dyno-cell`/demo cadence guard averages over a sweep whose slew
+rate varies continuously, hiding the regime a user actually watches the needle
+react to: the fast segments. Fast motion is isolated with
+`tools/bench_fast_motion.py` (a controlled constant-slew triangle sweep at
+9.789 psi/s, plus an empirical velocity-correlation against the unmodified
+organic demo waveform — both committed and reproducible). The direct capacity
+gate is the constant-slew sweep; the organic gate is demand-aware
+(`gaugeDemandPerSecond`), never a throttle.
 
-| Regime | renderFps median | worstRenderUs median | framesOverBudget/s |
-|---|---:|---:|---:|
-| Controlled sweep, regionDBuf ON, 9.79 psi/s sustained | 59 (min 52) | 31,684 | 1 |
-| Controlled sweep, regionDBuf OFF (tears — reference only) | 60 (min 58) | 21,322 | 1 |
-| Organic demo, fastest quartile of seconds (~8 psi/s) | 41.5 (min 35) | 35,044 | 21.5 |
-| Organic demo, slowest quartile of seconds (~0.7 psi/s) | 55.0 (min 33) | 29,216 | 6.5 |
+Two structural results stand:
+- **`teScanline` (runtime toggle, default OFF)** is the dynamic CO5300
+  `set_tear_scanline` (0x44) writeback: when a burst cannot prove EARLY/LATE,
+  it programs the tear line just past the dirty region's bottom so the TE edge
+  arrives as soon as the scan clears the band, instead of waiting up to a full
+  ~16.75 ms V-blank period. Exposed via `PUT /api/v1/themes/config
+  {"teScanline":true}`; `tools/bench_fast_motion.py sweep --te-scanline` and
+  `crossings` capture it. It helps the wide neon flip bands but does not by
+  itself reach locked 60 on segments/tube. **A fresh tear check on glass is
+  required before leaving the toggle ON.**
+- **Vault needle raster**: exactly two triangles (a redundant third added no
+  geometry but paid LVGL's mask path — same-firmware A/B: 60/59 vs 56/55 FPS
+  median), with three invalidation segments. Do not reintroduce overlap to hide
+  a seam without same-firmware A/B.
 
-Root cause: `te_wait_for_region_spans()` (`main/boost_display.c`, was
-`te_wait_for_region()`) decides whether a burst can skip its TE wait from the
-**union** of `top_row`/`bottom_row` across *every* span in the cycle, not
-each span's own range. The vault needle and the six digit-slot labels sit
-far apart on screen and both change on almost every 16 ms tick once psi is
-moving at all — during fast motion this is true on essentially every cycle,
-so the combined row range is wide almost every time, which makes the
-early/late proof fail more often and forces a real wait. When that wait
-lands after ~13.6 ms of rasterisation has already elapsed, the cycle's total
-cost roughly doubles to a second TE period, which reads as a stutter, not a
-rate reduction.
-
-**Since fixed and shipped** (branch `spike/fast-motion-cadence`): the wait
-proof now scores each span's own row range independently instead of the
-whole cycle's union, provably at least as safe as the version it replaces
-(see the block comment on `te_wait_for_region_spans()` for the exact
-argument, including where it is and isn't a strict superset of the old
-proof). Verified with an interleaved hardware A/B (rebuild + reflash between
-every arm, 3 rounds): `teSkips` up ~6% on average and `framesOverBudget` down
-~3%, a real if modest improvement to the underlying mechanism — but
-`renderFps`/`worstRenderUs` did not move outside run-to-run noise in either
-isolation method, so this does **not** read as a fix for the perceived
-stutter. Most fast-motion cycles are apparently dominated by a single tall
-span (the needle alone) or adjacent spans, where the new per-span proof is
-mathematically identical to the old union one; the "needle and a far-away
-digit label invalidate together with a wide gap between them" case this
-targets is real but evidently not the dominant cost. The `dyno-cell`/arc
-guard is unaffected (min 56-58/median 60, matching the pre-existing noise
-band). See the AGENTS.md ledger for the full numbers, the bug an early cut
-of this fix had (using the scan's row time instead of the write's own,
-which caused a real measured regression before being corrected), and why a
-RAMWRC-based per-chunk command reduction is still not shipped.
-
-**TE-scanline writeback (runtime toggle `teScanline`, default OFF):** the
-remaining wide-band cost is the *second-frame tax* — when the scan is inside
-the dirty band, `te_wait_for_region_spans()`'s fallback waits for the next
-V-blank, up to a full ~16.75 ms period no matter how tall the band is. The
-neon segments boost→overboost flip recolours ~18 segments × 3 arc bands (the
-widest dirty region on any face) and measured **29/45 min/median FPS** under
-the constant-slew sweep. When `teScanline` is ON, a burst that cannot prove
-EARLY/LATE instead reprograms the CO5300's `set_tear_scanline` (0x44) to just
-past the dirty region's bottom (`y1` + margin): the TE edge then arrives as
-soon as the scan clears the band — bounded by the band's height
-(~0.7-4.5 ms for a ~103-row band) — and the burst starts LATE-safe with the
-same one-frame-old-band semantics the existing LATE skip already accepts. The
-scan-position estimate anchors at the programmed line (`s_te_scanline_row`),
-so EARLY/LATE stay correct across cycles; if the panel ignores 0x44 the
-fresh-edge check waits for the V-blank edge instead, no worse than today.
-Expose via `PUT /api/v1/themes/config {"teScanline":true}`; the sweep bench
-takes `--te-scanline true`, and `tools/bench_fast_motion.py crossings` captures
-bounded boost↔overboost events in both directions. A first hardware crossing
-A/B (two events/direction, short diagnostic windows) confirmed that the path
-is active and helps, but does **not** establish locked 60: Segments improved
-from median 27 to 34.5 FPS and Tube from 47 to 48.5 FPS with `teScanline` OFF
-vs ON; `teScanlineWaits` rose from zero to 12.5/s and 19/s respectively, with
-zero TE timeouts. These event samples inherit the firmware's one-second metric
-window (event attribution latency was roughly 0.3-0.7 s), so use a larger
-interleaved run for release numbers. A fresh tear check on glass is still
-required before leaving the toggle ON. Since both layouts remain below 60,
-the remaining work is renderer/dirty-region profiling, not declaring the TE
-change a complete stutter fix.
-
-
-**Needle raster cost fixed:** the Vault-Tec wedge was submitted as three
-triangles even though two already tile its convex trapezoid exactly; the third
-triangle lay wholly inside that union. LVGL's software triangle renderer still
-allocated/applied three edge masks and blended every covered scanline for the
-redundant task. Removing it preserves the tapered base, blunt tip, colors, hub,
-and dirty-region geometry. A same-firmware runtime A/B isolated only that task:
-two triangles delivered median **60/59 FPS**, raster p50 **8.25/9.58 ms**, and
-**7/17** over-budget frames per 19-second run; restoring the third delivered
-**56/55 FPS**, **9.50/10.84 ms**, and **104/116** over-budget frames. After
-removing the temporary profiler, the production build measured median **60 FPS**
-(min 58), `worstRenderUs` median **17,949 us**, and 8 total over-budget frames
-in the controlled sweep. The organic fastest quartile improved from the
-historical **41.5 FPS / 21.5 over-budget frames** to **55 FPS / 6** in the final
-90-second cross-check, though its single min-21/max-118.9 ms outlier shows the
-tail remains noisy. Fixing the hundredths digit at `0` was also measured: it
-cut transferred pixels by about 10% but did not improve cadence, because the
-tenths digit still changes on nearly every fast-sweep frame. That display
-shortcut is not shipped.
+See [`docs/regression-ledger.md`](docs/regression-ledger.md) for the full
+fast-motion numbers, the per-span TE-wait fix and its first-cut regression, and
+why a RAMWRC-based per-chunk command reduction is not shipped.
 
 ### Host-only UI development
 
@@ -766,17 +678,20 @@ never precede OTA recovery.
 
 ## UI design tokens
 
+The dashboard chrome keeps one fixed identity (it does not re-skin with the
+gauge — `setTheme()` drives only the gauge palette):
+
 | Token | Hex | Role |
 |------|-----|------|
-| VOID | `#050608` | AMOLED background |
-| GHOST | `#1A1D24` | soft well |
-| STEEL | `#6B7280` | ticks / units |
-| ICE | `#E8ECF2` | primary number |
-| TEAL | `#2EE6C5` | vacuum |
-| AMBER | `#FFB020` | boost |
-| FLARE | `#FF3B30` | overboost |
+| `--face` | `#000000` | page background |
+| `--rail` / `--line` / `--field` | `#11141a` / `#2b313b` / `#171b22` | console rails, borders, wells |
+| `--text` | `#e8ecf2` | primary text |
+| `--muted` | `#6b7280` | secondary text / units |
+| `--vacuum` / `--boost` / `--overboost` | `#2ee6c5` / `#ffb020` / `#ff3b30` | chrome accent states |
+| `--zero` | `#e8ecf2` | zero marker |
 
-Signature move: one arc that **changes climate** at zero and flares past the overboost tick, instead of a generic multi-color rainbow gauge.
+Signature move: one arc that **changes climate** at zero and flares past the
+overboost tick, instead of a generic multi-color rainbow gauge.
 
 ---
 
@@ -801,7 +716,8 @@ than several theme entries. Both persist in NVS and both are exposed on
 `PUT /api/v1/themes/config`.
 
 - **`neonLayout`** (0–2) picks the face: `0` tube (one continuous arc), `1`
-  segments (54 discrete segments, the default — smallest dirty region), `2`
+  segments (45 discrete segments — 6° slots with 4° lit wedges and 2° gaps —
+  the default, smallest dirty region), `2`
   marquee (linear bar with a three-ring bulb border — innermost vacuum,
   middle boost, outermost overboost — and no value ring). The three rings sit
   at 176/200/224 (`NEON_BULB_RING_STEP` 24, 1.5x the first spread) so the
@@ -814,34 +730,25 @@ than several theme entries. Both persist in NVS and both are exposed on
   0 stale px). Each ring's bulb count is chosen for UNIFORM chord
   spacing — inner 54, middle 66, outer 72 (`NEON_BULB_N_INNER/MID/OUTER`, all
   divisible by 6 so the 2-lit/4-dark accent pattern wraps seamlessly). The border is a **cumulative stage ladder**: ring z's
-  accent bulbs (anchored per ring, `(i + offset(z)) % 6 < 2` with offset
-  0/3/0: inner and outer pairs share the top centre, the middle ring's pair
-  sits at the bottom centre with bulb N/2 at 6 o'clock and its partner one
-  dot left) light once the
+  accent bulbs light once the
   reading has REACHED that zone (vacuum → inner only, boost → inner+middle,
   overboost → all three); dead bulbs stay dim `track`, so the two-tone look
-  survives even fully lit. `neonMarqueeSpin` (persisted) makes the accent
+  survives even fully lit. The accent anchors are `NEON_BULB_ACCENT_OFFSET(z)`
+  = 0/3/2: inner pairs share the top centre, the middle ring's pair sits at
+  the bottom centre with bulb N/2 at 6 o'clock and its partner one dot left,
+  and the OUTER ring shifts two bulbs so its pairs flank the axis like the
+  inner ring's pattern. `neonMarqueeSpin` (persisted) makes the accent
   bulbs CHASE around the rings — one ring advances every 90 ms, round-robin,
   inner/outer clockwise and middle counterclockwise, a full 6-phase rotation
   per ring in 1.62 s. The chase only repaints one ring per step (12 small
   boxes) and defers to zone flips, so it stays inside LVGL's 32-slot
-  invalidation buffer and the face keeps ~1 Mpx/s. Pre-scaled readout A/B on
-  hardware (fresh boot each arm, spin + demo on, pixel shift off, 30 s):
-  framesOverBudget/s **33.2 → 21.6 (−35%)**, renderFps median **55 → 57**
-  (min 41 → 47), `worstRenderUs` median 43.0 → 42.0 ms / max 63.0 → 55.7 ms.
-  The median worst stays ~42 ms because the worst cycles are TE-wait + merged
-  full-region bound, not sprite bound; the win shows up as fewer over-budget
-  frames and a better tail. Min-FPS isolation on the board: the 40s mins are
-  fast-motion seconds (demo sweep peak slew ~9.8 psi/s), not dot cost — a
-  120 s spin-OFF capture held min **58** / med 61 (zone-flip seconds never
-  below 58), while spin ON (181 s) dropped min to **45** with 10-13
-  over-budget cycles/s and 50-61 ms worst cycles. Each spin step is a render
-  cycle that pays the regionDBuf TE wait (up to 16.7 ms) when the scan
-  crosses the readout band, so the lever is cycle count (spin cadence /
-  heavy-tick deferral / the stubbed TE scanline), not per-dot raster —
-  caching the accent dots would not help, they are already the cheapest
-  primitive. First marquee scene build is ~513 ms (the scaled
-  bake adds ~66 ms over the plain glyph bake); cached returns ~172 ms.
+  invalidation buffer and the face keeps ~1 Mpx/s. The pre-scaled readout
+  cut framesOverBudget/s by ~35% and lifted the fast-motion floor; the
+  remaining low-FPS seconds are fast-motion moments (demo sweep peak slew
+  ~9.8 psi/s) and spin steps paying the regionDBuf TE wait — the lever is
+  cycle count (spin cadence / heavy-tick deferral / teScanline), not per-dot
+  raster. First marquee scene build is ~513 ms (the scaled bake adds ~66 ms
+  over the plain glyph bake); cached returns ~172 ms.
   Invalidation is per-glyph, not per-slot: `neon_cell_x_span`/`neon_sign_x_span`
   ask the baked sprite for its own footprint (marquee: the pre-scaled tile's
   `bbox_s` at the scaled anchor; tube/segments: the full-size bbox at `spr_dx`)
@@ -850,40 +757,19 @@ than several theme entries. Both persist in NVS and both are exposed on
   changes. The marquee bar invalidates only when its DRAWN pixel extent or the
   zone colour changed, so a static reading goes idle; the live accent scan is
   skipped when the dirty region cannot reach the rings. Host audit, 25 s, all
-  four variants: **0 severe / 0 stale px**. Tube/segments flushed
-  px/cycle **19,753 → 18,397 (−6.9%)**; marquee unchanged at 14,848 (spin
-  16,441). **Hardware cadence re-run (2026-08-09, demo mode, 30 s/window, fresh captures, `teTimeouts 0` everywhere):** four-layout battery A matches the prior session's reference almost exactly — dyno-cell **min 58 / med 61** (guard PASS), neon tube 53/58, neon segments 40/57, neon marquee 26/36 (prior: 58/61, 52/58, 39/57, 24/36). Fast-motion constant-slew runs (`tools/bench_fast_motion.py sweep`, 9.789 psi/s, fresh boot per arm): marquee **min 56 / med 59** (1 over-budget/s, worst 43.4 ms), tube 45/56 (5 ob/s), segments **29/45 (14 ob/s)** — under sustained slew the layout ranking INVERTS vs the organic demo, because the segments face re-lights discrete wedges every tick while the marquee's cost stays bounded. Organic cross-check on the marquee (90 s, quartile-binned): fastest crossing seconds **min 43 / med 52**, slowest peak-dwell seconds **min 24 / med 31** — the marquee's floor is the DWELL seconds (needle hovering at a turning point while the tenths digit flutters), not fast motion, the opposite of the Vault pattern. TE accounting verified `waits/fps = 1.000` across 41 windows: `teSkips` is a subset of `teWaits` (47.8% here), never additive
+  four variants: **0 severe / 0 stale px**.
 - **Segments repaint optimization (2026-08-10):** same-side/same-colour
-  movement now invalidates the symmetric difference of the old and new painted
+  movement invalidates the symmetric difference of the old and new painted
   segment sets instead of the angular endpoint delta. Each segment's three
   lit bands are also baked once as 162 colour-independent A8 coverage tiles
   (149,840 B PSRAM) and recoloured at blit time; allocation failure keeps the
   original live-arc renderer. Full-size Tube/Segments glyph invalidation uses
   each immutable sprite's actual vertical ink bounds, with conservative boxes
-  for fallback paths. Host 25 s audits remained **517 comparisons / 0 stale /
-  0 severe** on Tube, Segments, Marquee, and Marquee-spin; the Segments audit
-  rendered zero live ring arcs, built the cache in ~20 ms, and recorded host
-  cycle p50/p90/max from 0.48/1.06/4.61 ms to 0.40/0.77/2.37 ms without changing
-  17,644 flushed px/cycle. The controlled ESP-IDF image was 2,231,184 B,
-  SHA-256 `D0F153F70204A641B78F6E08D9D27F8AEC448B50A09B099D1E77EA6E79810ADD`;
-  serial confirmed the 149,840 B cache engaged and showed no allocation,
-  panic, stack, colour-transfer, or TE-timeout errors. Two fresh-boot 30 s
-  constant-slew runs measured **55/59 and 53/59 min/median FPS**, 52/54 total
-  over-budget frames, and 72.5/72.4 ms worst maxima. The comparable pre-change
-  committed build measured 28/44 with 492 over-budget frames and a 174 ms
-  maximum, so the tail/floor improvement is material, but **59 is still below
-  the constant-slew median-60 gate by itself**. A matched 30 s run on the same A8 firmware with dynamic
-  `teScanline` OFF was **55/59**, while two fresh-boot runs with it ON were
-  **56/61 and 55/61**; median `worstRenderUs` fell from 34.6 ms to 23.9/24.4 ms,
-  with zero TE timeouts. Thus the combined renderer + scanline candidate meets
-  the constant-slew median target in this A/B, but still needs a physical-glass
-  tear check before the scanline toggle can be accepted. Under the legacy raw-
-  FPS reading, a 90 s organic run measured slow-dwell seconds at **23/26
-  min/median** and the fastest quartile at **29/53**; a separate 30 s-per-arm
-  matrix measured Segments **23/30** while Dyno Cell reached **60/62**. These
-  measurements stand, but organic acceptance now distinguishes idle dwell
-  windows from missed demanded renders through `gaugeDemandPerSecond`; only the
-  latter is a cadence failure.
+  for fallback paths. This materially improved the fast-motion floor and tail
+  (two fresh-boot constant-slew runs 55/59 and 53/59 min/median FPS vs a 28/44
+  pre-change build with a 174 ms worst maximum), but the combined renderer +
+  `teScanline` candidate still needs a physical-glass tear check before the
+  scanline toggle is accepted.
 - **`neonPreset`** (0–3) picks the colourway: `0` Violet, `1` Miami, `2` Toxic,
   `3` Blood Moon. Presets set `track`/`muted` as well as the three zone
   colours, so changing one repaints the cached background.
@@ -935,13 +821,10 @@ Shared rules across styles:
 ### Where it lives
 
 - **Web mirror:** `web/app.js` dispatches `drawGauge()` on `activeThemeStyle()`
-  to the active renderer. `tools/mock_server.py` serves the four selectable
-  themes (each with a `style` field); the dormant Sport renderer is retained but
-  not advertised. Regenerate embedded assets after any web edit. `setTheme()`
-  drives only the gauge palette, so the dashboard chrome keeps one fixed identity.
-- **Dormant Sport renderer:** if it is restored to `s_defaults[]`, its static
-  ring/ticks remain cached in a PSRAM `lv_canvas` and its live readout remains
-  bounded rather than repainting the full face.
+  to the active renderer. `tools/mock_server.py` serves the five selectable
+  themes (each with a `style` field). Regenerate embedded assets after any web
+  edit. `setTheme()` drives only the gauge palette, so the dashboard chrome
+  keeps one fixed identity.
 - **Simulator:** `sim/` builds the same `boost_gauge.c` on the host and renders
   headless PNGs, including the generated fonts, so a face can be checked without
   flashing. SDL2 is optional (only `--window` needs it); `--theme <id>` selects
@@ -950,11 +833,7 @@ Shared rules across styles:
   `--neon-chase DIR` writes a fixed-psi 90 ms/step chase sequence to DIR for
   preview GIFs). Both of those exist because the sim does **not**
   inherit the device's persisted settings: it calls `boost_theme_init()` at
-  startup, and without these flags it renders whatever the defaults say. Before
-  `--neon-preset` existed the sim never applied a preset at all
-  (`apply_neon_preset()` runs from `boost_theme_init()`, which the sim did not
-  call), so every screenshot showed the compiled-in palette regardless of which
-  preset was selected — screenshots agreed with the device only by coincidence. This is the fastest verification loop — use it before burning a
+  startup, and without these flags it renders whatever the defaults say. This is the fastest verification loop — use it before burning a
   flash cycle.
 - **Font:** `main/fonts/alvidafatface-regular.otf` (OTF kept over the TTF — CFF
   master, ~4× smaller, converts cleanly with `lv_font_conv`). The dashboard loads
@@ -1095,93 +974,50 @@ changed (usually the tenths alone) took the style from 37 to 42 FPS median and
 22 to 31 min. `HUD_GLITCH_DX` is shared between the draw and the invalidation so
 the dirty box can never be narrower than the pixels the ghosts touch.
 
-Night City's gradient fill has a measurable but secondary cadence cost. A
-three-round fresh-boot hardware A/B (`night-city`, demo mode, pixel shift off,
-20 s per arm) measured gradient off at min/median **30/40 FPS** and gradient on
-at **29/39, 29/39, and 29/38 FPS**. Across-round medians were **31.8 vs 32.0 ms**
-`worstRenderUs`, **11 vs 13** over-budget frames/s, and **0.688 vs 0.735 Mpx/s**.
-The implementation explains the extra work: the fill is one quantized solid
-colour, and each colour-step crossing invalidates and recolours the complete
-zero-to-value arc. The original `BIG_STEPS=24` covered the whole -15..+10 psi
-range, but every non-positive sample intentionally maps to the same vacuum color;
-there were therefore only **11 effective RGB565 colors** on the visible ramp (10
-above zero), which explains why the transition looked much coarser than “24
-steps.” A 48-slot full-range trial produced 20 effective colors, but still wasted
-29 slots on identical vacuum. The retained mapping instead uses one fixed vacuum
-sentinel plus **24 buckets devoted exclusively to positive pressure**. Bucket 1
-starts immediately above zero and bucket 24 lands exactly at configured max;
-firmware, Big Digit, and the web mirror share the same ceiling-based mapping. Endpoint movement between crossings already uses a
-tight wedge. Reproduce the comparison with `tools/bench_hud_gradient.py`; judge
-an optimization on render time, pacing, and pixels/s rather than FPS alone.
+Night City's gradient fill has a measurable but secondary cadence cost. The
+fill is one quantized solid colour, and each colour-step crossing invalidates
+and recolours the complete zero-to-value arc. The retained mapping uses one
+fixed vacuum sentinel plus **24 buckets devoted exclusively to positive
+pressure**: bucket 1 starts immediately above zero and bucket 24 lands exactly
+at configured max; firmware, Big Digit, and the web mirror share the same
+ceiling-based mapping. Reproduce a gradient comparison with
+`tools/bench_hud_gradient.py`; judge an optimization on render time, pacing,
+and pixels/s rather than FPS alone.
 
-Component-isolation builds preserved Night City's invalidation geometry while
-suppressing one raster operation at a time. Against the 39 FPS / 30.6 ms
-gradient-on baseline, removing the chromatic ghost draws reached **45 FPS / 19.1
-ms**, removing the primary digits **44.5 FPS / 28.8 ms**, removing the fill arc
-**43 FPS / 27.6 ms**, and suppressing the cached background blit **41 FPS / 28.0
-ms**. The ghost's two semi-transparent 96 px label passes were therefore the
-largest discrete raster cost. They now pre-blend their colours against the
-known static face and draw opaque, preserving the same offsets, glyphs and dirty
-regions while avoiding two destination read/blend passes. This intentionally
-approximates the original alpha composition where the two shifted copies overlap
-or cross other art; it is not framebuffer-identical. A production hardware run
-with gradient on improved median cadence **39 -> 44 FPS**; gradient off measured
-**46 FPS**. This is a substantial win, but the face still does not reach 60 FPS
-and the remaining costs are distributed across fill, primary glyphs, background
-compositing, TE waits, and other live labels.
+Component-isolation builds showed the ghost's two semi-transparent 96 px label
+passes were the largest discrete raster cost, so they now pre-blend their
+colours against the known static face and draw opaque, preserving the same
+offsets, glyphs and dirty regions while avoiding two destination read/blend
+passes. This intentionally approximates the original alpha composition where
+the two shifted copies overlap or cross other art; it is not
+framebuffer-identical. The face still does not reach 60 FPS; remaining costs
+are distributed across fill, primary glyphs, background compositing, TE waits,
+and other live labels.
 
-The tenths-only glyph-cache prototype exposed two independent LVGL contract
-violations: `lv_font_get_glyph_bitmap()` returns an `lv_draw_buf_t *`, not raw
-pixel bytes, and mutable PSRAM-backed A8 image sources outlived their draw-task
-assumptions. The completed readout cache is one scene-owned, immutable PSRAM
-block of **34,786 B** containing only digits 0-9, decimal, and minus, reused by
-the primary readout and ghost pass; surrounding HUD labels keep their source
-fonts. Draw callbacks publish stable descriptors only; the block
-is never mutated or republished. The lifecycle is draw-unit safe: drain with
-`lv_draw_wait_for_finish()` before scene teardown or cache release, and keep the
-cache alive until all draw units finish. Allocation failure retains the source
-font fallback. Host Night City audit: **517 comparisons / 0 mismatches**.
-Hardware confirmation: 60 rapid four-theme cycles plus a 60-second Night City
-soak completed with live rendering, no freeze, panic, `ESP_ERR_NO_MEM`,
-send-color error, or TE timeout. `BOOST_HUD_READOUT_CACHE=0` now provides a
-compile-time source-font A/B/fallback guard; cache-on and source-font host audits
-both completed with zero stale or severe mismatches. Cache construction also
-checks the second glyph lookup, descriptor consistency, integer overflow,
-stride/format/index identity, and every packed-buffer bound before publication.
+The readout cache is one scene-owned, immutable PSRAM block of **34,786 B**
+containing only digits 0-9, decimal, and minus, reused by the primary readout
+and ghost pass; surrounding HUD labels keep their source fonts. Draw callbacks
+publish stable descriptors only; the block is never mutated or republished.
+The lifecycle is draw-unit safe: drain with `lv_draw_wait_for_finish()` before
+scene teardown or cache release, and keep the cache alive until all draw units
+finish. Allocation failure retains the source-font fallback.
+`BOOST_HUD_READOUT_CACHE=0` provides a compile-time source-font A/B/fallback
+guard. The consolidated readout submits the two pre-blended ghost passes and
+then the authoritative primary glyphs from one styleless LVGL object, with an
+early clip rejection for outer-ring-only dirty regions; it cut flushed
+pixels/cycle roughly 11,254 → 7,297 and median panel work from ~0.75-0.78 to
+~0.47-0.50 Mpx/s, but median `renderFps` remained ~41-44.5 — a real
+raster/traffic reduction, not a 60 FPS result. Disabling region DBUF or TE did
+not improve the remaining tail, and a precomposed RGB565 tile prototype
+increased host flush work, so it was rejected rather than flashed.
 
-The consolidated-readout trial removes four large slot labels, the separate sign
-label, and the full-screen ghost object. One styleless LVGL object submits the two
-pre-blended ghost passes and then the authoritative primary glyphs, with an early
-clip rejection for outer-ring-only dirty regions. Its changed-slot union reduced
-the 30-second host audit from **11,254 to 7,297 flushed pixels/cycle** and **0.635
-to 0.445 Mpx/s**, while both Night City and Dyno Cell completed **620 snapshot
-comparisons with zero stale or severe mismatches**. On COM3, three interleaved
-60-second rounds measured Night City gradient-off median `worstRenderUs`
-**17,063.5-17,117 us** after the clip guard (down from **18,938-19,077.5 us** in
-the matched pre-change baseline) and cut median panel work from roughly
-**0.75-0.78 to 0.47-0.50 Mpx/s**. Gradient-on arms measured **17,398.5-17,628 us**
-and **0.52-0.54 Mpx/s**. Median `renderFps` remained **41-44.5**, so this is a
-real raster/traffic reduction but not a 60 FPS result. The remaining render tail
-is still just over the 16 ms budget; disabling region DBUF or TE did not improve
-it, and the 276x79 precomposed RGB565 tile prototype increased host flush work to
-**21,175 pixels/cycle**, so it was rejected rather than flashed.
-
-Vault-Tec now deliberately keeps the same consolidation pattern in a bounded
+Vault-Tec deliberately keeps the same consolidation pattern in a bounded
 **146x34** six-slot readout object together with `VAULT_NEEDLE_SEGS=3` and the
-hardware-proven two-triangle needle raster. The controlled consolidated-readout
-comparison separated host correctness from panel cadence: 3 segments averaged
-**11,460 px/cycle** with 3 severe / 8 total isolated needle-edge audit pixels;
-2 segments averaged **12,858 px/cycle** with 0 severe / 1 total. On hardware the
-best matched 3-segment fast-sweep round held **60/60 min/median FPS**, **17.162 ms**
-median / **20.194 ms** maximum render time, and **1** over-budget frame. The
-2-segment arm measured **58/60 FPS**, **18.222/33.558 ms**, and **9** over-budget
-frames. A later 3-segment confirmation was noisy (**55/59 FPS**, **19.564/33.623
-ms**, 28 over-budget), so it is recorded as run-to-run spread rather than proof of
-a regression. Two segments clean up host antialiasing seams but enlarge the dirty
-regions and worsened the matched hardware tail; the kept production choice is
-the bounded consolidated readout plus **three** invalidation segments. Future
-Vault changes must rerun both the RGB565 stale-pixel audit and interleaved hardware
-cadence measurements.
+hardware-proven two-triangle needle raster. Two invalidation segments clean up
+host antialiasing seams but enlarge the dirty regions and worsened the matched
+hardware tail, so the kept production choice is the bounded consolidated readout
+plus **three** invalidation segments. Future Vault changes must rerun both the
+RGB565 stale-pixel audit and interleaved hardware cadence measurements.
 
 The retained Vault renderer removes the **26 px counterweight tail** behind the
 pivot by default. A persisted `vaultNeedleTail` option in the Vault theme editor
@@ -1190,10 +1026,6 @@ hub, two-triangle raster, three invalidation segments, AA padding, CRT overlay,
 and 146x34 readout remain unchanged. Draw and both invalidation paths resolve the
 same runtime tail length; applying the setting rebuilds the scene, so old
 foreground pixels cannot remain. The browser mirror follows the same geometry.
-The final 25-second Vault audit rendered 1,517 cycles at **10,786 mean / 30,114
-max flushed pixels per cycle** and **0.660 Mpx/s**. It found **zero severe RGB565
-mismatches** and six isolated one-channel, one-step AA seams across 517
-comparisons (worst one pixel), with no broad stale trail.
 
 Both physical arcs now animate geometry through one shared latest-target linear
 interpolator. Each new sample remains the exact target immediately; the visible
@@ -1203,21 +1035,7 @@ non-finite input, or a gap over one second. There is no adaptive EMA, alpha cap,
 or small-change suppression. Only geometry is animated: raw pressure still
 drives numeric readouts, peak/model/API state, and immediate Dyno/Night City
 colour and threshold transitions. Draw and invalidation use the same committed
-visual state. The Dyno Cell hardware cadence regression guard remained **min 58 /
-median 61 FPS** over 103 post-warmup samples; 30-second host audits for both faces
-completed 620 comparisons with zero stale or severe mismatches.
-
-The full-cache hardware benchmark is **3 interleaved rounds** (6 arms, 336
-samples total), versus **1 prior round** for the tenths-only benchmark (2 arms,
-112 samples). Full-cache Night City gradient-off arms measured median FPS
-**40-42.5** (aggregate median **42.0**), median `worstRenderUs`
-**18,985.5-19,894 us** (aggregate **19,378.25 us**), and median
-`pixelsPerSecond` **691,490-795,718** (aggregate **741,639**), with zero TE
-timeouts. The prior tenths-only arms measured **40-41.5 FPS** (aggregate
-**40.75**), **27,824-29,056 us** (aggregate **28,440 us**), and **690,014-
-766,462 pixels/s** (aggregate **728,238**). These are honest directional
-figures, not a clean causal A/B: the old result is one round, while the full
-cache is three.
+visual state.
 
 Two web-mirror fixes closed remaining parity bugs. Night City's chromatic split
 had become visually negligible at **0.4 alpha / 3 px**; it now uses **0.7 / 6
@@ -1233,17 +1051,7 @@ physical invalidation bounds kept in lockstep so arc edges clear correctly.
 The ring is also pushed outward from radius 206 to 225; its unchanged 16 px
 ticks move from radii 198-214 to 217-233 so their outer ends meet the panel
 edge. The physical renderer, invalidation bounds, zero notch, and web mirror
-share that geometry. A 60-second-per-arm hardware run with demo mode, pixel
-shift off, TE sync and region double-buffering measured gradient off at
-**min 30 / median 41 FPS**, median `worstRenderUs` **19,187.5 us**, and median
-`pixelsPerSecond` **762,064**; gradient on measured **min 29 / median 39 FPS**,
-**19,889.5 us**, and **808,324 pixels/s**. Both arms had zero TE timeouts. The
-outward ring therefore adds some pixel throughput without a material latency
-regression against the prior full-cache result (gradient-off aggregate median
-42 FPS / 19,378.25 us / 741,639 pixels/s).
-The host Night City audit retained **517 comparisons / 0 stale mismatches**;
-the firmware build was flashed to COM3, the setting survived a hardware restart,
-and the standard Dyno Cell cadence guard remained **min 58 / median 60 FPS**.
+share that geometry.
 
 Night City's first sample is the exception to endpoint-only invalidation: after
 a scene switch it invalidates the complete zero-to-current span. Without that
@@ -1277,11 +1085,10 @@ window: the duration of a cycle, not the gap between cycles. Measuring the gap
 instead was the first cut of this metric and it was useless, because an idle
 screen produces long gaps and no stall at all.
 
-Measured medians / worst cycle at 80 MHz: `arc` 63 / 42 ms, `vault` 60 / 18 ms,
-`hud` 43 / 37 ms, `bigdigit` 31 / 39 ms (pre-cache figures). `arc`'s static
-furniture (unfilled track, zero notch, scale numerals) is now cached the same
-way vault/hud's is — see "Cached static faces" above for the measured
-before/after `worstRenderUs`.
+All faces cache their static art (see "Cached static faces" above); the
+measurement detail behind each face's current `worstRenderUs` lives in the
+ledger. `arc`'s furniture (unfilled track, zero notch, scale numerals) is
+cached the same way vault/hud's is.
 
 ### Fonts
 
