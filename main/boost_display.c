@@ -1149,6 +1149,18 @@ esp_err_t boost_display_push_bitmap(int x0, int y0, int x1, int y1,
                    src + (size_t)(y - y0 + r) * src_stride_px,
                    (size_t)width * sizeof(uint16_t));
         }
+        /* Byte-swap RGB565 to big-endian, the wire format the CO5300 QSPI
+         * link expects. The LVGL path gets this for free from the adapter
+         * bridge (lvgl_bridge_v9.c applies lv_draw_sw_rgb565_swap for
+         * ESP_LV_ADAPTER_PANEL_IF_OTHER + RGB565 BEFORE the custom
+         * draw-bitmap hook - which is why region_dbuf_writeback() must NOT
+         * swap again). This push bypasses the bridge entirely, so the swap
+         * happens here, in the internal scratch copy where the source
+         * framebuffer stays untouched little-endian LVGL image data. */
+        const size_t px = (size_t)width * lines;
+        for (size_t i = 0; i < px; ++i) {
+            xfer[i] = (uint16_t)((xfer[i] << 8) | (xfer[i] >> 8));
+        }
         const esp_err_t ret = esp_lcd_panel_draw_bitmap(s_panel, x0, y, x1, y + lines, xfer);
         if (ret != ESP_OK) {
             ESP_LOGE(TAG, "push_bitmap: draw_bitmap failed at y=%d: %s",

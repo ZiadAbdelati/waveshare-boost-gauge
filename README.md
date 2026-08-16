@@ -525,6 +525,14 @@ teardown (dyno-cell demo, min 57 / median 61). Remaining levers for 30/60 FPS
 are pipelining decode against push and decode acceleration, both gated on the
 `perf:` line's measurements.
 
+The push byte-swaps each strip to big-endian RGB565 in the internal scratch
+copy — the CO5300 wire format. The LVGL path gets this swap from the adapter
+bridge (`lv_draw_sw_rgb565_swap` for this panel profile, applied before the
+custom draw-bitmap hook); the direct push bypasses the bridge, so it must
+apply the same transform itself (first flash skipped it and showed fully
+scrambled colors; see the 2026-08-16 ledger row). The swap costs ~2.6 ms per
+full frame, keeping the effective push at ~18.3 ms.
+
 Do not use `check_display_cadence.py` while GIF media is active: its ≥60 FPS
 threshold defends the live gauge path, not full-frame animation playback.
 
