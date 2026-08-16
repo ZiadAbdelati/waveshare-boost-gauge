@@ -4971,7 +4971,7 @@ static bool load_media_gif_locked(void)
                             (width == DISP_SIZE && height == DISP_SIZE) ? LV_OPA_TRANSP
                                                                         : LV_OPA_COVER,
                             0);
-    lv_gif_set_color_format(s_media_gif, LV_COLOR_FORMAT_RGB565);
+    lv_gif_set_color_format(s_media_gif, LV_COLOR_FORMAT_RGB565_SWAPPED);
     lv_image_set_inner_align(s_media_gif, LV_IMAGE_ALIGN_CENTER);
     lv_gif_set_src(s_media_gif, &s_media_dsc);
     /* Where the decoder object actually landed. The extmem threshold is a

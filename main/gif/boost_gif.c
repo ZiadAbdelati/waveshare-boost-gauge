@@ -351,16 +351,14 @@ static void lv_gif_destructor(const lv_obj_class_t * class_p, lv_obj_t * obj)
             lv_free(gifobj->gif->pTurboBuffer);
             gifobj->gif->pTurboBuffer = NULL;
         }
-#ifdef ESP_PLATFORM
         if(gifobj->gif->pTurboSymbols != NULL) {
-            free(gifobj->gif->pTurboSymbols);
+            lv_free(gifobj->gif->pTurboSymbols);
             gifobj->gif->pTurboSymbols = NULL;
         }
         if(gifobj->gif->pTurboLengths != NULL) {
-            free(gifobj->gif->pTurboLengths);
+            lv_free(gifobj->gif->pTurboLengths);
             gifobj->gif->pTurboLengths = NULL;
         }
-#endif
         GIF_close(gifobj->gif);
         if(framebuffer != NULL && framebuffer != gifobj->framebuffers[0] && framebuffer != gifobj->framebuffers[1]) {
             lv_free(framebuffer);
@@ -557,11 +555,9 @@ static void initialize(lv_gif_t * gifobj)
     if(gif->pTurboBuffer != NULL) {
         lv_memset(gif->pTurboBuffer, 0, turbo_size);
     }
-#ifdef ESP_PLATFORM
-    /* BOOST: allocate symbols (16 KB) and lengths (8 KB) from internal RAM for single-cycle latency */
-    gif->pTurboSymbols = heap_caps_malloc(4096 * sizeof(uint32_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    gif->pTurboLengths = heap_caps_malloc(4096 * sizeof(uint16_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-#endif
+    /* BOOST: allocate symbols (16 KB) and lengths (8 KB) from PSRAM to preserve internal DMA RAM for BLE */
+    gif->pTurboSymbols = lv_malloc(4096 * sizeof(uint32_t));
+    gif->pTurboLengths = lv_malloc(4096 * sizeof(uint16_t));
 #endif
 
     gifobj->imgdsc.data = gif->pFrameBuffer; /* BOOST: cooked plane is at offset 0 now */
@@ -595,8 +591,8 @@ static void initialize(lv_gif_t * gifobj)
     gifobj->last_has_next = GIF_playFrame(gif, &ms_delay0, gifobj);
     gifobj->ms_delay_next = ms_delay0;
 
-    /* Spawn background decode task pinned to Core 0 with priority 5 */
-    xTaskCreatePinnedToCore(gif_decode_task, "gif_dec", 4096, gifobj, 5, &gifobj->decode_task, 0);
+    /* Spawn background decode task pinned to Core 1 with priority 5 (LVGL runs on Core 0) */
+    xTaskCreatePinnedToCore(gif_decode_task, "gif_dec", 4096, gifobj, 5, &gifobj->decode_task, 1);
 
     /* Prime decoder to start decoding frame 1 in background into buffer 1 */
     gifobj->write_fb_idx = 1;

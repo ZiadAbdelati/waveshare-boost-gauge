@@ -1162,21 +1162,7 @@ esp_err_t boost_display_push_bitmap(int x0, int y0, int x1, int y1,
         for (int r = 0; r < lines; ++r) {
             const uint16_t *s = src + (size_t)(y - y0 + r) * src_stride_px;
             uint16_t *d = xfer + (size_t)r * width;
-            int c = 0;
-            while (c <= width - 4) {
-                const uint32_t p01 = ((const gif_u32_alias_t *)&s[c])[0];
-                const uint32_t p23 = ((const gif_u32_alias_t *)&s[c + 2])[0];
-                const uint32_t sw01 = ((p01 & 0x00FF00FF) << 8) | ((p01 & 0xFF00FF00) >> 8);
-                const uint32_t sw23 = ((p23 & 0x00FF00FF) << 8) | ((p23 & 0xFF00FF00) >> 8);
-                ((gif_u32_alias_t *)&d[c])[0] = sw01;
-                ((gif_u32_alias_t *)&d[c + 2])[0] = sw23;
-                c += 4;
-            }
-            while (c < width) {
-                const uint16_t p = s[c];
-                d[c] = (uint16_t)((p << 8) | (p >> 8));
-                c++;
-            }
+            memcpy(d, s, width * sizeof(uint16_t));
         }
         const esp_err_t ret = esp_lcd_panel_draw_bitmap(s_panel, x0, y, x1, y + lines, xfer);
         if (ret != ESP_OK) {

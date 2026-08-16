@@ -43,6 +43,7 @@
 //   3. ALLOWS_UNALIGNED enabled for Xtensa/x86 (see boost_gif_dec.h).
 //
 #include "boost_gif_dec.h"
+#include "esp_attr.h"
 
 static const unsigned char cGIFBits[9] = {1,4,4,4,8,8,8,8,8}; // convert odd bpp values to ones we can handle
 
@@ -1116,7 +1117,13 @@ static inline __attribute__((always_inline)) int LZWCopyBytes(unsigned char *buf
 // Macro to extract a variable length code
 //
 #define GET_CODE_TURBO if (bitnum > (REGISTER_WIDTH - MAX_CODE_SIZE/*codesize*/)) { p += (bitnum >> 3); \
-            bitnum &= 7; ulBits = INTELLONG64(p); } \
+            bitnum &= 7; \
+            if (p >= pHighWater) { \
+                pImage->iLZWOff = (int)(p - pImage->ucLZW); \
+                GIFGetMoreData(pImage); \
+                p = &pImage->ucLZW[pImage->iLZWOff]; \
+            } \
+            ulBits = INTELLONG64(p); } \
         code = (uint32_t)((ulBits >> bitnum) & sMask);  \
         bitnum += codesize;
 
@@ -1236,56 +1243,86 @@ init_codetable:
                 nextlim <<= 1;
                 sMask = (sMask << 1) | 1;
             }
-            if (p >= pHighWater) {
-                pImage->iLZWOff = (int)(p - pImage->ucLZW); // restore object member var
-                GIFGetMoreData(pImage); // We need to read more LZW data
-                p = &pImage->ucLZW[pImage->iLZWOff];
-            }
             oldcode = code;
             GET_CODE_TURBO
         } /* while not end of LZW code stream */
     } // while not end of frame
     if (pImage->ucDrawType == GIF_DRAW_COOKED && pImage->pFrameBuffer) { // convert each line through the palette
-        GIFDRAW gd;
-        gd.iX = pImage->iX;
-        gd.iY = pImage->iY;
-        gd.iWidth = pImage->iWidth;
-        gd.iHeight = pImage->iHeight;
-        gd.pPalette = (pImage->bUseLocalPalette) ? pImage->pLocalPalette : pImage->pPalette;
-        gd.pPalette24 = (uint8_t *)gd.pPalette; // just cast the pointer for RGB888
-        gd.ucIsGlobalPalette = pImage->bUseLocalPalette==1?0:1;
-        gd.pUser = pImage->pUser;
-        gd.ucPaletteType = pImage->ucPaletteType;
-        const int iBpp = (pImage->ucPaletteType == GIF_PALETTE_RGB888) ? 3 : 2;
-        const int iPitch = pImage->iCanvasWidth * iBpp;
-        for (int y=0; y<pImage->iHeight; y++) {
-            gd.y = y;
-            gd.pPixels = &buf[(y * pImage->iWidth)]; // source pixels
-            // Ugly logic to handle the interlaced line position, but it
-            // saves having to have another set of state variables
-            if (pImage->ucMap & 0x40) { // interlaced?
-               int height = pImage->iHeight-1;
-               if (gd.y > height / 2)
-                  gd.y = gd.y * 2 - (height | 1);
-               else if (gd.y > height / 4)
-                  gd.y = gd.y * 4 - ((height & ~1) | 2);
-               else if (gd.y > height / 8)
-                  gd.y = gd.y * 8 - ((height & ~3) | 4);
-               else
-                  gd.y = gd.y * 8;
+        const uint8_t ucHasTrans = (pImage->ucGIFBits & 1);
+        const uint8_t *pPalBytes = (pImage->bUseLocalPalette) ? (const uint8_t *)pImage->pLocalPalette : (const uint8_t *)pImage->pPalette;
+        const uint16_t *pPal = (const uint16_t *)pPalBytes;
+
+        if (pImage->pfnDraw == NULL && !(pImage->ucMap & 0x40) &&
+            pImage->iWidth == pImage->iCanvasWidth && pImage->iX == 0 && !ucHasTrans &&
+            (pImage->ucPaletteType == GIF_PALETTE_RGB565_LE || pImage->ucPaletteType == GIF_PALETTE_RGB565_BE)) {
+            // Contiguous 16-way unrolled blit for full-width opaque frames
+            uint16_t *d = (uint16_t *)&pImage->pFrameBuffer[pImage->iY * pImage->iCanvasWidth * 2];
+            const uint8_t *s = buf;
+            const uint8_t *pEnd = buf + (pImage->iWidth * pImage->iHeight);
+
+            while (s <= pEnd - 16) {
+                const uint32_t s0 = *(const uint32_t *)&s[0];
+                const uint32_t s1 = *(const uint32_t *)&s[4];
+                const uint32_t s2 = *(const uint32_t *)&s[8];
+                const uint32_t s3 = *(const uint32_t *)&s[12];
+
+                ((uint32_t *)d)[0] = (uint32_t)pPal[(uint8_t)s0] | ((uint32_t)pPal[(uint8_t)(s0 >> 8)] << 16);
+                ((uint32_t *)d)[1] = (uint32_t)pPal[(uint8_t)(s0 >> 16)] | ((uint32_t)pPal[(uint8_t)(s0 >> 24)] << 16);
+                ((uint32_t *)d)[2] = (uint32_t)pPal[(uint8_t)s1] | ((uint32_t)pPal[(uint8_t)(s1 >> 8)] << 16);
+                ((uint32_t *)d)[3] = (uint32_t)pPal[(uint8_t)(s1 >> 16)] | ((uint32_t)pPal[(uint8_t)(s1 >> 24)] << 16);
+                ((uint32_t *)d)[4] = (uint32_t)pPal[(uint8_t)s2] | ((uint32_t)pPal[(uint8_t)(s2 >> 8)] << 16);
+                ((uint32_t *)d)[5] = (uint32_t)pPal[(uint8_t)(s2 >> 16)] | ((uint32_t)pPal[(uint8_t)(s2 >> 24)] << 16);
+                ((uint32_t *)d)[6] = (uint32_t)pPal[(uint8_t)s3] | ((uint32_t)pPal[(uint8_t)(s3 >> 8)] << 16);
+                ((uint32_t *)d)[7] = (uint32_t)pPal[(uint8_t)(s3 >> 16)] | ((uint32_t)pPal[(uint8_t)(s3 >> 24)] << 16);
+
+                s += 16;
+                d += 16;
             }
-            gd.ucDisposalMethod = (pImage->ucGIFBits & 0x1c)>>2;
-            gd.ucTransparent = pImage->ucTransparent;
-            gd.ucHasTransparency = pImage->ucGIFBits & 1;
-            gd.ucBackground = pImage->ucBackground;
-            gd.iCanvasWidth = pImage->iCanvasWidth;
-            if (pImage->pfnDraw) {
-                DrawCooked(pImage, &gd, &buf[pImage->iCanvasHeight * pImage->iCanvasWidth]); // dest = past end of canvas
-                gd.pPixels = &buf[pImage->iCanvasHeight * pImage->iCanvasWidth]; // point to the line we just converted
-                (*pImage->pfnDraw)(&gd); // callback to handle this line
-            } else {
-                int iOffset = (iBpp * pImage->iX) + ((gd.y + pImage->iY) * iPitch);
-                DrawCooked(pImage, &gd, &pImage->pFrameBuffer[iOffset]);
+            while (s < pEnd) {
+                *d++ = pPal[*s++];
+            }
+        } else {
+            GIFDRAW gd;
+            gd.iX = pImage->iX;
+            gd.iY = pImage->iY;
+            gd.iWidth = pImage->iWidth;
+            gd.iHeight = pImage->iHeight;
+            gd.pPalette = (pImage->bUseLocalPalette) ? pImage->pLocalPalette : pImage->pPalette;
+            gd.pPalette24 = (uint8_t *)gd.pPalette; // just cast the pointer for RGB888
+            gd.ucIsGlobalPalette = pImage->bUseLocalPalette==1?0:1;
+            gd.pUser = pImage->pUser;
+            gd.ucPaletteType = pImage->ucPaletteType;
+            const int iBpp = (pImage->ucPaletteType == GIF_PALETTE_RGB888) ? 3 : 2;
+            const int iPitch = pImage->iCanvasWidth * iBpp;
+            for (int y=0; y<pImage->iHeight; y++) {
+                gd.y = y;
+                gd.pPixels = &buf[(y * pImage->iWidth)]; // source pixels
+                // Ugly logic to handle the interlaced line position, but it
+                // saves having to have another set of state variables
+                if (pImage->ucMap & 0x40) { // interlaced?
+                   int height = pImage->iHeight-1;
+                   if (gd.y > height / 2)
+                      gd.y = gd.y * 2 - (height | 1);
+                   else if (gd.y > height / 4)
+                      gd.y = gd.y * 4 - ((height & ~1) | 2);
+                   else if (gd.y > height / 8)
+                      gd.y = gd.y * 8 - ((height & ~3) | 4);
+                   else
+                      gd.y = gd.y * 8;
+                }
+                gd.ucDisposalMethod = (pImage->ucGIFBits & 0x1c)>>2;
+                gd.ucTransparent = pImage->ucTransparent;
+                gd.ucHasTransparency = pImage->ucGIFBits & 1;
+                gd.ucBackground = pImage->ucBackground;
+                gd.iCanvasWidth = pImage->iCanvasWidth;
+                if (pImage->pfnDraw) {
+                    DrawCooked(pImage, &gd, &buf[pImage->iCanvasHeight * pImage->iCanvasWidth]); // dest = past end of canvas
+                    gd.pPixels = &buf[pImage->iCanvasHeight * pImage->iCanvasWidth]; // point to the line we just converted
+                    (*pImage->pfnDraw)(&gd); // callback to handle this line
+                } else {
+                    int iOffset = (iBpp * pImage->iX) + ((gd.y + pImage->iY) * iPitch);
+                    DrawCooked(pImage, &gd, &pImage->pFrameBuffer[iOffset]);
+                }
             }
         }
     }

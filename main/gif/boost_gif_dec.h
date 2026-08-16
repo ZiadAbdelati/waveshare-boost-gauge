@@ -242,7 +242,7 @@ typedef struct gif_image_tag
     int GIF_getLastError(GIFIMAGE *pGIF);
     int GIF_getLoopCount(GIFIMAGE *pGIF);
 
-#define REGISTER_WIDTH 32
+#define REGISTER_WIDTH 64
 
 // BOOST: upstream never defines ALLOWS_UNALIGNED, so INTELLONG() (used by the
 // hot GET_CODE bit-reader) degrades to four byte loads plus shifts and
@@ -281,6 +281,5 @@ typedef uint64_t gif_u64_alias_t GIF_MAY_ALIAS;
 #endif // ALLOWS_UNALIGNED
 #define BIGINT int64_t
 #define BIGUINT uint64_t
-#define REGISTER_WIDTH 64
 
 #endif // BOOST_GIF_DEC_H
