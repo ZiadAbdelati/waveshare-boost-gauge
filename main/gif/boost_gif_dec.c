@@ -938,13 +938,19 @@ static void DrawCooked(GIFIMAGE *pPage, GIFDRAW *pDraw, void *pDest)
                 }
             }
         } else { // convert all pixels through the palette without transparency
-            while (s <= pEnd - 4) {
-                const uint32_t p01 = (uint32_t)pPal[s[0]] | ((uint32_t)pPal[s[1]] << 16);
-                const uint32_t p23 = (uint32_t)pPal[s[2]] | ((uint32_t)pPal[s[3]] << 16);
+            while (s <= pEnd - 8) {
+                const uint32_t s0123 = *(const uint32_t *)&s[0];
+                const uint32_t s4567 = *(const uint32_t *)&s[4];
+                const uint32_t p01 = (uint32_t)pPal[(uint8_t)s0123] | ((uint32_t)pPal[(uint8_t)(s0123 >> 8)] << 16);
+                const uint32_t p23 = (uint32_t)pPal[(uint8_t)(s0123 >> 16)] | ((uint32_t)pPal[(uint8_t)(s0123 >> 24)] << 16);
+                const uint32_t p45 = (uint32_t)pPal[(uint8_t)s4567] | ((uint32_t)pPal[(uint8_t)(s4567 >> 8)] << 16);
+                const uint32_t p67 = (uint32_t)pPal[(uint8_t)(s4567 >> 16)] | ((uint32_t)pPal[(uint8_t)(s4567 >> 24)] << 16);
                 ((uint32_t *)d)[0] = p01;
                 ((uint32_t *)d)[1] = p23;
-                s += 4;
-                d += 4;
+                ((uint32_t *)d)[2] = p45;
+                ((uint32_t *)d)[3] = p67;
+                s += 8;
+                d += 8;
             }
             while (s < pEnd) {
                 c = *s++; // just write the new opaque pixels over the old

@@ -387,8 +387,13 @@ static void gif_decode_task(void * arg)
         uint8_t prev_idx = 1 - write_idx;
         size_t fb_size = (size_t)gifobj->gif->iCanvasWidth * gifobj->gif->iCanvasHeight * sizeof(uint16_t);
 
-        /* Copy previous canvas into current write buffer for delta composition */
-        if(gifobj->framebuffers[prev_idx] != NULL && gifobj->framebuffers[write_idx] != NULL) {
+        /* Only copy previous canvas if the frame has transparency or is a partial sub-rect.
+         * Full-frame opaque frames will overwrite every pixel, so skipping 434 KB PSRAM memcpy saves ~1.3 ms. */
+        const bool is_full_opaque = (gifobj->gif->iX == 0 && gifobj->gif->iY == 0 &&
+                                     gifobj->gif->iWidth == gifobj->gif->iCanvasWidth &&
+                                     gifobj->gif->iHeight == gifobj->gif->iCanvasHeight &&
+                                     !(gifobj->gif->ucGIFBits & 1));
+        if(!is_full_opaque && gifobj->framebuffers[prev_idx] != NULL && gifobj->framebuffers[write_idx] != NULL) {
             memcpy(gifobj->framebuffers[write_idx], gifobj->framebuffers[prev_idx], fb_size);
         }
 
