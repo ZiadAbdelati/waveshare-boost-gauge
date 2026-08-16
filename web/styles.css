@@ -730,16 +730,17 @@ output {
 }
 
 /* The shared #errorBox / #okBox are toasts: fixed overlays pinned to the
- * viewport top-centre. They are direct children of <body> (no panel can clip
- * or re-flow them), so a notification floats over the content instead of
- * pushing the layout around and stays visible on mobile no matter how far the
- * page is scrolled. The skins above still apply; only placement differs from
- * an inline box. */
+ * viewport top (centered on mobile, right-aligned on wide screens). They are
+ * direct children of <body> (no panel can clip or re-flow them), so a
+ * notification floats over the content instead of pushing the layout around
+ * and stays visible on mobile no matter how far the page is scrolled. The
+ * skins above still apply; only placement differs from an inline box. */
 #errorBox,
 #okBox {
   position: fixed;
   top: calc(env(safe-area-inset-top, 0px) + 2rem);
   left: 50%;
+  right: auto;
   transform: translate(-50%, 0);
   z-index: 1000;
   width: min(92vw, 26rem);
@@ -752,6 +753,15 @@ output {
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   box-shadow: 0 10px 32px rgba(0, 0, 0, 0.85);
+}
+@media (min-width: 720px) {
+  #errorBox,
+  #okBox {
+    left: auto;
+    right: 2rem;
+    transform: none;
+    text-align: left;
+  }
 }
 #errorBox {
   background: color-mix(in srgb, var(--overboost) 25%, #10141d 95%);
@@ -767,9 +777,19 @@ output {
   from { opacity: 0; transform: translate(-50%, -0.5rem); }
   to { opacity: 1; transform: translate(-50%, 0); }
 }
+@keyframes toast-in-right {
+  from { opacity: 0; transform: translateY(-0.5rem); }
+  to { opacity: 1; transform: translateY(0); }
+}
 #errorBox:not([hidden]),
 #okBox:not([hidden]) {
   animation: toast-in 180ms ease-out;
+}
+@media (min-width: 720px) {
+  #errorBox:not([hidden]),
+  #okBox:not([hidden]) {
+    animation: toast-in-right 180ms ease-out;
+  }
 }
 
 

@@ -9,12 +9,16 @@
  *
  * Run: node tools/test_neon_web_parity.js
  */
-const fs = require("fs");
-const path = require("path");
-const assert = require("assert");
+import fs from "fs";
+import path from "path";
+import assert from "assert";
+import { fileURLToPath } from "url";
 
-const src = fs.readFileSync(path.join(__dirname, "..", "web", "app.js"), "utf8");
-const css = fs.readFileSync(path.join(__dirname, "..", "web", "styles.css"), "utf8");
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const rootDir = path.resolve(__dirname, "..");
+const src = fs.readFileSync(path.join(rootDir, "web", "app.js"), "utf8");
+const css = fs.readFileSync(path.join(rootDir, "web", "styles.css"), "utf8");
 assert.ok(/@font-face\{[^}]*font-family:"SF Alien Encounters"[^}]*src:url\(data:font\//.test(css),
   "SF Alien Encounters must be inlined via @font-face");
 
@@ -40,15 +44,21 @@ const hexToRgb = (h) => {
 };
 
 const calls = [];
-const ctx = new Proxy({}, {
-  get(_, k) {
-    if (k === "canvas") return { width: 466, height: 466 };
-    return (...a) => calls.push({ op: String(k), args: a, style: ctx._fill, stroke: ctx._stroke, lw: ctx._lw });
+const ctx = new Proxy({
+  _fill: null,
+  _stroke: null,
+  _lw: null,
+  canvas: { width: 466, height: 466 },
+  measureText() { return { width: 20 }; },
+}, {
+  get(target, k) {
+    if (k in target) return target[k];
+    return (...a) => calls.push({ op: String(k), args: a, style: target._fill, stroke: target._stroke, lw: target._lw });
   },
-  set(_, k, v) {
-    if (k === "fillStyle") ctx._fill = v;
-    if (k === "strokeStyle") ctx._stroke = v;
-    if (k === "lineWidth") ctx._lw = v;
+  set(target, k, v) {
+    if (k === "fillStyle") target._fill = v;
+    if (k === "strokeStyle") target._stroke = v;
+    if (k === "lineWidth") target._lw = v;
     calls.push({ op: "set:" + String(k), args: [v] });
     return true;
   },
@@ -114,7 +124,7 @@ function withTextState(callsArr) {
 }
 
 /* --- the ring lights whole segments, indexed by floor at BOTH ends --------- */
-const cSeg = fs.readFileSync(path.join(__dirname, "..", "main", "boost_gauge.c"), "utf8");
+const cSeg = fs.readFileSync(path.join(rootDir, "main", "boost_gauge.c"), "utf8");
 const segGap = Number(/^#define[ \t]+NEON_SEG_GAP[ \t]+([0-9.]+)f/m.exec(cSeg)[1]);
 const segPitch = Number(/^#define[ \t]+NEON_SEG_PITCH[ \t]+([0-9.]+)f/m.exec(cSeg)[1]);
 const nseg = Number(/^#define[ \t]+NEON_NSEG[ \t]+([0-9]+)/m.exec(cSeg)[1]);
@@ -136,11 +146,12 @@ for (const psi of [-12, -3, 2.5, 8.5]) {
   const drawn = new Set();
   for (const k of c) {
     if (k.op !== "arc") continue;
-    /* Only the lit segments, which span segPitch - NEON_SEG_GAP degrees. The
-     * unlit track is one full-sweep arc and the bulbs are tiny circles; both
-     * would otherwise be mistaken for segment 0. */
+    /* Only the lit segments, which span segPitch - NEON_SEG_GAP degrees and use
+     * non-track styling (dim/lit/white). The unlit track draws unlit segments
+     * in state.palette.track. */
     const span = (k.args[4] - k.args[3]) / DEG;
     if (Math.abs(span - (segPitch - segGap)) > 0.01) continue;
+    if (k.stroke === state.palette.track) continue;
     const i = Math.round((k.args[3] / DEG - segGap / 2 - segStart) / segPitch);
     if (i >= 0 && i < nseg) drawn.add(i);
   }
@@ -166,7 +177,7 @@ for (const psi of [-12, -3, 2.5, 8.5]) {
  * from boost_gauge.c means the mirror is checked against the panel's
  * arithmetic, not against a restatement of its own. Module scope: the
  * spin block below re-uses bulbRef. */
-  const cSrc = fs.readFileSync(path.join(__dirname, "..", "main", "boost_gauge.c"), "utf8");
+  const cSrc = fs.readFileSync(path.join(rootDir, "main", "boost_gauge.c"), "utf8");
   const fdef = (name) => {
     const m = new RegExp("^#define[ \t]+" + name + "[ \t]+([0-9.]+)f", "m").exec(cSrc);
     assert.ok(m, `#define ${name} not found in main/boost_gauge.c`);
@@ -282,7 +293,7 @@ for (const psi of [-12, -3, 2.5, 8.5]) {
    * NEON_SPIN_DIR_* the per-ring direction (inner/outer clockwise -1,
    * middle counterclockwise +1). The mirror must read the SAME values, or a
    * chase that matches the panel on the bench would drift on the browser. */
-  const cSrc = fs.readFileSync(path.join(__dirname, "..", "main", "boost_gauge.c"), "utf8");
+  const cSrc = fs.readFileSync(path.join(rootDir, "main", "boost_gauge.c"), "utf8");
   const spinDef = (name) => {
     const m = new RegExp("^#define[ \\t]+" + name + "[ \\t]+\\(?(-?[0-9]+)\\\)?", "m").exec(cSrc);
     assert.ok(m, `#define ${name} not found in main/boost_gauge.c`);
@@ -444,7 +455,7 @@ for (const [layout, dy] of [[0, 0], [1, 0], [2, 0]]) {
    * entry pinned to the same corner of the colour cube and the zones converged.
    * Encoding the reference from the firmware's constants instead means the
    * test tracks neon_lit() rather than whatever app.js happens to do. */
-  const cSrc = fs.readFileSync(path.join(__dirname, "..", "main", "boost_gauge.c"), "utf8");
+  const cSrc = fs.readFileSync(path.join(rootDir, "main", "boost_gauge.c"), "utf8");
   const fdef = (name) => {
     const m = new RegExp("^#define[ \\t]+" + name + "[ \\t]+([0-9.]+)f", "m").exec(cSrc);
     assert.ok(m, `#define ${name} not found in main/boost_gauge.c`);
@@ -572,7 +583,7 @@ console.log("neon web parity: band stacking and sign shear verified");
  * swapped sides at the zero crossing (NEON_TUBE_ZERO_DEG). */
 {
   const c = render(0, -12);
-  const zSrc = fs.readFileSync(path.join(__dirname, "..", "main", "boost_gauge.c"), "utf8");
+  const zSrc = fs.readFileSync(path.join(rootDir, "main", "boost_gauge.c"), "utf8");
   const zDeg = Number(/^#define[ \t]+NEON_TUBE_ZERO_DEG[ \t]+([0-9.]+)f/m.exec(zSrc)[1]);
   const defN = (name) => Number(new RegExp("^#define[ \\t]+" + name + "[ \\t]+([0-9]+)", "m").exec(zSrc)[1]);
   const rN = defN("NEON_R"), capN = defN("NEON_CAP_W"), halfN = defN("NEON_TUBE_TRACK_HALF");
@@ -695,7 +706,7 @@ console.log("neon web parity: outer band is an HSL lighten (gradient, not a sand
  * against THOSE. This cannot drift silently: changing a #define without
  * updating web/app.js now fails here. */
 {
-  const cSrc = fs.readFileSync(path.join(__dirname, "..", "main", "boost_gauge.c"), "utf8");
+  const cSrc = fs.readFileSync(path.join(rootDir, "main", "boost_gauge.c"), "utf8");
   const def = (name) => {
     const m = new RegExp("^#define[ \\t]+" + name + "[ \\t]+\\(?(-?[0-9.]+)f?\\)?[ \\t]*(?:/\\*|$)", "m").exec(cSrc);
     assert.ok(m, `#define ${name} not found in main/boost_gauge.c`);

@@ -765,9 +765,17 @@ function drawNeonGauge(sample, psi, g) {
   } else {
     /* The unlit track shares the same outer edge as the lit bands, and stays
      * at the body width while the lit run extends further in. The tube's track
-     * is a bit wider now (ringR down to the halo's outer edge) to match the
-     * lit footprint. */
-    arc(start, start + sweep, tube ? (ringR - tubeHaloR + 1) : segmentW, p.track);
+     * is a solid arc matching its wider lit footprint; segments draws individual
+     * unlit segment blocks. */
+    if (tube) {
+      arc(start, start + sweep, ringR - tubeHaloR + 1, p.track);
+    } else {
+      for (let i = 0; i < nseg; i++) {
+        const a0 = segStart + i * segPitch + NEON_SEG_GAP / 2;
+        const a1 = a0 + segPitch - NEON_SEG_GAP;
+        arc(a0, a1, segmentW, p.track);
+      }
+    }
     const lo = Math.min(zero, value), hi = Math.max(zero, value);
     const zeroSeg = Math.floor((zero - segStart) / segPitch);
     if (tube) {
