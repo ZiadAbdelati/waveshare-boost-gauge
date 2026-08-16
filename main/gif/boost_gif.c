@@ -477,6 +477,32 @@ static void invalidate_frame(lv_gif_t * gifobj)
                     obj->coords.x1 + img->w - 1, obj->coords.y1 + img->h - 1);
         lv_area_align(&obj->coords, &img_area, img->align, img->offset.x, img->offset.y);
 
+        lv_area_t dirty;
+        dirty.x1 = img_area.x1 + fx;
+        dirty.y1 = img_area.y1 + fy;
+        dirty.x2 = dirty.x1 + fw - 1;
+        dirty.y2 = dirty.y1 + fh - 1;
+
+        /* CO5300 AMOLED QSPI controller requires even x1/y1 and odd x2/y2
+         * window edges (2-pixel/word aligned). Rounding matches rounder_event_cb
+         * in boost_display.c so CASET/RASET hardware windows never suffer 1-pixel
+         * phase shifts or horizontal streaking on partial delta frames. */
+        dirty.x1 = (dirty.x1 >> 1) << 1;
+        dirty.y1 = (dirty.y1 >> 1) << 1;
+        dirty.x2 = ((dirty.x2 >> 1) << 1) + 1;
+        dirty.y2 = ((dirty.y2 >> 1) << 1) + 1;
+
+        /* Clamp to img_area bounds */
+        if(dirty.x1 < img_area.x1) dirty.x1 = (img_area.x1 >> 1) << 1;
+        if(dirty.y1 < img_area.y1) dirty.y1 = (img_area.y1 >> 1) << 1;
+        if(dirty.x2 > img_area.x2) dirty.x2 = ((img_area.x2 >> 1) << 1) + 1;
+        if(dirty.y2 > img_area.y2) dirty.y2 = ((img_area.y2 >> 1) << 1) + 1;
+
+        const int32_t r_fx = dirty.x1 - img_area.x1;
+        const int32_t r_fy = dirty.y1 - img_area.y1;
+        const int32_t r_fw = dirty.x2 - dirty.x1 + 1;
+        const int32_t r_fh = dirty.y2 - dirty.y1 + 1;
+
 #ifdef ESP_PLATFORM
         /* BOOST direct push: the cooked framebuffer already holds panel-ready
          * RGB565 for exactly this rect, so instead of asking LVGL to re-blit
@@ -487,13 +513,13 @@ static void invalidate_frame(lv_gif_t * gifobj)
          * unrotated. On any push refusal we fall through to the ordinary
          * bounded LVGL invalidation. */
         const int64_t push_t0 = esp_timer_get_time();
-        /* x1/y1 are end-EXCLUSIVE (esp_lcd_panel_draw_bitmap convention), so
-         * +fw/+fh with no +1: img_area.x1+fx is the first column, and
-         * fx+fw is one past the last. */
+        /* x1/y1 are end-EXCLUSIVE (esp_lcd_panel_draw_bitmap convention).
+         * Since dirty.x1/y1 are even and dirty.x2/y2 are odd, dirty.x2+1 and
+         * dirty.y2+1 are even, preserving CO5300 2-pixel alignment. */
         esp_err_t pushed = boost_display_push_bitmap(
-            img_area.x1 + fx, img_area.y1 + fy,
-            img_area.x1 + fx + fw, img_area.y1 + fy + fh,
-            (const uint16_t *)gif->pFrameBuffer + (size_t)fy * gif->iCanvasWidth + fx,
+            dirty.x1, dirty.y1,
+            dirty.x2 + 1, dirty.y2 + 1,
+            (const uint16_t *)gif->pFrameBuffer + (size_t)r_fy * gif->iCanvasWidth + r_fx,
             (int32_t)gif->iCanvasWidth);
         if(pushed == ESP_OK) {
             gifobj->last_push_us = (uint32_t)(esp_timer_get_time() - push_t0);
@@ -501,23 +527,17 @@ static void invalidate_frame(lv_gif_t * gifobj)
             gifobj->stat_push_frames++;
             bounded = true; /* panel updated; skip the LVGL invalidation */
 #if BOOST_GIF_LOG_DIRTY_RECT
-            dirty_px = (uint32_t)(fw * fh);
+            dirty_px = (uint32_t)(r_fw * r_fh);
 #endif
         }
         else {
             gifobj->stat_push_failures++;
 #endif /* ESP_PLATFORM */
 
-            lv_area_t dirty;
-            dirty.x1 = img_area.x1 + fx;
-            dirty.y1 = img_area.y1 + fy;
-            dirty.x2 = dirty.x1 + fw - 1;
-            dirty.y2 = dirty.y1 + fh - 1;
-
             lv_obj_invalidate_area(obj, &dirty);
             bounded = true;
 #if BOOST_GIF_LOG_DIRTY_RECT
-            dirty_px = (uint32_t)(fw * fh);
+            dirty_px = (uint32_t)(r_fw * r_fh);
 #endif
 #ifdef ESP_PLATFORM
         }
