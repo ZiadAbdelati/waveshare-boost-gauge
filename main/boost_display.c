@@ -1141,25 +1141,29 @@ esp_err_t boost_display_push_bitmap(int x0, int y0, int x1, int y1,
         uint16_t *xfer = s_region_xfer_bufs[s_region_xfer_idx % BOOST_REGION_DBUF_QUEUE_DEPTH];
         ++s_region_xfer_idx;
         const int width = x1 - x0;
-        /* Row-by-row pack, same as the region path: source rows are
-         * src_stride_px apart (GIF canvas stride), destination strips pack
-         * `width` columns tight. */
+        /* Row-by-row pack with the RGB565 byte-swap FUSED into the copy.
+         * The CO5300 wire format is big-endian; the adapter bridge swaps for
+         * LVGL/region-dbuf paths before the custom hook, but this push
+         * bypasses the bridge, so the swap happens here (source framebuffer
+         * stays little-endian LVGL image data for the LVGL fallback path).
+         *
+         * Fused, not memcpy + a separate swap pass, for a measured reason: a
+         * full-frame burst must write FASTER than the panel scan (35.95
+         * us/row) or the scan catches the burst mid-frame and tears. With a
+         * separate in-place swap pass the per-chunk CPU cost (~158 us) pushed
+         * the effective write rate to ~39 us/row - over the scan rate - and
+         * full-frame pushes tore visibly on horizontally-moving content
+         * (2026-08-16 ledger row). The fused single pass keeps the per-chunk
+         * cost near a plain memcpy and the burst at region-dbuf's measured
+         * ~31.5 us/row, which stays ahead of the scan. Do not add per-chunk
+         * CPU work to this loop without re-checking that arithmetic. */
         for (int r = 0; r < lines; ++r) {
-            memcpy(xfer + (size_t)r * width,
-                   src + (size_t)(y - y0 + r) * src_stride_px,
-                   (size_t)width * sizeof(uint16_t));
-        }
-        /* Byte-swap RGB565 to big-endian, the wire format the CO5300 QSPI
-         * link expects. The LVGL path gets this for free from the adapter
-         * bridge (lvgl_bridge_v9.c applies lv_draw_sw_rgb565_swap for
-         * ESP_LV_ADAPTER_PANEL_IF_OTHER + RGB565 BEFORE the custom
-         * draw-bitmap hook - which is why region_dbuf_writeback() must NOT
-         * swap again). This push bypasses the bridge entirely, so the swap
-         * happens here, in the internal scratch copy where the source
-         * framebuffer stays untouched little-endian LVGL image data. */
-        const size_t px = (size_t)width * lines;
-        for (size_t i = 0; i < px; ++i) {
-            xfer[i] = (uint16_t)((xfer[i] << 8) | (xfer[i] >> 8));
+            const uint16_t *s = src + (size_t)(y - y0 + r) * src_stride_px;
+            uint16_t *d = xfer + (size_t)r * width;
+            for (int c = 0; c < width; ++c) {
+                const uint16_t p = s[c];
+                d[c] = (uint16_t)((p << 8) | (p >> 8));
+            }
         }
         const esp_err_t ret = esp_lcd_panel_draw_bitmap(s_panel, x0, y, x1, y + lines, xfer);
         if (ret != ESP_OK) {

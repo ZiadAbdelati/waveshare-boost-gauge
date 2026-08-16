@@ -41,6 +41,9 @@
 #ifdef ESP_PLATFORM
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "boost_media_store.h"
 #include "boost_display.h"
 #endif
@@ -121,6 +124,18 @@ typedef struct {
     uint32_t stat_full;
 #endif
 #ifdef ESP_PLATFORM
+    /* BOOST: dual-core pipelined decode + direct push state */
+    void * framebuffers[2];
+    uint8_t write_fb_idx;
+    uint8_t read_fb_idx;
+    TaskHandle_t decode_task;
+    SemaphoreHandle_t sem_frame_ready;
+    SemaphoreHandle_t sem_next_decode;
+    volatile bool task_running;
+    int ms_delay_next;
+    int last_has_next;
+    int32_t last_fx, last_fy, last_fw, last_fh;
+
     /* BOOST: direct-push + timing stats. decode_us/push_us accumulate totals
      * for the rate-limited summary; last_* keep the instantaneous values for
      * that same log line. push_failures counts fallbacks to the LVGL path. */
@@ -305,15 +320,92 @@ static void lv_gif_destructor(const lv_obj_class_t * class_p, lv_obj_t * obj)
 
     lv_image_cache_drop(lv_image_get_src(obj));
 
+#ifdef ESP_PLATFORM
+    if(gifobj->decode_task != NULL) {
+        gifobj->task_running = false;
+        xSemaphoreGive(gifobj->sem_next_decode);
+        vTaskDelay(pdMS_TO_TICKS(15));
+        gifobj->decode_task = NULL;
+    }
+    if(gifobj->sem_frame_ready != NULL) {
+        vSemaphoreDelete(gifobj->sem_frame_ready);
+        gifobj->sem_frame_ready = NULL;
+    }
+    if(gifobj->sem_next_decode != NULL) {
+        vSemaphoreDelete(gifobj->sem_next_decode);
+        gifobj->sem_next_decode = NULL;
+    }
+    if(gifobj->framebuffers[0] != NULL) {
+        lv_free(gifobj->framebuffers[0]);
+        gifobj->framebuffers[0] = NULL;
+    }
+    if(gifobj->framebuffers[1] != NULL) {
+        lv_free(gifobj->framebuffers[1]);
+        gifobj->framebuffers[1] = NULL;
+    }
+#endif
+
     if(gifobj->is_open) {
         void * framebuffer = gifobj->gif->pFrameBuffer;
+        if(gifobj->gif->pTurboBuffer != NULL) {
+            lv_free(gifobj->gif->pTurboBuffer);
+            gifobj->gif->pTurboBuffer = NULL;
+        }
+#ifdef ESP_PLATFORM
+        if(gifobj->gif->pTurboSymbols != NULL) {
+            free(gifobj->gif->pTurboSymbols);
+            gifobj->gif->pTurboSymbols = NULL;
+        }
+        if(gifobj->gif->pTurboLengths != NULL) {
+            free(gifobj->gif->pTurboLengths);
+            gifobj->gif->pTurboLengths = NULL;
+        }
+#endif
         GIF_close(gifobj->gif);
-        lv_free(framebuffer);
+        if(framebuffer != NULL && framebuffer != gifobj->framebuffers[0] && framebuffer != gifobj->framebuffers[1]) {
+            lv_free(framebuffer);
+        }
     }
     lv_free(gifobj->gif);
     gifobj->gif = NULL;
     lv_timer_delete(gifobj->timer);
 }
+
+#ifdef ESP_PLATFORM
+static void gif_decode_task(void * arg)
+{
+    lv_gif_t * gifobj = (lv_gif_t *)arg;
+    while(gifobj->task_running) {
+        if(xSemaphoreTake(gifobj->sem_next_decode, portMAX_DELAY) != pdTRUE) {
+            break;
+        }
+        if(!gifobj->task_running) {
+            break;
+        }
+
+        uint8_t write_idx = gifobj->write_fb_idx;
+        uint8_t prev_idx = 1 - write_idx;
+        size_t fb_size = (size_t)gifobj->gif->iCanvasWidth * gifobj->gif->iCanvasHeight * sizeof(uint16_t);
+
+        /* Copy previous canvas into current write buffer for delta composition */
+        if(gifobj->framebuffers[prev_idx] != NULL && gifobj->framebuffers[write_idx] != NULL) {
+            memcpy(gifobj->framebuffers[write_idx], gifobj->framebuffers[prev_idx], fb_size);
+        }
+
+        gifobj->gif->pFrameBuffer = gifobj->framebuffers[write_idx];
+
+        int64_t t0 = esp_timer_get_time();
+        int ms_delay = 0;
+        gifobj->last_has_next = GIF_playFrame(gifobj->gif, &ms_delay, gifobj);
+        gifobj->ms_delay_next = ms_delay;
+        gifobj->last_decode_us = (uint32_t)(esp_timer_get_time() - t0);
+        gifobj->stat_decode_us += gifobj->last_decode_us;
+
+        xSemaphoreGive(gifobj->sem_frame_ready);
+    }
+    vTaskDelete(NULL);
+}
+#endif
 
 static void initialize(lv_gif_t * gifobj)
 {
@@ -323,9 +415,54 @@ static void initialize(lv_gif_t * gifobj)
     if(gifobj->is_open) {
         lv_image_cache_drop(lv_image_get_src((lv_obj_t *) gifobj));
 
+#ifdef ESP_PLATFORM
+        if(gifobj->decode_task != NULL) {
+            gifobj->task_running = false;
+            xSemaphoreGive(gifobj->sem_next_decode);
+            vTaskDelay(pdMS_TO_TICKS(15));
+            gifobj->decode_task = NULL;
+        }
+        if(gifobj->sem_frame_ready != NULL) {
+            vSemaphoreDelete(gifobj->sem_frame_ready);
+            gifobj->sem_frame_ready = NULL;
+        }
+        if(gifobj->sem_next_decode != NULL) {
+            vSemaphoreDelete(gifobj->sem_next_decode);
+            gifobj->sem_next_decode = NULL;
+        }
+        if(gifobj->framebuffers[0] != NULL) {
+            lv_free(gifobj->framebuffers[0]);
+            gifobj->framebuffers[0] = NULL;
+        }
+        if(gifobj->framebuffers[1] != NULL) {
+            lv_free(gifobj->framebuffers[1]);
+            gifobj->framebuffers[1] = NULL;
+        }
+#endif
+
         void * framebuffer = gif->pFrameBuffer;
+        if(gif->pTurboBuffer != NULL) {
+            lv_free(gif->pTurboBuffer);
+            gif->pTurboBuffer = NULL;
+        }
+#ifdef ESP_PLATFORM
+        if(gif->pTurboSymbols != NULL) {
+            free(gif->pTurboSymbols);
+            gif->pTurboSymbols = NULL;
+        }
+        if(gif->pTurboLengths != NULL) {
+            free(gif->pTurboLengths);
+            gif->pTurboLengths = NULL;
+        }
+#endif
         GIF_close(gif);
-        lv_free(framebuffer);
+        if(framebuffer != NULL
+#ifdef ESP_PLATFORM
+           && framebuffer != gifobj->framebuffers[0] && framebuffer != gifobj->framebuffers[1]
+#endif
+          ) {
+            lv_free(framebuffer);
+        }
         gifobj->is_open = 0;
         gifobj->imgdsc.data = NULL;
     }
@@ -369,10 +506,32 @@ static void initialize(lv_gif_t * gifobj)
 
     uint32_t width = GIF_getCanvasWidth(gif);
     uint32_t height = GIF_getCanvasHeight(gif);
-    /* BOOST: upstream allocated width * height * (pixel_size_bytes + 1). The
-     * extra plane was an 8-bit palette-index copy of the canvas that
-     * GIF_DRAW_COOKED writes for every pixel and never reads back. */
     uint32_t framebuffer_size = width * height * pixel_size_bytes;
+
+#ifdef ESP_PLATFORM
+    /* BOOST: dual-core double-buffered pipeline. Allocate two PSRAM framebuffers
+     * so Core 0 decodes frame N+1 in background while Core 1 pushes frame N. */
+    gifobj->framebuffers[0] = lv_malloc(framebuffer_size);
+    gifobj->framebuffers[1] = lv_malloc(framebuffer_size);
+    LV_ASSERT_MALLOC(gifobj->framebuffers[0]);
+    LV_ASSERT_MALLOC(gifobj->framebuffers[1]);
+    if(gifobj->framebuffers[0] == NULL || gifobj->framebuffers[1] == NULL) {
+        LV_LOG_WARN("Couldn't allocate double framebuffers for GIF");
+        GIF_close(gif);
+        gifobj->is_open = 0;
+        return;
+    }
+    lv_memset(gifobj->framebuffers[0], 0, framebuffer_size);
+    lv_memset(gifobj->framebuffers[1], 0, framebuffer_size);
+
+    gif->pFrameBuffer = gifobj->framebuffers[0];
+    gif->ucDrawType = GIF_DRAW_COOKED;
+    gifobj->write_fb_idx = 0;
+    gifobj->read_fb_idx = 0;
+    gifobj->sem_frame_ready = xSemaphoreCreateBinary();
+    gifobj->sem_next_decode = xSemaphoreCreateBinary();
+    gifobj->task_running = true;
+#else
     gif->pFrameBuffer = lv_malloc(framebuffer_size);
     gif->ucDrawType = GIF_DRAW_COOKED;
     LV_ASSERT_MALLOC(gif->pFrameBuffer);
@@ -382,10 +541,23 @@ static void initialize(lv_gif_t * gifobj)
         gifobj->is_open = 0;
         return;
     }
-    /* BOOST: restore the zero-init. The decoder only ever writes the current
-     * frame's rectangle, so without this everything outside frame 1's rect is
-     * displayed straight from uninitialised PSRAM. */
     lv_memset(gif->pFrameBuffer, 0, framebuffer_size);
+#endif
+
+#if GIF_SUPPORT_TURBO
+    /* BOOST: allocate turbo LZW buffer (~242 KB in PSRAM).
+     * Decodes whole-frame byte streams without reverse-stack walks. */
+    const uint32_t turbo_size = (width * height) + 256 + (4096 * sizeof(uint32_t)) + (4096 * sizeof(uint16_t));
+    gif->pTurboBuffer = lv_malloc(turbo_size);
+    if(gif->pTurboBuffer != NULL) {
+        lv_memset(gif->pTurboBuffer, 0, turbo_size);
+    }
+#ifdef ESP_PLATFORM
+    /* BOOST: allocate symbols (16 KB) and lengths (8 KB) from internal RAM for single-cycle latency */
+    gif->pTurboSymbols = heap_caps_malloc(4096 * sizeof(uint32_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    gif->pTurboLengths = heap_caps_malloc(4096 * sizeof(uint16_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+#endif
+#endif
 
     gifobj->imgdsc.data = gif->pFrameBuffer; /* BOOST: cooked plane is at offset 0 now */
     gifobj->imgdsc.header.magic = LV_IMAGE_HEADER_MAGIC;
@@ -412,6 +584,18 @@ static void initialize(lv_gif_t * gifobj)
     gifobj->stat_push_failures = 0;
     gifobj->last_decode_us = 0;
     gifobj->last_push_us = 0;
+
+    /* Decode frame 0 synchronously so widget has initial content */
+    int ms_delay0 = 0;
+    gifobj->last_has_next = GIF_playFrame(gif, &ms_delay0, gifobj);
+    gifobj->ms_delay_next = ms_delay0;
+
+    /* Spawn background decode task pinned to Core 0 with priority 5 */
+    xTaskCreatePinnedToCore(gif_decode_task, "gif_dec", 4096, gifobj, 5, &gifobj->decode_task, 0);
+
+    /* Prime decoder to start decoding frame 1 in background into buffer 1 */
+    gifobj->write_fb_idx = 1;
+    xSemaphoreGive(gifobj->sem_next_decode);
 #endif
 
     lv_timer_resume(gifobj->timer);
@@ -516,10 +700,12 @@ static void invalidate_frame(lv_gif_t * gifobj)
         /* x1/y1 are end-EXCLUSIVE (esp_lcd_panel_draw_bitmap convention).
          * Since dirty.x1/y1 are even and dirty.x2/y2 are odd, dirty.x2+1 and
          * dirty.y2+1 are even, preserving CO5300 2-pixel alignment. */
+        const uint16_t * read_fb = (const uint16_t *)(gifobj->framebuffers[gifobj->read_fb_idx] != NULL ?
+                                                        gifobj->framebuffers[gifobj->read_fb_idx] : gif->pFrameBuffer);
         esp_err_t pushed = boost_display_push_bitmap(
             dirty.x1, dirty.y1,
             dirty.x2 + 1, dirty.y2 + 1,
-            (const uint16_t *)gif->pFrameBuffer + (size_t)r_fy * gif->iCanvasWidth + r_fx,
+            read_fb + (size_t)r_fy * gif->iCanvasWidth + r_fx,
             (int32_t)gif->iCanvasWidth);
         if(pushed == ESP_OK) {
             gifobj->last_push_us = (uint32_t)(esp_timer_get_time() - push_t0);
@@ -570,13 +756,14 @@ static void invalidate_frame(lv_gif_t * gifobj)
          * covers only direct-pushed frames. last_* give the instantaneous
          * values of the final frame in the window. */
         BOOST_GIF_LOG("perf: %u frames, decode mean %u us / last %u us, "
-                      "push %u frames mean %u us / last %u us, %u push fallbacks",
+                      "push %u frames mean %u us / last %u us, delay %d ms, %u push fallbacks",
                       (unsigned) gifobj->stat_frames,
                       (unsigned) (gifobj->stat_decode_us / gifobj->stat_frames),
                       (unsigned) gifobj->last_decode_us,
                       (unsigned) gifobj->stat_push_frames,
                       (unsigned) (gifobj->stat_push_frames ? gifobj->stat_push_us / gifobj->stat_push_frames : 0),
                       (unsigned) gifobj->last_push_us,
+                      gifobj->ms_delay_next,
                       (unsigned) gifobj->stat_push_failures);
         gifobj->stat_decode_us = 0;
         gifobj->stat_push_us = 0;
@@ -592,21 +779,51 @@ static void invalidate_frame(lv_gif_t * gifobj)
 
 static void next_frame_task_cb(lv_timer_t * t)
 {
-    lv_obj_t * obj = t->user_data;
+    lv_obj_t * obj = (lv_obj_t *)lv_timer_get_user_data(t);
     lv_gif_t * gifobj = (lv_gif_t *) obj;
 
 #ifdef ESP_PLATFORM
-    const int64_t t0 = esp_timer_get_time();
+    if(gifobj->decode_task != NULL) {
+        /* Wait for frame to finish decoding on Core 0 */
+        if(xSemaphoreTake(gifobj->sem_frame_ready, pdMS_TO_TICKS(100)) == pdTRUE) {
+            /* Ready frame is in write_fb_idx; switch active buffer to it */
+            gifobj->read_fb_idx = gifobj->write_fb_idx;
+            gifobj->gif->pFrameBuffer = gifobj->framebuffers[gifobj->read_fb_idx];
+            gifobj->imgdsc.data = gifobj->framebuffers[gifobj->read_fb_idx];
+
+            /* Kick Core 0 decoder to start decoding frame N+1 into alternate buffer */
+            gifobj->write_fb_idx = 1 - gifobj->read_fb_idx;
+            xSemaphoreGive(gifobj->sem_next_decode);
+
+            /* Push frame N to panel via DMA on Core 1 while Core 0 decodes frame N+1! */
+            lv_image_cache_drop(lv_image_get_src(obj));
+            invalidate_frame(gifobj);
+
+            if(gifobj->last_has_next <= 0) {
+                gifobj->force_full_invalidate = 1;
+                lv_result_t res = lv_obj_send_event(obj, LV_EVENT_READY, NULL);
+                if(gifobj->loop_count > 0) {
+                    if(gifobj->loop_count == 1) {
+                        lv_timer_pause(t);
+                    }
+                    else {
+                        gifobj->loop_count--;
+                    }
+                }
+                if(res != LV_RESULT_OK) return;
+            }
+            else {
+                /* Subtract push duration from frame delay so effective frame cadence
+                 * matches the GIF's authored rate instead of serializing push + delay. */
+                int remaining_ms = gifobj->ms_delay_next - (int)(gifobj->last_push_us / 1000);
+                lv_timer_set_period(gifobj->timer, remaining_ms > 1 ? remaining_ms : 1);
+            }
+            return;
+        }
+    }
 #endif
     int ms_delay_next;
     int has_next = GIF_playFrame(gifobj->gif, &ms_delay_next, gifobj);
-#ifdef ESP_PLATFORM
-    /* BOOST: decode timing for the rate-limited summary. Measured across the
-     * whole GIF_playFrame call (parse + LZW + palette conversion + frame
-     * composition into the cooked framebuffer). */
-    gifobj->last_decode_us = (uint32_t)(esp_timer_get_time() - t0);
-    gifobj->stat_decode_us += gifobj->last_decode_us;
-#endif
     if(has_next <= 0) {
         /*It was the last repeat*/
         /* BOOST: nothing was necessarily decoded on this call (empty frame,

@@ -917,6 +917,18 @@ static void DrawCooked(GIFIMAGE *pPage, GIFDRAW *pDraw, void *pDest)
                     }
                 }
             } else { // no disposal, just write non-transparent pixels
+                while (s <= pEnd - 2) {
+                    const uint8_t c0 = s[0];
+                    const uint8_t c1 = s[1];
+                    if (c0 != ucTransparent && c1 != ucTransparent) {
+                        *(uint32_t *)d = (uint32_t)pPal[c0] | ((uint32_t)pPal[c1] << 16);
+                    } else {
+                        if (c0 != ucTransparent) d[0] = pPal[c0];
+                        if (c1 != ucTransparent) d[1] = pPal[c1];
+                    }
+                    s += 2;
+                    d += 2;
+                }
                 while (s < pEnd) {
                     c = *s++;
                     if (c != ucTransparent) {
@@ -926,26 +938,14 @@ static void DrawCooked(GIFIMAGE *pPage, GIFDRAW *pDraw, void *pDest)
                 }
             }
         } else { // convert all pixels through the palette without transparency
-#if REGISTER_WIDTH == 64
-            // parallelize the writes
-            // optimizing for the write buffer helps; reading 4 bytes at a time vs 1 doesn't on M1
-            while (s < pEnd + 4) { // group 4 pixels
-                BIGUINT bu;
-                uint8_t s0, s1, s2, s3;
-                uint16_t d1, d2, d3;
-                s0 = s[0]; s1 = s[1]; s2 = s[2]; s3 = s[3];
-                bu = pPal[s0]; // not much difference on Apple M1
-                d1 = pPal[s1]; // but other processors may gain
-                d2 = pPal[s2]; // from unrolling the reads
-                d3 = pPal[s3];
-                bu |= (BIGUINT)d1 << 16;
-                bu |= (BIGUINT)d2 << 32;
-                bu |= (BIGUINT)d3 << 48;
+            while (s <= pEnd - 4) {
+                const uint32_t p01 = (uint32_t)pPal[s[0]] | ((uint32_t)pPal[s[1]] << 16);
+                const uint32_t p23 = (uint32_t)pPal[s[2]] | ((uint32_t)pPal[s[3]] << 16);
+                ((uint32_t *)d)[0] = p01;
+                ((uint32_t *)d)[1] = p23;
                 s += 4;
-                *(BIGUINT *)d = bu;
                 d += 4;
             }
-#endif
             while (s < pEnd) {
                 c = *s++; // just write the new opaque pixels over the old
                 *d++ = pPal[c]; // and create the cooked pixels through the palette
@@ -1181,8 +1181,13 @@ uint16_t *pLengths;
     eoi = cc + 1;
     iUncompressedLen = (pImage->iWidth * pImage->iHeight);
     buf = (uint8_t *)pImage->pTurboBuffer;
-    pSymbols = (uint32_t *)&buf[iUncompressedLen+256]; // we need 32-bits (really 23) for the offsets
-    pLengths = (uint16_t *)&pSymbols[4096]; // but only 16-bits for the length of any single string
+    if (pImage->pTurboSymbols != NULL && pImage->pTurboLengths != NULL) {
+        pSymbols = pImage->pTurboSymbols;
+        pLengths = pImage->pTurboLengths;
+    } else {
+        pSymbols = (uint32_t *)&buf[iUncompressedLen+256]; // we need 32-bits (really 23) for the offsets
+        pLengths = (uint16_t *)&pSymbols[4096]; // but only 16-bits for the length of any single string
+    }
     iOffset = 0; // output data offset
     p = pImage->ucLZW; // un-chunked LZW data
     ulBits = INTELLONG(p); // start by reading some LZW data
@@ -1243,7 +1248,7 @@ init_codetable:
             GET_CODE_TURBO
         } /* while not end of LZW code stream */
     } // while not end of frame
-    if (pImage->ucDrawType == GIF_DRAW_COOKED && pImage->pfnDraw && pImage->pFrameBuffer) { // convert each line through the palette
+    if (pImage->ucDrawType == GIF_DRAW_COOKED && pImage->pFrameBuffer) { // convert each line through the palette
         GIFDRAW gd;
         gd.iX = pImage->iX;
         gd.iY = pImage->iY;
@@ -1254,6 +1259,8 @@ init_codetable:
         gd.ucIsGlobalPalette = pImage->bUseLocalPalette==1?0:1;
         gd.pUser = pImage->pUser;
         gd.ucPaletteType = pImage->ucPaletteType;
+        const int iBpp = (pImage->ucPaletteType == GIF_PALETTE_RGB888) ? 3 : 2;
+        const int iPitch = pImage->iCanvasWidth * iBpp;
         for (int y=0; y<pImage->iHeight; y++) {
             gd.y = y;
             gd.pPixels = &buf[(y * pImage->iWidth)]; // source pixels
@@ -1275,9 +1282,14 @@ init_codetable:
             gd.ucHasTransparency = pImage->ucGIFBits & 1;
             gd.ucBackground = pImage->ucBackground;
             gd.iCanvasWidth = pImage->iCanvasWidth;
-            DrawCooked(pImage, &gd, &buf[pImage->iCanvasHeight * pImage->iCanvasWidth]); // dest = past end of canvas
-            gd.pPixels = &buf[pImage->iCanvasHeight * pImage->iCanvasWidth]; // point to the line we just converted
-            (*pImage->pfnDraw)(&gd); // callback to handle this line
+            if (pImage->pfnDraw) {
+                DrawCooked(pImage, &gd, &buf[pImage->iCanvasHeight * pImage->iCanvasWidth]); // dest = past end of canvas
+                gd.pPixels = &buf[pImage->iCanvasHeight * pImage->iCanvasWidth]; // point to the line we just converted
+                (*pImage->pfnDraw)(&gd); // callback to handle this line
+            } else {
+                int iOffset = (iBpp * pImage->iX) + ((gd.y + pImage->iY) * iPitch);
+                DrawCooked(pImage, &gd, &pImage->pFrameBuffer[iOffset]);
+            }
         }
     }
     return iErr;

@@ -71,14 +71,9 @@
 #define MAX_COLORS 256
 #define MAX_WIDTH 480
 
-// BOOST: the Turbo LZW decoder is deliberately not built. It needs a ~242 KB
-// scratch buffer plus a pfnDraw callback that would have to re-implement
-// transparency merging itself, and nothing in this project ever assigns
-// pTurboBuffer (GIF_begin() memsets the whole GIFIMAGE, so it is always NULL).
-// Compiling it out removes ~150 lines of unreachable code that still carried
-// the *old* two-plane framebuffer layout and would have been silently wrong
-// after the index-plane removal below.
-#define GIF_SUPPORT_TURBO 0
+// BOOST: Turbo LZW decoder enabled. Decodes whole-frame byte streams into
+// pTurboBuffer directly, avoiding reverse-stack walks on the CPU.
+#define GIF_SUPPORT_TURBO 1
 
 // BOOST: GIFMakePels()/LZWCopyBytes() under ALLOWS_UNALIGNED copy in
 // sizeof(BIGUINT)==4 byte chunks and deliberately overrun the destination by up
@@ -229,6 +224,8 @@ typedef struct gif_image_tag
     unsigned short usGIFTable[1<<MAX_CODE_SIZE];
     unsigned char ucGIFPixels[(PIXEL_LAST*2)];
     unsigned char ucLineBuf[MAX_WIDTH + GIF_LINEBUF_SLACK]; // BOOST: slack for the wide-copy overrun, see above
+    uint32_t *pTurboSymbols; // BOOST: internal-RAM symbol table for fast Turbo LZW (16 KB)
+    uint16_t *pTurboLengths; // BOOST: internal-RAM length table for fast Turbo LZW (8 KB)
 } GIFIMAGE;
 
 // C interface
