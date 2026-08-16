@@ -17,6 +17,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
+typedef uint32_t __attribute__((__may_alias__, __aligned__(1))) gif_u32_alias_t;
+
 /*
  * ESP32-S3 SPI GDMA cannot stream from PSRAM. The stock Waveshare BSP sets
  * use_psram=true for LVGL draw buffers, so every flush allocates an internal
@@ -1160,9 +1162,20 @@ esp_err_t boost_display_push_bitmap(int x0, int y0, int x1, int y1,
         for (int r = 0; r < lines; ++r) {
             const uint16_t *s = src + (size_t)(y - y0 + r) * src_stride_px;
             uint16_t *d = xfer + (size_t)r * width;
-            for (int c = 0; c < width; ++c) {
+            int c = 0;
+            while (c <= width - 4) {
+                const uint32_t p01 = ((const gif_u32_alias_t *)&s[c])[0];
+                const uint32_t p23 = ((const gif_u32_alias_t *)&s[c + 2])[0];
+                const uint32_t sw01 = ((p01 & 0x00FF00FF) << 8) | ((p01 & 0xFF00FF00) >> 8);
+                const uint32_t sw23 = ((p23 & 0x00FF00FF) << 8) | ((p23 & 0xFF00FF00) >> 8);
+                ((gif_u32_alias_t *)&d[c])[0] = sw01;
+                ((gif_u32_alias_t *)&d[c + 2])[0] = sw23;
+                c += 4;
+            }
+            while (c < width) {
                 const uint16_t p = s[c];
                 d[c] = (uint16_t)((p << 8) | (p >> 8));
+                c++;
             }
         }
         const esp_err_t ret = esp_lcd_panel_draw_bitmap(s_panel, x0, y, x1, y + lines, xfer);

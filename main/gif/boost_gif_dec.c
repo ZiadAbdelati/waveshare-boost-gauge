@@ -1080,43 +1080,34 @@ static void DrawNewPixels(GIFIMAGE *pPage, GIFDRAW *pDraw)
 //
 // Output the bytes for a single code (checks for buffer len)
 //
-static int LZWCopyBytes(unsigned char *buf, int iOffset, uint32_t *pSymbols, uint16_t *pLengths)
+static inline __attribute__((always_inline)) int LZWCopyBytes(unsigned char *buf, int iOffset, uint32_t *pSymbols, uint16_t *pLengths)
 {
-int iLen;
-uint8_t c, *s, *d, *pEnd;
-uint32_t u32Offset;
+    int iLen = *pLengths;
+    uint32_t u32Offset = *pSymbols;
+    uint8_t *s = &buf[u32Offset & 0x7fffff];
+    uint8_t *d = &buf[iOffset];
 
-    iLen = *pLengths;
-    u32Offset = *pSymbols;
-    // The string data frequently writes past the end of the framebuffer (past last pixel)
-    // ...but with the placement of our code tables AFTER the framebuffer, it doesn't matter
-    // Adding a check for buffer overrun here slows everything down about 10%
-    s = &buf[u32Offset & 0x7fffff];
-    d = &buf[iOffset];
-    pEnd = &d[iLen];
-    while (d < pEnd) // most frequent are 1-8 bytes in length, copy 4 or 8 bytes in these cases too
-    {
-#ifdef ALLOWS_UNALIGNED
-// This is a significant perf improvement compared to copying 1 byte at a time
-// even though it will often copy too many bytes
-        BIGUINT tmp = *(BIGUINT *) s;
-        s += sizeof(BIGUINT);
-        *(BIGUINT *)d = tmp;
-        d += sizeof(BIGUINT);
-#else
-// CPUs which enforce unaligned address exceptions must do it 1 byte at a time
-        *d++ = *s++;
-#endif
+    if (iLen <= 4) {
+        *(gif_u32_alias_t *)d = *(const gif_u32_alias_t *)s;
+    } else if (iLen <= 8) {
+        ((gif_u32_alias_t *)d)[0] = ((const gif_u32_alias_t *)s)[0];
+        ((gif_u32_alias_t *)d)[1] = ((const gif_u32_alias_t *)s)[1];
+    } else {
+        uint8_t *pEnd = d + iLen;
+        do {
+            ((gif_u32_alias_t *)d)[0] = ((const gif_u32_alias_t *)s)[0];
+            ((gif_u32_alias_t *)d)[1] = ((const gif_u32_alias_t *)s)[1];
+            s += 8;
+            d += 8;
+        } while (d < pEnd);
     }
-    if (u32Offset & 0x800000) // was a newly used code
+    if (u32Offset & 0x800000)
     {
-        d = pEnd; // in case we overshot
-        c = (uint8_t)(u32Offset >> 24);
+        uint8_t *pEnd = &buf[iOffset + iLen];
+        uint8_t c = (uint8_t)(u32Offset >> 24);
         iLen++;
-        // since the code with extension byte has now been written to the output, fix the code
         *pSymbols = iOffset;
-//        pSymbols[SYM_EXTRAS] = 0xffffffff;
-        *d = c;
+        *pEnd = c;
         *pLengths = (uint16_t)iLen;
     }
     return iLen;
@@ -1125,8 +1116,8 @@ uint32_t u32Offset;
 // Macro to extract a variable length code
 //
 #define GET_CODE_TURBO if (bitnum > (REGISTER_WIDTH - MAX_CODE_SIZE/*codesize*/)) { p += (bitnum >> 3); \
-            bitnum &= 7; ulBits = INTELLONG(p); } \
-        code = ((ulBits >> bitnum) & sMask);  \
+            bitnum &= 7; ulBits = INTELLONG64(p); } \
+        code = (uint32_t)((ulBits >> bitnum) & sMask);  \
         bitnum += codesize;
 
 //
@@ -1196,7 +1187,7 @@ uint16_t *pLengths;
     }
     iOffset = 0; // output data offset
     p = pImage->ucLZW; // un-chunked LZW data
-    ulBits = INTELLONG(p); // start by reading some LZW data
+    ulBits = INTELLONG64(p); // start by reading some LZW data
     // set up the default symbols (0..iColors-1)
    for (i = 0; i<iColors; i++) {
        pSymbols[i] = iUncompressedLen + i; // root symbols

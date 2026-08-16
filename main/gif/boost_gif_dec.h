@@ -267,16 +267,20 @@ typedef struct gif_image_tag
 #endif
 typedef uint16_t gif_u16_alias_t GIF_MAY_ALIAS;
 typedef uint32_t gif_u32_alias_t GIF_MAY_ALIAS;
+typedef uint64_t gif_u64_alias_t GIF_MAY_ALIAS;
 
 #ifdef ALLOWS_UNALIGNED
     #define INTELSHORT(p) (*(const gif_u16_alias_t *)(p))
     #define INTELLONG(p) (*(const gif_u32_alias_t *)(p))
+    #define INTELLONG64(p) (*(const gif_u64_alias_t *)(p))
 #else
     // Due to unaligned memory causing an exception, we have to do these macros the slow way
     #define INTELSHORT(p) ((*p) + (*(p+1)<<8))
     #define INTELLONG(p) ((*p) + (*(p+1)<<8) + (*(p+2)<<16) + (*(p+3)<<24))
+    #define INTELLONG64(p) ((uint64_t)INTELLONG(p) | ((uint64_t)INTELLONG((const uint8_t *)(p)+4) << 32))
 #endif // ALLOWS_UNALIGNED
-#define BIGINT int32_t
-#define BIGUINT uint32_t
+#define BIGINT int64_t
+#define BIGUINT uint64_t
+#define REGISTER_WIDTH 64
 
 #endif // BOOST_GIF_DEC_H
