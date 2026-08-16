@@ -344,9 +344,17 @@ static int run_audit(const char *theme_id, int seconds)
                    (double)jump_deg);
             if (jump_deg > 0.001f) return 2;
         } else if (t->style == BOOST_STYLE_HUD) {
-            /* Reproduce switching into Night City while already in vacuum.
+            /* Reproduce switching into Night City while already in vacuum, as
+             * well as switching into Night City at 0.0 PSI (atmosphere).
              * Pump the rebuild before its first sample, matching the ordering
-             * that exposed a missing initial full-span invalidation on-device. */
+             * that exposed missing initial invalidations on-device. */
+            boost_sample_t zero_sample = { .psi = 0.0f, .demo = true };
+            hold_state(&zero_sample, 64);
+            boost_gauge_apply_theme(t);
+            pump_lvgl(50);
+            boost_gauge_update(&zero_sample);
+            pump_lvgl(50);
+
             boost_sample_t vacuum = { .psi = -8.0f, .demo = true };
             hold_state(&vacuum, 64);
             boost_gauge_apply_theme(t);

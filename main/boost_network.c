@@ -10,6 +10,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/semphr.h"
+#include "freertos/timers.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 
@@ -27,11 +28,19 @@
 #define NVS_KEY_MODE "mode"
 #define NVS_KEY_SSID "ssid"
 #define NVS_KEY_PASS "pass"
+#define NVS_KEY_SAVED_CNT "saved_cnt"
+#define NVS_KEY_SAVED_SSID_PFX "s_ssid_"
+#define NVS_KEY_SAVED_PASS_PFX "s_pass_"
 
 #define WIFI_BIT_GOT_IP BIT0
 #define WIFI_BIT_FAIL   BIT1
 #define WIFI_SCAN_ACTIVE_MIN_MS 40
 #define WIFI_SCAN_ACTIVE_MAX_MS 80
+/* Backoff before re-attempting a dropped station association. AP and STA share
+ * one radio, so an out-of-range SSID reconnects in a tight scan->fail loop that
+ * repeatedly yanks the radio off the SoftAP channel; a 10 s backoff gives the
+ * AP stable airtime while the saved SSID stays in NVS and is retried quietly. */
+#define WIFI_SCAN_RETRY_DELAY_MS 30000
 
 static const char *TAG = "boost_net";
 
@@ -45,6 +54,93 @@ static bool s_started;
 static int s_rssi = 0;
 static esp_netif_t *s_ap_netif;
 static esp_netif_t *s_sta_netif;
+static TimerHandle_t s_reconnect_timer;
+static uint8_t s_try_index = 0;
+static uint8_t s_ap_clients = 0;
+static TaskHandle_t s_scan_conn_task;
+
+static esp_err_t apply_sta_config(void);
+
+static void scan_and_connect_task(void *arg)
+{
+    (void)arg;
+    
+    /* If a client is connected to SoftAP or we already have an IP, skip scanning */
+    if (s_ap_clients > 0 || s_sta_got_ip) {
+        ESP_LOGI(TAG, "AP client connected (%d) or STA connected; skipping background scan", s_ap_clients);
+        s_scan_conn_task = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    ESP_LOGI(TAG, "running background Wi-Fi scan for saved networks");
+    
+    wifi_scan_config_t scan_cfg = {
+        .ssid = NULL,
+        .bssid = NULL,
+        .channel = 0,
+        .show_hidden = false,
+        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+        .scan_time.active.min = WIFI_SCAN_ACTIVE_MIN_MS,
+        .scan_time.active.max = WIFI_SCAN_ACTIVE_MAX_MS,
+    };
+    
+    /* Perform blocking scan on the Wi-Fi driver */
+    esp_err_t err = esp_wifi_scan_start(&scan_cfg, true);
+    if (err == ESP_OK) {
+        uint16_t ap_count = 0;
+        esp_wifi_scan_get_ap_num(&ap_count);
+        if (ap_count > 0) {
+            wifi_ap_record_t *aps = calloc(ap_count, sizeof(wifi_ap_record_t));
+            if (aps != NULL) {
+                if (esp_wifi_scan_get_ap_records(&ap_count, aps) == ESP_OK) {
+                    xSemaphoreTake(s_lock, portMAX_DELAY);
+                    int best_match = -1;
+                    /* Check saved networks against visible APs */
+                    for (uint8_t s = 0; s < s_cfg.saved_count && best_match < 0; ++s) {
+                        for (uint16_t a = 0; a < ap_count; ++a) {
+                            if (aps[a].ssid[0] != '\0' && strcmp(s_cfg.saved[s].ssid, (char *)aps[a].ssid) == 0) {
+                                best_match = s;
+                                break;
+                            }
+                        }
+                    }
+                    if (best_match >= 0) {
+                        ESP_LOGI(TAG, "scan matched saved network: %s", s_cfg.saved[best_match].ssid);
+                        s_try_index = (uint8_t)best_match;
+                        strlcpy(s_cfg.sta_ssid, s_cfg.saved[best_match].ssid, sizeof(s_cfg.sta_ssid));
+                        strlcpy(s_cfg.sta_pass, s_cfg.saved[best_match].pass, sizeof(s_cfg.sta_pass));
+                        s_cfg.has_sta_pass = s_cfg.saved[best_match].has_pass;
+                        apply_sta_config();
+                        xSemaphoreGive(s_lock);
+                        esp_wifi_connect();
+                    } else {
+                        ESP_LOGI(TAG, "scan found no saved networks; will re-scan later");
+                        xSemaphoreGive(s_lock);
+                    }
+                    free(aps);
+                } else {
+                    free(aps);
+                }
+            }
+        }
+    } else {
+        ESP_LOGW(TAG, "scan_start failed: %d", err);
+    }
+    
+    s_scan_conn_task = NULL;
+    vTaskDelete(NULL);
+}
+
+static void reconnect_timer_cb(TimerHandle_t timer)
+{
+    (void)timer;
+    if (s_cfg.mode == BOOST_NET_MODE_APSTA && s_cfg.saved_count > 0 && !s_sta_got_ip && s_ap_clients == 0) {
+        if (s_scan_conn_task == NULL) {
+            xTaskCreate(scan_and_connect_task, "wifi_scan_conn", 4096, NULL, 3, &s_scan_conn_task);
+        }
+    }
+}
 
 static void defaults_from_secrets(boost_net_config_t *cfg)
 {
@@ -55,6 +151,10 @@ static void defaults_from_secrets(boost_net_config_t *cfg)
         strlcpy(cfg->sta_pass, BOOST_WIFI_STA_PASS, sizeof(cfg->sta_pass));
         cfg->has_sta_pass = cfg->sta_pass[0] != '\0';
         cfg->mode = BOOST_NET_MODE_APSTA;
+        cfg->saved_count = 1;
+        strlcpy(cfg->saved[0].ssid, cfg->sta_ssid, sizeof(cfg->saved[0].ssid));
+        strlcpy(cfg->saved[0].pass, cfg->sta_pass, sizeof(cfg->saved[0].pass));
+        cfg->saved[0].has_pass = cfg->has_sta_pass;
     }
 }
 
@@ -71,6 +171,23 @@ static esp_err_t save_locked(void)
     }
     if (err == ESP_OK) {
         err = nvs_set_str(h, NVS_KEY_PASS, s_cfg.sta_pass);
+    }
+    if (err == ESP_OK) {
+        err = nvs_set_u8(h, NVS_KEY_SAVED_CNT, s_cfg.saved_count);
+    }
+    for (uint8_t i = 0; err == ESP_OK && i < BOOST_NET_MAX_SAVED; ++i) {
+        char k_ssid[16], k_pass[16];
+        snprintf(k_ssid, sizeof(k_ssid), "%s%u", NVS_KEY_SAVED_SSID_PFX, (unsigned)i);
+        snprintf(k_pass, sizeof(k_pass), "%s%u", NVS_KEY_SAVED_PASS_PFX, (unsigned)i);
+        if (i < s_cfg.saved_count) {
+            err = nvs_set_str(h, k_ssid, s_cfg.saved[i].ssid);
+            if (err == ESP_OK) {
+                err = nvs_set_str(h, k_pass, s_cfg.saved[i].pass);
+            }
+        } else {
+            nvs_erase_key(h, k_ssid);
+            nvs_erase_key(h, k_pass);
+        }
     }
     if (err == ESP_OK) {
         err = nvs_commit(h);
@@ -101,6 +218,36 @@ static void load_config(void)
         strlcpy(s_cfg.sta_pass, pass, sizeof(s_cfg.sta_pass));
     }
     s_cfg.has_sta_pass = s_cfg.sta_pass[0] != '\0';
+
+    uint8_t saved_cnt = 0;
+    if (nvs_get_u8(h, NVS_KEY_SAVED_CNT, &saved_cnt) == ESP_OK) {
+        if (saved_cnt > BOOST_NET_MAX_SAVED) {
+            saved_cnt = BOOST_NET_MAX_SAVED;
+        }
+        s_cfg.saved_count = 0;
+        for (uint8_t i = 0; i < saved_cnt; ++i) {
+            char k_ssid[16], k_pass[16];
+            snprintf(k_ssid, sizeof(k_ssid), "%s%u", NVS_KEY_SAVED_SSID_PFX, (unsigned)i);
+            snprintf(k_pass, sizeof(k_pass), "%s%u", NVS_KEY_SAVED_PASS_PFX, (unsigned)i);
+            char s_buf[sizeof(s_cfg.saved[0].ssid)] = {0};
+            char p_buf[sizeof(s_cfg.saved[0].pass)] = {0};
+            size_t s_len = sizeof(s_buf), p_len = sizeof(p_buf);
+            if (nvs_get_str(h, k_ssid, s_buf, &s_len) == ESP_OK && s_buf[0] != '\0') {
+                nvs_get_str(h, k_pass, p_buf, &p_len);
+                strlcpy(s_cfg.saved[s_cfg.saved_count].ssid, s_buf, sizeof(s_cfg.saved[0].ssid));
+                strlcpy(s_cfg.saved[s_cfg.saved_count].pass, p_buf, sizeof(s_cfg.saved[0].pass));
+                s_cfg.saved[s_cfg.saved_count].has_pass = p_buf[0] != '\0';
+                s_cfg.saved_count++;
+            }
+        }
+    } else if (s_cfg.sta_ssid[0] != '\0') {
+        /* Migration from single-credential NVS */
+        s_cfg.saved_count = 1;
+        strlcpy(s_cfg.saved[0].ssid, s_cfg.sta_ssid, sizeof(s_cfg.saved[0].ssid));
+        strlcpy(s_cfg.saved[0].pass, s_cfg.sta_pass, sizeof(s_cfg.saved[0].pass));
+        s_cfg.saved[0].has_pass = s_cfg.has_sta_pass;
+    }
+
     /* NVS present with empty SSID forces SoftAP-only even if secrets exist. */
     if (s_cfg.sta_ssid[0] == '\0') {
         s_cfg.mode = BOOST_NET_MODE_AP;
@@ -147,9 +294,30 @@ static esp_err_t apply_sta_config(void)
 static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)arg;
+    if (base == WIFI_EVENT && id == WIFI_EVENT_AP_STACONNECTED) {
+        s_ap_clients++;
+        ESP_LOGI(TAG, "SoftAP client connected, active clients: %d", s_ap_clients);
+        if (s_reconnect_timer != NULL) {
+            xTimerStop(s_reconnect_timer, 0);
+        }
+        return;
+    }
+    if (base == WIFI_EVENT && id == WIFI_EVENT_AP_STADISCONNECTED) {
+        if (s_ap_clients > 0) {
+            s_ap_clients--;
+        }
+        ESP_LOGI(TAG, "SoftAP client disconnected, active clients: %d", s_ap_clients);
+        if (s_ap_clients == 0 && !s_sta_got_ip && s_reconnect_timer != NULL) {
+            xTimerReset(s_reconnect_timer, 0);
+        }
+        return;
+    }
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
-        if (s_cfg.mode == BOOST_NET_MODE_APSTA && s_cfg.sta_ssid[0]) {
-            esp_wifi_connect();
+        /* If configured with saved networks, do a quiet scan rather than blind connect */
+        if (s_cfg.mode == BOOST_NET_MODE_APSTA && s_cfg.saved_count > 0 && s_ap_clients == 0) {
+            if (s_scan_conn_task == NULL) {
+                xTaskCreate(scan_and_connect_task, "wifi_scan_conn", 4096, NULL, 3, &s_scan_conn_task);
+            }
         }
         return;
     }
@@ -159,8 +327,14 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
         s_sta_got_ip = false;
         s_sta_ip[0] = '\0';
         s_rssi = 0;
-        if (s_cfg.mode == BOOST_NET_MODE_APSTA && s_cfg.sta_ssid[0]) {
-            esp_wifi_connect();
+        if (s_cfg.mode == BOOST_NET_MODE_APSTA && s_cfg.saved_count > 0) {
+            if (s_reconnect_timer == NULL) {
+                s_reconnect_timer = xTimerCreate("wifi_rc", pdMS_TO_TICKS(WIFI_SCAN_RETRY_DELAY_MS),
+                                                 pdFALSE, NULL, reconnect_timer_cb);
+            }
+            if (s_reconnect_timer != NULL) {
+                xTimerReset(s_reconnect_timer, 0);
+            }
         }
         if (s_events) {
             xEventGroupSetBits(s_events, WIFI_BIT_FAIL);
@@ -171,6 +345,9 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
         ip_event_got_ip_t *ev = data;
         snprintf(s_sta_ip, sizeof(s_sta_ip), IPSTR, IP2STR(&ev->ip_info.ip));
         s_sta_got_ip = true;
+        if (s_reconnect_timer != NULL) {
+            xTimerStop(s_reconnect_timer, 0);
+        }
         wifi_ap_record_t ap_info = {0};
         if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
             s_rssi = ap_info.rssi;
@@ -273,6 +450,10 @@ void boost_network_get_status(boost_net_status_t *out)
         out->sta_enabled = s_cfg.mode == BOOST_NET_MODE_APSTA && s_cfg.sta_ssid[0] != '\0';
         strlcpy(out->sta_ssid, s_cfg.sta_ssid, sizeof(out->sta_ssid));
         out->has_sta_pass = s_cfg.has_sta_pass;
+        out->saved_count = s_cfg.saved_count;
+        for (uint8_t i = 0; i < s_cfg.saved_count; ++i) {
+            strlcpy(out->saved[i].ssid, s_cfg.saved[i].ssid, sizeof(out->saved[i].ssid));
+        }
         xSemaphoreGive(s_lock);
     }
     out->sta_connected = s_sta_got_ip;
@@ -319,10 +500,47 @@ esp_err_t boost_network_update(const char *ssid, const char *password, bool keep
         /* Setting an SSID while in AP-only upgrades to APSTA. */
         s_cfg.mode = BOOST_NET_MODE_APSTA;
     }
+
+    /* Update saved network pool */
+    if (s_cfg.sta_ssid[0] != '\0') {
+        int found_idx = -1;
+        for (uint8_t i = 0; i < s_cfg.saved_count; ++i) {
+            if (strcmp(s_cfg.saved[i].ssid, s_cfg.sta_ssid) == 0) {
+                found_idx = i;
+                break;
+            }
+        }
+        if (found_idx >= 0) {
+            /* Update existing entry and move to front (most recently used) */
+            boost_saved_entry_t entry = s_cfg.saved[found_idx];
+            if (password && !(keep_password && password[0] == '\0')) {
+                strlcpy(entry.pass, s_cfg.sta_pass, sizeof(entry.pass));
+                entry.has_pass = s_cfg.has_sta_pass;
+            }
+            for (int i = found_idx; i > 0; --i) {
+                s_cfg.saved[i] = s_cfg.saved[i - 1];
+            }
+            s_cfg.saved[0] = entry;
+        } else {
+            /* Insert new entry at index 0 */
+            if (s_cfg.saved_count < BOOST_NET_MAX_SAVED) {
+                s_cfg.saved_count++;
+            }
+            for (int i = s_cfg.saved_count - 1; i > 0; --i) {
+                s_cfg.saved[i] = s_cfg.saved[i - 1];
+            }
+            strlcpy(s_cfg.saved[0].ssid, s_cfg.sta_ssid, sizeof(s_cfg.saved[0].ssid));
+            strlcpy(s_cfg.saved[0].pass, s_cfg.sta_pass, sizeof(s_cfg.saved[0].pass));
+            s_cfg.saved[0].has_pass = s_cfg.has_sta_pass;
+        }
+        s_try_index = 0;
+    }
+
     const bool unchanged =
         before.mode == s_cfg.mode &&
         strcmp(before.sta_ssid, s_cfg.sta_ssid) == 0 &&
-        strcmp(before.sta_pass, s_cfg.sta_pass) == 0;
+        strcmp(before.sta_pass, s_cfg.sta_pass) == 0 &&
+        before.saved_count == s_cfg.saved_count;
     esp_err_t err = unchanged ? ESP_OK : save_locked();
     boost_net_config_t local = s_cfg;
     xSemaphoreGive(s_lock);
@@ -337,6 +555,69 @@ esp_err_t boost_network_update(const char *ssid, const char *password, bool keep
     if (want_sta && s_sta_netif == NULL) {
         s_sta_netif = esp_netif_create_default_wifi_sta();
     }
+    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(want_sta ? WIFI_MODE_APSTA : WIFI_MODE_AP), TAG, "mode");
+    ESP_RETURN_ON_ERROR(apply_ap_config(), TAG, "ap");
+    if (want_sta) {
+        ESP_RETURN_ON_ERROR(apply_sta_config(), TAG, "sta");
+        s_sta_got_ip = false;
+        s_sta_ip[0] = '\0';
+        esp_wifi_disconnect();
+        esp_wifi_connect();
+    } else {
+        s_sta_got_ip = false;
+        s_sta_ip[0] = '\0';
+        esp_wifi_disconnect();
+    }
+    return ESP_OK;
+}
+
+esp_err_t boost_network_delete_saved(const char *ssid)
+{
+    if (!ssid || ssid[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+    ESP_RETURN_ON_ERROR(boost_network_init(), TAG, "init");
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    int found_idx = -1;
+    for (uint8_t i = 0; i < s_cfg.saved_count; ++i) {
+        if (strcmp(s_cfg.saved[i].ssid, ssid) == 0) {
+            found_idx = i;
+            break;
+        }
+    }
+    if (found_idx < 0) {
+        xSemaphoreGive(s_lock);
+        return ESP_ERR_NOT_FOUND;
+    }
+    for (uint8_t i = found_idx; i + 1 < s_cfg.saved_count; ++i) {
+        s_cfg.saved[i] = s_cfg.saved[i + 1];
+    }
+    s_cfg.saved_count--;
+    memset(&s_cfg.saved[s_cfg.saved_count], 0, sizeof(s_cfg.saved[0]));
+
+    if (strcmp(s_cfg.sta_ssid, ssid) == 0) {
+        if (s_cfg.saved_count > 0) {
+            strlcpy(s_cfg.sta_ssid, s_cfg.saved[0].ssid, sizeof(s_cfg.sta_ssid));
+            strlcpy(s_cfg.sta_pass, s_cfg.saved[0].pass, sizeof(s_cfg.sta_pass));
+            s_cfg.has_sta_pass = s_cfg.saved[0].has_pass;
+        } else {
+            s_cfg.sta_ssid[0] = '\0';
+            s_cfg.sta_pass[0] = '\0';
+            s_cfg.has_sta_pass = false;
+            s_cfg.mode = BOOST_NET_MODE_AP;
+        }
+    }
+    s_try_index = 0;
+    esp_err_t err = save_locked();
+    boost_net_config_t local = s_cfg;
+    xSemaphoreGive(s_lock);
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (!s_started) {
+        return ESP_OK;
+    }
+    const bool want_sta = local.mode == BOOST_NET_MODE_APSTA && local.sta_ssid[0] != '\0';
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(want_sta ? WIFI_MODE_APSTA : WIFI_MODE_AP), TAG, "mode");
     ESP_RETURN_ON_ERROR(apply_ap_config(), TAG, "ap");
     if (want_sta) {

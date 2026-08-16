@@ -11,7 +11,7 @@ The live MAP path reads a GM 3-bar sensor through an ADS1115, with an optional B
 - Big signed PSI, zone label (`VAC` / `ATMO` / `BOOST` / `OVER`)
 - Peak hold; **short tap** resets peak
 - **Hold ~1s** toggles the configured max/min brightness levels.
-- **Two-finger hold ~4s** shows a QR code to join the SoftAP
+- **Two-finger hold ~3s** shows a QR code to join the SoftAP
   (`BoostGauge-XXXX` / `boost1234`); any fresh tap dismisses it.
 - Vault-Tec supports persisted needle color and counterweight-tail options; red
   changes only the needle body, and the green hub remains unchanged.
@@ -588,7 +588,7 @@ page 1 is the TPMS view. On the boost page, swipe **LEFT** to TPMS; on TPMS,
 swipe **RIGHT** to return to boost. There is no wrap-around: outward swipes at
 either end are ignored. Vertical theme swipes work only on page 0, and a tap
 resets peak only on page 0. A one-second hold toggles brightness on either
-page. A two-finger tap-and-hold (both fingers down) for four seconds shows a
+page. A two-finger tap-and-hold (both fingers down) for three seconds shows a
 full-screen QR code that joins the SoftAP (`BoostGauge-XXXX` / `boost1234`);
 the 1 s hold-to-dim is suppressed while both fingers are down, and the QR is
 dismissed by any fresh tap. Pointer-device events own
@@ -612,9 +612,16 @@ deterministic `main/boost_tpms_mock.c/.h` provider (`NORMAL`, `STALE`, and
 `DISCONNECTED` scenarios), and the pure `main/boost_tpms_protocol.c/.h`
 protocol/conversion/ISO-TP layer. For the 2019/2020 Mazda MX-5 ND, UDS
 `ReadDataByIdentifier` uses ECU/header `0x720`, with DIDs `FL=0x2A05`,
-`FR=0x2A07`, `RL=0x2A06`, and `RR=0x2A08`. Conversion is
+`FR=0x2A07`, `RL=0x2A06`, and `RR=0x2A08`. Each answer is a single data byte
+(`0x62 DID-hi DID-lo value`, a 4-byte response; the parser also accepts a
+padded two-byte value). Conversion is
 `pressure_kPa = raw * 1.373 + additive replacement-sensor offset`, then
-`pressure_psi = kPa * 0.145037738`.
+`pressure_psi = kPa * 0.145037738`. The low-pressure alert threshold (default
+220 kPa ≈ 32 psi, red below / green at or above) and the staleness window
+(default 15 s, sized above the ~4.5 s poll rotation so a single dropped DID
+never flips the page amber) are persisted in `boost_tpms` NVS and configurable
+as PSI in Settings (`/settings.html`). The drawn capsules inflate +2 px over the
+art's tire bounds so anti-aliased white edge pixels do not peek through.
 
 BLE central support is implemented as a runtime toggle and compile gate:
 `main/boost_obd_ble.c/.h` is a NimBLE central transport (scan by advertised
@@ -629,20 +636,19 @@ poll loop: the standard init sequence (`ATZ`, `ATE0`, `ATL0`, `ATS0`, `ATH0`,
 the conversion path above), and generic mode-01 PIDs plus `ATRV` battery voltage
 for the web cockpit. ESP32-S3 is BLE-only, not Classic/SPP, so the adapter must
 expose a BLE GATT service — the vLinker FD+ does; the FS family (Classic BT) does
- not. The firmware is intentionally adapter-agnostic: it discovers at runtime and
- requires a verified profile before trusting vehicle responses.
+not. The firmware is intentionally adapter-agnostic: it discovers at runtime and
+requires a verified profile before trusting vehicle responses.
 
- The header switching (`ATSH 720` for TPMS DIDs, `ATSH 7DF` for mode-01 PIDs) is
- **CAN-only**: `720`/`7DF` are ISO 15765 CAN identifiers, and issuing them as
- `ATSH` on a K-line bus (ISO 9141-2 / ISO 14230) corrupts the ELM header so the
- ECU never answers. The poll loop re-queries `ATDP` after the `0100` prime locks
- the protocol (the init-time read reports `AUTO` because `ATSP0` has not locked
- anything yet), and then only switches headers when the locked protocol is
- `ISO 15765` (CAN). On a legacy K-line/J1850 bus it keeps the auto-detected
- default header for the mode-01 PIDs (so a pre-CAN car like the 2003 Toyota
- Camry reads rpm/speed/coolant correctly) and skips the Mazda TPMS DID phase
- entirely (no Mazda TPMS module on such a bus). The Mazda MX-5 ND is CAN, so its
- TPMS path is unchanged.
+The header switching (`ATSH 720` for TPMS DIDs, `ATSH 7DF` for mode-01 PIDs) is
+**CAN-only**: `720`/`7DF` are ISO 15765 CAN identifiers, and issuing them as
+`ATSH` on a K-line bus (ISO 9141-2 / ISO 14230) corrupts the ELM header so the
+ECU never answers. The poll loop re-queries `ATDP` after the `0100` prime locks
+the protocol (the init-time read reports `AUTO` because `ATSP0` has not locked
+anything yet), and then only switches headers when the locked protocol is
+`ISO 15765` (CAN). On a legacy K-line/J1850 bus it keeps the auto-detected
+default header for the mode-01 PIDs (so a pre-CAN car like the 2003 Toyota
+Camry reads rpm/speed/coolant correctly) and skips the Mazda TPMS DID phase
+entirely (no Mazda TPMS module on such a bus).
 
 The link is controlled by the persisted `tpmsBle` setting (default **off**, so a
 fresh boot never touches the radio). Flipping it in Settings or via
@@ -663,7 +669,12 @@ The remembered adapter MAC is a convenience, not a binding: if a direct connect 
 it fails, the firmware falls back to scanning, and the first adapter that answers
 overwrites the stored MAC. Verified on the bench (2026-08-12): the FD+ links up,
 `ATZ`…`ATSP0` init completes, and `ATRV` reads the 12 V supply; mode-01 PIDs and
-TPMS DIDs correctly return `NO DATA` with no car attached.
+TPMS DIDs correctly return `NO DATA` with no car attached. Verified in-vehicle
+(2026-08-15): on the 2003 Camry (ISO 9141-2 K-line) the mode-01 PIDs decode live
+(`41 00 BE 1F A8 11` support bitmask, rpm/coolant/IAT/throttle/MAF updating,
+header switching correctly skipped); on the MX-5 ND (ISO 15765-4 CAN 11/500)
+both the mode-01 PIDs and the four TPMS DIDs decode live (`/state.tpms` shows
+~25-29 psi per wheel with the car in ACC).
 
 `obd.valid` and `obd.ageMs` track **link liveness**, not decode success: they are
 driven by the ELM reply timestamp (any complete `>`-terminated reply, including

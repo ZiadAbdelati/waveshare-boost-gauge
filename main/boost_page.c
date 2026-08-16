@@ -27,7 +27,7 @@
 #define HOLD_DIM_MS 1000
 /* Two fingers held this long shows the AP-join QR, distinct from the 1 s
  * hold-to-dim (suppressed while both fingers are down). */
-#define QR_HOLD_MS 4000
+#define QR_HOLD_MS 2200
 #define QR_POLL_MS 100
 
 static const char *TAG = "boost_page";
@@ -123,10 +123,18 @@ static void show_qr(void)
     lv_obj_center(qr);
 
     lv_obj_t *label = lv_label_create(s_qr_overlay);
-    lv_label_set_text(label, net.ap_ssid);
+    if (net.sta_connected && net.sta_ip[0] != '\0') {
+        char txt[64];
+        snprintf(txt, sizeof(txt), "%s\n%s", net.ap_ssid, net.sta_ip);
+        lv_label_set_text(label, txt);
+        lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, -24);
+    } else {
+        lv_label_set_text(label, net.ap_ssid);
+        lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, -36);
+    }
     lv_obj_set_style_text_color(label, lv_color_white(), 0);
     lv_obj_set_style_text_font(label, &lv_font_montserrat_20, 0);
-    lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, -36);
 
     s_qr_active = true;
     ESP_LOGI(TAG, "QR shown for AP %s", net.ap_ssid);

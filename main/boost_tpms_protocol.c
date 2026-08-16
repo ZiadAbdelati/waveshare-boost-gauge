@@ -63,12 +63,17 @@ bool boost_tpms_protocol_make_read_did(uint16_t did, uint8_t out_request[3])
 bool boost_tpms_protocol_parse_uds_response(const uint8_t *payload, size_t length,
                                             uint16_t *out_did, uint16_t *out_raw)
 {
-    if (payload == NULL || length != 5 || payload[0] != 0x62 ||
+    if (payload == NULL || (length != 4 && length != 5) || payload[0] != 0x62 ||
         boost_tpms_protocol_wheel_for_did(read_be16(&payload[1])) == BOOST_TPMS_WHEEL_INVALID) {
         return false;
     }
     if (out_did != NULL) *out_did = read_be16(&payload[1]);
-    if (out_raw != NULL) *out_raw = read_be16(&payload[3]);
+    /* The MX-5 ND TPMS module answers these DIDs with a single data byte
+     * (0x62 DID-hi DID-lo value), i.e. a 4-byte response. Accept a two-byte
+     * value as well in case another module pads it. */
+    if (out_raw != NULL) {
+        *out_raw = (length == 5) ? read_be16(&payload[3]) : (uint16_t)payload[3];
+    }
     return true;
 }
 

@@ -8,6 +8,8 @@
   <link rel="stylesheet" href="/styles.css?v=20260726a">
 </head>
 <body data-page="cockpit">
+  <div class="error" id="errorBox" hidden></div>
+  <div class="ok" id="okBox" hidden></div>
 
   <main class="shell" data-view="cockpit">
     <section class="gauge-bay" aria-label="Live boost gauge">
@@ -58,8 +60,6 @@
           <div><span>Clock</span><strong id="deviceClock">--</strong></div>
           <div><span>Brightness</span><strong id="brightnessNow">--</strong></div>
         </div>
-        <div class="error" id="errorBox" hidden></div>
-        <div class="ok" id="okBox" hidden></div>
       </section>
 
       <div class="console-cards">

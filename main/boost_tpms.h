@@ -13,9 +13,15 @@ typedef enum {
     BOOST_TPMS_STATUS_DISCONNECTED,
 } boost_tpms_status_t;
 
-/* Low-pressure alert threshold in kPa (~32 psi). The ND placard calls for
- * roughly 32-34 psi; the display flags anything clearly below that band. */
+/* Low-pressure alert threshold default (~32 psi). The ND placard calls for
+ * roughly 32-34 psi; the display flags anything clearly below that band.
+ * Runtime-configurable through boost_tpms_config_t (Settings > OBD2 BLE). */
 #define BOOST_TPMS_LOW_PRESSURE_KPA 220.0f
+
+/* Default staleness window. The BLE OBD poll rotation refreshes each wheel's
+ * DID roughly every 4-5 s, so the window must sit comfortably above one
+ * rotation or a single missed DID round flips the page amber. */
+#define BOOST_TPMS_STALE_AFTER_MS 15000u
 
 typedef struct {
     float kpa;
@@ -41,6 +47,7 @@ typedef struct {
 typedef struct {
     uint32_t stale_after_ms;
     float replacement_offset_kpa;
+    float low_kpa;                 /* red below, green at/above (UI + mirror) */
     bool enabled;
 } boost_tpms_config_t;
 

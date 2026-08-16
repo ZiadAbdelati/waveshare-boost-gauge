@@ -69,11 +69,15 @@ const CANVAS_DPR_MAX = 2;
 const TPMS_FACE_SIZE = 466;
 const TPMS_FACE_CENTER = TPMS_FACE_SIZE / 2;
 const TPMS_POWERTRAIN_SRC = "/tpms_powertrain.png";
+/* Final tire bounds from process_tpms_powertrain.py with the +2 px inflation
+ * that covers the art's anti-aliased tire edge, matching TPMS_CAPSULE_GROW in
+ * boost_tpms_ui.c. */
+const TPMS_CAPSULE_GROW = 2;
 const TPMS_CAPSULES = [
-  { x: 129, y: 80, w: 52, h: 104, radius: 26, textX: 121, textY: 132, align: "right" }, // FL
-  { x: 284, y: 80, w: 53, h: 104, radius: 26, textX: 345, textY: 132, align: "left" },  // FR
-  { x: 114, y: 277, w: 54, h: 109, radius: 27, textX: 106, textY: 332, align: "right" }, // RL
-  { x: 297, y: 277, w: 54, h: 109, radius: 27, textX: 359, textY: 332, align: "left" }, // RR
+  { x: 129 - TPMS_CAPSULE_GROW, y: 80 - TPMS_CAPSULE_GROW, w: 52 + TPMS_CAPSULE_GROW * 2, h: 104 + TPMS_CAPSULE_GROW * 2, radius: 26 + TPMS_CAPSULE_GROW, textX: 121, textY: 132, align: "right" },
+  { x: 284 - TPMS_CAPSULE_GROW, y: 80 - TPMS_CAPSULE_GROW, w: 53 + TPMS_CAPSULE_GROW * 2, h: 104 + TPMS_CAPSULE_GROW * 2, radius: 26 + TPMS_CAPSULE_GROW, textX: 345, textY: 132, align: "left" },
+  { x: 114 - TPMS_CAPSULE_GROW, y: 277 - TPMS_CAPSULE_GROW, w: 54 + TPMS_CAPSULE_GROW * 2, h: 109 + TPMS_CAPSULE_GROW * 2, radius: 27 + TPMS_CAPSULE_GROW, textX: 106, textY: 332, align: "right" },
+  { x: 297 - TPMS_CAPSULE_GROW, y: 277 - TPMS_CAPSULE_GROW, w: 54 + TPMS_CAPSULE_GROW * 2, h: 109 + TPMS_CAPSULE_GROW * 2, radius: 27 + TPMS_CAPSULE_GROW, textX: 359, textY: 332, align: "left" },
 ];
 const tpmsPowertrainImg = new Image();
 tpmsPowertrainImg.onload = () => scheduleGaugeRender();
@@ -161,6 +165,8 @@ const el = {
   rotation: document.getElementById("rotation"),
   demoMode: document.getElementById("demoMode"),
   tpmsBle: document.getElementById("tpmsBle"),
+  tpmsLowPsi: document.getElementById("tpmsLowPsi"),
+  tpmsStaleSec: document.getElementById("tpmsStaleSec"),
   obdStateText: document.getElementById("obdStateText"),
   obdPeer: document.getElementById("obdPeer"),
   obdRpm: document.getElementById("obdRpm"),
@@ -193,6 +199,7 @@ const el = {
   networkRefreshBtn: document.getElementById("networkRefreshBtn"),
   scanNetworksBtn: document.getElementById("scanNetworksBtn"),
   netScanSelect: document.getElementById("netScanSelect"),
+  savedNetworksList: document.getElementById("savedNetworksList"),
   netHint: document.getElementById("netHint"),
   psiMin: document.getElementById("psiMin"),
   psiMax: document.getElementById("psiMax"),
@@ -1547,7 +1554,8 @@ function drawTpmsFace(sample, g) {
       value = Number.isFinite(psi) ? psi.toFixed(1) : "--.-";
     } else if (status === 0 && valid) {
       value = psi.toFixed(1);
-      color = psi < 31.9 ? "#E8362E" : "#62D6A5";
+      const lowPsi = Number(state.tpms?.lowPsi ?? 31.9);
+      color = psi < lowPsi ? "#E8362E" : "#62D6A5";
     }
     const capsule = TPMS_CAPSULES[i];
     ctx.fillStyle = color;
@@ -1754,20 +1762,21 @@ function startHeartbeat(socket) {
   }, 750);
 }
 
-/* Shared #errorBox lifetime.
+/* Shared toast lifetime (#errorBox / #okBox, rendered as a fixed overlay).
  *
- * Two very different producers write this one box and they must not fight over
- * it, so every write carries the source that raised it:
+ * Two very different producers write this one toast and they must not fight
+ * over it, so every write carries the source that raised it:
  *
  *   ERR_LIVE - the unattended telemetry path (pollState, WebSocket frames).
  *              Nobody asked for these messages, and on HTTP fallback the path
  *              runs at POLL_FRAME_MS (4 Hz), so whatever it raises it must also
  *              retract: a transient network error self-clears the instant
- *              polling recovers.
+ *              polling recovers. As a toast it also auto-dismisses after
+ *              TOAST_TRANSIENT_MS, so a vanished producer cannot pin it.
  *   ERR_USER - the outcome of a gesture (save, scan, reconnect, upload, range
  *              validation). Nothing is polling on the operator's behalf, so the
- *              message stays until another gesture supersedes it or the
- *              operator clicks it away.
+ *              message stays until another gesture supersedes it, a showOk()
+ *              replaces it, or the operator clicks it away.
  *
  * A producer clears only what it raised. Before this, pollState() called
  * showError("") on every successful /state sample, so any user-facing error was
@@ -1777,12 +1786,19 @@ function startHeartbeat(socket) {
  * ERR_USER outranks ERR_LIVE in both directions: a poll failure may not paper
  * over the Wi-Fi error being read, and a poll recovery may not erase it. No
  * transport information is lost by that - the connection badge is the
- * designated live-transport indicator and this path never touches it. */
+ * designated live-transport indicator and this path never touches it.
+ *
+ * The nodes themselves sit directly under <body> and are position: fixed, so a
+ * notification is an overlay: it never shifts the page layout and stays
+ * visible regardless of scroll position. */
 const ERR_LIVE = "live";
 const ERR_USER = "user";
 const ERR_RANK = { [ERR_LIVE]: 1, [ERR_USER]: 2 };
-/* Source of the message currently on screen; null when the box is empty. */
+/* Source of the message currently on screen; null when the toast is empty. */
 let shownErrorSource = null;
+/* Transient (ERR_LIVE) toasts auto-dismiss after this long; ERR_USER persists. */
+const TOAST_TRANSIENT_MS = 3500;
+let toastTimer = null;
 
 function showError(message, source = ERR_USER) {
   if (!el.errorBox) return;
@@ -1795,12 +1811,20 @@ function showError(message, source = ERR_USER) {
   el.errorBox.hidden = false;
   el.errorBox.textContent = message;
   el.errorBox.title = "Click to dismiss";
-  if (el.okBox) el.okBox.hidden = true;
+  if (el.okBox) {
+    el.okBox.hidden = true;
+    el.okBox.textContent = "";
+  }
+  window.clearTimeout(toastTimer);
+  if (source === ERR_LIVE) {
+    toastTimer = window.setTimeout(() => clearError(ERR_LIVE), TOAST_TRANSIENT_MS);
+  }
 }
 
 function clearError(source = ERR_USER) {
   if (!el.errorBox) return;
   if (shownErrorSource && ERR_RANK[source] < ERR_RANK[shownErrorSource]) return;
+  window.clearTimeout(toastTimer);
   shownErrorSource = null;
   el.errorBox.hidden = true;
   el.errorBox.textContent = "";
@@ -1952,6 +1976,55 @@ function renderConfig(config) {
   }
 }
 
+function renderSavedNetworks(savedList, activeSsid) {
+  if (!el.savedNetworksList) return;
+  el.savedNetworksList.innerHTML = "";
+  const list = Array.isArray(savedList) ? savedList : [];
+  if (!list.length) {
+    const p = document.createElement("p");
+    p.className = "saved-net-empty";
+    p.textContent = "No saved networks yet. Add one below.";
+    el.savedNetworksList.appendChild(p);
+    return;
+  }
+  for (const item of list) {
+    const row = document.createElement("div");
+    row.className = "saved-net-item";
+    const nameWrap = document.createElement("div");
+    nameWrap.className = "saved-net-name-wrap";
+    const name = document.createElement("span");
+    name.className = "saved-net-name";
+    name.textContent = item.ssid || "";
+    nameWrap.appendChild(name);
+    if (item.ssid === activeSsid) {
+      const tag = document.createElement("span");
+      tag.className = "saved-net-badge";
+      tag.textContent = "Active";
+      nameWrap.appendChild(tag);
+    }
+    const delBtn = document.createElement("button");
+    delBtn.className = "saved-net-del";
+    delBtn.type = "button";
+    delBtn.textContent = "Remove";
+    delBtn.addEventListener("click", () => deleteSavedNetwork(item.ssid));
+    row.appendChild(nameWrap);
+    row.appendChild(delBtn);
+    el.savedNetworksList.appendChild(row);
+  }
+}
+
+async function deleteSavedNetwork(ssid) {
+  if (!ssid) return;
+  try {
+    showOk(`Removing ${ssid}…`);
+    const net = await api(`/network?ssid=${encodeURIComponent(ssid)}`, { method: "DELETE" });
+    renderNetwork(net);
+    showOk(`Removed ${ssid}`);
+  } catch (err) {
+    showError(`Failed to remove: ${err.message}`);
+  }
+}
+
 function renderNetwork(net) {
   state.network = net;
   if (el.netMode) el.netMode.textContent = (net.mode || "--").toUpperCase();
@@ -1964,10 +2037,11 @@ function renderNetwork(net) {
   if (el.netStaIp) el.netStaIp.textContent = net.staIp || "—";
   if (el.netApSsid) el.netApSsid.textContent = net.apSsid || "—";
   if (el.netSsid && document.activeElement !== el.netSsid) el.netSsid.value = net.staSsid || "";
+  renderSavedNetworks(net.saved, net.staSsid);
   if (el.netHint) {
     el.netHint.textContent = net.staConnected && net.staIp
       ? `Live on http://${net.staIp}/ · SoftAP ${net.apSsid || ""} still online`
-      : "SoftAP stays up as fallback. Saving STA may change the LAN IP.";
+      : "SoftAP stays up as fallback. Auto-connects to saved networks in range.";
   }
 }
 
@@ -2428,6 +2502,12 @@ function syncDisplayToggles() {
       : (state.demoMode ? "demo" : "off");
   }
   if (el.tpmsBle) el.tpmsBle.checked = !!state.tpmsBle;
+  if (el.tpmsLowPsi && state.tpmsConfig?.lowPsi != null) {
+    el.tpmsLowPsi.value = Number(state.tpmsConfig.lowPsi).toFixed(1);
+  }
+  if (el.tpmsStaleSec && state.tpmsConfig?.staleAfterMs != null) {
+    el.tpmsStaleSec.value = String(Math.round(state.tpmsConfig.staleAfterMs / 1000));
+  }
 }
 
 function wireDisplayToggles() {
@@ -2494,6 +2574,40 @@ function wireDisplayToggles() {
       send({ tpmsBle: el.tpmsBle.checked },
            el.tpmsBle.checked ? "OBD2 BLE link on" : "OBD2 BLE link off"),
     );
+  }
+  const saveTpmsField = async (body, label) => {
+    try {
+      clearError(ERR_USER);
+      const payload = await api("/tpms/config", {
+        method: "PUT",
+        body: JSON.stringify(body),
+      });
+      state.tpmsConfig = payload;
+      syncDisplayToggles();
+      showOk(label);
+    } catch (error) {
+      showError(error.message, ERR_USER);
+    }
+  };
+  if (el.tpmsLowPsi) {
+    el.tpmsLowPsi.addEventListener("change", () => {
+      const v = Number(el.tpmsLowPsi.value);
+      if (!Number.isFinite(v) || v < 15 || v > 55) {
+        showError("TPMS alert must be between 15 and 55 PSI", ERR_USER);
+        return;
+      }
+      saveTpmsField({ lowPsi: v }, `TPMS alert ${v.toFixed(1)} PSI`);
+    });
+  }
+  if (el.tpmsStaleSec) {
+    el.tpmsStaleSec.addEventListener("change", () => {
+      const sec = Number(el.tpmsStaleSec.value);
+      if (!Number.isFinite(sec) || sec < 2 || sec > 120) {
+        showError("TPMS stale must be between 2 and 120 seconds", ERR_USER);
+        return;
+      }
+      saveTpmsField({ staleAfterMs: Math.round(sec * 1000) }, `TPMS stale ${sec}s`);
+    });
   }
   if (el.pixelShiftMode) {
     el.pixelShiftMode.addEventListener("change", () => {
@@ -2946,7 +3060,10 @@ async function refreshAll(source = ERR_USER) {
     }
     const requests = [api("/state"), api("/config"), api("/themes"), api("/network")];
     if (IS_COCKPIT) requests.push(api("/media/status"));
-    const [statePayload, config, themes, network, media] = await Promise.all(requests);
+    else requests.push(api("/tpms/config").catch(() => null));
+    const [statePayload, config, themes, network, extra] = await Promise.all(requests);
+    if (!IS_COCKPIT && extra) state.tpmsConfig = extra;
+    const media = IS_COCKPIT ? extra : null;
     applyThemePayload(themes, {
       themes: [],
       bigDigitStaticColor: "#000000",

@@ -506,6 +506,64 @@ h1 {
   white-space: nowrap;
 }
 
+.saved-networks-wrap {
+  margin-top: 0.6rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.saved-networks-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.saved-net-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 150ms ease, background 150ms ease;
+}
+
+.saved-net-tag:hover {
+  border-color: var(--vacuum);
+  background: var(--track);
+}
+
+.saved-net-tag.active {
+  border-color: var(--boost);
+  font-weight: 600;
+}
+
+.saved-net-del {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.1rem;
+  height: 1.1rem;
+  border-radius: 50%;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 0.95rem;
+  line-height: 1;
+  padding: 0;
+  cursor: pointer;
+  transition: color 150ms ease, background 150ms ease;
+}
+
+.saved-net-del:hover {
+  color: var(--danger, #ff4444);
+  background: rgba(255, 68, 68, 0.15);
+}
+
 .time-grid {
   display: flex;
   flex-direction: row;
@@ -669,6 +727,49 @@ output {
 .ok {
   border: 1px solid color-mix(in srgb, var(--vacuum) 55%, var(--line));
   background: color-mix(in srgb, var(--vacuum) 12%, transparent);
+}
+
+/* The shared #errorBox / #okBox are toasts: fixed overlays pinned to the
+ * viewport top-centre. They are direct children of <body> (no panel can clip
+ * or re-flow them), so a notification floats over the content instead of
+ * pushing the layout around and stays visible on mobile no matter how far the
+ * page is scrolled. The skins above still apply; only placement differs from
+ * an inline box. */
+#errorBox,
+#okBox {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 2rem);
+  left: 50%;
+  transform: translate(-50%, 0);
+  z-index: 1000;
+  width: min(92vw, 26rem);
+  margin: 0;
+  padding: 0.75rem 1rem;
+  font-size: 0.88rem;
+  font-weight: 600;
+  text-align: center;
+  border-radius: 10px;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.85);
+}
+#errorBox {
+  background: color-mix(in srgb, var(--overboost) 25%, #10141d 95%);
+  border: 1px solid color-mix(in srgb, var(--overboost) 75%, var(--line));
+  color: #fff;
+}
+#okBox {
+  background: color-mix(in srgb, var(--vacuum) 25%, #10141d 95%);
+  border: 1px solid color-mix(in srgb, var(--vacuum) 75%, var(--line));
+  color: #fff;
+}
+@keyframes toast-in {
+  from { opacity: 0; transform: translate(-50%, -0.5rem); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+#errorBox:not([hidden]),
+#okBox:not([hidden]) {
+  animation: toast-in 180ms ease-out;
 }
 
 

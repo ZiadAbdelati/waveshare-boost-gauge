@@ -98,6 +98,7 @@ add_executable(test_neon_geom
     ${CMAKE_CURRENT_SOURCE_DIR}/../tools/test_neon_geom.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_neon_geom.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_theme.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_sim.c
 )
 target_include_directories(test_neon_geom PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../main

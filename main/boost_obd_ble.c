@@ -34,8 +34,8 @@
 #define OBD_MAX_WRITE      64
 #define OBD_MAX_RX         256
 #define OBD_MAX_CHR_CAND   8
-#define OBD_ADV_SCAN_MS    15000
-#define OBD_RECONNECT_MS   3000
+#define OBD_ADV_SCAN_MS    3000
+#define OBD_RECONNECT_MS   10000
 #define OBD_CCCD_UUID      0x2902
 /* The BT controller allocates its buffer pool from DMA-capable internal RAM,
  * and a failed allocation inside esp_bt_controller_enable() panics the board
@@ -404,8 +404,8 @@ static int gap_event_fn(struct ble_gap_event *event, void *arg)
 static void start_scan(void)
 {
     struct ble_gap_disc_params params = {
-        .itvl = 0x0010,
-        .window = 0x0010,
+        .itvl = 0x0080,             /* 80 ms interval (was 10 ms continuous) */
+        .window = 0x0020,           /* 20 ms window (25% duty cycle, frees 75% airtime for Wi-Fi) */
         .filter_duplicates = 1,  /* active scan so we get advertised names */
         .passive = 0,
         .limited = 0,
@@ -424,8 +424,8 @@ static void start_scan(void)
 static void try_connect(const ble_addr_t *addr)
 {
     struct ble_gap_conn_params params = {
-        .scan_itvl = 0x0010,
-        .scan_window = 0x0010,
+        .scan_itvl = 0x0080,
+        .scan_window = 0x0020,
         .itvl_min = 16,             /* 20 ms */
         .itvl_max = 32,             /* 40 ms */
         .latency = 0,
@@ -434,7 +434,7 @@ static void try_connect(const ble_addr_t *addr)
         .max_ce_len = 0,
     };
     publish_state(BOOST_OBD_BLE_CONNECTING);
-    const int rc = ble_gap_connect(BLE_OWN_ADDR_PUBLIC, addr, 10000, &params,
+    const int rc = ble_gap_connect(BLE_OWN_ADDR_PUBLIC, addr, 5000, &params,
                                    gap_event_fn, NULL);
     if (rc != 0) {
         obd_ble_event_t ev = { 0 };

@@ -5432,7 +5432,6 @@ static void update_arc(const boost_sample_t *sample, const boost_theme_t *theme)
     if (strcmp(lv_label_get_text(s_zone_label), zone) != 0) {
         lv_label_set_text(s_zone_label, zone);
     }
-    char sign[2] = {0}, tens[2] = {0}, ones[2] = {0}, tenths[2] = {0};
     update_arc_readout(sample->psi, sample->psi >= s_psi_overboost, theme);
 
     /* Only regenerate the "PEAK  x.x" text when the peak value actually
@@ -6533,9 +6532,9 @@ static void invalidate_hud_readout(lv_area_t *area)
 static void invalidate_hud_readout_full(void)
 {
     lv_area_t area = {
-        px_icx() - 156,
+        px_icx() - 156 - HUD_GLITCH_DX,
         px_icy() + HUD_VALUE_Y - 42,
-        px_icx() + 105,
+        px_icx() + 105 + HUD_GLITCH_DX,
         px_icy() + HUD_VALUE_Y + 42,
     };
     invalidate_hud_readout(&area);
@@ -6655,12 +6654,11 @@ static void build_hud(lv_obj_t *scr)
     lv_obj_clear_flag(s_hud_readout, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(s_hud_readout, draw_hud_readout, LV_EVENT_DRAW_MAIN, NULL);
     memset(s_hud_slot_text, 0, sizeof(s_hud_slot_text));
-    s_hud_slot_text[HUD_SLOT_ONES][0] = '0';
-    s_hud_slot_text[HUD_SLOT_DOT][0] = '.';
     memset(s_hud_sign_text, 0, sizeof(s_hud_sign_text));
     s_hud_sign_x = HUD_SIGN_ONES_X;
     s_hud_readout_color = c(theme->boost);
-    s_hud_readout_color_valid = true;
+    s_hud_readout_color_valid = false;
+    s_hud_val_str[0] = '\0';
     (void)readout_cached;
 
     /* The remaining labels are not part of the primary 96 px readout. */
@@ -6808,7 +6806,10 @@ static void update_hud(const boost_sample_t *sample, const boost_theme_t *theme)
         sign_changed = true;
     }
 
-    if ((value_changed || readout_color_changed) && s_hud_readout != NULL) {
+    const bool first_sample = prev_val[0] == '\0';
+    if (first_sample) {
+        invalidate_hud_readout_full();
+    } else if ((value_changed || readout_color_changed) && s_hud_readout != NULL) {
         /* Preserve the old exact dirty union: changed primary slots/sign, grown
          * by the shared ghost offset and AA margin. */
         const int grow = HUD_GLITCH_DX + 1;

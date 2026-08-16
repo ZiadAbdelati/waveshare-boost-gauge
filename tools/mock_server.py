@@ -120,6 +120,8 @@ CONFIG = {
     "psiMax": 10.0,
     "psiOverboost": 8.0,
     "zeroAngle": 236.25,
+    "tpmsLowKpa": 220.0,
+    "tpmsStaleAfterMs": 15000,
 }
 
 MEDIA = {
@@ -140,6 +142,10 @@ NETWORK = {
     "staIp": "192.168.1.42",
     "rssi": -54,
     "apSsid": "BoostGauge-7F3A",
+    "saved": [
+        {"ssid": "PitWall-5G"},
+        {"ssid": "Garage-IoT"},
+    ],
 }
 
 SCAN_NETWORKS = [
@@ -398,6 +404,18 @@ def state_payload() -> dict[str, float | int | str | bool]:
             "ambientKpa": ambient_kpa,
         },
     }
+    low_kpa = float(CONFIG.get("tpmsLowKpa", 220.0))
+    low_psi = round(low_kpa * 0.145037738, 1)
+    payload["tpms"] = {
+        "status": 0,
+        "lowPsi": low_psi,
+        "wheels": [
+            {"psi": 32.5, "valid": True},
+            {"psi": 33.0, "valid": True},
+            {"psi": 31.8, "valid": True},
+            {"psi": 32.8, "valid": True},
+        ],
+    }
     # Mirror the firmware /state OBD section. With the BLE link enabled the
     # mock fakes a connected adapter and live PID readings so the dashboard's
     # OBD readout can be exercised without hardware.
@@ -524,6 +542,13 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(themes_payload())
         elif path == "/api/v1/themes/config":
             self.send_json(themes_payload())
+        elif path == "/api/v1/tpms/config":
+            low_kpa = float(CONFIG.get("tpmsLowKpa", 220.0))
+            self.send_json({
+                "lowKpa": low_kpa,
+                "lowPsi": round(low_kpa * 0.145037738, 1),
+                "staleAfterMs": int(CONFIG.get("tpmsStaleAfterMs", 15000)),
+            })
         elif path == "/api/v1/logs":
             limit = int(parse_qs(parsed.query).get("limit", ["120"])[0])
             self.send_json({"sessionStartedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(STARTED_AT)), "samples": LOGS[-limit:]})
@@ -726,10 +751,41 @@ class Handler(BaseHTTPRequestHandler):
             if payload.get("mode") in ("ap", "apsta"):
                 NETWORK["mode"] = payload["mode"]
             if "ssid" in payload and payload["ssid"]:
-                NETWORK["staSsid"] = payload["ssid"]
+                ssid = payload["ssid"]
+                NETWORK["staSsid"] = ssid
+                if not any(item["ssid"] == ssid for item in NETWORK["saved"]):
+                    NETWORK["saved"].insert(0, {"ssid": ssid})
             NETWORK["staEnabled"] = NETWORK["mode"] == "apsta"
             NETWORK["staConnected"] = NETWORK["staEnabled"]
             self.send_json(NETWORK)
+        elif parsed.path == "/api/v1/tpms/config":
+            payload = self.read_json()
+            if payload is None:
+                return
+            if "lowKpa" in payload:
+                v = float(payload["lowKpa"])
+                if not (100.0 <= v <= 400.0):
+                    self.send_json({"error": "invalid_tpms_config"}, HTTPStatus.BAD_REQUEST)
+                    return
+                CONFIG["tpmsLowKpa"] = v
+            elif "lowPsi" in payload:
+                v = float(payload["lowPsi"]) / 0.145037738
+                if not (100.0 <= v <= 400.0):
+                    self.send_json({"error": "invalid_tpms_config"}, HTTPStatus.BAD_REQUEST)
+                    return
+                CONFIG["tpmsLowKpa"] = v
+            if "staleAfterMs" in payload:
+                v = int(payload["staleAfterMs"])
+                if not (2000 <= v <= 120000):
+                    self.send_json({"error": "invalid_tpms_config"}, HTTPStatus.BAD_REQUEST)
+                    return
+                CONFIG["tpmsStaleAfterMs"] = v
+            low_kpa = float(CONFIG.get("tpmsLowKpa", 220.0))
+            self.send_json({
+                "lowKpa": low_kpa,
+                "lowPsi": round(low_kpa * 0.145037738, 1),
+                "staleAfterMs": int(CONFIG.get("tpmsStaleAfterMs", 15000)),
+            })
         else:
             self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -794,6 +850,11 @@ class Handler(BaseHTTPRequestHandler):
             MEDIA.update({"present": False, "name": None, "sizeBytes": 0, "contentType": None, "uploadedAtEpochMs": None})
             self.send_response(HTTPStatus.NO_CONTENT)
             self.end_headers()
+        elif parsed.path == "/api/v1/network":
+            ssid = parse_qs(parsed.query).get("ssid", [None])[0]
+            if ssid:
+                NETWORK["saved"] = [item for item in NETWORK["saved"] if item["ssid"] != ssid]
+            self.send_json(NETWORK)
         else:
             self.send_error(HTTPStatus.NOT_FOUND)
 

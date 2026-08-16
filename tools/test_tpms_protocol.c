@@ -33,7 +33,7 @@ int main(void)
         BOOST_TPMS_WHEEL_FL, BOOST_TPMS_WHEEL_FR,
         BOOST_TPMS_WHEEL_RL, BOOST_TPMS_WHEEL_RR,
     };
-    const uint16_t dids[] = {0x2A05u, 0x2A07u, 0x2A06u, 0x2A08u};
+    const uint16_t dids[] = {0x2A08u, 0x2A06u, 0x2A07u, 0x2A05u};
     for (size_t i = 0; i < 4u; ++i) {
         assert(boost_tpms_protocol_wheel_for_did(dids[i]) == wheels[i]);
         assert(boost_tpms_protocol_did_for_wheel(wheels[i]) == dids[i]);
@@ -49,8 +49,13 @@ int main(void)
     uint16_t out_raw = 0u;
     assert(boost_tpms_protocol_parse_uds_response(valid, sizeof(valid), &out_did, &out_raw));
     assert(out_did == 0x2A05u && out_raw == 0x00A5u);
+    /* MX-5 ND answers these DIDs with a single data byte (4-byte response). */
+    const uint8_t valid_byte[] = {0x62u, 0x2Au, 0x05u, 0x8Cu};
+    assert(boost_tpms_protocol_parse_uds_response(valid_byte, sizeof(valid_byte),
+                                                  &out_did, &out_raw));
+    assert(out_did == 0x2A05u && out_raw == 0x008Cu);
     const uint8_t wrong_sid[] = {0x7Fu, 0x2Au, 0x05u, 0x00u, 0xA5u};
-    const uint8_t wrong_len[] = {0x62u, 0x2Au, 0x05u, 0x00u};
+    const uint8_t wrong_len[] = {0x62u, 0x2Au, 0x05u};
     const uint8_t wrong_did[] = {0x62u, 0x2Au, 0x09u, 0x00u, 0xA5u};
     assert(!boost_tpms_protocol_parse_uds_response(wrong_sid, sizeof(wrong_sid), NULL, NULL));
     assert(!boost_tpms_protocol_parse_uds_response(wrong_len, sizeof(wrong_len), NULL, NULL));

@@ -2,6 +2,8 @@
 
 #include <string.h>
 
+#include "boost_sim.h"
+
 /* Built for the desktop simulator too, which has no NVS. Settings there live
  * for the lifetime of the process; everything else in this file is identical,
  * so the sim exercises the same defaults and the same accessors. */
@@ -35,6 +37,7 @@
 #define NVS_KEY_NEONLAY "neon_layout"
 #define NVS_KEY_NEONPRE "neon_preset"
 #define NVS_KEY_DEMO    "demo_mode"
+#define NVS_KEY_FASTS   "demo_fast_sweep"
 #define NVS_KEY_TPMSBLE "tpms_ble"
 
 /* Palettes/styles here MUST match tools/mock_server.py and the web renderers so
@@ -300,6 +303,7 @@ static void persist(void)
     nvs_set_u8(h, NVS_KEY_NEONLAY, s_neon_layout);
     nvs_set_u8(h, NVS_KEY_NEONPRE, s_neon_preset);
     nvs_set_u8(h, NVS_KEY_DEMO, s_demo_mode ? 1 : 0);
+    nvs_set_u8(h, NVS_KEY_FASTS, boost_sim_fast_sweep() ? 1 : 0);
     nvs_set_u8(h, NVS_KEY_TPMSBLE, s_tpms_ble ? 1 : 0);
     nvs_commit(h);
     nvs_close(h);
@@ -426,6 +430,15 @@ void boost_theme_init(void)
     uint8_t dm = 0;
     if (nvs_get_u8(h, NVS_KEY_DEMO, &dm) == ESP_OK) {
         s_demo_mode = (dm != 0);
+    }
+
+    /* Absent key keeps the default (off = organic sweep). Applied to the sim
+     * here - before boost_sim_init() runs, which no longer resets it - so the
+     * persisted waveform choice survives a reboot. A separate flag from
+     * demoMode; it only matters while demo mode is on. */
+    uint8_t fs = 0;
+    if (nvs_get_u8(h, NVS_KEY_FASTS, &fs) == ESP_OK) {
+        boost_sim_set_fast_sweep(fs != 0);
     }
 
     uint8_t tb = 0;
@@ -707,6 +720,16 @@ void boost_theme_set_demo_mode(bool enabled)
 {
     ensure_loaded();
     s_demo_mode = enabled;
+    persist();
+}
+
+/* The flag itself lives in boost_sim.c (single source of truth); this is the
+ * persistence/entry point, mirroring demoMode's setter. Writes go through the
+ * sim setter so the runtime state and the stored value can never disagree. */
+void boost_theme_set_demo_fast_sweep(bool enabled)
+{
+    ensure_loaded();
+    boost_sim_set_fast_sweep(enabled);
     persist();
 }
 

@@ -27,6 +27,10 @@ static const float PSI_MAX = 9.6f;
 
 static float s_peak;
 static int64_t s_t0_us;
+/* Persisted via the theme NVS store (boost_theme.c, key "demo_fast_sweep");
+ * boost_theme_init() re-applies it before boost_sim_init() runs, and init no
+ * longer resets it, so the choice survives a reboot. Zero-init = organic
+ * sweep until the store has said otherwise. */
 static bool s_fast_sweep;
 
 /*
@@ -57,7 +61,9 @@ void boost_sim_init(void)
 {
     s_peak = 0.0f;
     s_t0_us = now_us();
-    s_fast_sweep = false;
+    /* Do NOT reset s_fast_sweep here: the demoFastSweep choice is persisted
+     * (boost_theme.c, NVS "demo_fast_sweep") and boost_theme_init() has already
+     * applied it before this runs, so wiping it would drop the choice on boot. */
 }
 
 void boost_sim_reset_peak(void)

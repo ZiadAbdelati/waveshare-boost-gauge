@@ -8,6 +8,8 @@
   <link rel="stylesheet" href="/styles.css?v=20260726a">
 </head>
 <body data-page="settings">
+  <div class="error" id="errorBox" hidden></div>
+  <div class="ok" id="okBox" hidden></div>
   <main class="shell shell-settings">
     <header class="mast settings-mast">
       <div>
@@ -27,9 +29,6 @@
     </header>
 
     <div class="settings-stack">
-      <div class="error" id="errorBox" hidden></div>
-      <div class="ok" id="okBox" hidden></div>
-
       <section class="panel range-panel">
         <div class="section-title">
           <span>Gauge range</span>
@@ -122,7 +121,7 @@
           sensors and hides the DEMO marker. Demo replays the synthetic idle-to-boost
           sweep and shows DEMO on every face &mdash; handy with no engine running.
           &ldquo;Linear sweep&rdquo; adds the constant-slew bench triangle (demoFastSweep,
-          9.789&nbsp;psi/s, transient &mdash; it does not survive a reboot) for
+          9.789&nbsp;psi/s, persisted like demo mode) for
           fast-motion testing.</p>
         <label class="toggle-field">
           <input id="teSync" type="checkbox">
@@ -197,6 +196,20 @@
           <div><span>Adapter</span><strong id="obdPeer">--</strong></div>
           <div><span>Battery</span><strong id="obdBattery">--</strong></div>
         </div>
+
+        <div class="field-group tpms-thresholds">
+          <label class="field">
+            <span>Low-pressure alert (PSI)</span>
+            <input id="tpmsLowPsi" type="number" step="0.5" min="15" max="55" placeholder="32.0">
+          </label>
+          <label class="field">
+            <span>Stale after (seconds)</span>
+            <input id="tpmsStaleSec" type="number" step="1" min="2" max="120" placeholder="15">
+          </label>
+        </div>
+        <p class="hint-text">Wheels below the alert pressure turn red on the
+          gauge and web mirror (green at/above). Data unrefreshed past the staleness
+          window shows amber (STALE). Saved in NVS.</p>
       </section>
 
       <section class="panel network-panel">
@@ -227,6 +240,10 @@
             <select id="netScanSelect" aria-label="Scanned Wi‑Fi networks">
               <option value="">Manual SSID entry</option>
             </select>
+          </div>
+          <div id="savedNetworksContainer" class="saved-networks-wrap" style="display:none;">
+            <span class="field-label">Saved Networks</span>
+            <div id="savedNetworksList" class="saved-networks-list"></div>
           </div>
           <label class="field">
             <span>Password</span>

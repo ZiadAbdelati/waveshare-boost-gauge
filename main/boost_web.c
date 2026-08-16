@@ -35,6 +35,8 @@
 #include "boost_network.h"
 #include "boost_media_store.h"
 #include "boost_obd.h"
+#include "boost_tpms.h"
+#include "boost_tpms_protocol.h"
 #include "generated_web_assets.h"
 
 #define API_BASE "/api/v1"
@@ -176,6 +178,8 @@ static int state_json(char *json, size_t len)
 {
     boost_state_t st;
     boost_model_get_state(&st);
+    boost_tpms_config_t tpms_cfg;
+    boost_tpms_get_config(&tpms_cfg);
     return snprintf(json, len,
                     "{\"psi\":%.2f,\"peakPsi\":%.2f,\"zone\":\"%s\",\"demo\":%s,"
                     "\"brightness\":%d,\"firmwareVersion\":\"%s\",\"uptimeMs\":%llu,"
@@ -190,7 +194,7 @@ static int state_json(char *json, size_t len)
                      * possible without the display. */
                     "\"sensors\":{\"adsPresent\":%s,\"bmpPresent\":%s,\"fault\":%s,"
                     "\"mapVolts\":%.4f,\"mapAbsKpa\":%.2f,\"ambientKpa\":%.2f},"
-                    "\"tpms\":{\"status\":%d,\"wheels\":[{\"psi\":%.1f,\"valid\":%s},{\"psi\":%.1f,\"valid\":%s},{\"psi\":%.1f,\"valid\":%s},{\"psi\":%.1f,\"valid\":%s}]},"
+                    "\"tpms\":{\"status\":%d,\"lowPsi\":%.1f,\"wheels\":[{\"psi\":%.1f,\"valid\":%s},{\"psi\":%.1f,\"valid\":%s},{\"psi\":%.1f,\"valid\":%s},{\"psi\":%.1f,\"valid\":%s}]},"
                     "\"obd\":{\"state\":%d,\"lastError\":%u,\"peer\":\"%s\",\"peerAddr\":\"%s\",\"uptimeMs\":%lu,\"ageMs\":%lu,\"valid\":%s,"
                     "\"lastReply\":\"%s\",\"protocol\":\"%s\","
                     "\"rpm\":%.1f,\"speedKph\":%.1f,\"coolantC\":%.1f,\"mapKpa\":%.1f,\"iatC\":%.1f,"
@@ -215,7 +219,7 @@ static int state_json(char *json, size_t len)
                     st.bmp_present ? "true" : "false",
                     st.sensor_fault ? "true" : "false",
                     (double)st.map_volts, (double)st.map_abs_kpa, (double)st.ambient_kpa,
-                    st.tpms_status,
+                    st.tpms_status, (double)boost_tpms_protocol_kpa_to_psi(tpms_cfg.low_kpa),
                     (double)st.tpms_psi[0], st.tpms_valid[0] ? "true" : "false",
                     (double)st.tpms_psi[1], st.tpms_valid[1] ? "true" : "false",
                     (double)st.tpms_psi[2], st.tpms_valid[2] ? "true" : "false",
@@ -941,10 +945,12 @@ static esp_err_t themes_config_put(httpd_req_t *req)
         boost_theme_set_demo_mode(cJSON_IsTrue(demo));
     }
 
-    /* Diagnostic-only, transient (not persisted): see boost_sim.h. */
+    /* Persisted via the theme store alongside demoMode (NVS "demo_fast_sweep")
+     * and re-applied at boot, so the sweep choice survives a reboot. Still a
+     * separate flag from demoMode: see boost_theme_set_demo_fast_sweep(). */
     const cJSON *fsweep = cJSON_GetObjectItemCaseSensitive(root, "demoFastSweep");
     if (cJSON_IsBool(fsweep)) {
-        boost_sim_set_fast_sweep(cJSON_IsTrue(fsweep));
+        boost_theme_set_demo_fast_sweep(cJSON_IsTrue(fsweep));
     }
 
     /* OBD2 BLE link for the TPMS page. Runtime, persisted, no reboot needed:
@@ -1072,6 +1078,63 @@ static esp_err_t page_put(httpd_req_t *req)
     if (err != ESP_OK) return send_err(req, "503 Service Unavailable", "display_unavailable");
     char json[64];
     snprintf(json, sizeof(json), "{\"ok\":true,\"activePage\":%d}", page);
+    return send_json(req, json);
+}
+
+static void tpms_config_json(char *json, size_t len)
+{
+    boost_tpms_config_t cfg;
+    boost_tpms_get_config(&cfg);
+    snprintf(json, len,
+             "{\"lowKpa\":%.1f,\"lowPsi\":%.1f,\"staleAfterMs\":%lu}",
+             (double)cfg.low_kpa,
+             (double)boost_tpms_protocol_kpa_to_psi(cfg.low_kpa),
+             (unsigned long)cfg.stale_after_ms);
+}
+
+static esp_err_t tpms_config_get(httpd_req_t *req)
+{
+    char json[128];
+    tpms_config_json(json, sizeof(json));
+    return send_json(req, json);
+}
+
+static esp_err_t tpms_config_put(httpd_req_t *req)
+{
+    char *body = read_body(req, MAX_JSON_BODY);
+    if (body == NULL) {
+        return send_err(req, HTTPD_400, "invalid_body");
+    }
+    cJSON *root = cJSON_Parse(body);
+    free(body);
+    if (root == NULL) {
+        return send_err(req, HTTPD_400, "invalid_json");
+    }
+    boost_tpms_config_t cfg;
+    boost_tpms_get_config(&cfg);
+    bool ok = true;
+    float ftmp;
+    if (json_float(root, "lowKpa", &ftmp)) {
+        if (!(ftmp >= 100.0f && ftmp <= 400.0f)) ok = false;
+        else cfg.low_kpa = ftmp;
+    } else if (json_float(root, "lowPsi", &ftmp)) {
+        const float kpa = ftmp / BOOST_TPMS_KPA_TO_PSI;
+        if (!(kpa >= 100.0f && kpa <= 400.0f)) ok = false;
+        else cfg.low_kpa = kpa;
+    }
+    int tmp;
+    if (ok && json_int(root, "staleAfterMs", &tmp)) {
+        if (!(tmp >= 2000 && tmp <= 120000)) ok = false;
+        else cfg.stale_after_ms = (uint32_t)tmp;
+    }
+    cJSON_Delete(root);
+    if (!ok || !boost_tpms_set_config(&cfg)) {
+        return send_err(req, HTTPD_400, "invalid_tpms_config");
+    }
+    /* The TPMS page colors straight from the snapshot each tick, so a new
+     * threshold takes effect on the next update with no scene rebuild. */
+    char json[128];
+    tpms_config_json(json, sizeof(json));
     return send_json(req, json);
 }
 
@@ -1521,15 +1584,26 @@ static void network_status_json(char *json, size_t len)
     char ap_e[64];
     json_escape(st.sta_ssid, ssid_e, sizeof(ssid_e));
     json_escape(st.ap_ssid, ap_e, sizeof(ap_e));
-    snprintf(json, len,
+    int written = snprintf(json, len,
              "{\"mode\":\"%s\",\"staEnabled\":%s,\"staConnected\":%s,"
              "\"staSsid\":\"%s\",\"staIp\":\"%s\",\"apSsid\":\"%s\",\"apIp\":\"%s\","
-             "\"rssi\":%d,\"hasPassword\":%s}",
+             "\"rssi\":%d,\"hasPassword\":%s,\"saved\":[",
              st.mode == BOOST_NET_MODE_APSTA ? "apsta" : "ap",
              st.sta_enabled ? "true" : "false",
              st.sta_connected ? "true" : "false",
              ssid_e, st.sta_ip, ap_e, st.ap_ip, st.rssi,
              st.has_sta_pass ? "true" : "false");
+    if (written < 0 || (size_t)written >= len) {
+        return;
+    }
+    for (uint8_t i = 0; i < st.saved_count; ++i) {
+        char s_esc[96];
+        json_escape(st.saved[i].ssid, s_esc, sizeof(s_esc));
+        char item[128];
+        snprintf(item, sizeof(item), "%s{\"ssid\":\"%s\"}", i == 0 ? "" : ",", s_esc);
+        strlcat(json, item, len);
+    }
+    strlcat(json, "]}", len);
 }
 
 static esp_err_t network_scan_get(httpd_req_t *req)
@@ -1621,6 +1695,39 @@ static esp_err_t network_put(httpd_req_t *req)
     return send_json(req, json);
 }
 
+static esp_err_t network_delete(httpd_req_t *req)
+{
+    char *body = read_body(req, MAX_JSON_BODY);
+    if (body == NULL) {
+        return send_err(req, HTTPD_400, "invalid_body");
+    }
+    cJSON *root = cJSON_Parse(body);
+    free(body);
+    if (!cJSON_IsObject(root)) {
+        cJSON_Delete(root);
+        return send_err(req, HTTPD_400, "invalid_json");
+    }
+    const char *ssid = NULL;
+    cJSON *ssid_j = cJSON_GetObjectItemCaseSensitive(root, "ssid");
+    if (cJSON_IsString(ssid_j)) {
+        ssid = ssid_j->valuestring;
+    }
+    if (!ssid || ssid[0] == '\0') {
+        cJSON_Delete(root);
+        return send_err(req, HTTPD_400, "missing_ssid");
+    }
+    esp_err_t err = boost_network_delete_saved(ssid);
+    cJSON_Delete(root);
+    if (err == ESP_ERR_NOT_FOUND) {
+        return send_err(req, HTTPD_404, "not_found");
+    } else if (err != ESP_OK) {
+        return send_err(req, HTTPD_400, "delete_failed");
+    }
+    char json[512];
+    network_status_json(json, sizeof(json));
+    return send_json(req, json);
+}
+
 static esp_err_t network_reconnect_post(httpd_req_t *req)
 {
     esp_err_t err = boost_network_reconnect();
@@ -1694,6 +1801,8 @@ esp_err_t boost_web_start(void)
     register_uri(API_BASE "/themes", HTTP_GET, themes_get);
     register_uri(API_BASE "/themes/active", HTTP_PUT, theme_active_put);
     register_uri(API_BASE "/themes/config", HTTP_PUT, themes_config_put);
+    register_uri(API_BASE "/tpms/config", HTTP_GET, tpms_config_get);
+    register_uri(API_BASE "/tpms/config", HTTP_PUT, tpms_config_put);
     register_uri(API_BASE "/page", HTTP_PUT, page_put);
     register_uri(API_BASE "/logs", HTTP_GET, logs_get);
     register_uri(API_BASE "/logs", HTTP_DELETE, logs_delete);
@@ -1705,6 +1814,7 @@ esp_err_t boost_web_start(void)
     register_uri(API_BASE "/restart", HTTP_POST, restart_post);
     register_uri(API_BASE "/network", HTTP_GET, network_get);
     register_uri(API_BASE "/network", HTTP_PUT, network_put);
+    register_uri(API_BASE "/network", HTTP_DELETE, network_delete);
     register_uri(API_BASE "/network/reconnect", HTTP_POST, network_reconnect_post);
     register_uri(API_BASE "/network/scan", HTTP_GET, network_scan_get);
 #if LV_USE_SNAPSHOT

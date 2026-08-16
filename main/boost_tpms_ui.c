@@ -49,6 +49,12 @@ static const tpms_capsule_t s_capsule[4] = {
     { 297, 277, 54, 109, 27 }, /* RR */
 };
 
+/* The drawn capsule grows this many px beyond the art's tire bounds on every
+ * side. At exact bounds the art's anti-aliased tire edge leaves a couple of
+ * white pixels peeking around the capsule; +2 covers them (the invalidation
+ * margin below already accounts for the shadow, which spreads further). */
+#define TPMS_CAPSULE_GROW 2
+
 static lv_obj_t *s_root;
 static lv_obj_t *s_canvas;
 static lv_obj_t *s_face;
@@ -81,16 +87,16 @@ static void draw_tpms_capsules(lv_event_t *event)
         lv_draw_rect_dsc_init(&rect);
         rect.bg_color = tpms_color(s_capsule_color[i]);
         rect.bg_opa = LV_OPA_COVER;
-        rect.radius = capsule->radius;
+        rect.radius = capsule->radius + TPMS_CAPSULE_GROW;
         rect.shadow_color = rect.bg_color;
         rect.shadow_width = 6;
         rect.shadow_opa = LV_OPA_30;
 
         lv_area_t area = {
-            face_area.x1 + capsule->x,
-            face_area.y1 + capsule->y,
-            face_area.x1 + capsule->x + capsule->w - 1,
-            face_area.y1 + capsule->y + capsule->h - 1,
+            face_area.x1 + capsule->x - TPMS_CAPSULE_GROW,
+            face_area.y1 + capsule->y - TPMS_CAPSULE_GROW,
+            face_area.x1 + capsule->x + capsule->w - 1 + TPMS_CAPSULE_GROW,
+            face_area.y1 + capsule->y + capsule->h - 1 + TPMS_CAPSULE_GROW,
         };
         lv_draw_rect(layer, &rect, &area);
     }
@@ -180,12 +186,14 @@ void boost_tpms_ui_update(const boost_tpms_snapshot_t *snapshot)
 {
     if (s_root == NULL) return;
 
+    boost_tpms_config_t cfg;
+    boost_tpms_get_config(&cfg);
     for (int i = 0; i < 4; ++i) {
         const bool received = snapshot != NULL &&
                               snapshot->wheel[i].age_ms != UINT32_MAX;
         const bool fresh = received && snapshot->wheel[i].valid;
         const bool low = fresh &&
-                         snapshot->wheel[i].kpa < BOOST_TPMS_LOW_PRESSURE_KPA;
+                         snapshot->wheel[i].kpa < cfg.low_kpa;
         const char *value = "--.-";
         uint32_t color = TPMS_OFFLINE;
         char formatted[16];

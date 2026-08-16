@@ -44,14 +44,16 @@ void boost_sim_reset_peak(void);
 boost_sample_t boost_sim_tick(void);
 
 /**
- * Diagnostic-only, transient (NOT persisted, reset to false by boost_sim_init()
- * on every boot): swap the sine-envelope demo waveform for a symmetric triangle
- * sweeping the full PSI_MIN..PSI_MAX range at a constant slew rate matching the
- * envelope waveform's own measured peak trend |dpsi/dt|. Exists so a fast-motion
- * measurement window can be sustained for an entire sampling run instead of
- * hunting for the brief fast segments the organic waveform produces only near
- * its sinusoid's zero-crossings. See tools/bench_fast_motion.py, which derives
- * the exact constant from the same formula this file uses. No effect unless
+ * Swap the sine-envelope demo waveform for a symmetric triangle sweeping the
+ * full PSI_MIN..PSI_MAX range at a constant slew rate matching the envelope
+ * waveform's own measured peak trend |dpsi/dt|. Persisted alongside demoMode
+ * via the theme NVS store (boost_theme.c, key "demo_fast_sweep"): the choice
+ * survives a reboot, and boost_theme_init() re-applies it before the sim
+ * starts ticking. Exists so a fast-motion measurement window can be sustained
+ * for an entire sampling run instead of hunting for the brief fast segments
+ * the organic waveform produces only near its sinusoid's zero-crossings. See
+ * tools/bench_fast_motion.py, which derives the exact constant from the same
+ * formula this file uses. A separate flag from demoMode - no effect unless
  * demo mode is also on (boost_theme_demo_mode()).
  */
 void boost_sim_set_fast_sweep(bool enabled);

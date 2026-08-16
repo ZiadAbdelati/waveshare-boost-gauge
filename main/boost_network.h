@@ -16,12 +16,26 @@ typedef enum {
     BOOST_NET_MODE_APSTA = 1,
 } boost_net_mode_t;
 
+#define BOOST_NET_MAX_SAVED 5
+
+typedef struct {
+    char ssid[33];
+    char pass[65];
+    bool has_pass;
+} boost_saved_entry_t;
+
 typedef struct {
     boost_net_mode_t mode;
     char sta_ssid[33];
     char sta_pass[65];
     bool has_sta_pass;
+    uint8_t saved_count;
+    boost_saved_entry_t saved[BOOST_NET_MAX_SAVED];
 } boost_net_config_t;
+
+typedef struct {
+    char ssid[33];
+} boost_saved_network_t;
 
 typedef struct {
     boost_net_mode_t mode;
@@ -33,6 +47,8 @@ typedef struct {
     char ap_ip[16];
     int rssi;
     bool has_sta_pass;
+    uint8_t saved_count;
+    boost_saved_network_t saved[BOOST_NET_MAX_SAVED];
 } boost_net_status_t;
 
 #define BOOST_WIFI_SCAN_MAX_RECORDS 16
@@ -62,6 +78,8 @@ void boost_network_get_status(boost_net_status_t *out);
  */
 esp_err_t boost_network_update(const char *ssid, const char *password, bool keep_password,
                                boost_net_mode_t mode, bool have_mode);
+
+esp_err_t boost_network_delete_saved(const char *ssid);
 
 esp_err_t boost_network_reconnect(void);
 

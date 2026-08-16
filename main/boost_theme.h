@@ -174,6 +174,16 @@ bool boost_theme_demo_mode(void);
 void boost_theme_set_demo_mode(bool enabled);
 
 /*
+ * Demo fast-sweep modifier. OFF (the default) runs the organic sine-envelope
+ * sweep; ON swaps it for the constant-slew 9.789 psi/s bench triangle (see
+ * boost_sim.h). Persisted like demoMode under NVS "demo_fast_sweep" and
+ * re-applied at boot. Deliberately a SEPARATE flag from demoMode - it only
+ * has an effect while demo mode is on, but the two are stored and toggled
+ * independently.
+ */
+void boost_theme_set_demo_fast_sweep(bool enabled);
+
+/*
  * OBD2 BLE link for the TPMS page. OFF (the default) leaves the BLE central
  * idle and the TPMS page on the mock provider; ON starts the BLE central and,
  * once an adapter answers, switches the TPMS page to live vehicle data.

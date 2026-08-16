@@ -3,6 +3,10 @@
 #include <math.h>
 #include <string.h>
 
+#ifdef ESP_PLATFORM
+#include "nvs.h"
+#endif
+
 #include "boost_tpms_protocol.h"
 #include "boost_tpms_mock.h"
 
@@ -10,10 +14,15 @@
 #define BOOST_TPMS_BLE_ENABLED 0
 #endif
 
+#define TPMS_NVS_NS     "boost_tpms"
+#define TPMS_NVS_LOW    "low_kpa"    /* u16, kPa */
+#define TPMS_NVS_STALE  "stale_ms"   /* u32, ms  */
+
 static boost_tpms_snapshot_t s_snapshot;
 static boost_tpms_config_t s_config = {
-    .stale_after_ms = 5000,
+    .stale_after_ms = BOOST_TPMS_STALE_AFTER_MS,
     .replacement_offset_kpa = 0.0f,
+    .low_kpa = BOOST_TPMS_LOW_PRESSURE_KPA,
     .enabled = true,
 };
 
@@ -61,6 +70,22 @@ void boost_tpms_init(void)
         s_snapshot.wheel[i].did = boost_tpms_protocol_did_for_wheel((boost_tpms_protocol_wheel_t)i);
         s_snapshot.wheel[i].age_ms = UINT32_MAX;
     }
+    /* Own-namespace NVS restore (nvs_flash_init already ran in boost_model_init,
+     * and is idempotent anyway). Absent keys keep the compiled defaults. */
+#ifdef ESP_PLATFORM
+    nvs_handle_t h;
+    if (nvs_open(TPMS_NVS_NS, NVS_READONLY, &h) == ESP_OK) {
+        uint16_t low = 0;
+        uint32_t stale = 0;
+        if (nvs_get_u16(h, TPMS_NVS_LOW, &low) == ESP_OK && low >= 100 && low <= 400) {
+            s_config.low_kpa = (float)low;
+        }
+        if (nvs_get_u32(h, TPMS_NVS_STALE, &stale) == ESP_OK && stale >= 2000 && stale <= 120000) {
+            s_config.stale_after_ms = stale;
+        }
+        nvs_close(h);
+    }
+#endif
 }
 
 void boost_tpms_start(void)
@@ -82,8 +107,19 @@ void boost_tpms_get_config(boost_tpms_config_t *out)
 bool boost_tpms_set_config(const boost_tpms_config_t *config)
 {
     if (config == NULL || config->stale_after_ms == 0 ||
-        !isfinite(config->replacement_offset_kpa)) return false;
+        !isfinite(config->replacement_offset_kpa) ||
+        !isfinite(config->low_kpa) ||
+        config->low_kpa < 100.0f || config->low_kpa > 400.0f) return false;
     s_config = *config;
+#ifdef ESP_PLATFORM
+    nvs_handle_t h;
+    if (nvs_open(TPMS_NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u16(h, TPMS_NVS_LOW, (uint16_t)(s_config.low_kpa + 0.5f));
+        nvs_set_u32(h, TPMS_NVS_STALE, s_config.stale_after_ms);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+#endif
     return true;
 }
 

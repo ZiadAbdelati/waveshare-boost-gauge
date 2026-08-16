@@ -202,8 +202,8 @@ def cmd_sweep(args) -> int:
             max(0, demand - fps) for fps, demand in demand_rows)
     print(json.dumps({k: v for k, v in result.items() if k != "raw"}, indent=2))
 
-    # Leave demoFastSweep off afterwards - it is diagnostic-only and would
-    # otherwise survive until the next reboot.
+    # Leave demoFastSweep off afterwards - it is persisted, so the panel must
+    # not be left booting into the diagnostic sweep.
     api_put(base, "/api/v1/themes/config", {"demoFastSweep": False})
 
     with open(args.out, "w") as f:
