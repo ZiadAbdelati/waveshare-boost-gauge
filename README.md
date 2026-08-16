@@ -503,6 +503,28 @@ it measured **14–20 physical renders/s** (median 20) with no serial display,
 memory, panic, or reset errors. That is decoder/renderer-bound rather than a
 panel-transfer failure.
 
+#### Direct panel push (2026-08-16)
+
+The decode/render split is now measured on hardware with a per-frame `perf:`
+serial line (120-frame windows): on the 98%-full-frame fixture above, decode
+costs **36.4–37.7 ms/frame** while the panel transfer costs **15.7–17.6 ms**
+against the 13.6 ms pure-transfer floor. Playback is therefore decode-bound,
+not transfer-bound.
+
+`main/gif/boost_gif.c` now pushes each decoded frame's rect straight to the
+panel through `boost_display_push_bitmap()` (`main/boost_display.c`), which
+reuses the region-dbuf internal DMA scratch strips and the same 20-line
+chunking + single TE wait as `region_dbuf_writeback()`. The redundant LVGL
+re-blit of the (already panel-ready RGB565) framebuffer is skipped on success.
+The push is refused (and playback falls back to the ordinary bounded LVGL
+invalidation) whenever panel rotation ≠ 0, the strips are not allocated, or
+the placement is not a plain 1:1 blit — no new internal RAM is allocated.
+Measured: 119/120 direct pushes, 0 fallbacks, ~18.7 FPS on this worst-case
+fixture (vs 14–20 baseline); the gauge cadence guard still passes after
+teardown (dyno-cell demo, min 57 / median 61). Remaining levers for 30/60 FPS
+are pipelining decode against push and decode acceleration, both gated on the
+`perf:` line's measurements.
+
 Do not use `check_display_cadence.py` while GIF media is active: its ≥60 FPS
 threshold defends the live gauge path, not full-frame animation playback.
 

@@ -167,6 +167,8 @@ These are the currently-actionable invariants distilled from the regression ledg
 | Raw dual-slot store only; committed-header-last atomicity; 409 on overlap; browser aborts then deletes | 2026-07-28 |
 | Keep the mmap alive through widget destruction (display lock → destroy widget → unmap) | 2026-07-28 |
 | GIF parsing/LZW/timing is third-party (LVGL + AnimatedGIF); only storage, widget integration, and the full-canvas zero/turbo-off flush are project code | 2026-07-28 |
+| Direct panel push (`boost_display_push_bitmap()`) is valid only under: display lock held (LVGL task), rotation 0, 1:1 bounded placement, region-dbuf scratch strips allocated; x1/y1 are END-EXCLUSIVE; any refusal falls back to the bounded LVGL invalidation, never a weaker guard | 2026-08-16 |
+| GIF playback is decode-bound (~37 ms decode vs ~16 ms push on the 98%-full-frame fixture); the `perf:` serial line is the measurement harness for any playback work — keep it and quote it | 2026-08-16 |
 
 ### WebSocket / telemetry
 

@@ -120,6 +120,32 @@ void boost_display_set_te_scanline(bool enabled);
 void boost_display_set_region_dbuf(bool enabled);
 bool boost_display_region_dbuf(void);
 
+/*
+ * Direct RGB565 strip push for exclusive media (GIF) playback.
+ *
+ * The GIF decoder already composes panel-ready RGB565 into its own
+ * framebuffer; routing those frames through an LVGL invalidation makes the
+ * render pipeline re-blit the same pixels (measured ~3.16 Mpx/s) into strips
+ * before they reach the panel. This path pushes (x0,y0)-(x1,y1) [x1/y1
+ * exclusive, same convention as esp_lcd_panel_draw_bitmap] straight from the
+ * caller's buffer, reusing the region-dbuf internal DMA scratch strips and
+ * the same single TE wait + 20-line chunking region_dbuf_writeback() uses.
+ *
+ * Caller contract:
+ *  - Holds the display lock (this runs on the LVGL task during media
+ *    playback, so no LVGL render cycle can interleave).
+ *  - src points at the (x0,y0) pixel; rows are src_stride_px pixels apart
+ *    (the GIF canvas stride, which differs from the panel width for
+ *    smaller-than-native clips).
+ *  - Panel rotation is 0 (checked here: LVGL screen coords are panel coords
+ *    only unrotated; a rotated setup gets ESP_ERR_NOT_SUPPORTED).
+ * Blocks until the transfer completes. Returns ESP_ERR_NOT_SUPPORTED when
+ * the preconditions fail or the scratch strips are unavailable, so the
+ * caller falls back to ordinary LVGL invalidation.
+ */
+esp_err_t boost_display_push_bitmap(int x0, int y0, int x1, int y1,
+                                    const uint16_t *src, int src_stride_px);
+
 esp_err_t boost_display_lock(uint32_t timeout_ms);
 void boost_display_unlock(void);
 void boost_display_get_metrics(boost_display_metrics_t *out);

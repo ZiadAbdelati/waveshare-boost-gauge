@@ -39,7 +39,10 @@
 #include "widgets/image/lv_image_private.h"
 #include "boost_gif_dec.h"
 #ifdef ESP_PLATFORM
-#include "esp_heap_caps.h"
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "boost_media_store.h"
+#include "boost_display.h"
 #endif
 
 #ifdef ESP_PLATFORM
@@ -116,6 +119,18 @@ typedef struct {
     uint32_t stat_frames;
     uint32_t stat_rect_px;
     uint32_t stat_full;
+#endif
+#ifdef ESP_PLATFORM
+    /* BOOST: direct-push + timing stats. decode_us/push_us accumulate totals
+     * for the rate-limited summary; last_* keep the instantaneous values for
+     * that same log line. push_failures counts fallbacks to the LVGL path. */
+    uint32_t stat_decode_us;
+    uint32_t stat_push_us;
+    uint32_t stat_push_frames;
+    uint32_t stat_push_failures;
+    uint32_t last_decode_us;
+    uint32_t last_push_us;
+    int8_t push_active; /* -1 unknown, 0 LVGL path, 1 direct push */
 #endif
 } lv_gif_t;
 
@@ -390,6 +405,14 @@ static void initialize(lv_gif_t * gifobj)
     gifobj->stat_rect_px = 0;
     gifobj->stat_full = 0;
 #endif
+#ifdef ESP_PLATFORM
+    gifobj->stat_decode_us = 0;
+    gifobj->stat_push_us = 0;
+    gifobj->stat_push_frames = 0;
+    gifobj->stat_push_failures = 0;
+    gifobj->last_decode_us = 0;
+    gifobj->last_push_us = 0;
+#endif
 
     lv_timer_resume(gifobj->timer);
     lv_timer_reset(gifobj->timer);
@@ -411,8 +434,8 @@ static void initialize(lv_gif_t * gifobj)
  *
  * If a future decoder change ever composes *outside* the current frame rect -
  * e.g. a real "restore to previous"/"restore to background" disposal that
- * repaints the PREVIOUS frame's rect - this bound stops being valid and must be
- * widened to the union of the previous and current rects.
+ * repaints the PREVIOUS frame's rect - this bound stops being valid and must
+ * be widened to the union of the previous and current rects.
  *
  * Falls back to a whole-widget invalidation whenever the image placement is not
  * a plain 1:1 blit, and on the first frame after (re)opening a source.
@@ -454,17 +477,51 @@ static void invalidate_frame(lv_gif_t * gifobj)
                     obj->coords.x1 + img->w - 1, obj->coords.y1 + img->h - 1);
         lv_area_align(&obj->coords, &img_area, img->align, img->offset.x, img->offset.y);
 
-        lv_area_t dirty;
-        dirty.x1 = img_area.x1 + fx;
-        dirty.y1 = img_area.y1 + fy;
-        dirty.x2 = dirty.x1 + fw - 1;
-        dirty.y2 = dirty.y1 + fh - 1;
-
-        lv_obj_invalidate_area(obj, &dirty);
-        bounded = true;
+#ifdef ESP_PLATFORM
+        /* BOOST direct push: the cooked framebuffer already holds panel-ready
+         * RGB565 for exactly this rect, so instead of asking LVGL to re-blit
+         * it through the render pipeline, push the strips ourselves. Valid
+         * under the same placement conditions as the bounded invalidation
+         * below (1:1 blit), plus panel rotation 0, which the push API checks.
+         * img_area is in screen coords, which equal panel coords only
+         * unrotated. On any push refusal we fall through to the ordinary
+         * bounded LVGL invalidation. */
+        const int64_t push_t0 = esp_timer_get_time();
+        /* x1/y1 are end-EXCLUSIVE (esp_lcd_panel_draw_bitmap convention), so
+         * +fw/+fh with no +1: img_area.x1+fx is the first column, and
+         * fx+fw is one past the last. */
+        esp_err_t pushed = boost_display_push_bitmap(
+            img_area.x1 + fx, img_area.y1 + fy,
+            img_area.x1 + fx + fw, img_area.y1 + fy + fh,
+            (const uint16_t *)gif->pFrameBuffer + (size_t)fy * gif->iCanvasWidth + fx,
+            (int32_t)gif->iCanvasWidth);
+        if(pushed == ESP_OK) {
+            gifobj->last_push_us = (uint32_t)(esp_timer_get_time() - push_t0);
+            gifobj->stat_push_us += gifobj->last_push_us;
+            gifobj->stat_push_frames++;
+            bounded = true; /* panel updated; skip the LVGL invalidation */
 #if BOOST_GIF_LOG_DIRTY_RECT
-        dirty_px = (uint32_t)(fw * fh);
+            dirty_px = (uint32_t)(fw * fh);
 #endif
+        }
+        else {
+            gifobj->stat_push_failures++;
+#endif /* ESP_PLATFORM */
+
+            lv_area_t dirty;
+            dirty.x1 = img_area.x1 + fx;
+            dirty.y1 = img_area.y1 + fy;
+            dirty.x2 = dirty.x1 + fw - 1;
+            dirty.y2 = dirty.y1 + fh - 1;
+
+            lv_obj_invalidate_area(obj, &dirty);
+            bounded = true;
+#if BOOST_GIF_LOG_DIRTY_RECT
+            dirty_px = (uint32_t)(fw * fh);
+#endif
+#ifdef ESP_PLATFORM
+        }
+#endif /* ESP_PLATFORM */
     }
 #endif /*BOOST_GIF_DIRTY_RECT*/
 
@@ -487,6 +544,25 @@ static void invalidate_frame(lv_gif_t * gifobj)
                       (unsigned) gifobj->stat_frames, (unsigned) mean_px, (unsigned) pct,
                       (unsigned) gif->iCanvasWidth, (unsigned) gif->iCanvasHeight,
                       (unsigned) gifobj->stat_full);
+#ifdef ESP_PLATFORM
+        /* BOOST: decode/push split for the same window. decode covers every
+         * decoded frame (stat_frames counts all of them, push or not); push
+         * covers only direct-pushed frames. last_* give the instantaneous
+         * values of the final frame in the window. */
+        BOOST_GIF_LOG("perf: %u frames, decode mean %u us / last %u us, "
+                      "push %u frames mean %u us / last %u us, %u push fallbacks",
+                      (unsigned) gifobj->stat_frames,
+                      (unsigned) (gifobj->stat_decode_us / gifobj->stat_frames),
+                      (unsigned) gifobj->last_decode_us,
+                      (unsigned) gifobj->stat_push_frames,
+                      (unsigned) (gifobj->stat_push_frames ? gifobj->stat_push_us / gifobj->stat_push_frames : 0),
+                      (unsigned) gifobj->last_push_us,
+                      (unsigned) gifobj->stat_push_failures);
+        gifobj->stat_decode_us = 0;
+        gifobj->stat_push_us = 0;
+        gifobj->stat_push_frames = 0;
+        gifobj->stat_push_failures = 0;
+#endif
         gifobj->stat_frames = 0;
         gifobj->stat_rect_px = 0;
         gifobj->stat_full = 0;
@@ -499,8 +575,18 @@ static void next_frame_task_cb(lv_timer_t * t)
     lv_obj_t * obj = t->user_data;
     lv_gif_t * gifobj = (lv_gif_t *) obj;
 
+#ifdef ESP_PLATFORM
+    const int64_t t0 = esp_timer_get_time();
+#endif
     int ms_delay_next;
     int has_next = GIF_playFrame(gifobj->gif, &ms_delay_next, gifobj);
+#ifdef ESP_PLATFORM
+    /* BOOST: decode timing for the rate-limited summary. Measured across the
+     * whole GIF_playFrame call (parse + LZW + palette conversion + frame
+     * composition into the cooked framebuffer). */
+    gifobj->last_decode_us = (uint32_t)(esp_timer_get_time() - t0);
+    gifobj->stat_decode_us += gifobj->last_decode_us;
+#endif
     if(has_next <= 0) {
         /*It was the last repeat*/
         /* BOOST: nothing was necessarily decoded on this call (empty frame,

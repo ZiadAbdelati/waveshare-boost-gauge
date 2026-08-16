@@ -1,4 +1,4 @@
-#include "boost_display.h"
+﻿#include "boost_display.h"
 #include "boost_theme.h"
 
 #include "bsp/display.h"
@@ -1095,6 +1095,73 @@ static void region_dbuf_writeback(void)
     }
     s_region_span_count = 0;
 }
+
+#if BOOST_LCD_USE_TE
+/*
+ * Direct push path for exclusive media playback. See boost_display.h for the
+ * caller contract. Shares region-dbuf's internal DMA scratch strips: they are
+ * allocated once at first use and this path only runs while media playback
+ * owns the panel (gauge hidden, no LVGL renders of the GIF area), so the two
+ * users cannot touch the strips in the same instant. TE discipline matches
+ * region_dbuf_writeback(): one te_wait_for_region_spans() for the whole burst
+ * immediately before it starts, so the wait cannot go stale against a long
+ * rasterisation pass. The wait is armed unconditionally here - unlike the
+ * region path there is no s_te_gate_armed producer, and skipping it would
+ * reintroduce exactly the tearing region-dbuf was built to remove.
+ */
+esp_err_t boost_display_push_bitmap(int x0, int y0, int x1, int y1,
+                                    const uint16_t *src, int src_stride_px)
+{
+    if (s_panel == NULL || src == NULL || src_stride_px <= 0) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    /* LVGL screen coordinates equal panel coordinates only at rotation 0. */
+    if (boost_theme_rotation() != 0) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    /* The scratch strips are the region-dbuf allocation; if region-dbuf never
+     * initialised them, do not allocate new internal DMA memory here (the
+     * internal-RAM budget is a hard constraint, see AGENTS.md). */
+    if (s_region_xfer_bufs[0] == NULL) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    if (x0 < 0 || y0 < 0 || x1 <= x0 || y1 <= y0
+        || x1 > BSP_LCD_H_RES || y1 > BSP_LCD_V_RES) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    region_span_t span = { .y0 = y0, .y1 = y1, .x0 = x0, .x1 = x1 };
+    te_wait_for_region_spans(&span, 1);
+
+    for (int y = y0; y < y1;) {
+        int lines = BOOST_LVGL_BUF_LINES;
+        if (y + lines > y1) {
+            lines = y1 - y;
+        }
+        uint16_t *xfer = s_region_xfer_bufs[s_region_xfer_idx % BOOST_REGION_DBUF_QUEUE_DEPTH];
+        ++s_region_xfer_idx;
+        const int width = x1 - x0;
+        /* Row-by-row pack, same as the region path: source rows are
+         * src_stride_px apart (GIF canvas stride), destination strips pack
+         * `width` columns tight. */
+        for (int r = 0; r < lines; ++r) {
+            memcpy(xfer + (size_t)r * width,
+                   src + (size_t)(y - y0 + r) * src_stride_px,
+                   (size_t)width * sizeof(uint16_t));
+        }
+        const esp_err_t ret = esp_lcd_panel_draw_bitmap(s_panel, x0, y, x1, y + lines, xfer);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "push_bitmap: draw_bitmap failed at y=%d: %s",
+                     y, esp_err_to_name(ret));
+            return ret;
+        }
+        ++s_flush_count;
+        s_pixel_count += (uint32_t)width * (uint32_t)lines;
+        y += lines;
+    }
+    return ESP_OK;
+}
+#endif /* BOOST_LCD_USE_TE */
 
 /*
  * Replaces the adapter's own esp_lcd_panel_draw_bitmap() call. Contract from
