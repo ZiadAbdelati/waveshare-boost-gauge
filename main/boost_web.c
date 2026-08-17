@@ -716,6 +716,11 @@ static esp_err_t time_post(httpd_req_t *req)
     }
     esp_err_t err = boost_model_set_time((int64_t)epoch->valuedouble, tz->valueint);
     cJSON_Delete(root);
+    if (err == ESP_ERR_INVALID_STATE) {
+        /* The client disagrees with a valid DS3231: it is the buggy clock, not
+         * a correction. Distinct status so the dashboard can explain itself. */
+        return send_err(req, "409 Conflict", "clock_rejected");
+    }
     if (err != ESP_OK) {
         return send_err(req, HTTPD_400, "time_not_set");
     }

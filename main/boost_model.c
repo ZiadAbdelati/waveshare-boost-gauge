@@ -634,8 +634,24 @@ const boost_theme_t *boost_model_active_theme(void)
 
 esp_err_t boost_model_set_time(int64_t epoch_ms, int timezone_offset_minutes)
 {
-    if (epoch_ms <= 0) {
+    if (epoch_ms <= 0 || epoch_ms < BOOST_RTC_EPOCH_MIN_MS) {
         return ESP_ERR_INVALID_ARG;
+    }
+    /* Once a valid DS3231 exists it is the clock authority: reject a browser
+     * that disagrees with it by more than the sync tolerance. The RTC is read
+     * BEFORE settimeofday, so a rejected sync touches neither the system clock
+     * nor the NVS checkpoint. An OSF/unreadable/absent RTC falls through - that
+     * is the first-seed or battery-change case where the client is authoritative. */
+    if (boost_sensors_rtc_present()) {
+        int64_t rtc_ms = 0;
+        if (boost_sensors_rtc_read(&rtc_ms) == ESP_OK) {
+            const int64_t diff = epoch_ms - rtc_ms;
+            if (diff > BOOST_RTC_SYNC_TOLERANCE_MS || diff < -BOOST_RTC_SYNC_TOLERANCE_MS) {
+                ESP_LOGW(TAG, "time sync rejected: browser epoch differs from DS3231 by %lld ms (tolerance %lld)",
+                         (long long)diff, (long long)BOOST_RTC_SYNC_TOLERANCE_MS);
+                return ESP_ERR_INVALID_STATE;
+            }
+        }
     }
     struct timeval tv = {
         .tv_sec = (time_t)(epoch_ms / 1000),

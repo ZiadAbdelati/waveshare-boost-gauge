@@ -525,7 +525,7 @@ esp_err_t boost_sensors_rtc_read(int64_t *epoch_ms)
         return ESP_ERR_INVALID_STATE;
     }
     const int64_t ms = rtc_epoch_ms(2000 + year, mon, date, hrs, mins, secs);
-    if (ms < 1700000000000LL) {            /* before 2023: implausible */
+    if (ms < BOOST_RTC_EPOCH_MIN_MS) {       /* before 2023: implausible */
         return ESP_ERR_INVALID_STATE;
     }
     *epoch_ms = ms;

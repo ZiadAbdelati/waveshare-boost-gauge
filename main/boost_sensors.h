@@ -183,6 +183,17 @@ esp_err_t boost_sensors_rtc_read(int64_t *epoch_ms);
  *  when no RTC is present or the epoch is outside 2000..2099. */
 esp_err_t boost_sensors_rtc_write(int64_t epoch_ms);
 
+/* Plausibility floor for the DS3231 epoch: any date before 2023 is never valid. */
+#define BOOST_RTC_EPOCH_MIN_MS 1700000000000LL
+/* A browser `POST /api/v1/time` is rejected when it disagrees with a valid
+ * DS3231 by more than this (5 minutes). The DS3231 drifts ~2 ppm (~63 s/year)
+ * and a correct NTP-synced client is within seconds of true time, so a larger
+ * gap means the client clock is wrong - the RTC is the authority once set.
+ * Corruption within the window self-heals on the next correct sync; beyond it,
+ * pull the DS3231 battery for a couple of seconds (sets the oscillator-stop
+ * flag) and Sync again. */
+#define BOOST_RTC_SYNC_TOLERANCE_MS (5LL * 60 * 1000)
+
 #ifdef __cplusplus
 }
 #endif

@@ -3327,9 +3327,15 @@ async function syncDeviceClock(tzOverride) {
 }
 
 async function syncTime() {
-  const response = await syncDeviceClock();
-  renderState(response);
-  showOk("Time synchronized");
+  try {
+    const response = await syncDeviceClock();
+    renderState(response);
+    showOk("Time synchronized");
+  } catch (error) {
+    showError(error.message === "clock_rejected"
+      ? "Clock rejected: this computer's time disagrees with the device RTC by more than 5 min. If this computer's clock is right, pull the RTC battery for 2 s and Sync again."
+      : error.message);
+  }
 }
 
 async function saveConfig() {
