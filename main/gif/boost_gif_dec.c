@@ -319,10 +319,7 @@ static int GIFParseInfo(GIFIMAGE *pPage, int bInfoOnly)
                     usRGB565 = ((p[iOffset] >> 3) << 11); // R
                     usRGB565 |= ((p[iOffset+1] >> 2) << 5); // G
                     usRGB565 |= (p[iOffset+2] >> 3); // B
-                    if (pPage->ucPaletteType == GIF_PALETTE_RGB565_LE)
-                        pPage->pPalette[i] = usRGB565;
-                    else
-                        pPage->pPalette[i] = (usRGB565 << 8) | (usRGB565 >> 8); // SPI wants MSB first
+                    pPage->pPalette[i] = usRGB565; /* little-endian; the direct push byte-swaps for the CO5300 */
                     iOffset += 3;
                 }
             } else if (pPage->ucPaletteType == GIF_PALETTE_1BPP || pPage->ucPaletteType == GIF_PALETTE_1BPP_OLED) {
@@ -482,10 +479,7 @@ static int GIFParseInfo(GIFIMAGE *pPage, int bInfoOnly)
                 usRGB565 = ((p[iOffset] >> 3) << 11); // R
                 usRGB565 |= ((p[iOffset+1] >> 2) << 5); // G
                 usRGB565 |= (p[iOffset+2] >> 3); // B
-                if (pPage->ucPaletteType == GIF_PALETTE_RGB565_LE)
-                    pPage->pLocalPalette[i] = usRGB565;
-                else
-                    pPage->pLocalPalette[i] = (usRGB565 << 8) | (usRGB565 >> 8); // SPI wants MSB first
+                pPage->pLocalPalette[i] = usRGB565; /* little-endian; the direct push byte-swaps for the CO5300 */
                 iOffset += 3;
             }
         } else if (pPage->ucPaletteType == GIF_PALETTE_1BPP || pPage->ucPaletteType == GIF_PALETTE_1BPP_OLED) {

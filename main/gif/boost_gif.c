@@ -72,6 +72,13 @@ _Static_assert(GIF_LINEBUF_SLACK >= 4,
  *********************/
 #define MY_CLASS (&lv_gif_class)
 
+/** BOOST: extra bytes allocated past every framebuffer. The fused LZW write
+ * path emits 8-pixel-wide (16-byte) stores and can run up to 7 pixels past
+ * the end on the frame's final string, so the buffers get a 16-pixel pad.
+ * imgdsc.data_size / header.w/h/stride stay EXACTLY framebuffer_size - LVGL
+ * never sees the pad. */
+#define GIF_FB_PAD_BYTES 32
+
 /** BOOST: bound each frame's invalidation to the GIF frame rect. Set to 0 to
  * fall back to upstream's whole-widget invalidation. */
 #ifndef BOOST_GIF_DIRTY_RECT
@@ -157,7 +164,7 @@ static void lv_gif_constructor(const lv_obj_class_t * class_p, lv_obj_t * obj);
 static void lv_gif_destructor(const lv_obj_class_t * class_p, lv_obj_t * obj);
 static void initialize(lv_gif_t * gifobj);
 static void next_frame_task_cb(lv_timer_t * t);
-static void invalidate_frame(lv_gif_t * gifobj);
+static void invalidate_frame(lv_gif_t * gifobj, int32_t fx, int32_t fy, int32_t fw, int32_t fh);
 
 /**********************
  *  STATIC VARIABLES
@@ -397,13 +404,12 @@ static void gif_decode_task(void * arg)
         uint8_t prev_idx = 1 - write_idx;
         size_t fb_size = (size_t)gifobj->gif->iCanvasWidth * gifobj->gif->iCanvasHeight * sizeof(uint16_t);
 
-        /* Only copy previous canvas if the frame has transparency or is a partial sub-rect.
-         * Full-frame opaque frames will overwrite every pixel, so skipping 434 KB PSRAM memcpy saves ~1.3 ms. */
-        const bool is_full_opaque = (gifobj->gif->iX == 0 && gifobj->gif->iY == 0 &&
-                                     gifobj->gif->iWidth == gifobj->gif->iCanvasWidth &&
-                                     gifobj->gif->iHeight == gifobj->gif->iCanvasHeight &&
-                                     !(gifobj->gif->ucGIFBits & 1));
-        if(!is_full_opaque && gifobj->framebuffers[prev_idx] != NULL && gifobj->framebuffers[write_idx] != NULL) {
+        /* The copy cannot be skipped: an is_full_opaque decision here would
+         * read the PREVIOUS frame's iX/iY/iWidth/iHeight (the incoming frame is
+         * only parsed inside GIF_playFrame below), so a partial/transparent
+         * frame following a full-opaque frame would composite over a two-cycles-
+         * stale buffer. A full-opaque frame overwrites the copy harmlessly. */
+        if(gifobj->framebuffers[prev_idx] != NULL && gifobj->framebuffers[write_idx] != NULL) {
             memcpy(gifobj->framebuffers[write_idx], gifobj->framebuffers[prev_idx], fb_size);
         }
 
@@ -415,6 +421,15 @@ static void gif_decode_task(void * arg)
         gifobj->ms_delay_next = ms_delay;
         gifobj->last_decode_us = (uint32_t)(esp_timer_get_time() - t0);
         gifobj->stat_decode_us += gifobj->last_decode_us;
+
+        /* Snapshot the decoded frame's rect: the next wake parses frame N+2's
+         * header and overwrites gif->iX/iY/iWidth/iHeight on Core 1 before the
+         * LVGL task (Core 0) pushes this frame. Publish before sem_frame_ready
+         * so the consumer reads a consistent snapshot. */
+        gifobj->last_fx = gifobj->gif->iX;
+        gifobj->last_fy = gifobj->gif->iY;
+        gifobj->last_fw = gifobj->gif->iWidth;
+        gifobj->last_fh = gifobj->gif->iHeight;
 
         xSemaphoreGive(gifobj->sem_frame_ready);
     }
@@ -431,11 +446,23 @@ static void initialize(lv_gif_t * gifobj)
     if(gifobj->is_open) {
         lv_image_cache_drop(lv_image_get_src((lv_obj_t *) gifobj));
 
+        /* Mirror lv_gif_destructor: in the dual-buffer pipeline gif->pFrameBuffer
+         * ALIASES one of the two framebuffers, so snapshot the ownership pointers
+         * BEFORE the frees NULL them and kill the alias, so the ownership check
+         * below cannot see a freed alias and double-free it. */
+        void *fb0 = gifobj->framebuffers[0];
+        void *fb1 = gifobj->framebuffers[1];
+        void * framebuffer = gif->pFrameBuffer;
+        gif->pFrameBuffer = NULL;
+
 #ifdef ESP_PLATFORM
         if(gifobj->decode_task != NULL) {
             gifobj->task_running = false;
+            gifobj->decode_done = false;
             xSemaphoreGive(gifobj->sem_next_decode);
-            vTaskDelay(pdMS_TO_TICKS(15));
+            /* The decoder may be mid-frame (~25 ms); wait for it to exit before
+             * freeing anything it touches. A fixed 15 ms delay races a full frame. */
+            while(!gifobj->decode_done) vTaskDelay(pdMS_TO_TICKS(1));
             gifobj->decode_task = NULL;
         }
         if(gifobj->sem_frame_ready != NULL) {
@@ -456,7 +483,6 @@ static void initialize(lv_gif_t * gifobj)
         }
 #endif
 
-        void * framebuffer = gif->pFrameBuffer;
         if(gif->pTurboBuffer != NULL) {
             lv_free(gif->pTurboBuffer);
             gif->pTurboBuffer = NULL;
@@ -474,7 +500,7 @@ static void initialize(lv_gif_t * gifobj)
         GIF_close(gif);
         if(framebuffer != NULL
 #ifdef ESP_PLATFORM
-           && framebuffer != gifobj->framebuffers[0] && framebuffer != gifobj->framebuffers[1]
+           && framebuffer != fb0 && framebuffer != fb1
 #endif
           ) {
             lv_free(framebuffer);
@@ -526,9 +552,10 @@ static void initialize(lv_gif_t * gifobj)
 
 #ifdef ESP_PLATFORM
     /* BOOST: dual-core double-buffered pipeline. Allocate two PSRAM framebuffers
-     * so Core 0 decodes frame N+1 in background while Core 1 pushes frame N. */
-    gifobj->framebuffers[0] = lv_malloc(framebuffer_size);
-    gifobj->framebuffers[1] = lv_malloc(framebuffer_size);
+     * so Core 1 decodes frame N+1 in background while the LVGL task (Core 0)
+     * pushes frame N. */
+    gifobj->framebuffers[0] = lv_malloc(framebuffer_size + GIF_FB_PAD_BYTES);
+    gifobj->framebuffers[1] = lv_malloc(framebuffer_size + GIF_FB_PAD_BYTES);
     LV_ASSERT_MALLOC(gifobj->framebuffers[0]);
     LV_ASSERT_MALLOC(gifobj->framebuffers[1]);
     if(gifobj->framebuffers[0] == NULL || gifobj->framebuffers[1] == NULL) {
@@ -549,7 +576,7 @@ static void initialize(lv_gif_t * gifobj)
     gifobj->task_running = true;
     gifobj->decode_done = false;
 #else
-    gif->pFrameBuffer = lv_malloc(framebuffer_size);
+    gif->pFrameBuffer = lv_malloc(framebuffer_size + GIF_FB_PAD_BYTES);
     gif->ucDrawType = GIF_DRAW_COOKED;
     LV_ASSERT_MALLOC(gif->pFrameBuffer);
     if(gif->pFrameBuffer == NULL) {
@@ -642,7 +669,7 @@ static void initialize(lv_gif_t * gifobj)
  * Falls back to a whole-widget invalidation whenever the image placement is not
  * a plain 1:1 blit, and on the first frame after (re)opening a source.
  */
-static void invalidate_frame(lv_gif_t * gifobj)
+static void invalidate_frame(lv_gif_t * gifobj, int32_t fx, int32_t fy, int32_t fw, int32_t fh)
 {
     lv_obj_t * obj = (lv_obj_t *) gifobj;
     GIFIMAGE * gif = gifobj->gif;
@@ -655,10 +682,10 @@ static void invalidate_frame(lv_gif_t * gifobj)
 #if BOOST_GIF_DIRTY_RECT
     lv_image_t * img = &gifobj->img;
 
-    int32_t fx = gif->iX;
-    int32_t fy = gif->iY;
-    int32_t fw = gif->iWidth;
-    int32_t fh = gif->iHeight;
+    /* fx/fy/fw/fh are the CALLER's snapshot of the frame rect: the pipelined
+     * path decodes frame N+1 on Core 1 and would overwrite gif->iX/iY/iWidth/
+     * iHeight between the wake and this push. Only iCanvasWidth/Height (the
+     * canvas, fixed at open) are read from gif directly. */
 
     if(gifobj->force_full_invalidate) {
         fx = 0;
@@ -700,9 +727,13 @@ static void invalidate_frame(lv_gif_t * gifobj)
         dirty.x2 = ((dirty.x2 >> 1) << 1) + 1;
         dirty.y2 = ((dirty.y2 >> 1) << 1) + 1;
 
-        /* Clamp to img_area bounds */
-        if(dirty.x1 < img_area.x1) dirty.x1 = (img_area.x1 >> 1) << 1;
-        if(dirty.y1 < img_area.y1) dirty.y1 = (img_area.y1 >> 1) << 1;
+        /* Clamp to img_area bounds. Round UP to the next even >= the origin:
+         * round-down can leave dirty.x1 = img_area.x1 - 1 when the origin is
+         * odd, making r_fx negative and the read_fb offset wrap before the
+         * buffer. Dropping that one column is fine - CO5300 cannot address an
+         * odd column anyway. */
+        if(dirty.x1 < img_area.x1) dirty.x1 = (img_area.x1 + 1) & ~1;
+        if(dirty.y1 < img_area.y1) dirty.y1 = (img_area.y1 + 1) & ~1;
         if(dirty.x2 > img_area.x2) dirty.x2 = ((img_area.x2 >> 1) << 1) + 1;
         if(dirty.y2 > img_area.y2) dirty.y2 = ((img_area.y2 >> 1) << 1) + 1;
 
@@ -726,11 +757,16 @@ static void invalidate_frame(lv_gif_t * gifobj)
          * dirty.y2+1 are even, preserving CO5300 2-pixel alignment. */
         const uint16_t * read_fb = (const uint16_t *)(gifobj->framebuffers[gifobj->read_fb_idx] != NULL ?
                                                         gifobj->framebuffers[gifobj->read_fb_idx] : gif->pFrameBuffer);
-        esp_err_t pushed = boost_display_push_bitmap(
-            dirty.x1, dirty.y1,
-            dirty.x2 + 1, dirty.y2 + 1,
-            read_fb + (size_t)r_fy * gif->iCanvasWidth + r_fx,
-            (int32_t)gif->iCanvasWidth);
+        /* A 1-pixel-wide/tall frame at an odd origin rounds to a zero-area
+         * rect (that column is not addressable anyway) - never push a
+         * zero-size window, fall back to the LVGL invalidation. */
+        esp_err_t pushed = (r_fw > 0 && r_fh > 0)
+            ? boost_display_push_bitmap(
+                dirty.x1, dirty.y1,
+                dirty.x2 + 1, dirty.y2 + 1,
+                read_fb + (size_t)r_fy * gif->iCanvasWidth + r_fx,
+                (int32_t)gif->iCanvasWidth)
+            : ESP_FAIL;
         if(pushed == ESP_OK) {
             gifobj->last_push_us = (uint32_t)(esp_timer_get_time() - push_t0);
             gifobj->stat_push_us += gifobj->last_push_us;
@@ -808,20 +844,29 @@ static void next_frame_task_cb(lv_timer_t * t)
 
 #ifdef ESP_PLATFORM
     if(gifobj->decode_task != NULL) {
-        /* Wait for frame to finish decoding on Core 0 */
+        /* Wait for the frame to finish decoding on Core 1 */
         if(xSemaphoreTake(gifobj->sem_frame_ready, pdMS_TO_TICKS(100)) == pdTRUE) {
             /* Ready frame is in write_fb_idx; switch active buffer to it */
             gifobj->read_fb_idx = gifobj->write_fb_idx;
             gifobj->gif->pFrameBuffer = gifobj->framebuffers[gifobj->read_fb_idx];
             gifobj->imgdsc.data = gifobj->framebuffers[gifobj->read_fb_idx];
 
-            /* Kick Core 0 decoder to start decoding frame N+1 into alternate buffer */
+            /* Snapshot the rect BEFORE waking the decoder: it parses frame N+1's
+             * header and overwrites gif->iX/iY/iWidth/iHeight on Core 1 before
+             * this task gets a chance to push. */
+            const int32_t fx = gifobj->last_fx;
+            const int32_t fy = gifobj->last_fy;
+            const int32_t fw = gifobj->last_fw;
+            const int32_t fh = gifobj->last_fh;
+
+            /* Kick the Core 1 decoder to start decoding frame N+1 into the alternate buffer */
             gifobj->write_fb_idx = 1 - gifobj->read_fb_idx;
             xSemaphoreGive(gifobj->sem_next_decode);
 
-            /* Push frame N to panel via DMA on Core 1 while Core 0 decodes frame N+1! */
+            /* Push frame N to the panel via DMA on this (LVGL, Core 0) task
+             * while Core 1 decodes frame N+1. */
             lv_image_cache_drop(lv_image_get_src(obj));
-            invalidate_frame(gifobj);
+            invalidate_frame(gifobj, fx, fy, fw, fh);
 
             if(gifobj->last_has_next <= 0) {
                 gifobj->force_full_invalidate = 1;
@@ -870,7 +915,8 @@ static void next_frame_task_cb(lv_timer_t * t)
     }
 
     lv_image_cache_drop(lv_image_get_src(obj));
-    invalidate_frame(gifobj);
+    invalidate_frame(gifobj, gifobj->gif->iX, gifobj->gif->iY,
+                     gifobj->gif->iWidth, gifobj->gif->iHeight);
 }
 
 #endif /*LV_USE_GIF*/

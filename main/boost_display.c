@@ -1,4 +1,4 @@
-﻿#include "boost_display.h"
+#include "boost_display.h"
 #include "boost_theme.h"
 
 #include "bsp/display.h"
@@ -1098,7 +1098,6 @@ static void region_dbuf_writeback(void)
     s_region_span_count = 0;
 }
 
-#if BOOST_LCD_USE_TE
 /*
  * Direct push path for exclusive media playback. See boost_display.h for the
  * caller contract. Shares region-dbuf's internal DMA scratch strips: they are
@@ -1131,6 +1130,12 @@ esp_err_t boost_display_push_bitmap(int x0, int y0, int x1, int y1,
         || x1 > BSP_LCD_H_RES || y1 > BSP_LCD_V_RES) {
         return ESP_ERR_INVALID_ARG;
     }
+    /* CO5300 CASET/RASET windows require even endpoints (x1/y1 are
+     * end-exclusive, so all four must be even). The sole caller already
+     * rounds; this is belt-and-braces. */
+    if ((x0 | y0 | x1 | y1) & 1) {
+        return ESP_ERR_INVALID_ARG;
+    }
 
     region_span_t span = { .y0 = y0, .y1 = y1, .x0 = x0, .x1 = x1 };
     te_wait_for_region_spans(&span, 1);
@@ -1144,10 +1149,12 @@ esp_err_t boost_display_push_bitmap(int x0, int y0, int x1, int y1,
         ++s_region_xfer_idx;
         const int width = x1 - x0;
         /* Row-by-row pack with the RGB565 byte-swap FUSED into the copy.
-         * The CO5300 wire format is big-endian; the adapter bridge swaps for
-         * LVGL/region-dbuf paths before the custom hook, but this push
-         * bypasses the bridge, so the swap happens here (source framebuffer
-         * stays little-endian LVGL image data for the LVGL fallback path).
+         * The CO5300 wire format is big-endian; the adapter bridge pre-swaps
+         * LVGL/region-dbuf strips before they reach the custom hook, but this
+         * push bypasses the bridge, so direct sources arrive little-endian
+         * LVGL image data and the swap to the big-endian wire format happens
+         * HERE (the source framebuffer itself stays little-endian for the
+         * LVGL fallback path).
          *
          * Fused, not memcpy + a separate swap pass, for a measured reason: a
          * full-frame burst must write FASTER than the panel scan (35.95
@@ -1162,7 +1169,21 @@ esp_err_t boost_display_push_bitmap(int x0, int y0, int x1, int y1,
         for (int r = 0; r < lines; ++r) {
             const uint16_t *s = src + (size_t)(y - y0 + r) * src_stride_px;
             uint16_t *d = xfer + (size_t)r * width;
-            memcpy(d, s, width * sizeof(uint16_t));
+            int c = 0;
+            while (c <= width - 4) {
+                const uint32_t p01 = ((const gif_u32_alias_t *)&s[c])[0];
+                const uint32_t p23 = ((const gif_u32_alias_t *)&s[c + 2])[0];
+                const uint32_t sw01 = ((p01 & 0x00FF00FF) << 8) | ((p01 & 0xFF00FF00) >> 8);
+                const uint32_t sw23 = ((p23 & 0x00FF00FF) << 8) | ((p23 & 0xFF00FF00) >> 8);
+                ((gif_u32_alias_t *)&d[c])[0] = sw01;
+                ((gif_u32_alias_t *)&d[c + 2])[0] = sw23;
+                c += 4;
+            }
+            while (c < width) {
+                const uint16_t p = s[c];
+                d[c] = (uint16_t)((p << 8) | (p >> 8));
+                c++;
+            }
         }
         const esp_err_t ret = esp_lcd_panel_draw_bitmap(s_panel, x0, y, x1, y + lines, xfer);
         if (ret != ESP_OK) {
@@ -1176,7 +1197,6 @@ esp_err_t boost_display_push_bitmap(int x0, int y0, int x1, int y1,
     }
     return ESP_OK;
 }
-#endif /* BOOST_LCD_USE_TE */
 
 /*
  * Replaces the adapter's own esp_lcd_panel_draw_bitmap() call. Contract from
