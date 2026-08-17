@@ -858,6 +858,10 @@ static void next_frame_task_cb(lv_timer_t * t)
             const int32_t fy = gifobj->last_fy;
             const int32_t fw = gifobj->last_fw;
             const int32_t fh = gifobj->last_fh;
+            /* BOOST: capture frame N's delay BEFORE waking the decoder: it
+             * parses frame N+2's header and overwrites gifobj->ms_delay_next
+             * before this task reads it again. */
+            const int32_t frame_delay_ms = gifobj->ms_delay_next;
 
             /* Kick the Core 1 decoder to start decoding frame N+1 into the alternate buffer */
             gifobj->write_fb_idx = 1 - gifobj->read_fb_idx;
@@ -882,10 +886,15 @@ static void next_frame_task_cb(lv_timer_t * t)
                 if(res != LV_RESULT_OK) return;
             }
             else {
-                /* Subtract push duration from frame delay so effective frame cadence
-                 * matches the GIF's authored rate instead of serializing push + delay. */
-                int remaining_ms = gifobj->ms_delay_next - (int)(gifobj->last_push_us / 1000);
-                lv_timer_set_period(gifobj->timer, remaining_ms > 1 ? remaining_ms : 1);
+                /* Deadline-based pacing: the frame just pushed has been on
+                 * screen for its authored delay only once the NEXT push starts
+                 * no earlier than end_of_this_push + D, so each frame is shown
+                 * for at least D and playback never exceeds the authored rate.
+                 * The timer period is measured from this callback's start, and
+                 * the push (in invalidate_frame above) took last_push_us, so
+                 * end_of_this_push sits ~last_push after that start. */
+                int deadline_ms = frame_delay_ms + (int)(gifobj->last_push_us / 1000);
+                lv_timer_set_period(gifobj->timer, deadline_ms > 1 ? deadline_ms : 1);
             }
             return;
         }
