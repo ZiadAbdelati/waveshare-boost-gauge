@@ -83,6 +83,8 @@ static void hide_qr(void)
         s_qr_overlay = NULL;
     }
     s_qr_active = false;
+    /* Resume GIF playback (direct panel push) now that the overlay is gone. */
+    boost_gauge_media_resume();
 }
 
 static void qr_click_cb(lv_event_t *event)
@@ -137,6 +139,8 @@ static void show_qr(void)
     lv_obj_set_style_text_font(label, &lv_font_montserrat_20, 0);
 
     s_qr_active = true;
+    /* Pause GIF playback so its direct panel push cannot overwrite the QR. */
+    boost_gauge_media_pause();
     ESP_LOGI(TAG, "QR shown for AP %s", net.ap_ssid);
 #else
     s_qr_active = true;

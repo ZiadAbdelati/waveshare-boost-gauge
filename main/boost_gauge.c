@@ -7371,6 +7371,24 @@ bool boost_gauge_media_active(void)
 #endif
 }
 
+void boost_gauge_media_pause(void)
+{
+#if LV_USE_GIF && defined(ESP_PLATFORM)
+    if (s_media_gif != NULL) {
+        lv_gif_pause(s_media_gif);
+    }
+#endif
+}
+
+void boost_gauge_media_resume(void)
+{
+#if LV_USE_GIF && defined(ESP_PLATFORM)
+    if (s_media_gif != NULL) {
+        lv_gif_resume(s_media_gif);
+    }
+#endif
+}
+
 void boost_gauge_apply_config(void)
 {
     if (!s_ui_ready) return;

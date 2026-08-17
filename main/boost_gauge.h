@@ -22,6 +22,11 @@ void boost_gauge_reset_peak(void);
 /** True while the exclusive mapped GIF widget owns the display. */
 bool boost_gauge_media_active(void);
 
+/** Pause/resume the exclusive GIF playback (used by full-screen overlays such
+ * as the AP-join QR so the direct panel push cannot overwrite them). */
+void boost_gauge_media_pause(void);
+void boost_gauge_media_resume(void);
+
 /** Re-apply colors from the active runtime theme. Must be called under lock. */
 void boost_gauge_apply_theme(const boost_theme_t *theme);
 

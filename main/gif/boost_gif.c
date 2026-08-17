@@ -591,8 +591,11 @@ static void initialize(lv_gif_t * gifobj)
     gifobj->last_has_next = GIF_playFrame(gif, &ms_delay0, gifobj);
     gifobj->ms_delay_next = ms_delay0;
 
-    /* Spawn background decode task pinned to Core 1 with priority 5 (LVGL runs on Core 0) */
-    xTaskCreatePinnedToCore(gif_decode_task, "gif_dec", 4096, gifobj, 5, &gifobj->decode_task, 1);
+    /* Spawn background decode task pinned to Core 1 at priority 2: below the
+     * HTTP server (5) and WebSocket (3) tasks that share Core 1, so a decode
+     * burst can never starve the web dashboard. Decode still gets near-full
+     * CPU because those tasks are mostly idle. */
+    xTaskCreatePinnedToCore(gif_decode_task, "gif_dec", 4096, gifobj, 2, &gifobj->decode_task, 1);
 
     /* Prime decoder to start decoding frame 1 in background into buffer 1 */
     gifobj->write_fb_idx = 1;
