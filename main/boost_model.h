@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <time.h>
 
 #include "esp_err.h"
 
@@ -26,11 +27,16 @@ typedef struct {
     int end_minutes;
 } boost_dim_schedule_t;
 
+/* POSIX TZ string capacity (e.g. "EST5EDT,M3.2.0/2,M11.1.0/2"), applied via
+ * setenv("TZ")+tzset() so localtime() handles DST automatically. */
+#define BOOST_TZ_STR_MAX 48
+
 typedef struct {
     int brightness_high;
     int brightness_low;
     boost_dim_schedule_t dim_schedule;
     int timezone_offset_minutes;
+    char timezone_tz[BOOST_TZ_STR_MAX];
     char active_theme_id[BOOST_THEME_ID_MAX];
     float psi_min;
     float psi_max;
@@ -110,7 +116,11 @@ esp_err_t boost_model_update_config(const boost_config_t *patch, uint32_t fields
 esp_err_t boost_model_set_active_theme(const char *id);
 esp_err_t boost_model_set_active_page(int page);
 const boost_theme_t *boost_model_active_theme(void);
-esp_err_t boost_model_set_time(int64_t epoch_ms, int timezone_offset_minutes);
+esp_err_t boost_model_set_time(int64_t epoch_ms, int timezone_offset_minutes, const char *timezone_tz);
+/** Current effective UTC offset in minutes (DST-aware) for the given epoch,
+ *  from the applied timezone. newlib lacks tm_gmtoff/timegm, so it is derived
+ *  by comparing localtime against gmtime via days-from-civil. */
+int boost_model_utc_offset_minutes_at(time_t t);
 /** Seed the system clock from the DS3231 on the sensor bus, if present and
  *  valid, and mark the clock trusted (so the dim schedule engages without
  *  Wi-Fi). Also refreshes the NVS epoch checkpoint so it stays a warm fallback.
@@ -134,6 +144,7 @@ enum {
     BOOST_CONFIG_DIM_START = 1u << 3,
     BOOST_CONFIG_DIM_END = 1u << 4,
     BOOST_CONFIG_TZ_OFFSET = 1u << 5,
+    BOOST_CONFIG_TZ_TZ = 1u << 11,
     BOOST_CONFIG_THEME = 1u << 6,
     BOOST_CONFIG_PSI_MIN = 1u << 7,
     BOOST_CONFIG_PSI_MAX = 1u << 8,

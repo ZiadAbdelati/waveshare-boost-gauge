@@ -111,6 +111,7 @@ CONFIG = {
     "brightnessLow": 12,
     "dimSchedule": {"enabled": True, "startMinutes": 21 * 60, "endMinutes": 7 * 60},
     "timezoneOffsetMinutes": 0,
+    "timezoneTz": "UTC0",
     "activeThemeId": "dyno-cell",
     "vaultNeedleRed": False,
     "vaultNeedleTail": False,
@@ -610,7 +611,7 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/api/v1/config":
             payload = self.read_json()
-            for key in ("brightnessHigh", "brightnessLow", "timezoneOffsetMinutes", "activeThemeId"):
+            for key in ("brightnessHigh", "brightnessLow", "timezoneOffsetMinutes", "timezoneTz", "activeThemeId"):
                 if key in payload:
                     CONFIG[key] = payload[key]
             if "dimSchedule" in payload:
@@ -797,6 +798,8 @@ class Handler(BaseHTTPRequestHandler):
             payload = self.read_json()
             TIME_ANCHOR_MS = int(payload["epochMs"])
             CONFIG["timezoneOffsetMinutes"] = int(payload["timezoneOffsetMinutes"])
+            if payload.get("timezoneTz"):
+                CONFIG["timezoneTz"] = payload["timezoneTz"]
             self.send_json({"epochMs": TIME_ANCHOR_MS, "timezoneOffsetMinutes": CONFIG["timezoneOffsetMinutes"]})
         elif parsed.path == "/api/v1/media":
             body = self.rfile.read(length)

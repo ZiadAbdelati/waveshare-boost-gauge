@@ -574,19 +574,19 @@ static void config_json(char *json, size_t len)
     snprintf(json, len,
              "{\"brightnessHigh\":%d,\"brightnessLow\":%d,"
              "\"dimSchedule\":{\"enabled\":%s,\"startMinutes\":%d,\"endMinutes\":%d},"
-             "\"timezoneOffsetMinutes\":%d,\"activeThemeId\":\"%s\","
+             "\"timezoneOffsetMinutes\":%d,\"timezoneTz\":\"%s\",\"activeThemeId\":\"%s\","
              "\"psiMin\":%.2f,\"psiMax\":%.2f,\"psiOverboost\":%.2f,\"zeroAngle\":%.2f}",
              cfg.brightness_high, cfg.brightness_low,
              cfg.dim_schedule.enabled ? "true" : "false",
              cfg.dim_schedule.start_minutes, cfg.dim_schedule.end_minutes,
-             cfg.timezone_offset_minutes, cfg.active_theme_id,
+             cfg.timezone_offset_minutes, cfg.timezone_tz, cfg.active_theme_id,
              (double)cfg.psi_min, (double)cfg.psi_max, (double)cfg.psi_overboost,
              (double)cfg.zero_angle);
 }
 
 static esp_err_t config_get(httpd_req_t *req)
 {
-    char json[384];
+    char json[512];
     config_json(json, sizeof(json));
     return send_json(req, json);
 }
@@ -639,6 +639,11 @@ static esp_err_t config_put(httpd_req_t *req)
     if (json_int(root, "timezoneOffsetMinutes", &tmp)) {
         patch.timezone_offset_minutes = tmp;
         fields |= BOOST_CONFIG_TZ_OFFSET;
+    }
+    cJSON *tzstr = cJSON_GetObjectItemCaseSensitive(root, "timezoneTz");
+    if (cJSON_IsString(tzstr)) {
+        strlcpy(patch.timezone_tz, tzstr->valuestring, sizeof(patch.timezone_tz));
+        fields |= BOOST_CONFIG_TZ_TZ;
     }
     cJSON *id = cJSON_GetObjectItemCaseSensitive(root, "activeThemeId");
     if (cJSON_IsString(id)) {
@@ -710,11 +715,14 @@ static esp_err_t time_post(httpd_req_t *req)
     free(body);
     cJSON *epoch = cJSON_GetObjectItemCaseSensitive(root, "epochMs");
     cJSON *tz = cJSON_GetObjectItemCaseSensitive(root, "timezoneOffsetMinutes");
+    cJSON *tzstr = cJSON_GetObjectItemCaseSensitive(root, "timezoneTz");
     if (!cJSON_IsNumber(epoch) || !cJSON_IsNumber(tz)) {
         cJSON_Delete(root);
         return send_err(req, HTTPD_400, "invalid_time");
     }
-    esp_err_t err = boost_model_set_time((int64_t)epoch->valuedouble, tz->valueint);
+    const char *tz_tz = (cJSON_IsString(tzstr) && tzstr->valuestring != NULL)
+        ? tzstr->valuestring : NULL;
+    esp_err_t err = boost_model_set_time((int64_t)epoch->valuedouble, tz->valueint, tz_tz);
     cJSON_Delete(root);
     if (err == ESP_ERR_INVALID_STATE) {
         /* The client disagrees with a valid DS3231: it is the buggy clock, not
@@ -1271,15 +1279,17 @@ static esp_err_t logs_csv_get(httpd_req_t *req)
             ? current.epoch_ms - ((int64_t)current.uptime_ms - (int64_t)logs[i].t_ms)
             : 0;
         char timestamp[40] = "";
+        int offset_min = current.timezone_offset_minutes;
         if (epoch_ms > 0) {
-            const time_t seconds = (time_t)(epoch_ms / 1000LL) + current.timezone_offset_minutes * 60;
+            const time_t seconds = (time_t)(epoch_ms / 1000LL);
             struct tm local = {0};
-            if (gmtime_r(&seconds, &local) != NULL) {
+            if (localtime_r(&seconds, &local) != NULL) {
                 strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%S", &local);
+                offset_min = boost_model_utc_offset_minutes_at(seconds);
             }
         }
         snprintf(row, sizeof(row), "%s,%d,%lld,%lu,%.2f,%.2f,%s,%d\n",
-                 timestamp, current.timezone_offset_minutes, (long long)epoch_ms,
+                 timestamp, offset_min, (long long)epoch_ms,
                  (unsigned long)logs[i].t_ms, (double)logs[i].psi, (double)logs[i].peak_psi,
                  logs[i].zone, logs[i].demo ? 1 : 0);
         httpd_resp_sendstr_chunk(req, row);

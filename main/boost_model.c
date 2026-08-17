@@ -1,6 +1,7 @@
 #include "boost_model.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <math.h>
 #include <sys/time.h>
@@ -58,6 +59,19 @@ typedef struct {
     float psi_max;
     float psi_overboost;
 } boost_config_v1_t;
+/* Pre-timezone_tz NVS payload (current-on-2026-08-17, before the POSIX TZ field
+ * was added). Keep this exact layout so an in-place migration can extend it. */
+typedef struct {
+    int brightness_high;
+    int brightness_low;
+    boost_dim_schedule_t dim_schedule;
+    int timezone_offset_minutes;
+    char active_theme_id[BOOST_THEME_ID_MAX];
+    float psi_min;
+    float psi_max;
+    float psi_overboost;
+    float zero_angle;
+} boost_config_v2_t;
 /* Last dim-schedule desired level actually applied: -1 = unknown (apply on
  * first evaluation), 0 = high (day), 1 = low (night). Tracking the level
  * rather than a minute counter means the schedule re-applies only when its
@@ -205,11 +219,63 @@ static void defaults(boost_config_t *cfg)
     cfg->dim_schedule.start_minutes = 21 * 60;
     cfg->dim_schedule.end_minutes = 7 * 60;
     cfg->timezone_offset_minutes = 0;
+    cfg->timezone_tz[0] = '\0';   /* empty => synthesised from the offset below */
     strlcpy(cfg->active_theme_id, theme->id, sizeof(cfg->active_theme_id));
     cfg->psi_min = -15.0f;
     cfg->psi_max = 10.0f;
     cfg->psi_overboost = 8.0f;
     cfg->zero_angle = 236.25f;
+}
+
+/* POSIX TZ string for a fixed offset (used for legacy configs / the fallback).
+ * POSIX offset is hours ADDED to local to get UTC, i.e. -timezone_offset_minutes. */
+static void tz_from_offset(char *out, size_t n, int offset_minutes)
+{
+    const int pm = -offset_minutes;
+    const int h = pm / 60, m = pm % 60;
+    if (m == 0) {
+        snprintf(out, n, "UTC%d", h);            /* e.g. UTC5 = UTC-5, UTC-1 = UTC+1 */
+    } else {
+        snprintf(out, n, "UTC%d:%02d", h, (m < 0 ? -m : m));
+    }
+}
+
+/* Apply the persisted timezone to the C library so localtime()/gmtoff reflect
+ * it (and DST rules, for a POSIX TZ string). Called at boot and on any change. */
+static void apply_timezone(void)
+{
+    char tz[BOOST_TZ_STR_MAX];
+    if (s_config.timezone_tz[0] != '\0') {
+        strlcpy(tz, s_config.timezone_tz, sizeof(tz));
+    } else {
+        tz_from_offset(tz, sizeof(tz), s_config.timezone_offset_minutes);
+    }
+    setenv("TZ", tz, 1);
+    tzset();
+}
+
+/* Days since 1970-01-01 (Howard Hinnant days-from-civil). */
+static int64_t civil_days(int year, int mon, int day)
+{
+    const int64_t y = year - (mon <= 2);
+    const int64_t era = (y >= 0 ? y : y - 399) / 400;
+    const int64_t yoe = y - era * 400;
+    const int64_t doy = (153 * (mon + (mon > 2 ? -3 : 9)) + 2) / 5 + day - 1;
+    const int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + doe - 719468;
+}
+
+int boost_model_utc_offset_minutes_at(time_t t)
+{
+    struct tm l = {0}, g = {0};
+    if (localtime_r(&t, &l) == NULL || gmtime_r(&t, &g) == NULL) {
+        return 0;
+    }
+    const int64_t lsec = civil_days(l.tm_year + 1900, l.tm_mon + 1, l.tm_mday) * 86400
+                       + l.tm_hour * 3600 + l.tm_min * 60 + l.tm_sec;
+    const int64_t gsec = civil_days(g.tm_year + 1900, g.tm_mon + 1, g.tm_mday) * 86400
+                       + g.tm_hour * 3600 + g.tm_min * 60 + g.tm_sec;
+    return (int)((lsec - gsec) / 60);
 }
 
 static esp_err_t save_config_locked(void)
@@ -270,6 +336,29 @@ static void load_config(void)
                     if (migrated) {
                         (void)save_config_locked();
                     }
+                }
+            }
+        } else if (len == sizeof(boost_config_v2_t)) {
+            /* Current-on-2026-08-17 layout (no POSIX TZ field yet). Extend in
+             * place: copy fields and leave timezone_tz empty so it is derived
+             * from the persisted offset on first apply. */
+            boost_config_v2_t legacy;
+            if (nvs_get_blob(h, NVS_KEY_CONFIG, &legacy, &len) == ESP_OK) {
+                migrate_legacy_neon_id(legacy.active_theme_id,
+                                       sizeof(legacy.active_theme_id));
+                if (boost_theme_find(legacy.active_theme_id) != NULL) {
+                    s_config.brightness_high = legacy.brightness_high;
+                    s_config.brightness_low = legacy.brightness_low;
+                    s_config.dim_schedule = legacy.dim_schedule;
+                    s_config.timezone_offset_minutes = legacy.timezone_offset_minutes;
+                    s_config.timezone_tz[0] = '\0';
+                    strlcpy(s_config.active_theme_id, legacy.active_theme_id, sizeof(s_config.active_theme_id));
+                    s_config.psi_min = legacy.psi_min;
+                    s_config.psi_max = legacy.psi_max;
+                    s_config.psi_overboost = legacy.psi_overboost;
+                    s_config.zero_angle = legacy.zero_angle;
+                    /* Persist in the new layout so this migration runs once. */
+                    (void)save_config_locked();
                 }
             }
         } else if (len == sizeof(boost_config_v1_t)) {
@@ -350,6 +439,7 @@ esp_err_t boost_model_init(void)
 
     xSemaphoreTake(s_lock, portMAX_DELAY);
     load_config();
+    apply_timezone();   /* setenv("TZ")+tzset() so localtime() is DST-correct */
     memset(&s_state, 0, sizeof(s_state));
     /* Report what is actually running. CMakeLists sets no PROJECT_VER, so
      * ESP-IDF fills the app description from `git describe` at build time -
@@ -475,7 +565,10 @@ void boost_model_refresh_status(void)
     s_state.brightness = boost_brightness_get();
     s_state.uptime_ms = (uint64_t)(esp_timer_get_time() / 1000ULL);
     s_state.epoch_ms = epoch_ms_now();
-    s_state.timezone_offset_minutes = s_config.timezone_offset_minutes;
+    /* Report the CURRENT effective offset (DST-aware) so the dashboard's device
+     * clock is right all year; the stored standard offset stays in config. */
+    s_state.timezone_offset_minutes =
+        boost_model_utc_offset_minutes_at((time_t)(s_state.epoch_ms / 1000));
     strlcpy(s_state.active_theme_id, s_config.active_theme_id, sizeof(s_state.active_theme_id));
     s_state.active_page = (int)boost_page_active();
     xSemaphoreGive(s_lock);
@@ -541,8 +634,24 @@ esp_err_t boost_model_update_config(const boost_config_t *patch, uint32_t fields
     if (fields & BOOST_CONFIG_DIM_END) {
         s_config.dim_schedule.end_minutes = normalize_minutes(patch->dim_schedule.end_minutes);
     }
+    bool tz_changed = false;
     if (fields & BOOST_CONFIG_TZ_OFFSET) {
         s_config.timezone_offset_minutes = clamp_tz_offset(patch->timezone_offset_minutes);
+        if (!(fields & BOOST_CONFIG_TZ_TZ)) {
+            s_config.timezone_tz[0] = '\0';   /* offset-only: fall back to it */
+        }
+        tz_changed = true;
+    }
+    if (fields & BOOST_CONFIG_TZ_TZ) {
+        if (patch->timezone_tz[0] != '\0') {
+            strlcpy(s_config.timezone_tz, patch->timezone_tz, sizeof(s_config.timezone_tz));
+        } else {
+            s_config.timezone_tz[0] = '\0';   /* clear -> derive from offset */
+        }
+        tz_changed = true;
+    }
+    if (tz_changed) {
+        apply_timezone();
     }
     if (fields & BOOST_CONFIG_THEME) {
         const boost_theme_t *theme = boost_theme_find(patch->active_theme_id);
@@ -632,7 +741,7 @@ const boost_theme_t *boost_model_active_theme(void)
     return theme;
 }
 
-esp_err_t boost_model_set_time(int64_t epoch_ms, int timezone_offset_minutes)
+esp_err_t boost_model_set_time(int64_t epoch_ms, int timezone_offset_minutes, const char *timezone_tz)
 {
     if (epoch_ms <= 0 || epoch_ms < BOOST_RTC_EPOCH_MIN_MS) {
         return ESP_ERR_INVALID_ARG;
@@ -664,6 +773,10 @@ esp_err_t boost_model_set_time(int64_t epoch_ms, int timezone_offset_minutes)
 
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_config.timezone_offset_minutes = clamp_tz_offset(timezone_offset_minutes);
+    if (timezone_tz != NULL && timezone_tz[0] != '\0') {
+        strlcpy(s_config.timezone_tz, timezone_tz, sizeof(s_config.timezone_tz));
+    }
+    apply_timezone();
     s_state.timezone_offset_minutes = s_config.timezone_offset_minutes;
     s_state.epoch_ms = epoch_ms_now();
     nvs_handle_t h;
@@ -753,11 +866,13 @@ bool boost_model_schedule_wants_low(void)
     if (now_ms <= 0) {
         return false;
     }
-    const int minutes_day = 24 * 60;
-    int local_min = (int)((now_ms / 60000LL + cfg.timezone_offset_minutes) % minutes_day);
-    if (local_min < 0) {
-        local_min += minutes_day;
+    /* Local wall-clock minute, DST-correct via the applied POSIX timezone. */
+    const time_t now_s = (time_t)(now_ms / 1000);
+    struct tm local = {0};
+    if (localtime_r(&now_s, &local) == NULL) {
+        return false;
     }
+    const int local_min = local.tm_hour * 60 + local.tm_min;
     const int start = cfg.dim_schedule.start_minutes;
     const int end = cfg.dim_schedule.end_minutes;
     if (start == end) {

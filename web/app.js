@@ -1956,28 +1956,29 @@ function timeToMinutes(value) {
   return h * 60 + m;
 }
 
-/* Fixed UTC-offset options for the Time zone dropdown. The device stores a
- * fixed offset in minutes (the DS3231 keeps UTC), so DST is handled by
- * re-picking the option for the current season - never by an IANA tz database
- * the firmware does not have. */
+/* Time zone options for the dropdown. Each carries a POSIX TZ string (`tz`)
+ * that the firmware applies via setenv("TZ")+tzset(), so localtime() on the
+ * device handles DST automatically; the `m` field is the standard UTC offset
+ * in minutes (still reported/persisted for the API). Zones with no `tz` are
+ * fixed-offset (no DST) and get a synthesized "UTC±H" string. */
 const TZ_OPTIONS = [
   { m: -720, label: "UTC-12:00 · Int. Date Line West" },
   { m: -660, label: "UTC-11:00 · Pago Pago" },
   { m: -600, label: "UTC-10:00 · Hawaii" },
   { m: -570, label: "UTC-09:30 · Marquesas" },
-  { m: -540, label: "UTC-09:00 · Alaska" },
-  { m: -480, label: "UTC-08:00 · Pacific Time" },
-  { m: -420, label: "UTC-07:00 · Mountain Time" },
-  { m: -360, label: "UTC-06:00 · Central Time" },
-  { m: -300, label: "UTC-05:00 · Eastern Time" },
-  { m: -240, label: "UTC-04:00 · Eastern DST / Atlantic" },
-  { m: -210, label: "UTC-03:30 · Newfoundland" },
+  { m: -540, label: "UTC-09:00 · Alaska", tz: "AKST9AKDT,M3.2.0/2,M11.1.0/2" },
+  { m: -480, label: "UTC-08:00 · Pacific Time", tz: "PST8PDT,M3.2.0/2,M11.1.0/2" },
+  { m: -420, label: "UTC-07:00 · Mountain Time", tz: "MST7MDT,M3.2.0/2,M11.1.0/2" },
+  { m: -360, label: "UTC-06:00 · Central Time", tz: "CST6CDT,M3.2.0/2,M11.1.0/2" },
+  { m: -300, label: "UTC-05:00 · Eastern Time", tz: "EST5EDT,M3.2.0/2,M11.1.0/2" },
+  { m: -240, label: "UTC-04:00 · Eastern DST / Atlantic", tz: "AST4ADT,M3.2.0/2,M11.1.0/2" },
+  { m: -210, label: "UTC-03:30 · Newfoundland", tz: "NST3:30NDT,M3.2.0/2,M11.1.0/2" },
   { m: -180, label: "UTC-03:00 · Buenos Aires" },
   { m: -120, label: "UTC-02:00 · South Georgia" },
   { m: -60, label: "UTC-01:00 · Azores" },
-  { m: 0, label: "UTC+00:00 · London / UTC" },
-  { m: 60, label: "UTC+01:00 · Central Europe / West Africa" },
-  { m: 120, label: "UTC+02:00 · Eastern Europe / Cairo" },
+  { m: 0, label: "UTC+00:00 · London / UTC", tz: "GMT0BST,M3.5.0/1,M10.5.0/2" },
+  { m: 60, label: "UTC+01:00 · Central Europe / West Africa", tz: "CET-1CEST,M3.5.0/2,M10.5.0/3" },
+  { m: 120, label: "UTC+02:00 · Eastern Europe / Cairo", tz: "EET-2EEST,M3.5.0/3,M10.5.0/4" },
   { m: 180, label: "UTC+03:00 · Moscow / Nairobi" },
   { m: 210, label: "UTC+03:30 · Tehran" },
   { m: 240, label: "UTC+04:00 · Dubai / Baku" },
@@ -1991,16 +1992,31 @@ const TZ_OPTIONS = [
   { m: 480, label: "UTC+08:00 · Beijing / Perth / Singapore" },
   { m: 525, label: "UTC+08:45 · Eucla" },
   { m: 540, label: "UTC+09:00 · Tokyo / Seoul / Yakutsk" },
-  { m: 570, label: "UTC+09:30 · Adelaide / Darwin" },
-  { m: 600, label: "UTC+10:00 · Sydney / Brisbane / Vladivostok" },
-  { m: 630, label: "UTC+10:30 · Lord Howe" },
+  { m: 570, label: "UTC+09:30 · Adelaide / Darwin", tz: "ACST9:30ACDT,M10.1.0/2,M4.1.0/3" },
+  { m: 600, label: "UTC+10:00 · Sydney / Brisbane / Vladivostok", tz: "AEST10AEDT,M10.1.0/2,M4.1.0/3" },
+  { m: 630, label: "UTC+10:30 · Lord Howe", tz: "LHST10:30LHDT,M10.1.0/2,M4.1.0/2" },
   { m: 660, label: "UTC+11:00 · Solomon Is. / Sakhalin" },
   { m: 690, label: "UTC+11:30 · Norfolk Is." },
-  { m: 720, label: "UTC+12:00 · Auckland / Fiji" },
-  { m: 765, label: "UTC+12:45 · Chatham" },
+  { m: 720, label: "UTC+12:00 · Auckland / Fiji", tz: "NZST12NZDT,M9.5.0/2,M4.1.0/3" },
+  { m: 765, label: "UTC+12:45 · Chatham", tz: "CHAST12:45CHADT,M9.5.0/2,M4.1.0/3" },
   { m: 780, label: "UTC+13:00 · Tonga / Apia" },
   { m: 840, label: "UTC+14:00 · Kiritimati" },
 ];
+
+/* POSIX TZ string for a fixed offset (used for the non-DST options and any
+ * custom offset the device holds). POSIX offset = -offsetMinutes. */
+function synthTz(m) {
+  const pm = -m;
+  const sign = pm < 0 ? "-" : "";
+  const ah = Math.floor(Math.abs(pm) / 60);
+  const am = Math.abs(pm) % 60;
+  return am ? `UTC${sign}${ah}:${String(am).padStart(2, "0")}` : `UTC${sign}${ah}`;
+}
+
+function tzForOffset(m) {
+  const opt = TZ_OPTIONS.find((o) => o.m === m);
+  return opt && opt.tz ? opt.tz : synthTz(m);
+}
 
 function populateTzSelect() {
   if (!el.tzOffset) return;
@@ -3320,9 +3336,12 @@ async function syncDeviceClock(tzOverride) {
       : -now.getTimezoneOffset();
   const response = await api("/time", {
     method: "POST",
-    body: JSON.stringify({ epochMs: now.getTime(), timezoneOffsetMinutes: tz }),
+    body: JSON.stringify({ epochMs: now.getTime(), timezoneOffsetMinutes: tz, timezoneTz: tzForOffset(tz) }),
   });
-  if (el.tzOffset) setTzOffsetSelect(el.tzOffset, response.timezoneOffsetMinutes);
+  /* /time returns the state, whose timezoneOffsetMinutes is the CURRENT (DST)
+   * effective offset - do not echo that into the dropdown, which keys on the
+   * stored standard offset from config. */
+  if (el.tzOffset && state.config) setTzOffsetSelect(el.tzOffset, state.config.timezoneOffsetMinutes ?? tz);
   return response;
 }
 
@@ -3339,10 +3358,12 @@ async function syncTime() {
 }
 
 async function saveConfig() {
+  const tzVal = Number(el.tzOffset.value);
   const payload = {
     brightnessHigh: Number(el.brightnessHigh.value),
     brightnessLow: Number(el.brightnessLow.value),
-    timezoneOffsetMinutes: Number(el.tzOffset.value),
+    timezoneOffsetMinutes: tzVal,
+    timezoneTz: tzForOffset(tzVal),
     activeThemeId: state.activeThemeId,
     dimSchedule: {
       enabled: el.scheduleEnabled.checked,
