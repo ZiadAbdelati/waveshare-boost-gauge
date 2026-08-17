@@ -36,6 +36,12 @@
 #define OBD_MAX_CHR_CAND   8
 #define OBD_ADV_SCAN_MS    3000
 #define OBD_RECONNECT_MS   10000
+/* When the adapter is consistently unreachable (bench, adapter unplugged) the
+ * old loop scanned every ~13 s forever, saturating the shared 2.4 GHz radio
+ * and spiking web latency. Back off the scan interval exponentially after each
+ * failed cycle, capped, so an absent peer stops hammering the radio while a
+ * present one is still found within one scan period. Reset on any connect. */
+#define OBD_RECONNECT_MAX_MS 120000
 #define OBD_CCCD_UUID      0x2902
 /* The BT controller allocates its buffer pool from DMA-capable internal RAM,
  * and a failed allocation inside esp_bt_controller_enable() panics the board
@@ -101,6 +107,7 @@ static char s_peer_name[24];
 static char s_peer_addr[32];
 static uint32_t s_ready_start_ms;
 static volatile uint16_t s_last_err;    /* last connect/discovery failure status */
+static uint32_t s_backoff_ms = OBD_RECONNECT_MS; /* grows while peer is unreachable */
 
 static uint8_t s_rx_tmp[OBD_MAX_RX];
 
@@ -455,6 +462,7 @@ static void driver_task(void *arg)
         switch (ev.type) {
         case OBD_EV_START: {
             first_pass = true;
+            s_backoff_ms = OBD_RECONNECT_MS;
             if (s_enabled) {
                 load_stored_peer();
                 if (s_peer_addr[0] != '\0') {
@@ -489,8 +497,11 @@ static void driver_task(void *arg)
                 s_last_err = ev.a;
                 ESP_LOGW(TAG, "connect failed: status=0x%04x", (unsigned)ev.a);
             }
-            vTaskDelay(pdMS_TO_TICKS(first_pass ? 0 : OBD_RECONNECT_MS));
+            vTaskDelay(pdMS_TO_TICKS(first_pass ? 0 : s_backoff_ms));
             first_pass = false;
+            if (s_backoff_ms < OBD_RECONNECT_MAX_MS) {
+                s_backoff_ms = s_backoff_ms * 2 > OBD_RECONNECT_MAX_MS ? OBD_RECONNECT_MAX_MS : s_backoff_ms * 2;
+            }
             if (s_enabled) start_scan();
             break;
         }
@@ -498,6 +509,7 @@ static void driver_task(void *arg)
             if (!s_enabled) break;
             s_conn_handle = ev.conn_handle;
             s_last_err = 0;   /* new link: reset the failure marker */
+            s_backoff_ms = OBD_RECONNECT_MS;   /* peer found: restore the fast retry cadence */
             publish_state(BOOST_OBD_BLE_DISCOVERING);
             start_svc_discovery(ev.conn_handle);
             break;
