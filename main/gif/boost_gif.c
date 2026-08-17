@@ -638,13 +638,19 @@ static void invalidate_frame(lv_gif_t * gifobj)
 #if BOOST_GIF_DIRTY_RECT
     lv_image_t * img = &gifobj->img;
 
-    const int32_t fx = gif->iX;
-    const int32_t fy = gif->iY;
-    const int32_t fw = gif->iWidth;
-    const int32_t fh = gif->iHeight;
+    int32_t fx = gif->iX;
+    int32_t fy = gif->iY;
+    int32_t fw = gif->iWidth;
+    int32_t fh = gif->iHeight;
 
-    if(!gifobj->force_full_invalidate
-       && img->align < _LV_IMAGE_ALIGN_AUTO_TRANSFORM
+    if(gifobj->force_full_invalidate) {
+        fx = 0;
+        fy = 0;
+        fw = (int32_t)gif->iCanvasWidth;
+        fh = (int32_t)gif->iCanvasHeight;
+    }
+
+    if(img->align < _LV_IMAGE_ALIGN_AUTO_TRANSFORM
        && img->rotation == 0
        && img->scale_x == LV_SCALE_NONE
        && img->scale_y == LV_SCALE_NONE
