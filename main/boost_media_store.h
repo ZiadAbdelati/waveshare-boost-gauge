@@ -10,8 +10,10 @@
 extern "C" {
 #endif
 
-/** Maximum accepted GIF payload and GIF canvas dimensions. */
-#define BOOST_MEDIA_STORE_MAX_BYTES (2u * 1024u * 1024u)
+/** Maximum accepted GIF payload and GIF canvas dimensions. 3.5 MB stays under
+ * the ~3.9 MB per-slot payload ceiling (8.25 MB partition / 2 slots - header),
+ * leaving headroom for the erase-range alignment in boost_media_store_begin(). */
+#define BOOST_MEDIA_STORE_MAX_BYTES (3500u * 1024u)
 #define BOOST_MEDIA_STORE_MAX_DIMENSION 466u
 
 /** Persisted state of the currently committed media slot. */
