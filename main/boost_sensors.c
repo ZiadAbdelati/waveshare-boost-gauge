@@ -615,7 +615,17 @@ esp_err_t boost_sensors_rtc_write(int64_t epoch_ms)
         xSemaphoreTake(s_bus_admin_lock, pdMS_TO_TICKS(RTC_LOCK_WAIT_MS)) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
     }
-    const esp_err_t err = i2c_master_transmit(s_rtc, buf, sizeof(buf), SENS_IO_TIMEOUT_MS);
+    esp_err_t err = i2c_master_transmit(s_rtc, buf, sizeof(buf), SENS_IO_TIMEOUT_MS);
+    if (err == ESP_OK) {
+        /* The DS3231 does NOT auto-clear the oscillator-stop flag when the
+         * time registers are written; it must be cleared explicitly in the
+         * status register, or every read reports "time never set" and the
+         * RTC never becomes the clock authority. */
+        uint8_t st = 0;
+        if (reg_read(s_rtc, DS3231_REG_STATUS, &st, 1) == ESP_OK) {
+            err = reg_write8(s_rtc, DS3231_REG_STATUS, (uint8_t)(st & ~DS3231_OSF));
+        }
+    }
     xSemaphoreGive(s_bus_admin_lock);
     return err;
 }

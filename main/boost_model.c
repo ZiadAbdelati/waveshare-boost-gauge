@@ -447,7 +447,8 @@ esp_err_t boost_model_init(void)
     const esp_app_desc_t *desc = esp_app_get_description();
     s_state.firmware_version = (desc != NULL) ? desc->version : "unknown";
     s_state.brightness = s_config.brightness_high;
-    s_state.timezone_offset_minutes = s_config.timezone_offset_minutes;
+    s_state.timezone_offset_minutes =
+        boost_model_utc_offset_minutes_at((time_t)(epoch_ms_now() / 1000));
     strlcpy(s_state.active_theme_id, s_config.active_theme_id, sizeof(s_state.active_theme_id));
     xSemaphoreGive(s_lock);
 
@@ -475,7 +476,9 @@ void boost_model_publish_sample(const boost_sample_t *sample)
     s_state.brightness = boost_brightness_get();
     s_state.uptime_ms = (uint64_t)(esp_timer_get_time() / 1000ULL);
     s_state.epoch_ms = epoch_ms_now();
-    s_state.timezone_offset_minutes = s_config.timezone_offset_minutes;
+    /* timezone_offset_minutes is owned by boost_model_refresh_status() (the
+     * DST-effective value); the per-sample publish must not clobber it with the
+     * stored standard offset or /state flickers by one hour across DST. */
     strlcpy(s_state.active_theme_id, s_config.active_theme_id, sizeof(s_state.active_theme_id));
 
     if (s_logs != NULL && s_state.uptime_ms - s_log_last_ms >= BOOST_LOG_INTERVAL_MS) {
@@ -777,7 +780,8 @@ esp_err_t boost_model_set_time(int64_t epoch_ms, int timezone_offset_minutes, co
         strlcpy(s_config.timezone_tz, timezone_tz, sizeof(s_config.timezone_tz));
     }
     apply_timezone();
-    s_state.timezone_offset_minutes = s_config.timezone_offset_minutes;
+    s_state.timezone_offset_minutes =
+        boost_model_utc_offset_minutes_at((time_t)(epoch_ms / 1000));
     s_state.epoch_ms = epoch_ms_now();
     nvs_handle_t h;
     esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
