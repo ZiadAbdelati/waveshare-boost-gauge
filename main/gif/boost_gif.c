@@ -132,6 +132,7 @@ typedef struct {
     SemaphoreHandle_t sem_frame_ready;
     SemaphoreHandle_t sem_next_decode;
     volatile bool task_running;
+    volatile bool decode_done;
     int ms_delay_next;
     int last_has_next;
     int32_t last_fx, last_fy, last_fw, last_fh;
@@ -320,11 +321,22 @@ static void lv_gif_destructor(const lv_obj_class_t * class_p, lv_obj_t * obj)
 
     lv_image_cache_drop(lv_image_get_src(obj));
 
+    /* In the dual-buffer pipeline gif->pFrameBuffer ALIASES one of the two
+     * framebuffers. Snapshot the ownership pointers BEFORE the pipeline frees
+     * NULL them, so the ownership check below can tell an aliased buffer
+     * (never free it again -> double free) from a separately allocated one. */
+    void *fb0 = gifobj->framebuffers[0];
+    void *fb1 = gifobj->framebuffers[1];
+    void *framebuffer = gifobj->is_open ? gifobj->gif->pFrameBuffer : NULL;
+
 #ifdef ESP_PLATFORM
     if(gifobj->decode_task != NULL) {
         gifobj->task_running = false;
+        gifobj->decode_done = false;
         xSemaphoreGive(gifobj->sem_next_decode);
-        vTaskDelay(pdMS_TO_TICKS(15));
+        /* The decoder may be mid-frame (~25 ms); wait for it to exit before
+         * freeing anything it touches. A fixed 15 ms delay races a full frame. */
+        while(!gifobj->decode_done) vTaskDelay(pdMS_TO_TICKS(1));
         gifobj->decode_task = NULL;
     }
     if(gifobj->sem_frame_ready != NULL) {
@@ -346,7 +358,7 @@ static void lv_gif_destructor(const lv_obj_class_t * class_p, lv_obj_t * obj)
 #endif
 
     if(gifobj->is_open) {
-        void * framebuffer = gifobj->gif->pFrameBuffer;
+        gifobj->gif->pFrameBuffer = NULL; /* killed alias; framebuffer owns it */
         if(gifobj->gif->pTurboBuffer != NULL) {
             lv_free(gifobj->gif->pTurboBuffer);
             gifobj->gif->pTurboBuffer = NULL;
@@ -360,7 +372,7 @@ static void lv_gif_destructor(const lv_obj_class_t * class_p, lv_obj_t * obj)
             gifobj->gif->pTurboLengths = NULL;
         }
         GIF_close(gifobj->gif);
-        if(framebuffer != NULL && framebuffer != gifobj->framebuffers[0] && framebuffer != gifobj->framebuffers[1]) {
+        if(framebuffer != NULL && framebuffer != fb0 && framebuffer != fb1) {
             lv_free(framebuffer);
         }
     }
@@ -406,6 +418,7 @@ static void gif_decode_task(void * arg)
 
         xSemaphoreGive(gifobj->sem_frame_ready);
     }
+    gifobj->decode_done = true; /* let the destructor's teardown wait see us exit */
     vTaskDelete(NULL);
 }
 #endif
@@ -534,6 +547,7 @@ static void initialize(lv_gif_t * gifobj)
     gifobj->sem_frame_ready = xSemaphoreCreateBinary();
     gifobj->sem_next_decode = xSemaphoreCreateBinary();
     gifobj->task_running = true;
+    gifobj->decode_done = false;
 #else
     gif->pFrameBuffer = lv_malloc(framebuffer_size);
     gif->ucDrawType = GIF_DRAW_COOKED;
