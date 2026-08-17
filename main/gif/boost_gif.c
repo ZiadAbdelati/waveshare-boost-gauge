@@ -143,6 +143,7 @@ typedef struct {
     int ms_delay_next;
     int last_has_next;
     int32_t last_fx, last_fy, last_fw, last_fh;
+    float speed; /* 1.0 = authored rate, 0.5 = half the authored delay (2x speed) */
 
     /* BOOST: direct-push + timing stats. decode_us/push_us accumulate totals
      * for the rate-limited summary; last_* keep the instantaneous values for
@@ -292,6 +293,17 @@ void lv_gif_set_loop_count(lv_obj_t * obj, int32_t count)
     }
 
     gifobj->loop_count = count;
+}
+
+/* BOOST: playback speed multiplier. 1.0 = the GIF's authored frame delay
+ * (default). 0.5 holds each frame for half the authored delay, i.e. 2x speed.
+ * Applied to the pacing period only - decode/push still run as fast as they
+ * can; this never makes a frame appear BEFORE the preceding one's (scaled)
+ * on-screen time has elapsed. */
+void lv_gif_set_speed(lv_obj_t * obj, float speed)
+{
+    lv_gif_t * gifobj = (lv_gif_t *) obj;
+    if(speed > 0.0f) gifobj->speed = speed;
 }
 
 /**********************
@@ -626,6 +638,7 @@ static void initialize(lv_gif_t * gifobj)
     gifobj->stat_push_failures = 0;
     gifobj->last_decode_us = 0;
     gifobj->last_push_us = 0;
+    if(gifobj->speed <= 0.0f) gifobj->speed = 1.0f;
 
     /* Decode frame 0 synchronously so widget has initial content */
     int ms_delay0 = 0;
@@ -892,8 +905,11 @@ static void next_frame_task_cb(lv_timer_t * t)
                  * for at least D and playback never exceeds the authored rate.
                  * The timer period is measured from this callback's start, and
                  * the push (in invalidate_frame above) took last_push_us, so
-                 * end_of_this_push sits ~last_push after that start. */
-                int deadline_ms = frame_delay_ms + (int)(gifobj->last_push_us / 1000);
+                 * end_of_this_push sits ~last_push after that start. speed < 1
+                 * shortens the on-screen hold below the authored delay (2x
+                 * speed = 0.5); 1.0 keeps the authored rate. */
+                int delay_ms = (int)(frame_delay_ms * gifobj->speed);
+                int deadline_ms = delay_ms + (int)(gifobj->last_push_us / 1000);
                 lv_timer_set_period(gifobj->timer, deadline_ms > 1 ? deadline_ms : 1);
             }
             return;
@@ -920,6 +936,8 @@ static void next_frame_task_cb(lv_timer_t * t)
         if(res != LV_RESULT_OK) return;
     }
     else {
+        int ms_delay_next = (int)(gifobj->ms_delay_next * gifobj->speed);
+        if(ms_delay_next < 1) ms_delay_next = 1;
         lv_timer_set_period(gifobj->timer, ms_delay_next);
     }
 

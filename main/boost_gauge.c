@@ -4975,6 +4975,7 @@ static bool load_media_gif_locked(void)
      * byte-swaps for the CO5300 wire format. */
     lv_gif_set_color_format(s_media_gif, LV_COLOR_FORMAT_RGB565);
     lv_image_set_inner_align(s_media_gif, LV_IMAGE_ALIGN_CENTER);
+    lv_gif_set_speed(s_media_gif, 0.5f); /* 2x playback (half the authored delay) */
     lv_gif_set_src(s_media_gif, &s_media_dsc);
     /* Where the decoder object actually landed. The extmem threshold is a
      * request, not a guarantee, and a silent fall back to PSRAM costs the
