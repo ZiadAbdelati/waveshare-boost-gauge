@@ -431,6 +431,14 @@ time survives power-off. The NVS epoch/monotonic checkpoint is refreshed at
 every RTC seed as well, keeping it a warm fallback if the RTC is later removed
 or fails.
 
+The UTC offset is set once from a **Time zone dropdown** on the cockpit (39
+fixed-offset entries, `timezoneOffsetMinutes` unchanged in the API/NVS). The
+device keeps UTC; the offset only drives the dim schedule and CSV timestamps.
+It is set once and persists — the dashboard refresh no longer overwrites it with
+the browser's own live offset. Offsets are fixed per selection, so a DST change
+means re-picking the current season's entry (e.g. `UTC-05:00 · Eastern Time` in
+winter, `UTC-04:00 · Eastern DST / Atlantic` in summer).
+
 Without an RTC (absent, failed, or never set — the oscillator-stop flag),
 behavior is unchanged from before: boot restores the frozen NVS epoch and
 advances it only by the monotonic delta when applicable, the clock stays

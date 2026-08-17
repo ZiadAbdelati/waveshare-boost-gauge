@@ -1956,6 +1956,83 @@ function timeToMinutes(value) {
   return h * 60 + m;
 }
 
+/* Fixed UTC-offset options for the Time zone dropdown. The device stores a
+ * fixed offset in minutes (the DS3231 keeps UTC), so DST is handled by
+ * re-picking the option for the current season - never by an IANA tz database
+ * the firmware does not have. */
+const TZ_OPTIONS = [
+  { m: -720, label: "UTC-12:00 · Int. Date Line West" },
+  { m: -660, label: "UTC-11:00 · Pago Pago" },
+  { m: -600, label: "UTC-10:00 · Hawaii" },
+  { m: -570, label: "UTC-09:30 · Marquesas" },
+  { m: -540, label: "UTC-09:00 · Alaska" },
+  { m: -480, label: "UTC-08:00 · Pacific Time" },
+  { m: -420, label: "UTC-07:00 · Mountain Time" },
+  { m: -360, label: "UTC-06:00 · Central Time" },
+  { m: -300, label: "UTC-05:00 · Eastern Time" },
+  { m: -240, label: "UTC-04:00 · Eastern DST / Atlantic" },
+  { m: -210, label: "UTC-03:30 · Newfoundland" },
+  { m: -180, label: "UTC-03:00 · Buenos Aires" },
+  { m: -120, label: "UTC-02:00 · South Georgia" },
+  { m: -60, label: "UTC-01:00 · Azores" },
+  { m: 0, label: "UTC+00:00 · London / UTC" },
+  { m: 60, label: "UTC+01:00 · Central Europe / West Africa" },
+  { m: 120, label: "UTC+02:00 · Eastern Europe / Cairo" },
+  { m: 180, label: "UTC+03:00 · Moscow / Nairobi" },
+  { m: 210, label: "UTC+03:30 · Tehran" },
+  { m: 240, label: "UTC+04:00 · Dubai / Baku" },
+  { m: 270, label: "UTC+04:30 · Kabul" },
+  { m: 300, label: "UTC+05:00 · Karachi / Tashkent" },
+  { m: 330, label: "UTC+05:30 · Mumbai / Colombo" },
+  { m: 345, label: "UTC+05:45 · Kathmandu" },
+  { m: 360, label: "UTC+06:00 · Dhaka / Almaty" },
+  { m: 390, label: "UTC+06:30 · Yangon" },
+  { m: 420, label: "UTC+07:00 · Bangkok / Jakarta" },
+  { m: 480, label: "UTC+08:00 · Beijing / Perth / Singapore" },
+  { m: 525, label: "UTC+08:45 · Eucla" },
+  { m: 540, label: "UTC+09:00 · Tokyo / Seoul / Yakutsk" },
+  { m: 570, label: "UTC+09:30 · Adelaide / Darwin" },
+  { m: 600, label: "UTC+10:00 · Sydney / Brisbane / Vladivostok" },
+  { m: 630, label: "UTC+10:30 · Lord Howe" },
+  { m: 660, label: "UTC+11:00 · Solomon Is. / Sakhalin" },
+  { m: 690, label: "UTC+11:30 · Norfolk Is." },
+  { m: 720, label: "UTC+12:00 · Auckland / Fiji" },
+  { m: 765, label: "UTC+12:45 · Chatham" },
+  { m: 780, label: "UTC+13:00 · Tonga / Apia" },
+  { m: 840, label: "UTC+14:00 · Kiritimati" },
+];
+
+function populateTzSelect() {
+  if (!el.tzOffset) return;
+  el.tzOffset.innerHTML = "";
+  for (const opt of TZ_OPTIONS) {
+    const o = document.createElement("option");
+    o.value = String(opt.m);
+    o.textContent = opt.label;
+    el.tzOffset.appendChild(o);
+  }
+}
+
+/* Select the option matching `minutes`, adding a Custom entry when the device
+ * holds an offset with no exact dropdown entry (e.g. a DST offset mid-season). */
+function setTzOffsetSelect(select, minutes) {
+  if (!select) return;
+  const want = Number(minutes);
+  const match = Array.from(select.options).find((o) => Number(o.value) === want);
+  if (match) {
+    select.value = match.value;
+    return;
+  }
+  const sign = want >= 0 ? "+" : "-";
+  const h = String(Math.floor(Math.abs(want) / 60)).padStart(2, "0");
+  const mm = String(Math.abs(want) % 60).padStart(2, "0");
+  const o = document.createElement("option");
+  o.value = String(want);
+  o.textContent = `UTC${sign}${h}:${mm} · Custom`;
+  select.appendChild(o);
+  select.value = o.value;
+}
+
 function renderState(sample) {
   if (IS_COCKPIT) {
     if (sample.firmwareVersion && el.firmwareVersion) el.firmwareVersion.textContent = sample.firmwareVersion;
@@ -2007,7 +2084,7 @@ function renderObd(obd) {
 function renderConfig(config) {
   state.config = config;
   if (IS_COCKPIT) {
-    if (el.tzOffset) el.tzOffset.value = config.timezoneOffsetMinutes ?? 0;
+    if (el.tzOffset) setTzOffsetSelect(el.tzOffset, config.timezoneOffsetMinutes ?? 0);
     if (el.scheduleEnabled) el.scheduleEnabled.checked = Boolean(config.dimSchedule?.enabled);
     if (el.scheduleStart) el.scheduleStart.value = minutesToTime(config.dimSchedule?.startMinutes ?? 1260);
     if (el.scheduleEnd) el.scheduleEnd.value = minutesToTime(config.dimSchedule?.endMinutes ?? 420);
@@ -3105,14 +3182,6 @@ async function refreshNetwork() {
 async function refreshAll(source = ERR_USER) {
   try {
     clearError(source);
-    if (IS_COCKPIT) {
-      /* Keep device wall-clock aligned with the browser so dim schedules match local time. */
-      try {
-        await syncDeviceClock(-new Date().getTimezoneOffset());
-      } catch (_) {
-        /* non-fatal; schedule may wait until manual Sync */
-      }
-    }
     const requests = [api("/state"), api("/config"), api("/themes"), api("/network")];
     if (IS_COCKPIT) requests.push(api("/media/status"), api("/logs?limit=300"));
     else requests.push(api("/tpms/config").catch(() => null));
@@ -3132,6 +3201,16 @@ async function refreshAll(source = ERR_USER) {
     if (IS_COCKPIT) renderThemes();
     setTheme(state.themes.find((theme) => theme.id === state.activeThemeId));
     renderConfig(config);
+    if (IS_COCKPIT) {
+      /* Keep the device wall clock calibrated against the browser. The timezone
+       * comes from the dropdown (the persisted config), never the browser's own
+       * live offset - a zone is set once and stays until the user changes it. */
+      try {
+        await syncDeviceClock();
+      } catch (_) {
+        /* non-fatal; schedule may wait until manual Sync */
+      }
+    }
     renderState(statePayload);
     if (IS_COCKPIT) seedHistoryFromLog(logs?.samples);
     if (IS_COCKPIT) renderMediaStatus(media);
@@ -3230,9 +3309,8 @@ function connectEvents() {
 }
 
 /* Push the browser clock to the device. The offset comes from tzOverride when
- * given (the cockpit refresh always sends the browser's own offset), otherwise
- * from the timezone field when it holds a finite value, else the browser
- * offset. Updates el.tzOffset with the device's echoed offset on success. */
+ * given, otherwise from the Time zone dropdown when populated, else the browser
+ * offset. Updates the dropdown with the device's echoed offset on success. */
 async function syncDeviceClock(tzOverride) {
   const now = new Date();
   const tz = Number.isFinite(Number(tzOverride))
@@ -3244,7 +3322,7 @@ async function syncDeviceClock(tzOverride) {
     method: "POST",
     body: JSON.stringify({ epochMs: now.getTime(), timezoneOffsetMinutes: tz }),
   });
-  if (el.tzOffset) el.tzOffset.value = response.timezoneOffsetMinutes;
+  if (el.tzOffset) setTzOffsetSelect(el.tzOffset, response.timezoneOffsetMinutes);
   return response;
 }
 
@@ -3568,4 +3646,5 @@ if (IS_COCKPIT) {
   scheduleGaugeRender();
   scheduleSparklineRender();
 }
+populateTzSelect();
 refreshAll(ERR_LIVE).finally(connectEvents);
