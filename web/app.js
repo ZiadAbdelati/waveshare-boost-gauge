@@ -1735,6 +1735,53 @@ function pushSample(sample) {
   return true;
 }
 
+/* Backfill the 60 s sparkline window from the device RAM log ring (the same
+ * 5 Hz samples /logs.csv exports). Only fills holes: ring points that already
+ * have a nearby live sample are skipped, so the 62.5 Hz live trace keeps
+ * covered regions. */
+function seedHistoryFromLog(samples) {
+  if (!IS_COCKPIT || !Array.isArray(samples) || !samples.length) return;
+  const toleranceMs = 50;
+  const inserted = [];
+  for (const s of samples) {
+    const t = Number(s.tMs);
+    if (!Number.isFinite(t)) continue;
+    if (sampleHistory.some((p) => Math.abs(p.historyTimeMs - t) <= toleranceMs)) continue;
+    inserted.push({
+      psi: Number(s.psi ?? 0),
+      peakPsi: Number(s.peakPsi ?? 0),
+      zone: s.zone,
+      demo: !!s.demo,
+      uptimeMs: t,
+      historyTimeMs: t,
+    });
+  }
+  if (!inserted.length) return;
+  sampleHistory.push(...inserted);
+  sampleHistory.sort((a, b) => a.historyTimeMs - b.historyTimeMs);
+  const newest = sampleHistory.at(-1);
+  const cutoffMs = newest.historyTimeMs - HISTORY_WINDOW_MS;
+  while (sampleHistory.length && sampleHistory[0].historyTimeMs < cutoffMs) sampleHistory.shift();
+  const newestSeeded = inserted.at(-1);
+  if (!state.gaugeTarget || newestSeeded.historyTimeMs > Number(state.gaugeTarget.uptimeMs)) {
+    state.gaugeTarget = newestSeeded;
+    state.gaugePsi = Number(newestSeeded.psi);
+  }
+  if (el.sampleCount) el.sampleCount.textContent = "Last 60 seconds";
+  if (el.emptyState) el.emptyState.hidden = sampleHistory.length > 0;
+  scheduleSparklineRender();
+}
+
+async function resyncHistory() {
+  if (!IS_COCKPIT) return;
+  try {
+    const payload = await api("/logs?limit=300");
+    seedHistoryFromLog(payload?.samples);
+  } catch (_) {
+    /* non-fatal: the live feed covers the window on its own */
+  }
+}
+
 function updateConnection(mode, transport = null) {
   if (!el.connection || !el.connectionText) return;
   const online = mode === "online";
@@ -3067,9 +3114,9 @@ async function refreshAll(source = ERR_USER) {
       }
     }
     const requests = [api("/state"), api("/config"), api("/themes"), api("/network")];
-    if (IS_COCKPIT) requests.push(api("/media/status"));
+    if (IS_COCKPIT) requests.push(api("/media/status"), api("/logs?limit=300"));
     else requests.push(api("/tpms/config").catch(() => null));
-    const [statePayload, config, themes, network, extra] = await Promise.all(requests);
+    const [statePayload, config, themes, network, extra, logs] = await Promise.all(requests);
     if (!IS_COCKPIT && extra) state.tpmsConfig = extra;
     const media = IS_COCKPIT ? extra : null;
     applyThemePayload(themes, {
@@ -3086,6 +3133,7 @@ async function refreshAll(source = ERR_USER) {
     setTheme(state.themes.find((theme) => theme.id === state.activeThemeId));
     renderConfig(config);
     renderState(statePayload);
+    if (IS_COCKPIT) seedHistoryFromLog(logs?.samples);
     if (IS_COCKPIT) renderMediaStatus(media);
     renderNetwork(network);
     /* A successful refresh must not relabel an already-open WebSocket as HTTP. */
@@ -3156,6 +3204,7 @@ function connectEvents() {
     startHeartbeat(socket);
     updateConnection("online", "websocket");
     clearError(ERR_LIVE);
+    void resyncHistory();
   };
   socket.onmessage = (event) => {
     if (state.liveSocket !== socket) return;

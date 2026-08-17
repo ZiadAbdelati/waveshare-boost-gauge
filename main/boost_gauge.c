@@ -42,7 +42,7 @@ static inline void boost_display_gauge_update_begin(void) {}
 static inline void boost_display_gauge_update_end(void) {}
 #endif
 #if LV_USE_GIF
-#include "libs/gif/lv_gif.h"
+#include "gif/boost_gif.h"
 #endif
 
 /* The cached face lives in PSRAM on device, plain heap on the simulator. */

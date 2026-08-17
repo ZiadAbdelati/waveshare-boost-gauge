@@ -30,7 +30,7 @@
 /*********************
  *      INCLUDES
  *********************/
-#include "libs/gif/lv_gif.h"
+#include "boost_gif.h"
 #if LV_USE_GIF
 #include "misc/lv_timer_private.h"
 #include "misc/cache/lv_cache.h"
