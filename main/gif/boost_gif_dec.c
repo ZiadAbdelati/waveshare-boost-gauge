@@ -1081,20 +1081,27 @@ static void DrawNewPixels(GIFIMAGE *pPage, GIFDRAW *pDraw)
 //
 // Output the bytes for a single code (checks for buffer len)
 //
-static inline __attribute__((always_inline)) int LZWCopyBytes(unsigned char *buf, int iOffset, uint32_t *pSymbols, uint16_t *pLengths)
+static inline __attribute__((always_inline)) int LZWCopyBytes(unsigned char *buf, int iOffset, uint32_t *pSymbols, uint16_t *pLengths, uint8_t *pFirstChar)
 {
     int iLen = *pLengths;
     uint32_t u32Offset = *pSymbols;
-    uint8_t *s = &buf[u32Offset & 0x7fffff];
+    const uint8_t *s = &buf[u32Offset & 0x7fffff];
     uint8_t *d = &buf[iOffset];
+    const uint32_t w0 = *(const gif_u32_alias_t *)s;
+
+    *pFirstChar = (uint8_t)w0;
 
     if (iLen <= 4) {
-        *(gif_u32_alias_t *)d = *(const gif_u32_alias_t *)s;
+        *(gif_u32_alias_t *)d = w0;
     } else if (iLen <= 8) {
-        ((gif_u32_alias_t *)d)[0] = ((const gif_u32_alias_t *)s)[0];
+        ((gif_u32_alias_t *)d)[0] = w0;
         ((gif_u32_alias_t *)d)[1] = ((const gif_u32_alias_t *)s)[1];
     } else {
         uint8_t *pEnd = d + iLen;
+        ((gif_u32_alias_t *)d)[0] = w0;
+        ((gif_u32_alias_t *)d)[1] = ((const gif_u32_alias_t *)s)[1];
+        s += 8;
+        d += 8;
         do {
             ((gif_u32_alias_t *)d)[0] = ((const gif_u32_alias_t *)s)[0];
             ((gif_u32_alias_t *)d)[1] = ((const gif_u32_alias_t *)s)[1];
@@ -1106,6 +1113,82 @@ static inline __attribute__((always_inline)) int LZWCopyBytes(unsigned char *buf
     {
         uint8_t *pEnd = &buf[iOffset + iLen];
         uint8_t c = (uint8_t)(u32Offset >> 24);
+        iLen++;
+        *pSymbols = iOffset;
+        *pEnd = c;
+        *pLengths = (uint16_t)iLen;
+    }
+    return iLen;
+} /* LZWCopyBytes() */
+
+static inline __attribute__((always_inline)) int LZWCopyBytesFused(unsigned char *buf, int iOffset, uint32_t *pSymbols, uint16_t *pLengths, uint8_t *pFirstChar, uint16_t *d_fb, const uint16_t *pPal)
+{
+    int iLen = *pLengths;
+    uint32_t u32Offset = *pSymbols;
+    const uint8_t *s = &buf[u32Offset & 0x7fffff];
+    uint8_t *d = &buf[iOffset];
+    uint16_t *df = &d_fb[iOffset];
+    const uint32_t w0 = *(const gif_u32_alias_t *)s;
+
+    *pFirstChar = (uint8_t)w0;
+
+    if (iLen <= 4) {
+        *(gif_u32_alias_t *)d = w0;
+        const uint32_t p01 = (uint32_t)pPal[(uint8_t)w0] | ((uint32_t)pPal[(uint8_t)(w0 >> 8)] << 16);
+        const uint32_t p23 = (uint32_t)pPal[(uint8_t)(w0 >> 16)] | ((uint32_t)pPal[(uint8_t)(w0 >> 24)] << 16);
+        ((uint32_t *)df)[0] = p01;
+        ((uint32_t *)df)[1] = p23;
+    } else if (iLen <= 8) {
+        const uint32_t w1 = ((const gif_u32_alias_t *)s)[1];
+        ((gif_u32_alias_t *)d)[0] = w0;
+        ((gif_u32_alias_t *)d)[1] = w1;
+        const uint32_t p01 = (uint32_t)pPal[(uint8_t)w0] | ((uint32_t)pPal[(uint8_t)(w0 >> 8)] << 16);
+        const uint32_t p23 = (uint32_t)pPal[(uint8_t)(w0 >> 16)] | ((uint32_t)pPal[(uint8_t)(w0 >> 24)] << 16);
+        const uint32_t p45 = (uint32_t)pPal[(uint8_t)w1] | ((uint32_t)pPal[(uint8_t)(w1 >> 8)] << 16);
+        const uint32_t p67 = (uint32_t)pPal[(uint8_t)(w1 >> 16)] | ((uint32_t)pPal[(uint8_t)(w1 >> 24)] << 16);
+        ((uint32_t *)df)[0] = p01;
+        ((uint32_t *)df)[1] = p23;
+        ((uint32_t *)df)[2] = p45;
+        ((uint32_t *)df)[3] = p67;
+    } else {
+        uint8_t *pEnd = d + iLen;
+        ((gif_u32_alias_t *)d)[0] = w0;
+        ((gif_u32_alias_t *)d)[1] = ((const gif_u32_alias_t *)s)[1];
+        const uint32_t w1 = ((const gif_u32_alias_t *)s)[1];
+        const uint32_t p01 = (uint32_t)pPal[(uint8_t)w0] | ((uint32_t)pPal[(uint8_t)(w0 >> 8)] << 16);
+        const uint32_t p23 = (uint32_t)pPal[(uint8_t)(w0 >> 16)] | ((uint32_t)pPal[(uint8_t)(w0 >> 24)] << 16);
+        const uint32_t p45 = (uint32_t)pPal[(uint8_t)w1] | ((uint32_t)pPal[(uint8_t)(w1 >> 8)] << 16);
+        const uint32_t p67 = (uint32_t)pPal[(uint8_t)(w1 >> 16)] | ((uint32_t)pPal[(uint8_t)(w1 >> 24)] << 16);
+        ((uint32_t *)df)[0] = p01;
+        ((uint32_t *)df)[1] = p23;
+        ((uint32_t *)df)[2] = p45;
+        ((uint32_t *)df)[3] = p67;
+        s += 8;
+        d += 8;
+        df += 8;
+        while (d < pEnd) {
+            const uint32_t c0 = ((const gif_u32_alias_t *)s)[0];
+            const uint32_t c1 = ((const gif_u32_alias_t *)s)[1];
+            ((gif_u32_alias_t *)d)[0] = c0;
+            ((gif_u32_alias_t *)d)[1] = c1;
+            const uint32_t lp01 = (uint32_t)pPal[(uint8_t)c0] | ((uint32_t)pPal[(uint8_t)(c0 >> 8)] << 16);
+            const uint32_t lp23 = (uint32_t)pPal[(uint8_t)(c0 >> 16)] | ((uint32_t)pPal[(uint8_t)(c0 >> 24)] << 16);
+            const uint32_t lp45 = (uint32_t)pPal[(uint8_t)c1] | ((uint32_t)pPal[(uint8_t)(c1 >> 8)] << 16);
+            const uint32_t lp67 = (uint32_t)pPal[(uint8_t)(c1 >> 16)] | ((uint32_t)pPal[(uint8_t)(c1 >> 24)] << 16);
+            ((uint32_t *)df)[0] = lp01;
+            ((uint32_t *)df)[1] = lp23;
+            ((uint32_t *)df)[2] = lp45;
+            ((uint32_t *)df)[3] = lp67;
+            s += 8;
+            d += 8;
+            df += 8;
+        }
+    }
+    if (u32Offset & 0x800000)
+    {
+        uint8_t *pEnd = &buf[iOffset + iLen];
+        uint8_t c = (uint8_t)(u32Offset >> 24);
+        df[iLen] = pPal[c];
         iLen++;
         *pSymbols = iOffset;
         *pEnd = c;
@@ -1162,7 +1245,7 @@ int iUncompressedLen;
 uint32_t code, oldcode, codesize, nextcode, nextlim;
 uint32_t cc, eoi;
 uint32_t sMask;
-uint8_t c, *p, *buf, codestart, *pHighWater;
+uint8_t *p, *buf, codestart, *pHighWater;
 BIGUINT ulBits;
 int iLen, iColors;
 int iErr = GIF_SUCCESS;
@@ -1195,59 +1278,115 @@ uint16_t *pLengths;
     iOffset = 0; // output data offset
     p = pImage->ucLZW; // un-chunked LZW data
     ulBits = INTELLONG64(p); // start by reading some LZW data
+
+    const uint8_t ucHasTrans = (pImage->ucGIFBits & 1);
+    const uint8_t *pPalBytes = (pImage->bUseLocalPalette) ? (const uint8_t *)pImage->pLocalPalette : (const uint8_t *)pImage->pPalette;
+    const uint16_t *pPal = (const uint16_t *)pPalBytes;
+    const bool bFused = (pImage->ucDrawType == GIF_DRAW_COOKED && pImage->pFrameBuffer && !ucHasTrans &&
+                         pImage->pfnDraw == NULL && !(pImage->ucMap & 0x40) &&
+                         pImage->iWidth == pImage->iCanvasWidth && pImage->iX == 0 &&
+                         (pImage->ucPaletteType == GIF_PALETTE_RGB565_LE || pImage->ucPaletteType == GIF_PALETTE_RGB565_BE));
+    uint16_t *d_fb = bFused ? (uint16_t *)&pImage->pFrameBuffer[pImage->iY * pImage->iCanvasWidth * 2] : NULL;
+
     // set up the default symbols (0..iColors-1)
-   for (i = 0; i<iColors; i++) {
-       pSymbols[i] = iUncompressedLen + i; // root symbols
-       pLengths[i] = 1;
-       buf[iUncompressedLen + i] = (unsigned char) i;
-   }
+    for (i = 0; i<iColors; i++) {
+        pSymbols[i] = iUncompressedLen + i; // root symbols
+        pLengths[i] = 1;
+        buf[iUncompressedLen + i] = (unsigned char) i;
+    }
 init_codetable:
-   codesize = codestart + 1;
-   sMask = UINT32_MAX << (codestart+1);
-   sMask = 0xffffffff - sMask;
-   nextcode = cc + 2;
-   nextlim = (1 << codesize);
+    codesize = codestart + 1;
+    sMask = UINT32_MAX << (codestart+1);
+    sMask = 0xffffffff - sMask;
+    nextcode = cc + 2;
+    nextlim = (1 << codesize);
     GET_CODE_TURBO
     if (code == cc) { // we just reset the dictionary; get another code
         GET_CODE_TURBO
     }
-    buf[iOffset++] = (unsigned char) code; // first code after a dictionary reset is just stored
+    buf[iOffset] = (unsigned char) code; // first code after a dictionary reset is just stored
+    if (bFused) {
+        d_fb[iOffset] = pPal[(uint8_t)code];
+    }
+    iOffset++;
     oldcode = code;
     GET_CODE_TURBO
-    while (code != eoi && iOffset < iUncompressedLen) { /* Loop through all the data */
-        if (code == cc) { /* Clear code? */
-           goto init_codetable;
-        }
-        if (code != eoi) {
-            if (nextcode < nextlim) { // for deferred cc case, don't let it overwrite the last entry (fff)
-                if (code != nextcode) { // most probable case
-                    iLen = LZWCopyBytes(buf, iOffset, &pSymbols[code], &pLengths[code]);
-                    pSymbols[nextcode] = (pSymbols[oldcode] | 0x800000 | (buf[iOffset] << 24));
-                    pLengths[nextcode] = pLengths[oldcode];
+    if (bFused) {
+        while (code != eoi && iOffset < iUncompressedLen) { /* Loop through all the data */
+            if (code == cc) { /* Clear code? */
+                goto init_codetable;
+            }
+            if (code != eoi) {
+                if (nextcode < nextlim) { // for deferred cc case, don't let it overwrite the last entry (fff)
+                    if (code != nextcode) { // most probable case
+                        uint8_t first_char;
+                        iLen = LZWCopyBytesFused(buf, iOffset, &pSymbols[code], &pLengths[code], &first_char, d_fb, pPal);
+                        pSymbols[nextcode] = (pSymbols[oldcode] | 0x800000 | ((uint32_t)first_char << 24));
+                        pLengths[nextcode] = pLengths[oldcode];
+                        iOffset += iLen;
+                    } else { // new code
+                        uint8_t first_char;
+                        iLen = LZWCopyBytesFused(buf, iOffset, &pSymbols[oldcode], &pLengths[oldcode], &first_char, d_fb, pPal);
+                        pLengths[nextcode] = iLen+1;
+                        pSymbols[nextcode] = iOffset;
+                        iOffset += iLen;
+                        buf[iOffset] = first_char; // repeat first character of old code on the end
+                        d_fb[iOffset] = pPal[first_char];
+                        iOffset++;
+                    }
+                } else { // Deferred CC case - continue to use codes, but don't generate new ones
+                    uint8_t dummy_char;
+                    iLen = LZWCopyBytesFused(buf, iOffset, &pSymbols[code], &pLengths[code], &dummy_char, d_fb, pPal);
                     iOffset += iLen;
-                } else { // new code
-                    iLen = LZWCopyBytes(buf, iOffset, &pSymbols[oldcode], &pLengths[oldcode]);
-                    pLengths[nextcode] = iLen+1;
-                    pSymbols[nextcode] = iOffset;
-                    c = buf[iOffset];
-                    iOffset += iLen;
-                    buf[iOffset++] = c; // repeat first character of old code on the end
                 }
-            } else { // Deferred CC case - continue to use codes, but don't generate new ones
-                iLen = LZWCopyBytes(buf, iOffset, &pSymbols[code], &pLengths[code]);
-                iOffset += iLen;
+                nextcode++;
+                if (nextcode >= nextlim && codesize < MAX_CODE_SIZE) {
+                    codesize++;
+                    nextlim <<= 1;
+                    sMask = (sMask << 1) | 1;
+                }
+                oldcode = code;
+                GET_CODE_TURBO
+            } /* while not end of LZW code stream */
+        } // while not end of frame
+    } else {
+        while (code != eoi && iOffset < iUncompressedLen) { /* Loop through all the data */
+            if (code == cc) { /* Clear code? */
+                goto init_codetable;
             }
-            nextcode++;
-            if (nextcode >= nextlim && codesize < MAX_CODE_SIZE) {
-                codesize++;
-                nextlim <<= 1;
-                sMask = (sMask << 1) | 1;
-            }
-            oldcode = code;
-            GET_CODE_TURBO
-        } /* while not end of LZW code stream */
-    } // while not end of frame
-    if (pImage->ucDrawType == GIF_DRAW_COOKED && pImage->pFrameBuffer) { // convert each line through the palette
+            if (code != eoi) {
+                if (nextcode < nextlim) { // for deferred cc case, don't let it overwrite the last entry (fff)
+                    if (code != nextcode) { // most probable case
+                        uint8_t first_char;
+                        iLen = LZWCopyBytes(buf, iOffset, &pSymbols[code], &pLengths[code], &first_char);
+                        pSymbols[nextcode] = (pSymbols[oldcode] | 0x800000 | ((uint32_t)first_char << 24));
+                        pLengths[nextcode] = pLengths[oldcode];
+                        iOffset += iLen;
+                    } else { // new code
+                        uint8_t first_char;
+                        iLen = LZWCopyBytes(buf, iOffset, &pSymbols[oldcode], &pLengths[oldcode], &first_char);
+                        pLengths[nextcode] = iLen+1;
+                        pSymbols[nextcode] = iOffset;
+                        iOffset += iLen;
+                        buf[iOffset++] = first_char; // repeat first character of old code on the end
+                    }
+                } else { // Deferred CC case - continue to use codes, but don't generate new ones
+                    uint8_t dummy_char;
+                    iLen = LZWCopyBytes(buf, iOffset, &pSymbols[code], &pLengths[code], &dummy_char);
+                    iOffset += iLen;
+                }
+                nextcode++;
+                if (nextcode >= nextlim && codesize < MAX_CODE_SIZE) {
+                    codesize++;
+                    nextlim <<= 1;
+                    sMask = (sMask << 1) | 1;
+                }
+                oldcode = code;
+                GET_CODE_TURBO
+            } /* while not end of LZW code stream */
+        } // while not end of frame
+    }
+    if (!bFused && pImage->ucDrawType == GIF_DRAW_COOKED && pImage->pFrameBuffer) { // convert each line through the palette
         const uint8_t ucHasTrans = (pImage->ucGIFBits & 1);
         const uint8_t *pPalBytes = (pImage->bUseLocalPalette) ? (const uint8_t *)pImage->pLocalPalette : (const uint8_t *)pImage->pPalette;
         const uint16_t *pPal = (const uint16_t *)pPalBytes;
