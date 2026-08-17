@@ -1971,7 +1971,7 @@ const TZ_OPTIONS = [
   { m: -420, label: "UTC-07:00 · Mountain Time", tz: "MST7MDT,M3.2.0/2,M11.1.0/2" },
   { m: -360, label: "UTC-06:00 · Central Time", tz: "CST6CDT,M3.2.0/2,M11.1.0/2" },
   { m: -300, label: "UTC-05:00 · Eastern Time", tz: "EST5EDT,M3.2.0/2,M11.1.0/2" },
-  { m: -240, label: "UTC-04:00 · Eastern DST / Atlantic", tz: "AST4ADT,M3.2.0/2,M11.1.0/2" },
+  { m: -240, label: "UTC-04:00 · Atlantic Time", tz: "AST4ADT,M3.2.0/2,M11.1.0/2" },
   { m: -210, label: "UTC-03:30 · Newfoundland", tz: "NST3:30NDT,M3.2.0/2,M11.1.0/2" },
   { m: -180, label: "UTC-03:00 · Buenos Aires" },
   { m: -120, label: "UTC-02:00 · South Georgia" },
@@ -3339,9 +3339,10 @@ async function syncDeviceClock(tzOverride) {
     body: JSON.stringify({ epochMs: now.getTime(), timezoneOffsetMinutes: tz, timezoneTz: tzForOffset(tz) }),
   });
   /* /time returns the state, whose timezoneOffsetMinutes is the CURRENT (DST)
-   * effective offset - do not echo that into the dropdown, which keys on the
-   * stored standard offset from config. */
-  if (el.tzOffset && state.config) setTzOffsetSelect(el.tzOffset, state.config.timezoneOffsetMinutes ?? tz);
+   * effective offset, while the dropdown keys on the stored standard offset
+   * from config. Do NOT reset the dropdown here: doing so from stale
+   * state.config stomps a timezone the user just picked, so the UI reverts to
+   * the old zone until a refresh. renderConfig owns the dropdown from /config. */
   return response;
 }
 
