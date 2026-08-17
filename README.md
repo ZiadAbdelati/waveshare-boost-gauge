@@ -263,9 +263,57 @@ sparkle or torn rows, drop back to 40 MHz first.
 GIF playback is an exclusive, decoder/renderer-bound path; the live-gauge
 cadence guard does not apply while media is active.
 
+## v0.8.0 release notes
+
+The headline of v0.8.0 is the **battery-backed clock**: the wall clock is now
+authoritative from a **DS3231 RTC on the sensor I2C bus**, so it survives
+power-off without Wi-Fi, the dim schedule stays correct, and a wrong browser
+clock can no longer corrupt it. Timezones are now **DST-aware** via a POSIX TZ
+string, and a pair of latent bugs in the RTC write path and the `/state` offset
+were fixed on hardware.
+
+- **DS3231 RTC as boot-time clock authority.** `boost_sensors_rtc_read/write`
+  (probe 0x68 on the shared sensor bus) reject OSF/garbage/implausible time; the
+  seed runs before boot brightness is decided, so a night boot with a set RTC
+  comes up dim from the first frame with no Wi-Fi. A browser Sync writes the
+  RTC as calibration. Hardware-verified across soft resets and a full
+  power-off (clock came up exact).
+- **RTC is the write authority too.** `POST /api/v1/time` more than 5 min from a
+  valid DS3231 is rejected with `409 clock_rejected` *before* touching the
+  system clock/NVS/RTC — a slow client can't corrupt the battery-backed clock.
+- **OSF cleared on write.** The DS3231 does *not* auto-clear its oscillator-stop
+  flag when the time registers are written; `boost_sensors_rtc_write()` now
+  clears it explicitly (status 0x0F) under the bus-admin lock. Without this the
+  RTC reported "time never set" forever and fell back to NVS.
+- **DST-aware timezone (POSIX TZ string).** Config stores `timezoneTz` (e.g.
+  `EST5EDT,M3.2.0/2,M11.1.0/2`) applied via `setenv("TZ")+tzset()`; the dim
+  schedule, CSV and the effective offset use `localtime()`, so DST is automatic
+  and the zone is set once, never re-picked per season. `/state` reports the
+  DST-effective offset; `/config` keeps the stored standard offset for the
+  dropdown. The web dropdown carries the POSIX TZ string per option (US/CA/
+  Europe/AU/NZ rules verified against GNU date).
+- **`/state` offset stability.** `publish_sample()` no longer clobbers the
+  DST-effective `timezoneOffsetMinutes` with the stored standard offset, which
+  previously made the dashboard clock flicker by one hour across DST.
+- **I2C bus hardening.** RTC read/write now hold the bus-admin mutex (the reset
+  takes no lock); recovery honors ADS/BMP re-config returns (no silent 0 V
+  false-good) and re-probes devices absent at boot; the live scan is time-capped
+  (5 s) so a hung bus cannot wedge httpd.
+- **Web fixes.** The timezone dropdown no longer reverts to the old zone when
+  saving (a stale-state reset in `syncDeviceClock` was stomping fresh
+  selections); the `UTC-04:00` entry is relabeled **Atlantic Time** (it was
+  mislabeled "Eastern DST", inviting a wrong zone pick); the Sync button is
+  renamed **Save**.
+
+Hardware verification this release covered boot, LAN + SoftAP network access,
+the DS3231 seed/authority and OSF clearing, the DST-effective `/state` offset,
+the bus scan and RTC coexistence, and the served web assets. The display
+cadence/media paths are unchanged from v0.7.1 (this release touches clock, I2C
+and web only) and retain their prior hardware-verified guards.
+
 ## Fast path: flash prebuilt (no ESP-IDF)
 
-A verified **v0.7.1** build (ESP-IDF **5.5.1**, app size ~1.5 MB) is available in [`release/`](release/) and on the [latest GitHub release](https://github.com/ZiadAbdelati/waveshare-boost-gauge/releases/latest).
+A verified **v0.8.0** build (ESP-IDF **5.5.1**, app size ~2.4 MB) is available in [`release/`](release/) and on the [latest GitHub release](https://github.com/ZiadAbdelati/waveshare-boost-gauge/releases/latest).
 
 ```bash
 git clone https://github.com/ZiadAbdelati/waveshare-boost-gauge.git

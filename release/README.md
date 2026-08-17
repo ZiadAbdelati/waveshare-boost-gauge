@@ -1,15 +1,14 @@
-# Prebuilt firmware v0.7.1 — neon marquee refinement
+# Prebuilt firmware v0.8.0 — battery-backed clock (DS3231 RTC) + DST
 
-Firmware **`v0.7.1`**, built with **ESP-IDF 5.5.1** for **ESP32-S3**, 16 MB
-flash. Refines the `neon` marquee face added in v0.7.0: the three-ring bulb
-border is realigned so every ring shares a top/bottom axis, the accent pairs
-are re-anchored (middle ring's pair at the bottom centre, outer ring shifted
-off-axis to match the inner ring's pattern), and the marquee readout is
-pre-scaled once at scene build so the live blits are plain stride-copies.
-Carries everything from v0.7.0 — tube/segments/marquee faces, four colourways,
-the embedded Wi-Fi dashboard, the DMA-safe AMOLED display path
-(`main/boost_display.c`), and the calibrated GM 12223861 MAP path. The same
-files are published on the
+Firmware **`v0.8.0`**, built with **ESP-IDF 5.5.1** for **ESP32-S3**, 16 MB
+flash. Headlines: the wall clock is now authoritative from a **DS3231 RTC on the
+sensor I2C bus** (survives power-off with no Wi-Fi, the dim schedule stays
+correct, and a wrong browser clock can no longer corrupt it), timezones are
+**DST-aware** via a POSIX TZ string, and a pair of latent RTC/`/state` bugs were
+fixed on hardware. Carries everything from v0.7.1 — the tube/segments/marquee
+neon faces, four colourways, the embedded Wi-Fi dashboard, the DMA-safe AMOLED
+display path (`main/boost_display.c`), and the calibrated GM 12223861 MAP path.
+The same files are published on the
 [latest GitHub release](https://github.com/ZiadAbdelati/waveshare-boost-gauge/releases/latest).
 
 The image reports its own version on `/api/v1/state` (`firmwareVersion`), taken
@@ -18,64 +17,68 @@ captured at CMake **configure** time, not build time: a tree that was dirty when
 `idf.py` last configured will keep reporting `-dirty` through subsequent clean
 builds until `idf.py reconfigure` runs. This release was tagged first, then
 built from the clean tagged tree and reflashed, so the board reports a clean
-`v0.7.1`.
+`v0.8.0`.
 
-## What changed since v0.7.0
+## What changed since v0.7.1
 
-The marquee border (layout 2) is now three concentric bulb rings at 176/200/224
-(`NEON_BULB_RING_STEP` 24): innermost vacuum, middle boost, outermost
-overboost. Each ring has its own bulb count (54/66/72, all divisible by 6) so
-the CHORD spacing is uniform across rings even though the radii differ. Bulb 0
-sits at 12 o'clock and bulb N/2 at 6 o'clock on every ring (`-90°` rotation in
-`neon_bulb_pos`), so the top and bottom are radially aligned. Lighting is a
-**cumulative stage ladder**: ring z's accent pairs light once the reading has
-REACHED that zone (vacuum → inner only, boost → inner+middle, overboost → all
-three), anchored per ring at `(i + offset(z)) % 6 < 2` with offset **0/3/2** —
-inner pairs at the top centre, the middle ring's pair at the bottom centre
-(bulb N/2 at 6 o'clock, partner one dot left), and the OUTER ring's pair two
-bulbs off the vertical axis so it flanks top/bottom like the inner ring's
-pattern, as close as the different bulb counts allow. Dead bulbs stay dim
-`track`, so the two-tone look survives even fully lit. `neonMarqueeSpin`
-(persisted) makes the accent pairs CHASE around the rings — one ring advances
-every 90 ms round-robin, inner/outer clockwise and middle counterclockwise, a
-full 6-phase rotation per ring in 1.62 s; only one ring repaints per step (12
-small boxes), deferred on zone-flip frames, inside LVGL's 32-slot invalidation
-buffer.
-
-Readout performance: the shared 118 px A8 sprite set is baked ONCE per scene
-build at the 0.87 marquee scale (`neon_bake_scaled_sprites`, through the same
-LVGL transform the per-frame draw used, so the pixels are identical), and live
-blits are plain stride-copy blends. Host A/B measured the per-frame transform
-at ~35-40% of every readout repaint; the marquee audit is fully clean (0
-severe, 0 stale px). The pre-scaled readout A/B on hardware (fresh boot each
-arm, spin + demo on, pixel shift off, 30 s) cut framesOverBudget/s from 33.2 →
-21.6 (−35%) and lifted renderFps min 41 → 47.
-
-Min-FPS isolation on the board: the remaining 40s mins are fast-motion seconds
-of the demo sweep (peak slew ~9.8 psi/s), not dot cost. A 120 s spin-OFF
-capture held min 58 / med 61 (zone-flip seconds never below 58); spin ON
-(181 s) dropped min to 45 with 10-13 over-budget cycles/s and 50-61 ms worst
-cycles. Each spin step is a render cycle that pays the regionDBuf TE wait (up
-to 16.7 ms) when the scan crosses the readout band — the lever is cycle count,
-not per-dot raster.
+- **DS3231 RTC as boot-time clock authority.** `boost_sensors_rtc_read/write`
+  (probe `0x68` on the shared sensor bus) reject oscillator-stop-flag / garbage /
+  implausible time so a fresh part never seeds `2000-01-01`. The seed runs before
+  boot brightness is decided, so a night boot with a set RTC comes up dim from
+  the first frame with no Wi-Fi. A browser Sync writes the RTC as calibration,
+  and the seed refreshes the NVS epoch checkpoint as a warm fallback. Hardware-
+  verified across a soft reset **and** a full ~2-minute power-off (clock came up
+  exact, `deltaSec=0`).
+- **RTC is the write authority too.** `POST /api/v1/time` more than 5 minutes
+  from a valid DS3231 is rejected with **`409 clock_rejected`** *before* the
+  system clock/NVS/RTC are touched, so a slow client cannot corrupt the
+  battery-backed clock. OSF/unreadable/absent RTC accepts any plausible epoch
+  (first seed / battery change).
+- **OSF cleared on write.** The DS3231 does *not* auto-clear its oscillator-stop
+  flag when the time registers are written; `boost_sensors_rtc_write()` now
+  clears it explicitly (status `0x0F` bit 7) under the bus-admin lock. Without
+  this every read reported "time never set" and the RTC fell back to NVS forever.
+- **DST-aware timezone (POSIX TZ string).** Config stores `timezoneTz` (e.g.
+  `EST5EDT,M3.2.0/2,M11.1.0/2`), applied via `setenv("TZ")+tzset()`; the dim
+  schedule, CSV and the effective offset use `localtime()`, so DST is automatic
+  and the zone is set once, never re-picked per season. `/state` reports the
+  DST-effective offset; `/config` keeps the stored standard offset for the
+  dropdown. The web dropdown carries the POSIX TZ string per option (US/CA/
+  Europe/AU/NZ rules verified against GNU date; the `UTC-04:00` entry is relabeled
+  **Atlantic Time**, not "Eastern DST").
+- **`/state` offset stability.** `boost_model_publish_sample()` no longer clobbers
+  the DST-effective `timezoneOffsetMinutes` with the stored standard offset,
+  which previously made the dashboard clock flicker one hour across DST.
+- **I2C bus hardening.** RTC read/write now hold the bus-admin mutex (the reset
+  takes no lock); recovery honors ADS/BMP re-config returns (no silent 0 V
+  false-good) and re-probes devices absent at boot; the live scan is time-capped
+  (5 s) so a hung bus cannot wedge httpd.
+- **Web fixes.** The timezone dropdown no longer reverts to the old zone when
+  saving (a stale-state reset in `syncDeviceClock` was stomping fresh
+  selections); the Sync button is renamed **Save**.
 
 ## Verified on hardware for this release
 
-Measured on the board at `192.168.50.102`, running the exact image published
-here (clean tree, tagged `v0.7.1`, built from the tag, flashed, hard-reset).
+Measured on the board at `192.168.50.101`, running the exact image published
+here (clean tree, tagged `v0.8.0`, built from the tag, flashed, hard-reset).
 
 | Gate | Result |
 |---|---|
-| Boot and network after serial flash | control plane reachable at `192.168.50.102`, clean boot log (`HTTP API ready`, no `task_wdt`/panic/`ESP_ERR_NO_MEM`) |
-| Release identity | published app image reports **`firmwareVersion v0.7.1`** (asserted, not eyeballed) |
-| Neon cadence, `tools/check_neon_hw.py` | **segments 57, tube 57, marquee 58 FPS median**; counters live, no watchdog output |
-| Marquee accent pattern on glass | device debug snapshot at overboost (psi 8.5, Miami preset): all three rings lit, accent residues match the committed macro (ring0 `{0,1}` = vacuum cyan, ring1 `{3,4}` = boost pink, ring2 `{4,5}` = overboost red-orange), dead bulbs dim `track` |
-| Serial error absence | no `task_wdt`, panic, or reset markers while the face was driven |
+| Boot and network after serial flash | control plane reachable at `192.168.50.101`, clean boot log (`HTTP API ready`, no panic / `ESP_ERR_NO_MEM`), LAN + SoftAP |
+| Release identity | published app image reports **`firmwareVersion v0.8.0`** (asserted, not eyeballed) |
+| RTC authority across soft reset | boot log `clock seeded from DS3231 (...)`, no OSF, no NVS fallback |
+| RTC authority across full power-off | unplugged ~2 min, repowered: `/state` `deltaSec=0` (exact), bus `found:["0x48","0x68","0x76"]` |
+| OSF clearing | after seed + reboot no `time never set - clock not trusted`; the write clears status `0x0F` bit 7 |
+| DST / `/state` offset stability | 30 rapid `/state` polls all reported the single DST-effective offset (−180); no 1-hour 17:44<->18:44 flicker |
+| Bus scan / httpd responsiveness | repeated `/sensors/scan` return all three devices quickly and httpd stays responsive (the earlier rapid-scan wedge is fixed by the 5 s scan cap) |
+| Served web assets | decompressed `app.js`/`index.html` confirm the Atlantic relabel, the removed dropdown-revert line, and the Save button |
 
-**Not verified this cycle, and not claimed:** the media upload/abort/delete
-cycle, WebSocket pool and transport badge behavior, sensor calibration/soak, and
-the physical swipe/needle appearance on glass. Those paths are unchanged by this
-release, but they were not re-exercised for it.
+**Not re-demonstrated this cycle, and not claimed:** the live physical cadence
+gate (display path is unchanged from v0.7.1), the media upload/abort/delete
+cycle, WebSocket pool and transport badge behavior, sensor calibration/soak, the
+`clock_rejected` 409 response after the OSF fix, and the physical swipe/needle
+appearance on glass. Those paths are unchanged by this release; this release
+touches clock, I2C and web only.
 
 ## Display path (do not regress)
 
