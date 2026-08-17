@@ -194,6 +194,7 @@ These are the currently-actionable invariants distilled from the regression ledg
 | GM 12223861 transfer function: two-point fit (0.619 V → 40 kPa, 4.818 V → 304 kPa) with ratiometric normalization plus a one-point atmospheric offset; recalibration replaces, never accumulates (`tools/test_map_conversion.py`) | 2026-08-06 |
 | Presence flags are never liveness; gate on `ads_age_ms`/`bmp_age_ms`/`ambient_is_fallback`; `UINT32_MAX` means never-read | 2026-08-06 |
 | Bus is 100 kHz (MOSFET shifter + 4.7 kΩ pull-ups), in-place `i2c_master_bus_reset()`, bus-admin mutex, four-ACK filter; `/sensors/scan` returns `{busUp,recoveries,found}` — do not reintroduce per-request fixed probes | 2026-08-05 |
+| `i2c_master_bus_reset()` takes no internal lock, so EVERY I2C path outside the reader must hold the bus-admin mutex — including the DS3231 read/write (`boost_sensors_rtc_read/write`, bounded 500 ms wait). A live scan is a weak witness (a real device has measured 0-4 of 32 ACKs) so it is capped to `SCAN_TIME_BUDGET_US` (5 s) so a hung bus cannot wedge the httpd task. Recovery (`bus_recover`) must honor the ADS/BMP re-config returns (a failed ADS reconfig silently reads 0 V "successfully") and re-probe devices that were absent at boot — presence is not frozen forever | 2026-08-17 |
 | The cadence guard is only meaningful in demo mode; a real sensor at constant atmosphere legitimately reports single-digit `renderFps` | 2026-08-06 |
 
 ### OBD2 / BLE / TPMS

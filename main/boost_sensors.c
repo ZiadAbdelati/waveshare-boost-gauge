@@ -40,6 +40,15 @@ static const char *TAG = "boost_sensors";
 /* A single probe on this bus has been observed to ACK a phantom address once;
  * four consecutive ACKs is the filter that made the scanner trustworthy. */
 #define SCAN_CONFIRM_ATTEMPTS 4
+/* A live scan is a poor witness on this bus (a real device has measured 0-4 of
+ * 32 ACKs) and each probe can time out at SENS_IO_TIMEOUT_MS, so the full sweep
+ * could hold the bus-admin lock - and thus the httpd task - for tens of seconds
+ * on a hung bus. This budget bounds one scan to a few seconds. */
+#define SCAN_TIME_BUDGET_US (5 * 1000 * 1000)
+/* How long the RTC read/write (called from the main/httpd tasks) will wait for
+ * the bus-admin lock before giving up, so a Sync/seed never blocks behind a
+ * long scan or recovery. */
+#define RTC_LOCK_WAIT_MS 500
 
 /* ---------------------------------------------------------------------------
  * ADS1115 (GM 3-bar MAP on A0, single-ended)
@@ -411,6 +420,34 @@ static esp_err_t add_rtc(void)
     return i2c_master_bus_add_device(s_bus, &cfg, &s_rtc);
 }
 
+/* After a bus reset, re-probe any device that was absent at boot. Without this,
+ * a device that was not ready at power-up (or dropped out) stays "absent" until
+ * reboot, because bus_recover only reconfigures devices that already made it.
+ * Runs under the bus-admin lock (bus_recover holds it). */
+static void reprobe_absent(void)
+{
+    if (!s_ads_present &&
+        i2c_master_probe(s_bus, ADS1115_ADDR, SENS_IO_TIMEOUT_MS) == ESP_OK &&
+        add_ads() == ESP_OK && ads_configure()) {
+        s_ads_present = true;
+        ESP_LOGI(TAG, "ADS1115 re-probed after bus recovery");
+    }
+    if (!s_bmp_present &&
+        i2c_master_probe(s_bus, BMP280_ADDR, SENS_IO_TIMEOUT_MS) == ESP_OK &&
+        add_bmp() == ESP_OK && bmp_load_calibration() &&
+        reg_write8(s_bmp, BMP280_REG_CTRL_MEAS, BMP280_CTRL_MEAS) == ESP_OK &&
+        reg_write8(s_bmp, BMP280_REG_CONFIG, BMP280_CONFIG) == ESP_OK) {
+        s_bmp_present = true;
+        ESP_LOGI(TAG, "BMP280 re-probed after bus recovery");
+    }
+    if (!s_rtc_present &&
+        i2c_master_probe(s_bus, DS3231_ADDR, SENS_IO_TIMEOUT_MS) == ESP_OK &&
+        add_rtc() == ESP_OK) {
+        s_rtc_present = true;
+        ESP_LOGI(TAG, "DS3231 re-probed after bus recovery");
+    }
+}
+
 /* Reset the existing controller in place. This uses ESP-IDF's supported bus/FSM
  * clear without invalidating the bus and device handles or exposing the pins. */
 static void bus_recover(void)
@@ -424,13 +461,20 @@ static void bus_recover(void)
     const esp_err_t reset_err = i2c_master_bus_reset(s_bus);
     if (reset_err == ESP_OK) {
         if (s_ads_present && s_ads != NULL) {
-            ads_configure();
+            /* A failed reconfig leaves the ADS in single-shot mode, which reads
+             * 0 V "successfully" - so surface it instead of reading a false good. */
+            if (ads_configure() != ESP_OK) {
+                ESP_LOGE(TAG, "ADS1115 re-config after recovery FAILED (continuous mode may be halted)");
+            }
         }
         if (s_bmp_present && s_bmp != NULL) {
             /* calib stays valid across recovery; just re-arm the mode registers. */
-            reg_write8(s_bmp, BMP280_REG_CTRL_MEAS, BMP280_CTRL_MEAS);
-            reg_write8(s_bmp, BMP280_REG_CONFIG, BMP280_CONFIG);
+            if (reg_write8(s_bmp, BMP280_REG_CTRL_MEAS, BMP280_CTRL_MEAS) != ESP_OK ||
+                reg_write8(s_bmp, BMP280_REG_CONFIG, BMP280_CONFIG) != ESP_OK) {
+                ESP_LOGE(TAG, "BMP280 re-config after recovery FAILED");
+            }
         }
+        reprobe_absent();
     }
     xSemaphoreGive(s_bus_admin_lock);
 
@@ -488,14 +532,23 @@ esp_err_t boost_sensors_rtc_read(int64_t *epoch_ms)
     if (epoch_ms == NULL || s_bus == NULL || !s_rtc_present || s_rtc == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
-    uint8_t st = 0;
-    if (reg_read(s_rtc, DS3231_REG_STATUS, &st, 1) != ESP_OK || (st & DS3231_OSF)) {
-        /* Oscillator-stop flag: the time has never been set since power-up. */
-        return ESP_ERR_INVALID_STATE;
+    /* Serialize against bus recovery and the live scan. i2c_master_bus_reset
+     * takes no internal lock, so a reset mid-burst could abort this read; the
+     * bus-admin mutex (which both those paths hold) is the serialization point.
+     * Bounded so a Sync/seed never blocks behind a long scan. */
+    if (s_bus_admin_lock == NULL ||
+        xSemaphoreTake(s_bus_admin_lock, pdMS_TO_TICKS(RTC_LOCK_WAIT_MS)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
     }
-    uint8_t b[7];   /* 0x00..0x06: sec, min, hr, day, date, month/century, year */
-    if (reg_read(s_rtc, 0x00, b, sizeof(b)) != ESP_OK) {
-        return ESP_ERR_INVALID_STATE;
+    uint8_t st = 0;
+    uint8_t b[7] = {0};   /* 0x00..0x06: sec, min, hr, day, date, mon/century, year */
+    const esp_err_t read_err =
+        (reg_read(s_rtc, DS3231_REG_STATUS, &st, 1) != ESP_OK || (st & DS3231_OSF))
+            ? ESP_ERR_INVALID_STATE   /* oscillator-stop flag: never set since power-up */
+            : reg_read(s_rtc, 0x00, b, sizeof(b));
+    xSemaphoreGive(s_bus_admin_lock);
+    if (read_err != ESP_OK) {
+        return read_err;
     }
     if ((b[0] & 0x80) ||                       /* CH: oscillator stopped */
         !rtc_bcd_ok(b[0] & 0x7F) || !rtc_bcd_ok(b[1] & 0x7F) ||
@@ -556,7 +609,15 @@ esp_err_t boost_sensors_rtc_write(int64_t epoch_ms)
         rtc_bin2bcd((uint8_t)(t.tm_mon + 1)),
         rtc_bin2bcd((uint8_t)(t.tm_year - 100)),            /* year - 2000 */
     };
-    return i2c_master_transmit(s_rtc, buf, sizeof(buf), SENS_IO_TIMEOUT_MS);
+    /* Same admin-lock serialization as the read: a reset mid-burst truncates
+     * the write and can leave partially-written time registers. */
+    if (s_bus_admin_lock == NULL ||
+        xSemaphoreTake(s_bus_admin_lock, pdMS_TO_TICKS(RTC_LOCK_WAIT_MS)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    const esp_err_t err = i2c_master_transmit(s_rtc, buf, sizeof(buf), SENS_IO_TIMEOUT_MS);
+    xSemaphoreGive(s_bus_admin_lock);
+    return err;
 }
 
 /* ---------------------------------------------------------------- reader task */
@@ -940,9 +1001,17 @@ int boost_sensors_i2c_scan(uint8_t *out, int max)
         return -1;
     }
     int n = 0;
+    const int64_t deadline = esp_timer_get_time() + SCAN_TIME_BUDGET_US;
     for (uint8_t addr = 0x08; addr <= 0x77 && n < max; ++addr) {
+        if (esp_timer_get_time() > deadline) {
+            break;   /* bound the admin-lock / httpd hold on a hung bus */
+        }
         bool stable_ack = true;
         for (int attempt = 0; attempt < SCAN_CONFIRM_ATTEMPTS; ++attempt) {
+            if (esp_timer_get_time() > deadline) {
+                stable_ack = false;
+                break;
+            }
             if (i2c_master_probe(s_bus, addr, SENS_IO_TIMEOUT_MS) != ESP_OK) {
                 stable_ack = false;
                 break;
