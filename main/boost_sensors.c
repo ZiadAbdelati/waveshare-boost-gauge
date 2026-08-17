@@ -3,6 +3,7 @@
 #include <math.h>
 #include <string.h>
 #include <sys/time.h>
+#include <time.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -35,6 +36,7 @@ static const char *TAG = "boost_sensors";
 
 #define ADS1115_ADDR        0x48   /* ADDR pin -> GND */
 #define BMP280_ADDR         0x76   /* SDO pin  -> GND */
+#define DS3231_ADDR         0x68   /* battery-backed UTC RTC */
 /* A single probe on this bus has been observed to ACK a phantom address once;
  * four consecutive ACKs is the filter that made the scanner trustworthy. */
 #define SCAN_CONFIRM_ATTEMPTS 4
@@ -186,8 +188,10 @@ static int32_t  s_t_fine;
 static i2c_master_bus_handle_t s_bus;
 static i2c_master_dev_handle_t s_ads;
 static i2c_master_dev_handle_t s_bmp;
+static i2c_master_dev_handle_t s_rtc;
 static bool s_ads_present;
 static bool s_bmp_present;
+static bool s_rtc_present;
 
 static SemaphoreHandle_t s_lock;
 static SemaphoreHandle_t s_bus_admin_lock; /* serializes reset against HTTP scan */
@@ -397,6 +401,16 @@ static esp_err_t add_bmp(void)
     return i2c_master_bus_add_device(s_bus, &cfg, &s_bmp);
 }
 
+static esp_err_t add_rtc(void)
+{
+    const i2c_device_config_t cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = DS3231_ADDR,
+        .scl_speed_hz = SENS_I2C_HZ,
+    };
+    return i2c_master_bus_add_device(s_bus, &cfg, &s_rtc);
+}
+
 /* Reset the existing controller in place. This uses ESP-IDF's supported bus/FSM
  * clear without invalidating the bus and device handles or exposing the pins. */
 static void bus_recover(void)
@@ -426,6 +440,123 @@ static void bus_recover(void)
     }
     ++s_recoveries;
     ESP_LOGW(TAG, "I2C bus recovery attempt #%u", (unsigned)s_recoveries);
+}
+
+/* ------------------------------------------------------------------ DS3231 */
+
+/* Battery-backed UTC RTC on the same sensor bus. Registers 0x00..0x06 hold
+ * BCD seconds..year; a burst read freezes the copy so it is atomic, and
+ * writing the time registers clears the oscillator-stop flag. */
+#define DS3231_REG_STATUS   0x0F
+#define DS3231_OSF          0x80   /* set until the time has been written */
+
+static uint8_t rtc_bcd2bin(uint8_t b)
+{
+    return (uint8_t)(((b >> 4) & 0x0F) * 10 + (b & 0x0F));
+}
+
+static uint8_t rtc_bin2bcd(uint8_t v)
+{
+    return (uint8_t)((((v / 10) % 10) << 4) | (v % 10));
+}
+
+static bool rtc_bcd_ok(uint8_t b)
+{
+    return (b & 0x0F) <= 9 && ((b >> 4) & 0x0F) <= 9;
+}
+
+bool boost_sensors_rtc_present(void)
+{
+    return s_rtc_present;
+}
+
+/* UTC epoch ms from a civil date (mon 1..12). The toolchain's newlib lacks
+ * timegm(), so the conversion is the standard days-from-civil arithmetic. */
+static int64_t rtc_epoch_ms(int year, int mon, int day, int hour, int min, int sec)
+{
+    const int64_t y = year - (mon <= 2);
+    const int64_t era = (y >= 0 ? y : y - 399) / 400;
+    const int64_t yoe = y - era * 400;
+    const int64_t doy = (153 * (mon + (mon > 2 ? -3 : 9)) + 2) / 5 + day - 1;
+    const int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    const int64_t days = era * 146097 + doe - 719468;   /* days since 1970-01-01 */
+    return (days * 86400 + hour * 3600 + min * 60 + sec) * 1000;
+}
+
+esp_err_t boost_sensors_rtc_read(int64_t *epoch_ms)
+{
+    if (epoch_ms == NULL || s_bus == NULL || !s_rtc_present || s_rtc == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    uint8_t st = 0;
+    if (reg_read(s_rtc, DS3231_REG_STATUS, &st, 1) != ESP_OK || (st & DS3231_OSF)) {
+        /* Oscillator-stop flag: the time has never been set since power-up. */
+        return ESP_ERR_INVALID_STATE;
+    }
+    uint8_t b[7];   /* 0x00..0x06: sec, min, hr, day, date, month/century, year */
+    if (reg_read(s_rtc, 0x00, b, sizeof(b)) != ESP_OK) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if ((b[0] & 0x80) ||                       /* CH: oscillator stopped */
+        !rtc_bcd_ok(b[0] & 0x7F) || !rtc_bcd_ok(b[1] & 0x7F) ||
+        !rtc_bcd_ok(b[2] & 0x3F) || !rtc_bcd_ok(b[4] & 0x3F) ||
+        !rtc_bcd_ok(b[5] & 0x1F) || !rtc_bcd_ok(b[6])) {
+        return ESP_ERR_INVALID_STATE;          /* garbage / non-BCD registers */
+    }
+    const uint8_t secs = rtc_bcd2bin(b[0] & 0x7F);
+    const uint8_t mins = rtc_bcd2bin(b[1] & 0x7F);
+    uint8_t hrs = b[2] & 0x3F;
+    if (b[2] & 0x40) {                         /* 12-hour mode: normalise */
+        const bool pm = (b[2] & 0x20) != 0;
+        hrs = rtc_bcd2bin(hrs);
+        if (pm) {
+            hrs = (hrs == 12) ? 12 : (uint8_t)(hrs + 12);
+        } else if (hrs == 12) {
+            hrs = 0;
+        }
+    } else {
+        hrs = rtc_bcd2bin(hrs);
+    }
+    const uint8_t date = rtc_bcd2bin(b[4] & 0x3F);
+    const uint8_t mon  = rtc_bcd2bin(b[5] & 0x1F);
+    const uint8_t year = rtc_bcd2bin(b[6]);
+    if (secs > 59 || mins > 59 || hrs > 23 || date < 1 || date > 31 ||
+        mon < 1 || mon > 12 || year > 99) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    const int64_t ms = rtc_epoch_ms(2000 + year, mon, date, hrs, mins, secs);
+    if (ms < 1700000000000LL) {            /* before 2023: implausible */
+        return ESP_ERR_INVALID_STATE;
+    }
+    *epoch_ms = ms;
+    return ESP_OK;
+}
+
+esp_err_t boost_sensors_rtc_write(int64_t epoch_ms)
+{
+    if (epoch_ms <= 0 || s_bus == NULL || !s_rtc_present || s_rtc == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    const time_t secs = (time_t)(epoch_ms / 1000);
+    struct tm t;
+    gmtime_r(&secs, &t);
+    if (t.tm_year + 1900 < 2000 || t.tm_year + 1900 > 2099) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    /* Burst write: pointer to the seconds register, then sec..year. CH (sec
+     * bit 7) is 0 so the oscillator keeps/restarts; hour bit 6 is 0 for
+     * 24-hour mode; the century bit in the month register stays 0 (2000s). */
+    const uint8_t buf[8] = {
+        0x00,
+        rtc_bin2bcd((uint8_t)t.tm_sec),
+        rtc_bin2bcd((uint8_t)t.tm_min),
+        rtc_bin2bcd((uint8_t)t.tm_hour),
+        rtc_bin2bcd((uint8_t)(t.tm_wday ? t.tm_wday : 7)),  /* 1..7, arbitrary */
+        rtc_bin2bcd((uint8_t)t.tm_mday),
+        rtc_bin2bcd((uint8_t)(t.tm_mon + 1)),
+        rtc_bin2bcd((uint8_t)(t.tm_year - 100)),            /* year - 2000 */
+    };
+    return i2c_master_transmit(s_rtc, buf, sizeof(buf), SENS_IO_TIMEOUT_MS);
 }
 
 /* ---------------------------------------------------------------- reader task */
@@ -680,6 +811,27 @@ static void detect_sensors(void)
         ESP_LOGW(TAG, "BMP280 NOT detected at 0x%02X - using %.1f kPa standard atmosphere",
                  BMP280_ADDR, (double)STANDARD_ATM_KPA);
     }
+
+    /* The RTC can be present while the MAP sensors are not (and vice versa),
+     * so the handle must be torn down first to make re-detect idempotent. */
+    if (s_rtc) { i2c_master_bus_rm_device(s_rtc); s_rtc = NULL; }
+    s_rtc_present = false;
+    if (i2c_master_probe(s_bus, DS3231_ADDR, SENS_IO_TIMEOUT_MS) == ESP_OK &&
+        add_rtc() == ESP_OK) {
+        uint8_t st = 0;
+        if (reg_read(s_rtc, DS3231_REG_STATUS, &st, 1) == ESP_OK) {
+            s_rtc_present = true;
+            ESP_LOGI(TAG, "DS3231 detected at 0x%02X%s", DS3231_ADDR,
+                     (st & DS3231_OSF) ? " (time never set - clock not trusted)" : "");
+        } else {
+            i2c_master_bus_rm_device(s_rtc);
+            s_rtc = NULL;
+        }
+    }
+    if (!s_rtc_present) {
+        ESP_LOGW(TAG, "DS3231 NOT detected at 0x%02X - clock falls back to NVS/sync",
+                 DS3231_ADDR);
+    }
 }
 
 bool boost_sensors_init(void)
@@ -752,9 +904,10 @@ bool boost_sensors_init(void)
         return false;
     }
 
-    ESP_LOGI(TAG, "sensor path ready: ADS1115 %s, BMP280 %s",
+    ESP_LOGI(TAG, "sensor path ready: ADS1115 %s, BMP280 %s, DS3231 %s",
              s_ads_present ? "present" : "absent",
-             s_bmp_present ? "present" : "absent");
+             s_bmp_present ? "present" : "absent",
+             s_rtc_present ? "present" : "absent");
     return s_ads_present || s_bmp_present;
 }
 

@@ -416,21 +416,27 @@ idf.py build flash monitor   # look for BOOST_WEB_IP=192.168.x.y
   own reason: a two-second measurement's verdict belongs beside its readouts).
 ### Clock source, persistence, and CSV timestamps
 
-The dashboard's **Sync Time** control is the only time-synchronization action:
-its `POST /api/v1/time` supplies browser `Date.now()` plus the configured UTC
-offset. Firmware applies the epoch with `settimeofday` and saves the epoch plus
-the monotonic checkpoint and configuration in NVS. On reboot it restores that
-checkpoint and advances it only by the monotonic delta when applicable. This
-path performs no RTC or NTP resynchronization, so merely opening the dashboard
-does not sync the device; use **Sync Time** explicitly.
+The wall clock is battery-backed by a **DS3231 RTC on the sensor I2C bus**
+(GPIO18/17, address 0x68). At boot, after the sensor bus comes up and *before*
+boot brightness is decided, the firmware seeds `settimeofday` from the DS3231
+when it is present and its time is valid (oscillator-stop flag clear, BCD
+registers sane, date ≥ 2023) and marks the clock trusted. A night boot with a
+set RTC therefore comes up dim from the first frame with **no Wi-Fi involved**.
 
-A full power cycle freezes the restored clock at the last sync (the monotonic
-checkpoint does not survive power-off), so the dim schedule treats a restored
-but unadvanced clock as **unknown time** and defaults to bright. The schedule
-engages on the next dashboard Sync (the cockpit refresh auto-syncs) or a manual
-Sync Time; a soft reset that preserves the monotonic timer keeps the schedule
-live across reboot. This prevents a board synced last night from booting dim the
-next afternoon.
+The dashboard's **Sync Time** control remains the calibration action: its
+`POST /api/v1/time` supplies browser `Date.now()` plus the configured UTC
+offset. Firmware applies the epoch with `settimeofday`, saves it (plus the
+monotonic checkpoint and configuration) in NVS, and **writes the DS3231** so the
+time survives power-off. The NVS epoch/monotonic checkpoint is refreshed at
+every RTC seed as well, keeping it a warm fallback if the RTC is later removed
+or fails.
+
+Without an RTC (absent, failed, or never set — the oscillator-stop flag),
+behavior is unchanged from before: boot restores the frozen NVS epoch and
+advances it only by the monotonic delta when applicable, the clock stays
+untrusted, the schedule defaults to bright, and a browser Sync (over LAN or
+SoftAP) is the only way to establish the time. `epoch_ms_now()` and CSV
+timestamps always report the best-effort clock.
 
 CSV `timestamp_local` is formatted as `%Y-%m-%dT%H:%M:%S` with no timezone
 suffix. `utc_offset_minutes` remains a separate CSV field. The CSV export now

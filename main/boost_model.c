@@ -18,6 +18,7 @@
 #include "boost_brightness.h"
 #include "boost_page.h"
 #include "boost_display.h"
+#include "boost_sensors.h"
 
 /* Factory brightness. These match what the default theme used to impose, so a
  * fresh device behaves exactly as before; they are now plain defaults that the
@@ -665,6 +666,56 @@ esp_err_t boost_model_set_time(int64_t epoch_ms, int timezone_offset_minutes)
         nvs_close(h);
     }
     xSemaphoreGive(s_lock);
+
+    /* Calibrate the DS3231 so the time survives power-off without Wi-Fi. The
+     * system clock and NVS are already set; an RTC write failure is non-fatal. */
+    if (boost_sensors_rtc_present()) {
+        const esp_err_t rtc_err = boost_sensors_rtc_write(epoch_ms);
+        if (rtc_err != ESP_OK) {
+            ESP_LOGW(TAG, "DS3231 time write failed: %s", esp_err_to_name(rtc_err));
+        }
+    }
+    return err;
+}
+
+esp_err_t boost_model_seed_clock_from_rtc(void)
+{
+    if (!boost_sensors_rtc_present()) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    int64_t epoch_ms = 0;
+    esp_err_t err = boost_sensors_rtc_read(&epoch_ms);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "DS3231 read failed (%s) - clock stays on NVS/sync fallback",
+                 esp_err_to_name(err));
+        return err;
+    }
+    struct timeval tv = {
+        .tv_sec = (time_t)(epoch_ms / 1000),
+        .tv_usec = (suseconds_t)((epoch_ms % 1000) * 1000),
+    };
+    if (settimeofday(&tv, NULL) != 0) {
+        return ESP_FAIL;
+    }
+    s_clock_trusted = true;
+
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    /* Keep the NVS epoch/monotonic checkpoint fresh so it stays a warm
+     * fallback if the DS3231 is later removed or fails. */
+    nvs_handle_t h;
+    err = nvs_open(NVS_NS, NVS_READWRITE, &h);
+    if (err == ESP_OK) {
+        err = nvs_set_i64(h, NVS_KEY_EPOCH_MS, epoch_ms);
+        if (err == ESP_OK) {
+            err = nvs_set_i64(h, NVS_KEY_MONO_MS, esp_timer_get_time() / 1000LL);
+        }
+        if (err == ESP_OK) {
+            err = nvs_commit(h);
+        }
+        nvs_close(h);
+    }
+    xSemaphoreGive(s_lock);
+    ESP_LOGI(TAG, "clock seeded from DS3231 (%lld)", (long long)epoch_ms);
     return err;
 }
 

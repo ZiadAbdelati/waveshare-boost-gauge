@@ -18,7 +18,8 @@ Current verified release is **`v0.7.1`** (ESP-IDF 5.5.1, app image ~1.5 MB in `r
 - `main/boost_gauge.c/.h`: gauge rendering and exclusive GIF playback lifecycle.
 - `main/boost_media_store.c/.h`: raw `media` partition format, upload transaction, CRC, mapping, and deletion.
 - `main/boost_web.c`: HTTP/WebSocket API and upload/delete request serialization.
-- `main/boost_model.c/.h`: sensor/model state and publication.
+- `main/boost_model.c/.h`: model state and publication; owns the wall clock (`settimeofday`, `s_clock_trusted`) and the DS3231 seed/calibration paths.
+- `main/boost_sensors.c/.h`: I2C bus (port 0, GPIO18/17), ADS1115/BMP280 sampling, calibration, and the DS3231 RTC device (`boost_sensors_rtc_read/write`).
 - `web/`: dashboard source (cockpit + settings views). `main/generated_web_assets.c/.h` are generated outputs only.
 - `tools/embed_web.py`: web asset regeneration. `tools/mock_server.py` mirrors config/network APIs. `release/`: explicitly produced release artifacts only.
 
@@ -213,7 +214,8 @@ These are the currently-actionable invariants distilled from the regression ledg
 
 | Guard | Since |
 |---|---|
-| The dim schedule must never trust a frozen NVS-restored clock: `s_clock_trusted` is set only by a browser Sync or a monotonic-preserving soft reset; unknown clock → boot bright | 2026-08-14 |
+| The dim schedule must never trust a frozen NVS-restored clock: `s_clock_trusted` is set only by a browser Sync, a monotonic-preserving soft reset, or a valid boot read of the DS3231 RTC; unknown clock → boot bright | 2026-08-14 |
+| The DS3231 RTC (0x68, sensor I2C bus) is the battery-backed clock authority when present: `boost_sensors_rtc_read()` rejects oscillator-stop-flag/garbage/implausible time so a fresh RTC never seeds `2000-01-01`; `boost_model_seed_clock_from_rtc()` runs BEFORE boot brightness is decided so a night boot comes up dim with no Wi-Fi; a browser Sync writes the RTC (`boost_sensors_rtc_write`) as calibration and the seed refreshes the NVS epoch checkpoint as a warm fallback | 2026-08-17 |
 | Panel boots at 0% and ramps to `boost_model_boot_brightness()` after a 100 ms settle — no bright/white flash; hold-to-dim re-applies only on a schedule desired-state transition, never on a fixed cadence | 2026-08-13/14 |
 | Two-finger QR (2.2 s hold) depends on the vendored CST9217 two-point read (15-byte read + ACK write, count at byte [5]); displays connected STA IP when associated | 2026-08-14/15 |
 | No module's persistence may depend on another module having initialised NVS; test persistence with an actual reboot | 2026-07-25 |

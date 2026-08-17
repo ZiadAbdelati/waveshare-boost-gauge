@@ -100,6 +100,21 @@ void app_main(void)
      * not depend on running after boost_model_init(). */
     boost_theme_init();
     ESP_ERROR_CHECK(boost_model_init());
+
+    /* Real-sensor path: I2C on GPIO18/17 (separate from the BSP touch bus on
+     * GPIO14/15). Brings up the bus, probes ADS1115 (0x48), BMP280 (0x76) and
+     * the DS3231 RTC (0x68), and starts the reader task. Runs regardless of the
+     * demo flag so a runtime flip to real mode has data waiting; init logs which
+     * sensors were seen. Deliberately before boot brightness is decided and the
+     * panel is started: a valid DS3231 seeds the wall clock, so a night boot
+     * comes up dim from the first frame instead of bright until a browser sync. */
+    if (!boost_sensors_init()) {
+        ESP_LOGW(TAG, "no MAP/ambient sensors detected; real mode will fault until wired");
+    }
+    if (boost_model_seed_clock_from_rtc() != ESP_OK) {
+        ESP_LOGW(TAG, "no valid DS3231 time; clock falls back to NVS/sync");
+    }
+
     boost_config_t cfg;
     boost_model_get_config(&cfg);
 
@@ -132,13 +147,6 @@ void app_main(void)
     boost_tpms_start();
     boost_tpms_mock_set_scenario(BOOST_TPMS_MOCK_NORMAL);
 
-    /* Real-sensor path: I2C on GPIO18/17 (separate from the BSP touch bus on
-     * GPIO14/15). Brings up the bus, probes ADS1115 (0x48) and BMP280 (0x76),
-     * and starts the reader task. Runs regardless of the demo flag so a runtime
-     * flip to real mode has data waiting; init logs which sensors were seen. */
-    if (!boost_sensors_init()) {
-        ESP_LOGW(TAG, "no MAP/ambient sensors detected; real mode will fault until wired");
-    }
     ESP_LOGI(TAG, "sample source at boot: %s", boost_theme_demo_mode() ? "DEMO (sim)" : "real sensors");
 
     /* The physical gauge receives samples directly in its LVGL timer. */

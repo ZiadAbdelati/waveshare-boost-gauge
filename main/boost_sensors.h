@@ -158,10 +158,30 @@ uint32_t boost_sensors_recoveries(void);
  * the sensor bus and writes addresses that ACK four consecutive probes into
  * `out` (up to `max`). Returns -1 if the bus never came up. Serialized against
  * bus recovery. Used by /api/v1/sensors/scan so the bus can be inspected without
- * serial — stable 0x48 and 0x76 identify the expected sensors; an empty result
- * is correct when no external devices are connected.
+ * serial — stable 0x48 and 0x76 identify the expected sensors (0x68 the DS3231
+ * RTC when fitted); an empty result is correct when no external devices are
+ * connected.
  */
 int boost_sensors_i2c_scan(uint8_t *out, int max);
+
+/* ------------------------------------------------------------ DS3231 RTC */
+
+/** True when a DS3231 (0x68) was found on the sensor bus at init. */
+bool boost_sensors_rtc_present(void);
+
+/**
+ * Read the DS3231 as a Unix epoch in ms. The DS3231 keeps UTC; timezone
+ * conversion is the caller's concern. Returns ESP_ERR_INVALID_STATE when no
+ * RTC is present or its time is not trustworthy (oscillator-stop flag set,
+ * non-BCD/garbage registers, or an implausible date before 2023), so the
+ * caller can fall back to the NVS-restored clock.
+ */
+esp_err_t boost_sensors_rtc_read(int64_t *epoch_ms);
+
+/** Write a Unix epoch in ms to the DS3231 in 24-hour mode. Writing the time
+ *  registers also clears the oscillator-stop flag. Returns ESP_ERR_INVALID_STATE
+ *  when no RTC is present or the epoch is outside 2000..2099. */
+esp_err_t boost_sensors_rtc_write(int64_t epoch_ms);
 
 #ifdef __cplusplus
 }

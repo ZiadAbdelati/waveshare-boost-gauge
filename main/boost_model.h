@@ -111,6 +111,12 @@ esp_err_t boost_model_set_active_theme(const char *id);
 esp_err_t boost_model_set_active_page(int page);
 const boost_theme_t *boost_model_active_theme(void);
 esp_err_t boost_model_set_time(int64_t epoch_ms, int timezone_offset_minutes);
+/** Seed the system clock from the DS3231 on the sensor bus, if present and
+ *  valid, and mark the clock trusted (so the dim schedule engages without
+ *  Wi-Fi). Also refreshes the NVS epoch checkpoint so it stays a warm fallback.
+ *  Returns ESP_ERR_NOT_FOUND when no RTC is fitted and the read error
+ *  otherwise; the caller logs and continues. */
+esp_err_t boost_model_seed_clock_from_rtc(void);
 void boost_model_apply_schedule(void);
 bool boost_model_schedule_wants_low(void);
 /** Brightness the panel should boot at (dim-schedule night level if the
