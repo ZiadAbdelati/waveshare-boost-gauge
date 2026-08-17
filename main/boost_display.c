@@ -659,8 +659,10 @@ static bool region_dbuf_alloc(void)
         return false;
     }
     for (size_t i = 0; i < BOOST_REGION_DBUF_QUEUE_DEPTH; ++i) {
-        s_region_xfer_bufs[i] = (uint16_t *)heap_caps_malloc(BOOST_LVGL_STRIP_BYTES,
-                                                              MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+        /* 8-byte aligned so the push path's direct uint64_t byte-swap is
+         * legal (MALLOC_CAP_DMA only guarantees 4-byte alignment). */
+        s_region_xfer_bufs[i] = (uint16_t *)heap_caps_aligned_alloc(8, BOOST_LVGL_STRIP_BYTES,
+                                                                    MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
         if (s_region_xfer_bufs[i] == NULL) {
             ESP_LOGW(TAG, "region-dbuf: internal scratch buffer %u/%d alloc failed; "
                      "staying on per-strip path", (unsigned)i, BOOST_REGION_DBUF_QUEUE_DEPTH);
@@ -1156,33 +1158,46 @@ esp_err_t boost_display_push_bitmap(int x0, int y0, int x1, int y1,
          * HERE (the source framebuffer itself stays little-endian for the
          * LVGL fallback path).
          *
-         * Fused, not memcpy + a separate swap pass, for a measured reason: a
-         * full-frame burst must write FASTER than the panel scan (35.95
-         * us/row) or the scan catches the burst mid-frame and tears. With a
-         * separate in-place swap pass the per-chunk CPU cost (~158 us) pushed
-         * the effective write rate to ~39 us/row - over the scan rate - and
-         * full-frame pushes tore visibly on horizontally-moving content
-         * (2026-08-16 ledger row). The fused single pass keeps the per-chunk
-         * cost near a plain memcpy and the burst at region-dbuf's measured
-         * ~31.5 us/row, which stays ahead of the scan. Do not add per-chunk
-         * CPU work to this loop without re-checking that arithmetic. */
-        for (int r = 0; r < lines; ++r) {
-            const uint16_t *s = src + (size_t)(y - y0 + r) * src_stride_px;
-            uint16_t *d = xfer + (size_t)r * width;
-            int c = 0;
-            while (c <= width - 4) {
-                const uint32_t p01 = ((const gif_u32_alias_t *)&s[c])[0];
-                const uint32_t p23 = ((const gif_u32_alias_t *)&s[c + 2])[0];
-                const uint32_t sw01 = ((p01 & 0x00FF00FF) << 8) | ((p01 & 0xFF00FF00) >> 8);
-                const uint32_t sw23 = ((p23 & 0x00FF00FF) << 8) | ((p23 & 0xFF00FF00) >> 8);
-                ((gif_u32_alias_t *)&d[c])[0] = sw01;
-                ((gif_u32_alias_t *)&d[c + 2])[0] = sw23;
-                c += 4;
+         * NOT done with the gif_u32_alias_t (__aligned__(1)) load/store trick:
+         * Xtensa has no unaligned word access, so each nominal 32-bit read
+         * compiles to 4 byte loads + combines, and the fused loop measured
+         * ~10x slower than a plain memcpy (16.2 ms vs 5-7 ms for a 434 KB
+         * strip stream). Instead: memcpy the row block (fast, alignment-
+         * agnostic) then byte-swap IN PLACE on the internal DMA buffer using
+         * aligned 64-bit access. Safe: width is always even (CO5300 window
+         * rounding), so the block is a whole number of 8-byte words and xfer
+         * is 8-byte aligned (internal DMA heap). Measured 2026-08-17: full-
+         * frame push dropped ~21 ms -> ~15.5 ms in-loop (copy 16.2 -> 7.9 ms,
+         * wire DMA ~6 ms), keeping the burst ahead of the panel scan. */
+        if (src_stride_px == width) {
+            /* Full-width strip: source rows are contiguous in the framebuffer
+             * and destination rows are contiguous in xfer, so the whole strip
+             * collapses to ONE memcpy instead of `lines` of them. */
+            memcpy(xfer, src + (size_t)(y - y0) * src_stride_px,
+                   (size_t)lines * (size_t)width * sizeof(uint16_t));
+        } else {
+            for (int r = 0; r < lines; ++r) {
+                memcpy(xfer + (size_t)r * width,
+                       src + (size_t)(y - y0 + r) * src_stride_px,
+                       (size_t)width * sizeof(uint16_t));
             }
-            while (c < width) {
-                const uint16_t p = s[c];
-                d[c] = (uint16_t)((p << 8) | (p >> 8));
-                c++;
+        }
+        /* Byte-swap in place on the internal DMA buffer with aligned 64-bit access.
+         * Safe: width is always even (CO5300 window rounding), so the block
+         * is a whole number of 8-byte words, and the buffers are allocated
+         * 8-byte aligned via heap_caps_aligned_alloc (MALLOC_CAP_DMA alone
+         * only guarantees 4). Measured 2026-08-17: full-frame push dropped
+         * ~21 ms -> ~15.5 ms in-loop (copy 16.2 -> 7.9 ms), keeping the burst
+         * ahead of the panel scan. A memcpy-per-8-byte variant of this swap
+         * measured ~2x worse (42 ms) - call overhead per 8-byte word - so it
+         * must stay a tight direct loop. */
+        {
+            uint64_t *w = (uint64_t *)xfer;
+            const size_t n64 = ((size_t)lines * width * sizeof(uint16_t)) / 8u;
+            for (size_t i = 0; i < n64; ++i) {
+                const uint64_t v = w[i];
+                w[i] = ((v & 0x00FF00FF00FF00FFULL) << 8) |
+                       ((v & 0xFF00FF00FF00FF00ULL) >> 8);
             }
         }
         const esp_err_t ret = esp_lcd_panel_draw_bitmap(s_panel, x0, y, x1, y + lines, xfer);
