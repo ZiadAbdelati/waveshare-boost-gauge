@@ -21,7 +21,7 @@ def fetch_display(base_url: str) -> dict[str, int]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--url", default="http://192.168.50.102")
+    parser.add_argument("--url", default="http://192.168.1.100")
     parser.add_argument("--seconds", type=float, default=DEFAULT_SECONDS)
     args = parser.parse_args()
 

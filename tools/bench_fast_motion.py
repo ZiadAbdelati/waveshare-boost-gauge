@@ -23,8 +23,8 @@ Two independent methods, both against the live board:
    its fastest, not a faster synthetic case.
 
 Usage:
-    python tools/bench_fast_motion.py sweep    --url http://192.168.50.102
-    python tools/bench_fast_motion.py organic  --url http://192.168.50.102
+    python tools/bench_fast_motion.py sweep    --url http://192.168.1.100
+    python tools/bench_fast_motion.py organic  --url http://192.168.1.100
     python tools/bench_fast_motion.py constants   # just print the derived numbers
 
 Committed so these numbers are reproducible - see the project's own method

@@ -24,7 +24,7 @@ nothing and legitimately reports single-digit renderFps):
     neon marquee spin-off
 
 Usage:
-    python tools/bench_theme_matrix.py --url http://192.168.50.102
+    python tools/bench_theme_matrix.py --url http://192.168.1.100
                                         [--seconds 30] [--settle 8]
 
 The board's starting theme/layout/spin/demo/pixel-shift state is restored
@@ -39,7 +39,7 @@ import sys
 import time
 import urllib.request
 
-BASE = "http://192.168.50.102"
+BASE = "http://192.168.1.100"
 MIN_MEDIAN_RENDER_FPS = 60
 SAMPLE_INTERVAL_SECONDS = 0.25
 WARMUP_SAMPLES = 4

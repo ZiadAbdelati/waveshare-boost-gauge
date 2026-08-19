@@ -80,7 +80,7 @@ The media store MUST remain a raw dual-slot partition; do not reintroduce SPIFFS
 - **Verify against the device, and decompress first.** Assets are served gzipped, so grepping the raw HTTP response for a token you just added finds nothing whether the asset is current or stale. Check with:
   `python -c "import urllib.request,gzip;r=urllib.request.urlopen('http://<ip>/app.js');print('TOKEN' in gzip.decompress(r.read()).decode())"`
 - A release is not complete until the verified ESP-IDF build produces the app image and the release directory contains the bootloader, partition table, OTA data, app image, merged full-flash image, flash helper, and refreshed `SHA256SUMS`. The merged image is for resetting the complete layout; later web OTA uses the app image, not the merged image. Tag the release commit, publish every file in `release/` except documentation-only metadata as GitHub release assets, mark the new release latest, and verify the published asset checksums. Do not publish artifacts from an unverified build or claim hardware behavior from a host-only run.
-- Hardware release verification must cover boot, network access, the live physical cadence gate, transport-specific badge behavior, media upload/abort/delete behavior, and serial error absence. Record measured outputs in the README and this file before committing.
+- Hardware release verification must cover boot, network access, the live physical cadence gate, transport-specific badge behavior, media upload/abort/delete behavior, and serial error absence. Record measured outputs in `docs/regression-ledger.md` (and summarise in `release/README.md`/this file) before committing.
 
 ## Theme system and physical input
 

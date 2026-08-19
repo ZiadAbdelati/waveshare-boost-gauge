@@ -7,7 +7,7 @@ and wait_online raised different exception types). One shared module keeps the
 semantics identical everywhere; a tool that needs a different timeout passes it
 explicitly at the call site.
 
-`base` is the board's root URL (e.g. http://192.168.50.102); `path` is the
+`base` is the board's root URL (e.g. http://192.168.1.100); `path` is the
 full API path including the /api/v1 prefix.
 """
 from __future__ import annotations
@@ -16,7 +16,7 @@ import json
 import time
 from urllib.request import Request, urlopen
 
-DEFAULT_URL = "http://192.168.50.102"
+DEFAULT_URL = "http://192.168.1.100"
 
 
 def api_get(base: str, path: str, timeout: float = 5.0) -> dict:

@@ -2,7 +2,7 @@
 
 Date: 2026-07-26
 Branch: `spike/ble-wifi-coexistence` (commit `126ae46`). **Not merged to main.**
-Hardware: Waveshare ESP32-S3-Touch-AMOLED-1.75, COM3, LAN `192.168.50.102`.
+Hardware: Waveshare ESP32-S3-Touch-AMOLED-1.75, COM3, LAN `192.168.1.100`.
 Firmware baseline: `v0.5.0-1-g37339b4` (repo `main` at HEAD), ESP-IDF v5.5.1.
 
 ## Verdict
@@ -84,7 +84,7 @@ difficulty.
 
 ### Display cadence — the gate that matters
 
-`python tools/check_display_cadence.py --url http://192.168.50.102 --seconds 30`,
+`python tools/check_display_cadence.py --url http://192.168.1.100 --seconds 30`,
 run in **demo mode on the `dyno-cell` (arc) face**, per AGENTS.md. Reference:
 min 57 / median 60.
 
@@ -224,12 +224,12 @@ Backtrace: ieee80211_hostap_attach <- wifi_softap_start <- _do_wifi_start
 ```
 W (2561) boost_main: DRAM[before-ble] free=161679 largest=86016
 I (2574) BLE_INIT: Put all controller code in flash
-I (2583) BLE_INIT: Bluetooth MAC: 28:84:85:55:5e:d6
-I (2676) boost_ble: host synced, addr 28:84:85:55:5e:d6
+I (2583) BLE_INIT: Bluetooth MAC: AA:BB:CC:DD:EE:F1
+I (2676) boost_ble: host synced, addr AA:BB:CC:DD:EE:F1
 I (2699) boost_ble: advertising as BoostGauge
 W (2703) boost_main: DRAM[after-ble] free=132023 largest=63488
-I (4313) wifi:mode : sta (28:84:85:55:5e:d4) + softAP (28:84:85:55:5e:d5)
-I (5423) boost_net: STA got IP 192.168.50.102
+I (4313) wifi:mode : sta (AA:BB:CC:DD:EE:F2) + softAP (AA:BB:CC:DD:EE:F3)
+I (5423) boost_net: STA got IP 192.168.1.100
 I (5437) boost_web: HTTP API ready
 W (5437) boost_main: DRAM[after-web-start] free=73807 largest=63488
 W (20446) boost_main: DRAM[t+15s] free=73695 largest=63488 minEver=73199
@@ -314,7 +314,7 @@ Stated plainly, because these are real gaps, not caveats:
   reachable and no `adb` is installed. Fixing the adapter would mean changing
   system device settings, which I did not do. Evidence of advertising is
   therefore ESP-side only: `ble_gap_adv_start()` returned 0, the host synced with
-  address `28:84:85:55:5e:d6`, and `advertising: true` was reported over HTTP.
+  address `AA:BB:CC:DD:EE:F1`, and `advertising: true` was reported over HTTP.
   **That the controller accepted the advertisement is not proof a scanner can
   see it.**
 - **Section 4 (throughput) is entirely unmeasured.** No central connected, so no
@@ -351,7 +351,7 @@ Stated plainly, because these are real gaps, not caveats:
 ```powershell
 $env:IDF_TOOLS_PATH = 'C:\Espressif'
 & 'C:\esp\v5.5.1\esp-idf\export.ps1'
-Set-Location 'C:\Users\aliab\boost-gauge'
+Set-Location 'C:\Users\<you>\boost-gauge'
 git checkout spike/ble-wifi-coexistence
 Remove-Item sdkconfig -Force        # sdkconfig.defaults changed
 idf.py -DSPIKE_BLE_FIRST=1 build
@@ -360,7 +360,7 @@ idf.py -p COM3 flash                # COM3 only
 
 Then `GET /api/v1/debug/heap` for RAM and BLE link state,
 `?bleadvms=N` to retune the advertising interval, `?blehz=N` for the notify
-producer, and `python tools/check_display_cadence.py --url http://192.168.50.102
+producer, and `python tools/check_display_cadence.py --url http://192.168.1.100
 --seconds 30` in demo mode on `dyno-cell`.
 
 ## Board state at end of spike
@@ -368,7 +368,7 @@ producer, and `python tools/check_display_cadence.py --url http://192.168.50.102
 Reflashed to `main` (`v0.5.0-1-g37339b4`, no `-dirty`) over COM3 and verified:
 
 - `GET /api/v1/state` responds; `mode: apsta`, `staConnected: true`,
-  `staIp: 192.168.50.102`, `apSsid: BoostGauge-5ED5`
+  `staIp: 192.168.1.100`, `apSsid: BoostGauge-XXXX`
 - cadence guard after restore: **min 58 / median 60** over 102 samples
 - HTTP `/api/v1/state` p50 **25.3 ms**
 - theme returned to `night-city`, demo mode returned to `false` (real sensor)

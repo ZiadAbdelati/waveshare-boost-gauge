@@ -7,7 +7,7 @@ that stream into a viewable image, which is how the panel gets verified without
 physically looking at it.
 
 Usage:
-  python tools/fetch_panel_snapshot.py --url http://192.168.1.42 --out panel.png
+  python tools/fetch_panel_snapshot.py --url http://192.168.1.100 --out panel.png
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ def rgb565_to_png(raw: bytes, width: int, height: int, out_path: str) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--url", required=True, help="device base URL, e.g. http://192.168.1.42")
+    ap.add_argument("--url", required=True, help="device base URL, e.g. http://192.168.1.100")
     ap.add_argument("--out", default="panel.png")
     ap.add_argument("--width", type=int, default=DEFAULT_W)
     ap.add_argument("--height", type=int, default=DEFAULT_H)

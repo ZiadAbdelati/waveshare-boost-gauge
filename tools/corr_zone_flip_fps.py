@@ -26,7 +26,7 @@ def put(url, payload):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--url", default="http://192.168.50.102")
+    ap.add_argument("--url", default="http://192.168.1.100")
     ap.add_argument("--seconds", type=int, default=180)
     ap.add_argument("--worst", type=int, default=10)
     ap.add_argument("--no-spin", action="store_true", help="leave spin as-is")

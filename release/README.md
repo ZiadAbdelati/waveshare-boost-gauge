@@ -59,12 +59,12 @@ built from the clean tagged tree and reflashed, so the board reports a clean
 
 ## Verified on hardware for this release
 
-Measured on the board at `192.168.50.101`, running the exact image published
+Measured on the board at `192.168.1.101`, running the exact image published
 here (clean tree, tagged `v0.8.0`, built from the tag, flashed, hard-reset).
 
 | Gate | Result |
 |---|---|
-| Boot and network after serial flash | control plane reachable at `192.168.50.101`, clean boot log (`HTTP API ready`, no panic / `ESP_ERR_NO_MEM`), LAN + SoftAP |
+| Boot and network after serial flash | control plane reachable at `192.168.1.101`, clean boot log (`HTTP API ready`, no panic / `ESP_ERR_NO_MEM`), LAN + SoftAP |
 | Release identity | published app image reports **`firmwareVersion v0.8.0`** (asserted, not eyeballed) |
 | RTC authority across soft reset | boot log `clock seeded from DS3231 (...)`, no OSF, no NVS fallback |
 | RTC authority across full power-off | unplugged ~2 min, repowered: `/state` `deltaSec=0` (exact), bus `found:["0x48","0x68","0x76"]` |

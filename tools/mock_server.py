@@ -140,7 +140,7 @@ NETWORK = {
     "staEnabled": True,
     "staConnected": True,
     "staSsid": "PitWall-5G",
-    "staIp": "192.168.1.42",
+    "staIp": "192.168.1.100",
     "rssi": -54,
     "apSsid": "BoostGauge-7F3A",
     "saved": [

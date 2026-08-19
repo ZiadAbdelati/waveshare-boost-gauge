@@ -9,7 +9,7 @@ corrected for today's `main`, the `big-digit` clean-network re-run closes the
 n=2/LAN-contamination gap and reports a real (if small) finding, and GIF
 playback — never exercised with this option off — is now tested on both
 builds.
-Hardware: Waveshare ESP32-S3-Touch-AMOLED-1.75, COM3, LAN `192.168.50.102`.
+Hardware: Waveshare ESP32-S3-Touch-AMOLED-1.75, COM3, LAN `192.168.1.100`.
 Firmware baseline: `v0.5.0-2-gc18339c`, ESP-IDF v5.5.1.
 
 ## Verdict
@@ -298,7 +298,7 @@ rule that a line in `sdkconfig.defaults` is not evidence the symbol took effect.
 Official guard, demo mode on `dyno-cell`:
 
 ```
-python tools/check_display_cadence.py --url http://192.168.50.102 --seconds 30
+python tools/check_display_cadence.py --url http://192.168.1.100 --seconds 30
 physical render FPS: min=56 median=60 samples=104
 ```
 
@@ -450,7 +450,7 @@ specifically.
 ### Cadence guard, re-confirmed on today's `main`
 
 ```
-python tools/check_display_cadence.py --url http://192.168.50.102 --seconds 30
+python tools/check_display_cadence.py --url http://192.168.1.100 --seconds 30
 IRAM=y (today's main)     : physical render FPS: min=56 median=60 samples=104
 IRAM=n (rebased branch)   : physical render FPS: min=57 median=60 samples=104
 ```
@@ -516,7 +516,7 @@ both builds.
 ```powershell
 $env:IDF_TOOLS_PATH = 'C:\Espressif'
 & 'C:\esp\v5.5.1\esp-idf\export.ps1'
-Set-Location 'C:\Users\aliab\boost-gauge'
+Set-Location 'C:\Users\<you>\boost-gauge'
 git checkout spike/lvgl-iram-benefit
 Remove-Item sdkconfig -Force        # sdkconfig.defaults changed
 idf.py build
@@ -532,7 +532,7 @@ clients stay live.
 Guard, demo mode on `dyno-cell` per AGENTS.md. Run on both IRAM=n binaries:
 
 ```
-python tools/check_display_cadence.py --url http://192.168.50.102 --seconds 30
+python tools/check_display_cadence.py --url http://192.168.1.100 --seconds 30
 instrumented IRAM=n build : physical render FPS: min=57 median=60 samples=104
 shipping binary (a58cb48) : physical render FPS: min=56 median=60 samples=104
 ```

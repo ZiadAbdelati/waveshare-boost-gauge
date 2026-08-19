@@ -23,7 +23,7 @@ def get(url: str) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--url", default="http://192.168.50.102")
+    ap.add_argument("--url", default="http://192.168.1.100")
     ap.add_argument("--seconds", type=float, default=40.0)
     ap.add_argument("--pause", type=float, default=0.12)
     args = ap.parse_args()

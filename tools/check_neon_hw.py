@@ -15,7 +15,7 @@ Two checks, both of which a wedged board fails:
      across different layouts
 
 Run after every flash:
-    python tools/check_neon_hw.py --url http://192.168.50.102 --port COM3
+    python tools/check_neon_hw.py --url http://192.168.1.100 --port COM3
 """
 from __future__ import annotations
 
@@ -91,7 +91,7 @@ def check_layout(base: str, name: str, layout: int, seconds: float) -> tuple[boo
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--url", default="http://192.168.50.102")
+    ap.add_argument("--url", default="http://192.168.1.100")
     ap.add_argument("--port", default="COM3")
     ap.add_argument("--seconds", type=float, default=12.0)
     args = ap.parse_args()
