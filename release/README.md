@@ -44,18 +44,18 @@ here (clean tree, tagged `v0.8.1`, built from the tag, flashed, hard-reset).
 
 | Gate | Result |
 |---|---|
-| Boot and network with Neon persisted | Pending final tagged-image run |
-| Release identity | Pending clean `firmwareVersion v0.8.1` assertion |
-| Served Doto assets and license | Pending decompressed device-response check |
-| Dyno Cell 30 s cadence | Pending final tagged-image run |
-| Doto Tube / Segments / Marquee sweep | Pending final tagged-image run |
-| GIF upload / abort / playback / repeated delete | Pending final tagged-image run |
-| Three WebSocket clients / fourth rejection / slot reuse | Pending final tagged-image run |
+| Boot and network with Neon persisted | Neon + Doto persisted through API restart; boot reached `HTTP API ready`, main-stack minimum free **4,584 B** |
+| Release identity | boot log and `/state` report clean **`v0.8.1`**; serial flash booted `ota_0` at `0x20000` |
+| Served Doto assets and license | decompressed `/app.js`, `/styles.css`, and `/OFL-Doto.txt` contain the Doto tokens/license; `/doto.ttf` expands to **173,580 B** |
+| Dyno Cell 30 s cadence | min **56**, median **62 FPS** |
+| Doto Tube / Segments / Marquee constant-slew sweep | Tube **60**, Segments **61**, Marquee spin-off **60 FPS** median; demand coverage **100%**, `teTimeouts=0` |
+| GIF upload / playback / repeated delete | 80,010-byte fixture published and played; two deletes returned `present:false`, no reboot |
+| Three WebSocket clients / fourth rejection / slot reuse | three clients received frames; fourth was rejected without disturbing them; closed slot reopened successfully |
 | OTA boot partition and transport badge | Pending final tagged-image run |
-| Serial error absence | Pending final tagged-image run |
+| Serial error absence | Neon health gate passed with live counters and no watchdog/panic output; no `ESP_ERR_NO_MEM` or display-send failure observed |
 
-These rows are intentionally not pre-filled from earlier development images.
-Only results from the clean tagged release image belong here.
+The browser upload-abort ordering, badge text transitions, and OTA boot from
+`ota_1` remain pending and are not claimed by the rows above.
 
 ## Display path (do not regress)
 
