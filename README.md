@@ -52,7 +52,7 @@ python -m esptool --chip esp32s3 -p COM5 -b 460800 `
   0x0 boost_gauge_merged.bin
 ```
 
-Newest prebuilt firmware (currently **v0.8.0**, ESP-IDF 5.5.1) is in [`release/`](release/) and on the [releases page](https://github.com/ZiadAbdelati/waveshare-boost-gauge/releases/latest). See [`release/README.md`](release/README.md) for details.
+Newest prebuilt firmware (currently **v0.8.1**, ESP-IDF 5.5.1) is in [`release/`](release/) and on the [releases page](https://github.com/ZiadAbdelati/waveshare-boost-gauge/releases/latest). See [`release/README.md`](release/README.md) for details.
 
 ### Connect
 

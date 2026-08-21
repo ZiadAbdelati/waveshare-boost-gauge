@@ -1,12 +1,11 @@
-# Prebuilt firmware v0.8.0 — battery-backed clock (DS3231 RTC) + DST
+# Prebuilt firmware v0.8.1 — Doto Neon readout + rendering fixes
 
-Firmware **`v0.8.0`**, built with **ESP-IDF 5.5.1** for **ESP32-S3**, 16 MB
-flash. Headlines: the wall clock is now authoritative from a **DS3231 RTC on the
-sensor I2C bus** (survives power-off with no Wi-Fi, the dim schedule stays
-correct, and a wrong browser clock can no longer corrupt it), timezones are
-**DST-aware** via a POSIX TZ string, and a pair of latent RTC/`/state` bugs were
-fixed on hardware. Carries everything from v0.7.1 — the tube/segments/marquee
-neon faces, four colourways, the embedded Wi-Fi dashboard, the DMA-safe AMOLED
+Firmware **`v0.8.1`**, built with **ESP-IDF 5.5.1** for **ESP32-S3**, 16 MB
+flash. Headlines: the Neon Tube, Segments, and Marquee layouts gain an optional
+**Doto** modular readout; the zero-pressure zone reads **ATMO**; circular
+Marquee invalidation no longer leaves a stale top bulb; and the ESP-IDF main
+task has enough stack to boot a persisted Neon scene reliably. Carries the
+v0.8.0 DS3231/DST clock work, the embedded Wi-Fi dashboard, the DMA-safe AMOLED
 display path (`main/boost_display.c`), and the calibrated GM 12223861 MAP path.
 The same files are published on the
 [latest GitHub release](https://github.com/ZiadAbdelati/waveshare-boost-gauge/releases/latest).
@@ -17,68 +16,46 @@ captured at CMake **configure** time, not build time: a tree that was dirty when
 `idf.py` last configured will keep reporting `-dirty` through subsequent clean
 builds until `idf.py reconfigure` runs. This release was tagged first, then
 built from the clean tagged tree and reflashed, so the board reports a clean
-`v0.8.0`.
+`v0.8.1`.
 
-## What changed since v0.7.1
+## What changed since v0.8.0
 
-- **DS3231 RTC as boot-time clock authority.** `boost_sensors_rtc_read/write`
-  (probe `0x68` on the shared sensor bus) reject oscillator-stop-flag / garbage /
-  implausible time so a fresh part never seeds `2000-01-01`. The seed runs before
-  boot brightness is decided, so a night boot with a set RTC comes up dim from
-  the first frame with no Wi-Fi. A browser Sync writes the RTC as calibration,
-  and the seed refreshes the NVS epoch checkpoint as a warm fallback. Hardware-
-  verified across a soft reset **and** a full ~2-minute power-off (clock came up
-  exact, `deltaSec=0`).
-- **RTC is the write authority too.** `POST /api/v1/time` more than 5 minutes
-  from a valid DS3231 is rejected with **`409 clock_rejected`** *before* the
-  system clock/NVS/RTC are touched, so a slow client cannot corrupt the
-  battery-backed clock. OSF/unreadable/absent RTC accepts any plausible epoch
-  (first seed / battery change).
-- **OSF cleared on write.** The DS3231 does *not* auto-clear its oscillator-stop
-  flag when the time registers are written; `boost_sensors_rtc_write()` now
-  clears it explicitly (status `0x0F` bit 7) under the bus-admin lock. Without
-  this every read reported "time never set" and the RTC fell back to NVS forever.
-- **DST-aware timezone (POSIX TZ string).** Config stores `timezoneTz` (e.g.
-  `EST5EDT,M3.2.0/2,M11.1.0/2`), applied via `setenv("TZ")+tzset()`; the dim
-  schedule, CSV and the effective offset use `localtime()`, so DST is automatic
-  and the zone is set once, never re-picked per season. `/state` reports the
-  DST-effective offset; `/config` keeps the stored standard offset for the
-  dropdown. The web dropdown carries the POSIX TZ string per option (US/CA/
-  Europe/AU/NZ rules verified against GNU date; the `UTC-04:00` entry is relabeled
-  **Atlantic Time**, not "Eastern DST").
-- **`/state` offset stability.** `boost_model_publish_sample()` no longer clobbers
-  the DST-effective `timezoneOffsetMinutes` with the stored standard offset,
-  which previously made the dashboard clock flicker one hour across DST.
-- **I2C bus hardening.** RTC read/write now hold the bus-admin mutex (the reset
-  takes no lock); recovery honors ADS/BMP re-config returns (no silent 0 V
-  false-good) and re-probes devices absent at boot; the live scan is time-capped
-  (5 s) so a hung bus cannot wedge httpd.
-- **Web fixes.** The timezone dropdown no longer reverts to the old zone when
-  saving (a stale-state reset in `syncDeviceClock` was stomping fresh
-  selections); the Sync button is renamed **Save**.
+- **Doto Neon readout.** Tube, Segments, and Marquee can select Doto ROND 100 /
+  weight 700. The setting persists in NVS and is mirrored by the dashboard.
+  Doto publishes raw A8 coverage without the SF Alien halo and draws a custom
+  three-dot minus; signed geometry keeps a measured 20 px ink gap beside the
+  widest tabular digit.
+- **ATMO zone label.** Neon shows white `ATMO` at zero pressure in both the
+  physical renderer and browser mirror.
+- **Marquee wrap fix.** Spin and zone-flip invalidation now wrap each complete
+  bulb index by that ring's bulb count. This fixes the stale outer-ring bulb at
+  12 o'clock when an invalidation pair crosses the circular boundary.
+- **Persisted-Neon boot reliability.** The main task stack is now **8,192 bytes**;
+  the previous 3,584-byte stack could overflow while synchronously baking Neon
+  glyphs before brightness/network startup.
+- **Font licensing and reproducibility.** `web/doto.ttf` is the prepared static
+  dashboard/source font, `web/OFL-Doto.txt` ships its SIL OFL 1.1 license, and
+  `tools/generate_doto_font.py` deterministically regenerates the LVGL subset.
 
 ## Verified on hardware for this release
 
-Measured on the board at `192.168.1.101`, running the exact image published
-here (clean tree, tagged `v0.8.0`, built from the tag, flashed, hard-reset).
+Measured on the board at `192.168.50.101`, running the exact image published
+here (clean tree, tagged `v0.8.1`, built from the tag, flashed, hard-reset).
 
 | Gate | Result |
 |---|---|
-| Boot and network after serial flash | control plane reachable at `192.168.1.101`, clean boot log (`HTTP API ready`, no panic / `ESP_ERR_NO_MEM`), LAN + SoftAP |
-| Release identity | published app image reports **`firmwareVersion v0.8.0`** (asserted, not eyeballed) |
-| RTC authority across soft reset | boot log `clock seeded from DS3231 (...)`, no OSF, no NVS fallback |
-| RTC authority across full power-off | unplugged ~2 min, repowered: `/state` `deltaSec=0` (exact), bus `found:["0x48","0x68","0x76"]` |
-| OSF clearing | after seed + reboot no `time never set - clock not trusted`; the write clears status `0x0F` bit 7 |
-| DST / `/state` offset stability | 30 rapid `/state` polls all reported the single DST-effective offset (−180); no 1-hour 17:44<->18:44 flicker |
-| Bus scan / httpd responsiveness | repeated `/sensors/scan` return all three devices quickly and httpd stays responsive (the earlier rapid-scan wedge is fixed by the 5 s scan cap) |
-| Served web assets | decompressed `app.js`/`index.html` confirm the Atlantic relabel, the removed dropdown-revert line, and the Save button |
+| Boot and network with Neon persisted | Pending final tagged-image run |
+| Release identity | Pending clean `firmwareVersion v0.8.1` assertion |
+| Served Doto assets and license | Pending decompressed device-response check |
+| Dyno Cell 30 s cadence | Pending final tagged-image run |
+| Doto Tube / Segments / Marquee sweep | Pending final tagged-image run |
+| GIF upload / abort / playback / repeated delete | Pending final tagged-image run |
+| Three WebSocket clients / fourth rejection / slot reuse | Pending final tagged-image run |
+| OTA boot partition and transport badge | Pending final tagged-image run |
+| Serial error absence | Pending final tagged-image run |
 
-**Not re-demonstrated this cycle, and not claimed:** the live physical cadence
-gate (display path is unchanged from v0.7.1), the media upload/abort/delete
-cycle, WebSocket pool and transport badge behavior, sensor calibration/soak, the
-`clock_rejected` 409 response after the OSF fix, and the physical swipe/needle
-appearance on glass. Those paths are unchanged by this release; this release
-touches clock, I2C and web only.
+These rows are intentionally not pre-filled from earlier development images.
+Only results from the clean tagged release image belong here.
 
 ## Display path (do not regress)
 
