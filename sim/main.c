@@ -632,7 +632,8 @@ static void usage(const char *argv0)
             "  %s --tpms [normal|stale|disconnected]\n"
             "                          snapshot the TPMS page under a mock scenario\n"
             "  (all modes accept --theme ID, --neon-layout tube|segments|marquee,\n"
-            "   and --neon-spin to enable the marquee chase for screenshots)\n",
+            "   --neon-font 0|1 (0=SF Alien 1=Doto), and --neon-spin to enable\n"
+            "   the marquee chase for screenshots)\n",
             argv0, argv0, argv0, argv0);
 }
 
@@ -752,6 +753,18 @@ int main(int argc, char **argv)
                     fprintf(stderr, "unknown neon layout: %s (tube|segments|marquee)\n", v);
                     return 1;
                 }
+            }
+        } else if (strcmp(argv[i], "--neon-font") == 0) {
+            /* Which readout typeface to render: 0=SF Alien (default),
+             * 1=Doto. Same init trap as --neon-layout. */
+            if (i + 1 < argc) {
+                const char *v = argv[++i];
+                const int n = atoi(v);
+                if (n < 0 || n > 1) {
+                    fprintf(stderr, "unknown neon font: %s (0=sf-alien 1=doto)\n", v);
+                    return 1;
+                }
+                boost_theme_set_neon_font((boost_neon_font_t)n);
             }
         } else if (strcmp(argv[i], "--neon-preset") == 0) {
             /* Same class of trap as --neon-layout above, and it bit harder:

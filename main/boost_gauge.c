@@ -305,6 +305,7 @@ LV_FONT_DECLARE(archivo_black_65);
 LV_FONT_DECLARE(font_wide_22);
 LV_FONT_DECLARE(font_wide_32);
 LV_FONT_DECLARE(neon_big);
+LV_FONT_DECLARE(doto_big);
 LV_FONT_DECLARE(neon_label);
 #define BIGDIGIT_FONT  (&alvida_big)
 #define F_MONO16 (&font_mono_16)
@@ -317,6 +318,7 @@ LV_FONT_DECLARE(neon_label);
 #define F_WIDE32 (&font_wide_32)
 #define HUD_VALUE_FONT F_COND96
 #define NEON_BIG   (&neon_big)
+#define NEON_BIG_DOTO (&doto_big)
 #define NEON_LABEL (&neon_label)
 #define HUD_READOUT_GLYPH_COUNT 12
 
@@ -682,6 +684,58 @@ static inline float neon_seg_start(int i)
  * (-1px off face centre for segments/tube, -26px for marquee) now that
  * line_height changed. */
 #define NEON_READOUT_TOP     (-42)
+/* The neon readout's font, and every metric measured off that typeface rather
+ * than chosen for the face. The readout is baked to A8 coverage sprites at
+ * scene build, so switching fonts only needs a rebake - but the cell pitch,
+ * decimal width, sign geometry and the digit advance tables all come from the
+ * font, so they live here with it instead of as free-floating constants. */
+typedef struct {
+    const lv_font_t *font;
+    int slot_w;      /* digit cell pitch, clears the widest digit's ink */
+    int dot_w;       /* decimal cell width */
+    int sign_w;      /* sign mark width */
+    int sign_gap;    /* from the first glyph's ink edge, not the cell's */
+    int negative_shift; /* move signed composition right for left-ring clearance */
+    int font_px;     /* render size the font was generated at */
+    int cell_bleed;  /* draw-box slack around each cell */
+    int readout_top; /* vertical anchor; top + line_h/2 keeps the face centre */
+    bool sign_is_dots; /* true: three Doto modules; false: SF bars */
+    const boost_neon_digit_metrics_t *metrics;
+} neon_font_style_t;
+
+static const neon_font_style_t k_neon_sf = {
+    .font = NEON_BIG,
+    .slot_w = NEON_SLOT_W,
+    .dot_w = NEON_DOT_W,
+    .sign_w = NEON_SIGN_W,
+    .sign_gap = NEON_SIGN_GAP,
+    .negative_shift = 0,
+    .font_px = NEON_FONT_PX,
+    .cell_bleed = NEON_CELL_BLEED,
+    .readout_top = NEON_READOUT_TOP,
+    .sign_is_dots = false,
+    .metrics = &boost_neon_sf_metrics,
+};
+static const neon_font_style_t k_neon_doto = {
+    .font = NEON_BIG_DOTO,
+    .slot_w = 68,      /* 61 px digit ink + margin at 126 px */
+    .dot_w = 26,       /* 11 px dot ink + balanced visual gaps */
+    .sign_w = 42,      /* three 10 px period modules with 6 px gaps */
+    .sign_gap = 20,      /* 20 px beside any tabular digit; shifts sign 4 px left */
+    .negative_shift = 16,
+    .font_px = 126,
+    .cell_bleed = 18,  /* clears the 75.6 px advance */
+    .readout_top = -42, /* Doto line_height 85; centre on the face */
+    .sign_is_dots = true,
+    .metrics = &boost_neon_doto_metrics,
+};
+
+/* Which readout font is active right now. */
+static const neon_font_style_t *neon_font(void)
+{
+    return (boost_theme_neon_font() == BOOST_NEON_FONT_DOTO)
+        ? &k_neon_doto : &k_neon_sf;
+}
 /* One vertical rhythm for the lower stack, used by every layout: unit mark,
  * hairline rule and peak readout at fixed offsets from the centre. Marquee
  * shifts the whole block down as a unit rather than re-spacing it, so the three
@@ -878,7 +932,7 @@ static int neon_accent_base(int z)
     return ((6 - NEON_BULB_ACCENT_OFFSET(z) - s_neon_spin_phase[z]) % 6 + 6) % 6;
 }
 
-/* The marquee's centre draws the SHARED 118 px readout sprites at 0.87 scale
+/* The marquee's centre draws the active readout sprites at 0.87 scale
  * so the composition (readout, bar, stack) fits inside the spread rings: the
  * innermost ring's inner edge is 224 - 2*STEP - 4 = 172, and the full-size
  * readout ink+glow reaches ~184, so the whole centre scales about the face
@@ -976,21 +1030,21 @@ static inline int neon_mq(int v)
  * breathe. Shared by the draw and the invalidation so they cannot disagree. */
 static int neon_readout_top_off(void)
 {
-    return neon_mq(NEON_READOUT_TOP) - (s_neon_layout == BOOST_NEON_MARQUEE
+    return neon_mq(neon_font()->readout_top) - (s_neon_layout == BOOST_NEON_MARQUEE
         ? NEON_MARQUEE_READOUT_LIFT : 0);
 }
 
 #if BOOST_NEON_GLYPH_SPRITES
 /* One PSRAM block holding every baked glyph, for every zone colour, at the
- * one font size every layout now shares (NEON_BIG, 118 px): 112x111 per
- * tile - the font's own measured union ink box (84x83, read straight off
- * the glyph_dsc tables) plus a 14 px glow margin on every side so the
- * NEON_GLOW_BLUR_R glow has room to read before the tile edge clips it.
+ * one sprite size every layout now shares (112x120): the font's own measured
+ * union ink box plus a 14 px glow
+ * margin on every side so the NEON_GLOW_BLUR_R glow has room to read before
+ * the tile edge clips it.
  * The width covers the union of every glyph centred on its own ADVANCE
  * (advances differ: '3' leans to -37.9, '5' to +55.2 = 93.1 px) plus
- * margin, not the widest single ink. 12 glyphs (0-9, '.', '-') x 3 zones.
- * '-' is never blitted - the sign mark stays the existing triangle
- * geometry - but is baked anyway to keep one uniform glyph table. Marquee
+ * margin, not the widest single ink. 12 glyphs (0-9, '.', '-') plus one sign
+ * slot. '-' is never blitted: SF keeps its sliced bars and Doto draws three
+ * modules matching the decimal dot. Marquee
  * used to carry its own 130 px font and sprite set; unifying the readout
  * across layouts removed it, saving ~1.16 MB of PSRAM and the scene-switch
  * rebake. PSRAM cost at this margin, measured via BOOST_NEON_DRAW_STATS
@@ -998,10 +1052,10 @@ static int neon_readout_top_off(void)
  * 1.6 MB/font budget against 8 MB of PSRAM total. */
 #define NEON_SPR_GLOW_MARGIN 14
 #define NEON_SPR_BIG_W  112
-#define NEON_SPR_BIG_H  111
-/* 12 digits/punctuation plus one slot for the minus mark, which is drawn from
- * baked bar geometry rather than from a font glyph (this typeface's '-' has no
- * contour) - see neon_bake_sign_sprite(). */
+#define NEON_SPR_BIG_H  120
+#define NEON_DOTO_SIGN_DOTS 3
+/* 12 digits/punctuation plus one slot for the custom minus geometry - see
+ * neon_bake_sign_sprite(). */
 #define NEON_GLYPH_COUNT 12
 #define NEON_SIGN_SLOT   NEON_GLYPH_COUNT
 #define NEON_SPRITE_COUNT (NEON_GLYPH_COUNT + 1)
@@ -1048,12 +1102,13 @@ static bool s_neon_glyph_sprites_ready;
  * against 45-100 ms for every other theme, which is the delay that made it
  * feel like the slow one.
  *
- * The cache key is just the LAYOUT, which it can be only because the tiles are
- * A8 coverage: they carry no colour, so a palette edit, a preset change or a
- * zone flip cannot invalidate them. Layout is the one input that matters,
- * because it selects the font. Switching away to another theme and back is
- * therefore free. */
+ * The cache key is the LAYOUT plus the FONT, which it can be only because the
+ * tiles are A8 coverage: they carry no colour, so a palette edit, a preset
+ * change or a zone flip cannot invalidate them. Layout and font are the two
+ * inputs that matter, because together they select the rendered glyphs.
+ * Switching away to another theme and back is therefore free. */
 static boost_neon_layout_t s_neon_sprite_layout = (boost_neon_layout_t)0xFF;
+static boost_neon_font_t s_neon_sprite_font = (boost_neon_font_t)0xFF;
 static bool s_neon_sprites_reused;
 static int s_neon_spr_w, s_neon_spr_h;
 static uint32_t s_neon_spr_stride;
@@ -1073,7 +1128,7 @@ static int s_neon_spr_dx, s_neon_spr_dy;
  * already painted (nothing outside the glyph's own ink/glow). */
 static int16_t s_neon_glyph_bbox[NEON_SPRITE_COUNT][4]; /* x0,y0,x1,y1 inclusive */
 
-/* Marquee-only pre-scaled copies of the tiles above. The shared 118 px set is
+/* Marquee-only pre-scaled copies of the tiles above. The active font set is
  * drawn at NEON_MARQUEE_CENTER_SCALE through LVGL's per-frame transform, which
  * host A/B measured at ~35-40% of every readout repaint (plain blit p50
  * 0.09 ms vs transform p50 0.14 ms on the same dirty regions, max 0.45 vs
@@ -1165,19 +1220,19 @@ static const neon_seg_band_geom_t k_neon_tube_band_geom[4] = {
     { NEON_R, NEON_CAP_W },                                 /* cap (skinny)    */
 };
 
-/* The zone word (VACUUM / BOOST / OVERBOOST) gets the same treatment.
+/* The zone word (VACUUM / ATMO / BOOST / OVERBOOST) gets the same treatment.
  *
  * It was a plain lv_label, so it was the one lit element on the face with no
  * glow at all - flat next to a readout that blooms. It cannot simply be given
  * one: LVGL has no text glow, and stamping the label at offsets reads as
  * fringing. Baking it through the glyphs' own blur is the same trick, and at
- * this size it is nearly free (three words, one byte per pixel, ~69 KB).
+ * this size it is nearly free (four words, one byte per pixel, ~92 KB).
  *
  * Drawn from the face's draw callback rather than as a child object, because
  * a glow has to composite against the face beneath it. That means this code
  * owns its own invalidation on a zone flip - see update_neon(). Indexed by
- * neon_zone_id(). */
-#define NEON_WORD_COUNT 3
+ * neon_word_id(). */
+#define NEON_WORD_COUNT 4
 #define NEON_WORD_W 320
 #define NEON_WORD_H 72
 /* The layout box the word is centred in, unchanged from the lv_label it
@@ -1194,7 +1249,7 @@ static const neon_seg_band_geom_t k_neon_tube_band_geom[4] = {
  * centre, ~24 px clear either way. */
 #define NEON_WORD_Y (-95)
 static const char *const k_neon_zone_words[NEON_WORD_COUNT] = {
-    "VACUUM", "BOOST", "OVERBOOST"
+    "VACUUM", "ATMO", "BOOST", "OVERBOOST"
 };
 static void *s_neon_word_buf;
 static lv_image_dsc_t s_neon_word_img[NEON_WORD_COUNT];
@@ -1669,12 +1724,28 @@ uint32_t g_neon_sprite_blits;
  * one-line function, rather than refactoring neon_zone_rgb() to share it, so
  * the existing (already relied upon) function is not touched by this work.
  * Lives OUTSIDE the sprite guard: the marquee's live accent bulbs and the
- * zone-word sprite selector both call it, and the accent bulbs are drawn
- * with plain lv_draw_rect - they exist whether or not glyph sprites do. */
+ * live accent bulbs call it, and those bulbs are drawn with plain lv_draw_rect
+ * whether or not glyph sprites exist. */
 #endif
 static inline int neon_zone_id(float psi)
 {
     return (psi >= s_psi_overboost) ? 2 : (psi > 0.05f) ? 1 : 0;
+}
+
+/* ATMO is a display-only word around zero. It deliberately does not add a
+ * fourth colour stage: the readout, rings and marquee keep their established
+ * vacuum/boost/overboost thresholds and cadence behaviour. */
+static inline int neon_word_id(float psi)
+{
+    if (psi >= s_psi_overboost) return 3;
+    if (psi >= 0.35f) return 2;
+    if (psi > -0.35f) return 1;
+    return 0;
+}
+
+static inline uint32_t neon_word_rgb(const boost_theme_t *theme, float psi)
+{
+    return neon_word_id(psi) == 1 ? theme->text : neon_zone_rgb(theme, psi);
 }
 #if BOOST_NEON_GLYPH_SPRITES
 
@@ -1814,6 +1885,8 @@ static void neon_scratch_clear(lv_obj_t *scratch, int x0, int y0, int w, int h)
 static void neon_draw_sign_pass(lv_layer_t *layer,
                                 const boost_neon_bar_t bars[BOOST_NEON_SIGN_BARS],
                                 uint32_t color);
+static void neon_draw_dot_sign(lv_layer_t *layer, int cx, int cy, int width,
+                               uint32_t color);
 
 /* Fold one glyph's core and blurred coverage into the single 8-bit plane that
  * gets blitted, and publish the windowed image descriptor for it.
@@ -1827,13 +1900,16 @@ static void neon_store_coverage(int slot, const uint8_t *core, const uint8_t *gl
                                 int cov_w, int pad, int spr_w, int spr_h,
                                 uint32_t spr_stride, size_t glyph_bytes)
 {
+    const bool use_glow = boost_theme_neon_font() != BOOST_NEON_FONT_DOTO;
     uint8_t *dst_bytes = (uint8_t *)s_neon_glyph_buf + (size_t)slot * glyph_bytes;
     for (int y = 0; y < spr_h; ++y) {
         uint8_t *dst = dst_bytes + (size_t)y * spr_stride;
         for (int x = 0; x < spr_w; ++x) {
             const int cxi = x + pad, cyi = y + pad;
             const int core_v = core[(size_t)cyi * (size_t)cov_w + (size_t)cxi];
-            int glow_v = (glow[(size_t)cyi * (size_t)cov_w + (size_t)cxi] * NEON_GLOW_GAIN_PCT) / 100;
+            int glow_v = use_glow
+                ? (glow[(size_t)cyi * (size_t)cov_w + (size_t)cxi] * NEON_GLOW_GAIN_PCT) / 100
+                : 0;
             if (glow_v > 255) glow_v = 255;
             dst[x] = (uint8_t)(core_v > glow_v ? core_v : glow_v);
         }
@@ -1934,8 +2010,8 @@ static bool neon_blit_sprite_scaled(lv_layer_t *layer, int slot,
 /*
  * Bake the minus mark into the same coverage pipeline as the digits.
  *
- * The mark cannot come from the font: this typeface's '-' has no contour, so
- * it has always been drawn as two sheared parallelogram bars from
+ * For SF Alien the mark cannot come from the font: that typeface's '-' has no
+ * contour, so it has always been drawn as two sheared parallelogram bars from
  * boost_neon_sign_bars(). Its glow used to be faked by running that same
  * geometry a second time with every edge pushed out NEON_SIGN_GLOW px in a dim
  * colour. That does not read as glow at this scale. The bars are only ~6 px
@@ -1947,25 +2023,34 @@ static bool neon_blit_sprite_scaled(lv_layer_t *layer, int slot,
  * digits get, so the two match by construction rather than by tuning. It is
  * drawn into the scratch canvas at the same anchor the live code uses (box
  * centre horizontally, top + line_h/2 vertically), which is what lets the blit
- * reuse the glyphs' own dx/dy mapping.
+ * reuse the glyphs' own dx/dy mapping. Doto uses three round modules matching
+ * its decimal dot, kept shorter than its wide built-in hyphen so it clears the
+ * ring - same slot, same pipeline.
  */
 static void neon_bake_sign_sprite(lv_obj_t *scratch, int safe_w, int safe_h,
-                                  int cx0, int cy0, int font_px, int sign_w,
+                                  int cx0, int cy0, int bake_y,
+                                  int font_px, int sign_w,
+                                  const neon_font_style_t *nfs,
                                   uint8_t *core, uint8_t *glow,
                                   int cov_w, int cov_h, int pad,
                                   int spr_w, int spr_h,
                                   uint32_t spr_stride, size_t glyph_bytes)
 {
-    const lv_font_t *font = NEON_BIG;
+    const lv_font_t *font = nfs->font;
     const int line_h = (int)lv_font_get_line_height(font);
-
-    boost_neon_bar_t bars[BOOST_NEON_SIGN_BARS];
-    boost_neon_sign_bars(safe_w / 2, line_h / 2, font_px, sign_w, bars);
 
     lv_layer_t layer;
     lv_canvas_init_layer(scratch, &layer);
     neon_scratch_clear(scratch, 0, 0, safe_w, safe_h);
-    neon_draw_sign_pass(&layer, bars, 0xFFFFFFu);
+    if (nfs->sign_is_dots) {
+        neon_draw_dot_sign(&layer, safe_w / 2, bake_y + line_h / 2,
+                           sign_w, 0xFFFFFFu);
+    } else {
+        boost_neon_bar_t bars[BOOST_NEON_SIGN_BARS];
+        boost_neon_sign_bars(safe_w / 2, bake_y + line_h / 2,
+                             font_px, sign_w, bars);
+        neon_draw_sign_pass(&layer, bars, 0xFFFFFFu);
+    }
     lv_canvas_finish_layer(scratch, &layer);
 
     const lv_draw_buf_t *db = lv_canvas_get_draw_buf(scratch);
@@ -2166,7 +2251,7 @@ static void neon_bake_zone_words(lv_obj_t *scr)
  * applied per blit as the A8 recolor.
  */
 
-/* Marquee readout performance: bake the shared 118 px tiles at the marquee's
+/* Marquee readout performance: bake the active tiles at the marquee's
  * 0.87 scale ONCE per scene build so draw time never pays LVGL's per-frame
  * transform (host A/B: ~35-40% of every readout repaint). The scaled pixels
  * are produced by the SAME lv_draw_image call the old per-frame blit made
@@ -2302,7 +2387,8 @@ static void neon_bake_glyph_sprites(lv_obj_t *scr)
 {
     /* Already baked for this layout - reuse. See s_neon_sprite_layout for why
      * the layout alone is a sufficient key. */
-    if (s_neon_glyph_sprites_ready && s_neon_sprite_layout == s_neon_layout) {
+    if (s_neon_glyph_sprites_ready && s_neon_sprite_layout == s_neon_layout &&
+        s_neon_sprite_font == boost_theme_neon_font()) {
         s_neon_sprites_reused = true;
         return;
     }
@@ -2311,8 +2397,9 @@ static void neon_bake_glyph_sprites(lv_obj_t *scr)
 
     const bool marquee = (s_neon_layout == BOOST_NEON_MARQUEE);
     (void)marquee; /* border art differs; the readout is shared now */
-    const lv_font_t *font = NEON_BIG;
-    const int font_px = NEON_FONT_PX;
+    const neon_font_style_t *nfs = neon_font();
+    const lv_font_t *font = nfs->font;
+    const int font_px = nfs->font_px;
     const int spr_w = NEON_SPR_BIG_W;
     const int spr_h = NEON_SPR_BIG_H;
     s_neon_spr_w = spr_w;
@@ -2320,17 +2407,14 @@ static void neon_bake_glyph_sprites(lv_obj_t *scr)
 
     const int line_h = (int)lv_font_get_line_height(font);
     /* Wide enough that no glyph's ink can clip against the scratch canvas
-     * edges regardless of its advance/bearing. Tall enough for the SAME
-     * top-anchored draw (row 0 = the live draw's 'top', unaffected by making
-     * the box taller) to leave room for the crop below the ink, with margin
-     * on both sides: line_h + 8 matches the live draw's own box height, but
-     * this font's line_h (its ACTUAL ascent+descent) turned out to be
-     * shorter than the glyph-ink-plus-glow sprite height on the marquee
-     * font, which pushed the crop's top clamp negative and painted glow
-     * above the invalidated box - the exact bug this margin exists to rule
-     * out, not just patch over for the font measured this session. */
+     * edges regardless of its advance/bearing. The label starts one glow
+     * margin below the scratch top, then s_neon_spr_dy subtracts that offset
+     * again at blit time. That keeps the live top anchor unchanged while the
+     * blur gets real zero-coverage rows above the ink instead of clamping at
+     * row 0. Extra height below covers the matching lower halo. */
     const int safe_w = font_px * 2;
     const int safe_h = line_h + 8 + 2 * spr_h;
+    const int bake_y = NEON_SPR_GLOW_MARGIN;
 
     const uint32_t scratch_bytes =
         LV_CANVAS_BUF_SIZE(safe_w, safe_h, 16, LV_DRAW_BUF_STRIDE_ALIGN);
@@ -2353,7 +2437,7 @@ static void neon_bake_glyph_sprites(lv_obj_t *scr)
     for (int gi = 0; gi < NEON_GLYPH_COUNT; ++gi) {
         own_x0[gi] = safe_w; own_y0[gi] = safe_h; own_x1[gi] = -1; own_y1[gi] = -1;
         const char ch = k_neon_glyph_chars[gi];
-        if (ch == '-') continue; /* zero-contour in this typeface: nothing to bound */
+        if (ch == '-') continue; /* both signs use custom geometry */
         /* The geometry pass does not yet know where the ink will land - that
          * is what this scan is for - so it has to clear the WHOLE canvas,
          * unlike the colour pass below. Still a plain memset rather than
@@ -2366,7 +2450,7 @@ static void neon_bake_glyph_sprites(lv_obj_t *scr)
         dsc.font = font; dsc.align = LV_TEXT_ALIGN_CENTER; dsc.color = lv_color_white();
         char text[2] = { ch, 0 };
         dsc.text = text; dsc.text_local = 1;
-        lv_area_t full = { 0, 0, safe_w - 1, safe_h - 1 };
+        lv_area_t full = { 0, bake_y, safe_w - 1, safe_h - 1 };
         lv_draw_label(&layer, &dsc, &full);
         lv_canvas_finish_layer(scratch, &layer);
 
@@ -2412,7 +2496,7 @@ static void neon_bake_glyph_sprites(lv_obj_t *scr)
      * (cx + cell.x + dx, top + dy) reproduces the same pixels the crop came
      * from, without needing the box width/height to match. */
     s_neon_spr_dx = cx0 - safe_w / 2;
-    s_neon_spr_dy = cy0;
+    s_neon_spr_dy = cy0 - bake_y;
 
     /* Per-glyph tight bbox, tile-local, own ink + glow margin - see the
      * static array's comment for why this (not the full tile) is what gets
@@ -2511,7 +2595,7 @@ static void neon_bake_glyph_sprites(lv_obj_t *scr)
             lv_layer_t layer;
             lv_canvas_init_layer(scratch, &layer);
             neon_scratch_clear(scratch, cwx0, cwy0, cwx1 - cwx0, cwy1 - cwy0);
-            lv_area_t full = { 0, 0, safe_w - 1, safe_h - 1 };
+            lv_area_t full = { 0, bake_y, safe_w - 1, safe_h - 1 };
             lv_draw_label_dsc_t dsc; lv_draw_label_dsc_init(&dsc);
             dsc.font = font; dsc.align = LV_TEXT_ALIGN_CENTER; dsc.color = lv_color_white();
             char text[2] = { k_neon_glyph_chars[gi], 0 };
@@ -2541,8 +2625,8 @@ static void neon_bake_glyph_sprites(lv_obj_t *scr)
                                 spr_stride, glyph_bytes);
     }
 
-    neon_bake_sign_sprite(scratch, safe_w, safe_h, cx0, cy0, font_px,
-                          NEON_SIGN_W,
+    neon_bake_sign_sprite(scratch, safe_w, safe_h, cx0, cy0, bake_y, font_px,
+                          nfs->sign_w, nfs,
                           core, glow, cov_w, cov_h, pad,
                           spr_w, spr_h, spr_stride, glyph_bytes);
 
@@ -2556,6 +2640,7 @@ static void neon_bake_glyph_sprites(lv_obj_t *scr)
     BG_FREE(scratch_buf);
     s_neon_glyph_sprites_ready = true;
     s_neon_sprite_layout = s_neon_layout;
+    s_neon_sprite_font = boost_theme_neon_font();
 }
 
 /* Bake the segments layout's three lit-band coverage tiles for every segment.
@@ -3106,6 +3191,28 @@ static void neon_draw_sign_pass(lv_layer_t *layer,
     }
 }
 
+static void neon_draw_dot_sign(lv_layer_t *layer, int cx, int cy, int width,
+                               uint32_t color)
+{
+    /* At full size each module is the generated period's exact 10x10 ink box.
+     * Scale both it and the slight downward optical offset with marquee. */
+    const int dot = (width * 10 + 21) / 42;
+    const int gap = (width - NEON_DOTO_SIGN_DOTS * dot) /
+                    (NEON_DOTO_SIGN_DOTS - 1);
+    const int left = cx - width / 2;
+    const int top = cy + (width + 420) / 42 - dot / 2;
+    lv_draw_rect_dsc_t dsc; lv_draw_rect_dsc_init(&dsc);
+    dsc.bg_color = c(color); dsc.bg_opa = LV_OPA_COVER;
+    dsc.radius = LV_RADIUS_CIRCLE;
+    for (int i = 0; i < NEON_DOTO_SIGN_DOTS; ++i) {
+        const int x = left + i * (dot + gap);
+        lv_area_t a = { x, top, x + dot - 1, top + dot - 1 };
+        if (!neon_area_overlaps(&a, &layer->_clip_area)) continue;
+        NEON_STAT_SIGN();
+        lv_draw_rect(layer, &dsc, &a);
+    }
+}
+
 static void draw_neon_live(lv_event_t *e)
 {
     NEON_STAT_CB();
@@ -3488,16 +3595,19 @@ static void draw_neon_live(lv_event_t *e)
      * anchor below goes through neon_mq() on marquee so the geometry, the
      * sprite blits and the invalidation all agree about the smaller size. */
     const float mq = marquee ? NEON_MARQUEE_CENTER_SCALE : 1.0f;
-    const int slot_w = neon_mq(NEON_SLOT_W);
-    const int dot_w = neon_mq(NEON_DOT_W);
-    const int sign_w = neon_mq(NEON_SIGN_W);
-    const int sign_gap = neon_mq(NEON_SIGN_GAP);
-    const int font_px = neon_mq(NEON_FONT_PX);
+    const neon_font_style_t *nfs = neon_font();
+    const int slot_w = neon_mq(nfs->slot_w);
+    const int dot_w = neon_mq(nfs->dot_w);
+    const int sign_w = neon_mq(nfs->sign_w);
+    const int sign_gap = neon_mq(nfs->sign_gap);
+    const int font_px = neon_mq(nfs->font_px);
     boost_neon_readout_t r;
-    boost_neon_layout_readout(psi, slot_w, dot_w, sign_w, sign_gap, font_px, &r);
+    boost_neon_layout_readout(psi, slot_w, dot_w, sign_w, sign_gap,
+                              neon_mq(nfs->negative_shift), font_px,
+                              nfs->metrics, &r);
     const uint32_t ink = neon_lit(accent_rgb);
     lv_draw_label_dsc_t dsc; lv_draw_label_dsc_init(&dsc);
-    dsc.font = NEON_BIG; dsc.align = LV_TEXT_ALIGN_CENTER;
+    dsc.font = nfs->font; dsc.align = LV_TEXT_ALIGN_CENTER;
     char ch[2] = { 0, 0 };
     /* The glow used to be unavailable here - LVGL cannot blur a glyph at draw
      * time, and stamping the same glyph at small offsets reads as fringing
@@ -3538,8 +3648,8 @@ static void draw_neon_live(lv_event_t *e)
          * is wider than its cell and leans right at the top - a box the size
          * of the cell clips the ink, and then the clip and the invalidation
          * disagree at the top-right corner. NEON_CELL_BLEED covers both. */
-        lv_area_t a = { cx + r.cells[i].x - slot_w / 2 - NEON_CELL_BLEED, top,
-                        cx + r.cells[i].x + slot_w / 2 + NEON_CELL_BLEED, bottom };
+        lv_area_t a = { cx + r.cells[i].x - slot_w / 2 - nfs->cell_bleed, top,
+                        cx + r.cells[i].x + slot_w / 2 + nfs->cell_bleed, bottom };
         if (!neon_area_overlaps(&a, &layer->_clip_area)) continue;
         NEON_STAT_LABEL();
         lv_draw_label(layer, &dsc, &a);
@@ -3563,6 +3673,10 @@ static void draw_neon_live(lv_event_t *e)
             /* done */
         } else
 #endif
+        if (nfs->sign_is_dots) {
+            neon_draw_dot_sign(layer, cx + r.sign_x, top + line_h / 2,
+                               sign_w, ink);
+        } else
         {
             boost_neon_bar_t bars[BOOST_NEON_SIGN_BARS];
             boost_neon_sign_bars(cx + r.sign_x, top + line_h / 2, font_px, sign_w, bars);
@@ -3575,7 +3689,7 @@ static void draw_neon_live(lv_event_t *e)
      * label it replaced had none, which made it the one flat lit element on
      * an otherwise blooming face. */
     if (s_neon_words_ready) {
-        const int wi = neon_zone_id(psi);
+        const int wi = neon_word_id(psi);
         const lv_image_dsc_t *wimg = &s_neon_word_img[wi];
         if (wimg->data != NULL) {
             int bx, by;
@@ -3588,7 +3702,7 @@ static void draw_neon_live(lv_event_t *e)
                 lv_draw_image_dsc_t widsc; lv_draw_image_dsc_init(&widsc);
                 widsc.src = wimg;
                 widsc.opa = LV_OPA_COVER;
-                widsc.recolor = c(ink);
+                widsc.recolor = c(neon_lit(neon_word_rgb(theme, psi)));
                 widsc.recolor_opa = LV_OPA_COVER;
                 lv_draw_image(layer, &widsc, &wa);
             }
@@ -3983,23 +4097,22 @@ static void update_neon(const boost_sample_t *sample, const boost_theme_t *theme
     const float old_psi = s_neon_psi;
     s_neon_psi = psi;
     s_neon_peak_value = fmaxf(s_peak_psi, 0.0f);
-    const char *zone = (psi >= s_psi_overboost) ? "OVERBOOST" : (psi > 0.05f) ? "BOOST" : "VACUUM";
-    const lv_color_t zc = c(neon_lit(neon_zone_rgb(theme, psi)));
+    const char *zone = k_neon_zone_words[neon_word_id(psi)];
+    const lv_color_t zc = c(neon_lit(neon_word_rgb(theme, psi)));
     if (s_neon_zone != NULL) {
         if (strcmp(lv_label_get_text(s_neon_zone), zone) != 0) lv_label_set_text(s_neon_zone, zone);
         if (!lv_color_eq(lv_obj_get_style_text_color(s_neon_zone, 0), zc)) lv_obj_set_style_text_color(s_neon_zone, zc, 0);
     } else {
         /* Sprite path: no child object is tracking this, so the word's own
-         * dirty region is this code's responsibility. Both the word AND its
-         * colour change only at a zone threshold, so one invalidation on the
-         * flip covers both - and it has to span the union of the outgoing and
-         * incoming words, since OVERBOOST is far wider than BOOST and a box
-         * sized to the new word alone would strand the old one's tail. The
-         * box is the full layout box, which contains every word by
-         * construction, plus the glow margin. */
+         * dirty region is this code's responsibility. It has to span the union
+         * of the outgoing and incoming words, since OVERBOOST is far wider
+         * than ATMO/BOOST and a box sized to the new word alone would strand
+         * the old one's tail. */
         (void)zone;
-        const int wi = neon_zone_id(psi);
-        if (wi != s_neon_word_drawn) {
+        const int wi = neon_word_id(psi);
+        const bool word_recolor = neon_word_rgb(theme, old_psi) !=
+                                  neon_word_rgb(theme, psi);
+        if (wi != s_neon_word_drawn || word_recolor) {
             int bx, by;
             neon_word_box_origin(px_icx(), px_icy(), &bx, &by);
             /* Invalidate only the painted word pixels. Each word's sprite is
@@ -4178,13 +4291,14 @@ static void update_neon(const boost_sample_t *sample, const boost_theme_t *theme
      * left the sign and the outer digits uncovered. */
     /* Same scaled metrics draw_neon_live() uses on the marquee, so the dirty
      * boxes and the painted pixels agree. */
-    const int inv_slot = neon_mq(NEON_SLOT_W);
+    const neon_font_style_t *nfs = neon_font();
+    const int inv_slot = neon_mq(nfs->slot_w);
     /* The true sign width, fed to boost_neon_layout_readout() below so the
      * computed sign_x/half_w geometry matches what draw_neon_live() actually
      * draws. The invalidation margin used further down is this PLUS the
      * sign's glow reach - kept as a separate variable so widening the dirty
      * region can never leak into the geometry math. */
-    const int inv_sign = neon_mq(NEON_SIGN_W);
+    const int inv_sign = neon_mq(nfs->sign_w);
     /* The sign is a baked sprite now, so its halo reaches exactly as far as
      * every other sprite's: NEON_SPR_GLOW_MARGIN past its own ink. Every
      * invalidation box below that bounds the sign must grow by the same
@@ -4195,10 +4309,11 @@ static void update_neon(const boost_sample_t *sample, const boost_theme_t *theme
      * further, so the pad has to follow it up rather than stay behind. */
     const int inv_sign_pad = inv_sign + NEON_SPR_GLOW_MARGIN;
     boost_neon_layout_readout(psi, inv_slot,
-                              neon_mq(NEON_DOT_W),
+                              neon_mq(nfs->dot_w),
                               inv_sign,
-                              neon_mq(NEON_SIGN_GAP),
-                              neon_mq(NEON_FONT_PX), &r);
+                              neon_mq(nfs->sign_gap),
+                              neon_mq(nfs->negative_shift),
+                              neon_mq(nfs->font_px), nfs->metrics, &r);
     /* The glyph is WIDER than the cell it sits in: a '0' at 104 px measures
      * about 83 px against a 62 px cell, so it overhangs ~10 px each side. The
      * cell pitch is spacing, not ink extent, and invalidating only the cell
@@ -4212,10 +4327,10 @@ static void update_neon(const boost_sample_t *sample, const boost_theme_t *theme
      * sufficient on EVERY layout - no per-layout pad. Marquee had been using 70,
      * 40 px more than its own draw box, and its cells are the largest on the
      * face, so the waste showed up directly in the flush cost. */
-    const int cell_pad = NEON_CELL_BLEED;
+    const int cell_pad = nfs->cell_bleed;
     int cell_top = px_icy() + neon_readout_top_off();
     int cell_bot = cell_top +
-        (int)lv_font_get_line_height(NEON_BIG) + 8;
+        (int)lv_font_get_line_height(nfs->font) + 8;
 #if BOOST_NEON_GLYPH_SPRITES
     /* The sprite's own vertical footprint is not guaranteed to sit inside
      * the label-box height above - a font whose measured line height is
@@ -4301,8 +4416,9 @@ static void update_neon(const boost_sample_t *sample, const boost_theme_t *theme
                     for (int k = 0; k < NEON_BULB_N(z) / 6; ++k) {
                         int bx[3], by[3];
                         for (int j = 0; j < 3; ++j) {
+                            const int i = (k * 6 + first + j) % NEON_BULB_N(z);
                             neon_bulb_pos(px_icx(), px_icy(), z,
-                                          k * 6 + (first + j) % 6,
+                                          i,
                                           &bx[j], &by[j]);
                         }
                         const int pad = NEON_BULB_HALF + 1;
@@ -4332,8 +4448,10 @@ static void update_neon(const boost_sample_t *sample, const boost_theme_t *theme
                 const int base = neon_accent_base(z);
                 for (int k = 0; k < NEON_BULB_N(z) / 6; ++k) {
                     int bx1, by1, bx2, by2;
-                    neon_bulb_pos(px_icx(), px_icy(), z, k * 6 + base, &bx1, &by1);
-                    neon_bulb_pos(px_icx(), px_icy(), z, k * 6 + base + 1, &bx2, &by2);
+                    const int i1 = (k * 6 + base) % NEON_BULB_N(z);
+                    const int i2 = (i1 + 1) % NEON_BULB_N(z);
+                    neon_bulb_pos(px_icx(), px_icy(), z, i1, &bx1, &by1);
+                    neon_bulb_pos(px_icx(), px_icy(), z, i2, &bx2, &by2);
                     const int pad = NEON_BULB_HALF + 1;
                     lv_area_t pb = {
                         (bx1 < bx2 ? bx1 : bx2) - pad,

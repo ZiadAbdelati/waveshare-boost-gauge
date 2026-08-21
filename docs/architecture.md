@@ -8,6 +8,8 @@
 - **Changing theme rebuilds the scene** rather than recolouring, because each style is a different object tree. `PUT /themes/active` therefore calls `boost_gauge_apply_theme()` under the display lock — without it the picker only took effect after a reboot.
 - The `arc` face keeps its original geometry and wedge-invalidation logic verbatim; it is the path the 60 FPS cadence guard was established against.
 
+`app_main()` synchronously builds the persisted scene before it returns. The main task stack is therefore 8,192 bytes; ESP-IDF's 3,584-byte default overflowed while baking a persisted Neon scene before brightness or networking could start. A Neon cold boot must reach brightness and `HTTP API ready`, not merely `display ready`.
+
 ## Zero reference
 
 `psi_to_angle()` maps the arc face. `psi_to_sweep(psi, a0, a1)` projects the same zero-referenced scaling into any other sweep, so Vault-Tec and Night City honour the configured `zeroAngle` and scale vacuum/boost independently, exactly like the arc.
@@ -90,7 +92,7 @@ Vault-Tec also seeds its newly-built needle from the last committed pressure on 
 
 ## Fonts
 
-`main/fonts/` holds generated LVGL fonts plus their sources in `main/fonts/src/`. All are OFL so they can ship in the image (the web mirror's Bahnschrift/Consolas are Microsoft fonts and cannot be embedded):
+`main/fonts/` holds generated LVGL fonts; sources live there, under `main/fonts/src/`, or in `web/` when the dashboard serves the same file. All are OFL so they can ship in the image (the web mirror's Bahnschrift/Consolas are Microsoft fonts and cannot be embedded):
 
 | Font | Source | Use |
 |---|---|---|
@@ -101,10 +103,11 @@ Vault-Tec also seeds its newly-built needle from the last committed pressure on 
 | `archivo_black_65` (65 px) | Archivo Black (Google Fonts) | Dyno Cell readout |
 | `font_wide_22/32` | Saira SemiCondensed Bold | Big Digit labels |
 | `neon_big` (118 px) | SF Alien Encounters Italic | neon readout, all three layouts |
+| `doto_big` (126 px) | Doto ROND 100 / weight 700 | optional neon readout, all three layouts |
 | `neon_label` (24 px) | SF Alien Encounters regular | neon zone word and `P S I` |
 
 The neon readout is italic; the zone word and `P S I` are the **upright** face, so `main/fonts/` carries both `SFAlienEncounters-Italic.ttf` and `SFAlienEncounters.ttf`. The web mirror inlines both under one family name and selects between them purely by the presence of the `italic` keyword.
 
-The three neon fonts carry only `0x30–0x39,0x2E` (plus `0x20,0x41–0x5A` for `neon_label`); the face has no `-` contour, so the minus mark is drawn from bar geometry rather than a glyph. Their sizes are not free parameters — the readout cell pitch, sprite tile size, and invalidation bounds are derived from the generated `line_height` and widest glyph ink.
+The neon fonts carry only the glyphs they use. SF Alien's minus is drawn from bar geometry; Doto's uses three period-sized dots. Their sizes are not free parameters — the readout cell pitch, sprite tile size, and invalidation bounds are derived from the generated `line_height` and widest glyph ink. Regenerate Doto with `python tools/generate_doto_font.py`; its SIL OFL 1.1 license is `web/OFL-Doto.txt`.
 
 Regenerate with `lv_font_conv`, always passing `--lv-include lvgl.h` (the default `lvgl/lvgl.h` does not resolve against the managed component). Glyphs missing from a face can be merged from a second `--font`. Do not try to embed box-drawing/arrow codepoints through shell escapes — draw such marks as shapes instead; escaped UTF-8 has repeatedly been mangled a layer early.

@@ -8,7 +8,7 @@ A theme is no longer just a palette swap — each theme carries a **`style`** th
 | `vault-tec` | `vault` | Fallout-style phosphor **needle dial** with CRT scanlines/vignette, a peak tell-tale marker, and an overboost alert (warm numeral + blinking `OVER-PRESSURE`). |
 | `night-city` | `hud` | Cyberpunk **targeting HUD**: hazard chevrons, Kiroshi reticle around a big italic value, glitch-shear on fast spikes, MAP/PEAK telemetry. |
 | `big-digit` | `bigdigit` | A huge **Alvida Fatface** PSI number in white on a ground that sweeps cyan → lime → red with the reading. |
-| `neon` | `neon` | Neon-tube face in **SF Alien Encounters**: a glowing readout over one of three selectable layouts, in one of four colour presets. |
+| `neon` | `neon` | Neon-tube face with **SF Alien Encounters** or **Doto** readout, one of three selectable layouts, and one of four colour presets. |
 
 ## Shared rules across styles
 
@@ -28,7 +28,14 @@ The same endpoint carries `bigDigitStaticBg`. Big Digit normally sweeps its whol
 
 ## Neon: layouts and presets
 
-Unlike the other themes, `neon` is one theme with two extra settings rather than several theme entries. Both persist in NVS and both are exposed on `PUT /api/v1/themes/config`.
+Unlike the other themes, `neon` is one theme with layout, font, preset, and marquee-spin settings rather than several theme entries. They persist in NVS and are exposed on `PUT /api/v1/themes/config`.
+
+### `neonFont` (0-1)
+
+- **`0` SF Alien** - the original italic readout with its established two-pass halo and bar-shaped minus.
+- **`1` Doto** - ROND 100 / weight 700 modular digits with raw A8 coverage, no baked glow, and a custom three-dot minus.
+
+Doto's signed layout shifts its digits 16 px right and keeps 20 px from the minus ink to the first digit ink. Geometry tests use the tabular widest-digit case (`-99.9`), and firmware and web share the same metrics. Keep the established aligned sprite crop for both fonts: shrinking Doto to its ink exposed unaligned marquee descriptors. Sprite caches are keyed by layout and font.
 
 ### `neonLayout` (0–2)
 
@@ -40,7 +47,7 @@ The three rings sit at 176/200/224 (`NEON_BULB_RING_STEP` 24, 1.5× the first sp
 
 Each ring's bulb count is chosen for UNIFORM chord spacing — inner 54, middle 66, outer 72 (`NEON_BULB_N_INNER/MID/OUTER`, all divisible by 6 so the 2-lit/4-dark accent pattern wraps seamlessly). The border is a **cumulative stage ladder**: ring z's accent bulbs light once the reading has REACHED that zone (vacuum → inner only, boost → inner+middle, overboost → all three); dead bulbs stay dim `track`, so the two-tone look survives even fully lit. The accent anchors are `NEON_BULB_ACCENT_OFFSET(z)` = 0/3/2.
 
-`neonMarqueeSpin` (persisted) makes the accent bulbs CHASE around the rings — one ring advances every 90 ms, round-robin, inner/outer clockwise and middle counterclockwise, a full 6-phase rotation per ring in 1.62 s. The chase repaints only one ring per step (12 small boxes) and defers to zone flips, so it stays inside LVGL's 32-slot invalidation buffer. The pre-scaled readout cut framesOverBudget/s by ~35% and lifted the fast-motion floor. First marquee scene build is ~513 ms; cached returns ~172 ms.
+`neonMarqueeSpin` (persisted) makes the accent bulbs CHASE around the rings — one ring advances every 90 ms, round-robin, inner/outer clockwise and middle counterclockwise, a full 6-phase rotation per ring in 1.62 s. The chase repaints only one ring per step (12 small boxes) and defers to zone flips, so it stays inside LVGL's 32-slot invalidation buffer. Spin and zone-flip invalidation wrap every complete bulb index by `NEON_BULB_N(z)`; wrapping only the six-bulb residue or leaving `base+1` unbounded strands outer-ring bulb 0 at 12 o'clock. The pre-scaled readout cut framesOverBudget/s by ~35% and lifted the fast-motion floor. First marquee scene build is ~513 ms; cached returns ~172 ms.
 
 Invalidation is per-glyph, not per-slot: `neon_cell_x_span` / `neon_sign_x_span` ask the baked sprite for its own footprint (marquee: the pre-scaled tile's `bbox_s` at the scaled anchor; tube/segments: the full-size bbox at `spr_dx`) and REPLACE the uniform label box with the tile's exact extent (+1 px AA margin), unioning the old and new glyph footprints when a cell's occupant changes. The marquee bar invalidates only when its DRAWN pixel extent or the zone colour changed, so a static reading goes idle; the live accent scan is skipped when the dirty region cannot reach the rings. Host audit, 25 s, all four variants: **0 severe / 0 stale px**.
 
@@ -63,7 +70,7 @@ Presets set `track`/`muted` as well as the three zone colours, so changing one r
 
 **Palette entries are the base the bloom is derived from, not what you see.** Everything lit goes through `neon_lit()`: saturate ×1.30 about luma, gain ×1.92, then overflow past full scale desaturates toward white (`NEON_WHITE_LIFT`). Two earlier overflow rules each failed in a way worth not repeating — clamping per channel pinned every saturated entry to the same corner of the colour cube and made the three zones converge; scaling the whole vector back to peak 255 preserved hue but handed back all the gain, so the bloomed body came out *darker* than the raw palette and the ring's band structure inverted in 11 of 12 zones. The ring's inner band is a *dimmed* zone colour (`NEON_HALO_DIM`), which is what guarantees the bands read dark → bright → white outward regardless of palette.
 
-Readout glyphs, the minus mark, and the zone word are baked once at scene build as **A8 coverage tiles** with a box-blurred glow, then blitted with a recolor. Because coverage carries no colour, one set of tiles serves every zone and every preset, and both tiles and the painted background survive theme switches (keyed on layout, and on `neon_bg_key_t` respectively) — without that memoisation, entering `neon` cost ~350 ms against 45–100 ms for other themes.
+Readout glyphs, the minus mark, and the zone word are baked once at scene build as **A8 coverage tiles**, then blitted with a recolor. SF Alien and zone words retain the box-blurred glow; Doto digits, decimal, and three-dot minus publish raw core coverage. Because coverage carries no colour, one set of tiles serves every zone and every preset, and both tiles and the painted background survive theme switches (keyed on layout + font, and on `neon_bg_key_t` respectively) — without that memoisation, entering `neon` cost ~350 ms against 45–100 ms for other themes.
 
 ## UI design tokens
 

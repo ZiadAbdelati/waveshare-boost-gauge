@@ -45,6 +45,7 @@ idf_component_register(
         "fonts/font_cond_96.c"
         "fonts/archivo_black_65.c"
         "fonts/neon_big.c"
+        "fonts/doto_big.c"
         "fonts/neon_label.c"
         "fonts/font_wide_22.c"
         "fonts/font_wide_32.c"

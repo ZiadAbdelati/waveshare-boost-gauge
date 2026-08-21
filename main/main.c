@@ -165,6 +165,8 @@ void app_main(void)
         lv_timer_ready(gauge_timer);
         lv_timer_create(tpms_timer_cb, 250, NULL);
         boost_display_unlock();
+        ESP_LOGI(TAG, "main stack minimum free after scene build: %u B",
+                 (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
     } else {
         ESP_LOGE(TAG, "display lock failed during UI create");
         return;

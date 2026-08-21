@@ -65,6 +65,11 @@ CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=y
 
 CONFIG_FREERTOS_HZ=1000
 
+# app_main builds the persisted LVGL scene before it returns. The Neon scene's
+# sprite bake exceeds ESP-IDF's 3584-byte default and otherwise boot-loops before
+# brightness and networking start.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
 # LVGL 9
 CONFIG_LV_USE_CLIB_MALLOC=y
 CONFIG_LV_USE_CLIB_STRING=y

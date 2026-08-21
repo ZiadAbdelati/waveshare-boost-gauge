@@ -158,8 +158,11 @@ These are the currently-actionable invariants distilled from the regression ledg
 | Segments: 45 × 6-degree slots (4° lit wedges, 2° gaps); lit bands baked as colour-independent A8 tiles | 2026-08-11 |
 | Marquee: rings at 176/200/224 (`NEON_BULB_RING_STEP` 24), bulb counts 54/66/72 for uniform chord spacing, cumulative stage ladder, `neonMarqueeSpin` chase; zone flip defers the run repaint one frame (word-first, arc-next-frame) | 2026-08-11 |
 | Zone-flip recolor deferral is one frame of old-colour ring, never a multi-frame sweep (user rejected the banded sweep) | 2026-08-11 |
-| Scene-build caches: background keyed on `neon_bg_key_t` (layout/track/zero), glyph sprites keyed on layout alone; exercise the MUST-rebuild paths, not just the fast path | 2026-08-11 |
+| Scene-build caches: background keyed on `neon_bg_key_t` (layout/track/zero), glyph sprites keyed on layout + font; exercise the MUST-rebuild paths, not just the fast path | 2026-08-11/20 |
 | Readout invalidation uses the baked sprite footprint, never the label box; marquee scaled anchor + `bbox_s`, full-size `spr_dx` + bbox | 2026-08-09 |
+| Doto's signed readout shifts digits 16 px right and keeps 20 px from the custom three-dot minus to the first digit ink; test the tabular widest-digit case and keep firmware/web geometry identical | 2026-08-20 |
+| Doto readout glyphs/sign are raw A8 coverage with no baked glow; SF Alien retains the two-pass halo. Keep the established aligned sprite crop for both fonts; shrinking Doto's crop to ink exposed unaligned marquee descriptors | 2026-08-20 |
+| Marquee spin and zone-flip invalidation wrap every complete bulb index by `NEON_BULB_N(z)`; wrapping only the residue or leaving `base+1` unbounded strands outer-ring bulb 0 at 12 o'clock for several cycles | 2026-08-20 |
 
 ### Media / GIF
 
@@ -224,6 +227,7 @@ These are the currently-actionable invariants distilled from the regression ledg
 | Panel boots at 0% and ramps to `boost_model_boot_brightness()` after a 100 ms settle — no bright/white flash; hold-to-dim re-applies only on a schedule desired-state transition, never on a fixed cadence | 2026-08-13/14 |
 | Two-finger QR (2.2 s hold) depends on the vendored CST9217 two-point read (15-byte read + ACK write, count at byte [5]); displays connected STA IP when associated | 2026-08-14/15 |
 | No module's persistence may depend on another module having initialised NVS; test persistence with an actual reboot | 2026-07-25 |
+| The main task stack is 8,192 bytes because `app_main()` synchronously builds the persisted LVGL scene; 3,584 bytes overflows during the Neon glyph bake before brightness/network startup. Reboot with Neon persisted and require brightness + `HTTP API ready`, not merely `display ready` | 2026-08-20 |
 | Internal DRAM is shared with Wi-Fi and display DMA: measure free internal at peak, keep a hard reserve, and anything that can brick the boot path needs a serial recovery plan before it is flashed | 2026-07-26 |
 | Wi-Fi STA scans before connecting across up to 5 saved NVS networks; scans and reconnects are suspended while SoftAP clients are connected to preserve airtime | 2026-08-15 |
 | BLE scan runs 25% duty cycle (80 ms interval, 20 ms window, 3 s burst) while disconnected, with an **exponential inter-scan backoff (10 s → 120 s cap) that grows while the stored peer is unreachable and resets on any connect** — an absent adapter must not hammer the shared radio (web p95 191 → 118 ms, max 291 → 169 ms, no timeouts) | 2026-08-15 |

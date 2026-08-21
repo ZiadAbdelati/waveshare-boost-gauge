@@ -764,7 +764,7 @@ static esp_err_t themes_get(httpd_req_t *req)
              "\"teSync\":%s,\"regionDBuf\":%s,\"teScanline\":%s,"
              "\"rotation\":%u,"
              "\"vaultFace\":\"#%06lx\",\"vaultVignette\":%u,\"vaultNeedleRed\":%s,"
-              "\"vaultNeedleTail\":%s,\"neonLayout\":%u,\"neonPreset\":%u,\"demoMode\":%s,\"demoFastSweep\":%s,"
+              "\"vaultNeedleTail\":%s,\"neonLayout\":%u,\"neonFont\":%u,\"neonPreset\":%u,\"demoMode\":%s,\"demoFastSweep\":%s,"
              "\"tpmsBle\":%s,"
              "\"pixelShift\":%s,\"pixelShiftSec\":%u,\"themes\":[",
              cfg.active_theme_id,
@@ -785,6 +785,7 @@ static esp_err_t themes_get(httpd_req_t *req)
              boost_theme_vault_needle_red() ? "true" : "false",
              boost_theme_vault_needle_tail() ? "true" : "false",
               (unsigned)boost_theme_neon_layout(),
+              (unsigned)boost_theme_neon_font(),
               (unsigned)boost_theme_neon_preset(),
              boost_theme_demo_mode() ? "true" : "false",
              boost_sim_fast_sweep() ? "true" : "false",
@@ -1008,6 +1009,20 @@ static esp_err_t themes_config_put(httpd_req_t *req)
             return send_err(req, HTTPD_400, "invalid_neon_layout");
         }
         boost_theme_set_neon_layout((boost_neon_layout_t)(int)v);
+        if (boost_display_lock(1000) == ESP_OK) {
+            boost_gauge_apply_theme(boost_model_active_theme());
+            boost_display_unlock();
+        }
+    }
+
+    const cJSON *nfont = cJSON_GetObjectItemCaseSensitive(root, "neonFont");
+    if (cJSON_IsNumber(nfont)) {
+        const double v = nfont->valuedouble;
+        if (!(v == 0.0 || v == 1.0)) {
+            cJSON_Delete(root);
+            return send_err(req, HTTPD_400, "invalid_neon_font");
+        }
+        boost_theme_set_neon_font((boost_neon_font_t)(int)v);
         if (boost_display_lock(1000) == ESP_OK) {
             boost_gauge_apply_theme(boost_model_active_theme());
             boost_display_unlock();

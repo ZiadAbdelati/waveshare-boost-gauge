@@ -59,8 +59,27 @@ typedef struct {
  * `half_w` is what callers size the face against: the sign sits outside the
  * cell block, so the negative case is always the widest the readout gets.
  */
+/* Advance width and left side bearing per mille of em for '0'..'9', sampled
+ * from the typeface. Both are needed: the ink is not centred in the advance
+ * box. Doto (uniform 600/13) and SF Alien (the original tables) differ, so
+ * the caller passes the font's tables and layout_readout uses them.
+ * `dot_center_per_mille` corrects punctuation whose ink is not centred on the
+ * digit ink centre after it is put in a narrower decimal cell. */
+typedef struct {
+    const uint16_t adv_per_mille[10];
+    const uint16_t lsb_per_mille[10];
+    int16_t dot_center_per_mille;
+} boost_neon_digit_metrics_t;
+
+/* SF Alien Encounters italic digit metrics (the theme's original typeface). */
+extern const boost_neon_digit_metrics_t boost_neon_sf_metrics;
+/* Doto ROND=100 / wght=700: tabular, uniform advance and bearing. */
+extern const boost_neon_digit_metrics_t boost_neon_doto_metrics;
+
 void boost_neon_layout_readout(float psi, int slot_w, int dot_w,
-                               int sign_w, int sign_gap, int font_px,
+                               int sign_w, int sign_gap, int negative_shift,
+                               int font_px,
+                               const boost_neon_digit_metrics_t *metrics,
                                boost_neon_readout_t *out);
 
 /*

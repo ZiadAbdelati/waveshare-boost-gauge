@@ -21,6 +21,8 @@ const src = fs.readFileSync(path.join(rootDir, "web", "app.js"), "utf8");
 const css = fs.readFileSync(path.join(rootDir, "web", "styles.css"), "utf8");
 assert.ok(/@font-face\{[^}]*font-family:"SF Alien Encounters"[^}]*src:url\(data:font\//.test(css),
   "SF Alien Encounters must be inlined via @font-face");
+assert.ok(/@font-face\{[^}]*font-family:"Doto"[^}]*src:url\("\/doto\.ttf"\)/.test(css),
+  "Doto must be served as a dashboard font asset");
 
 function extract(name) {
   const start = src.indexOf(`function ${name}(`);
@@ -67,9 +69,10 @@ function roundRectPath(x, y, w, h, r) { calls.push({ op: "roundRect", args: [x, 
 
 const state = {
   neonLayout: 1,
+  neonFont: 0,
   neonMarqueeSpin: false,
   neonSpinTicks: 0,
-  palette: { track: "#241038", muted: "#5A3A7A", vacuum: "#7B00FF", boost: "#FF2BD6", overboost: "#FF6A00" },
+  palette: { track: "#241038", text: "#FFFFFF", muted: "#5A3A7A", vacuum: "#7B00FF", boost: "#FF2BD6", overboost: "#FF6A00" },
 };
 function psiRange() { return { psiMin: -15, psiMax: 10, psiOverboost: 8, zeroAngle: 236.25 }; }
 
@@ -103,6 +106,13 @@ function render(layout, psi, peak = 0) {
   return calls;
 }
 
+function renderFont(layout, font, psi, peak = 0) {
+  state.neonFont = font;
+  const result = render(layout, psi, peak);
+  state.neonFont = 0;
+  return result;
+}
+
 /* ctx.font and ctx.textBaseline are ordinary property sets in this shim, not
  * attributes of the fillText call itself - this replays the call log and
  * stamps each call with whichever font/baseline was active at that point, so
@@ -121,6 +131,36 @@ function withTextState(callsArr) {
   const fontSets = c.filter((k) => k.op === "set:font").map((k) => String(k.args[0]));
   assert.ok(fontSets.some((font) => font.includes('"SF Alien Encounters"')),
     "readout must request SF Alien Encounters");
+}
+{
+  const c = renderFont(1, 1, -99.9);
+  const text = withTextState(c);
+  assert.ok(text.some((k) => k.op === "fillText" && k.font?.includes('"Doto"')),
+    "Doto readout must request the Doto webfont");
+  const signDots = c.filter((k) => k.op === "arc" && Math.abs(k.args[2] - 5) < 0.01);
+  assert.strictEqual(signDots.length, 3, `Doto minus must draw 3 period-sized dots, got ${signDots.length}`);
+  const firstDigit = text.find((k) => k.op === "fillText" && k.font?.includes('"Doto"') && k.args[0] === "9");
+  const firstInkLeft = firstDigit.args[1] - 0.6 * 126 / 2 + 0.013 * 126;
+  const signRightEdge = signDots[2].args[0] + signDots[2].args[2];
+  assert.ok(Math.abs(firstInkLeft - signRightEdge - 20) < 0.01,
+    `Doto minus must clear the widest adjacent digit ink by 20 px, got ${firstInkLeft - signRightEdge}`);
+  assert.strictEqual(signDots[0].args[1], 11,
+    `Doto minus must sit 11 px below the readout line midpoint, got y=${signDots[0].args[1]}`);
+  const digitCalls = text.filter((k) => k.op === "fillText" && k.font?.includes('"Doto"'));
+  const decimal = digitCalls.find((k) => k.args[0] === ".");
+  assert.ok(decimal, "Doto decimal missing");
+  assert.strictEqual(decimal.args[1], 62,
+    `Doto decimal must carry the firmware's 12 px visual-centre correction, got ${decimal.args[1]}`);
+}
+{
+  const atmoCalls = withTextState(render(1, 0)).filter((k) => k.op === "fillText");
+  assert.ok(atmoCalls.some((k) => k.args[0] === "ATMO"), "Neon must show ATMO inside the shared -0.35..0.35 atmosphere band");
+  assert.strictEqual(atmoCalls.find((k) => k.args[0] === "ATMO").style, "rgb(255, 255, 255)",
+    "Neon ATMO word must render white");
+  const vac = withTextState(render(1, -0.35)).filter((k) => k.op === "fillText").map((k) => k.args[0]);
+  assert.ok(vac.includes("VACUUM"), "Neon must return to VACUUM at -0.35 psi");
+  const boost = withTextState(render(1, 0.35)).filter((k) => k.op === "fillText").map((k) => k.args[0]);
+  assert.ok(boost.includes("BOOST"), "Neon must enter BOOST at 0.35 psi");
 }
 
 /* --- the ring lights whole segments, indexed by floor at BOTH ends --------- */

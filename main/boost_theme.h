@@ -213,6 +213,14 @@ boost_neon_layout_t boost_theme_neon_layout(void);
 void boost_theme_set_neon_layout(boost_neon_layout_t layout);
 
 typedef enum {
+    BOOST_NEON_FONT_ALIEN = 0,   /* SF Alien Encounters (current default) */
+    BOOST_NEON_FONT_DOTO = 1,    /* Doto ROND=100 / wght=700 */
+} boost_neon_font_t;
+
+boost_neon_font_t boost_theme_neon_font(void);
+void boost_theme_set_neon_font(boost_neon_font_t font);
+
+typedef enum {
     BOOST_NEON_PRESET_VIOLET = 0,
     BOOST_NEON_PRESET_MIAMI = 1,
     BOOST_NEON_PRESET_TOXIC = 2,

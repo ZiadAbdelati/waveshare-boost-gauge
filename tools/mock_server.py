@@ -115,7 +115,9 @@ CONFIG = {
     "activeThemeId": "dyno-cell",
     "vaultNeedleRed": False,
     "vaultNeedleTail": False,
+    "regionDBuf": False,
     "neonLayout": 1,
+    "neonFont": 0,
     "neonPreset": 0,
     "psiMin": -15.0,
     "psiMax": 10.0,
@@ -493,6 +495,7 @@ def themes_payload() -> dict:
         "hudTrueBlack": bool(CONFIG.get("hudTrueBlack", False)),
         "neonMarqueeSpin": bool(CONFIG.get("neonMarqueeSpin", False)),
         "teSync": bool(CONFIG.get("teSync", False)),
+        "regionDBuf": bool(CONFIG.get("regionDBuf", False)),
         "teScanline": bool(CONFIG.get("teScanline", False)),
         "rotation": int(CONFIG.get("rotation", 0)),
         "demoMode": bool(CONFIG.get("demoMode", False)),
@@ -503,6 +506,7 @@ def themes_payload() -> dict:
         "vaultNeedleRed": bool(CONFIG.get("vaultNeedleRed", False)),
         "vaultNeedleTail": bool(CONFIG.get("vaultNeedleTail", False)),
         "neonLayout": int(CONFIG.get("neonLayout", 1)),
+        "neonFont": int(CONFIG.get("neonFont", 0)),
         "neonPreset": int(CONFIG.get("neonPreset", 0)),
         "themes": out,
     }
@@ -712,13 +716,20 @@ class Handler(BaseHTTPRequestHandler):
                 CONFIG["vaultNeedleRed"] = payload["vaultNeedleRed"]
             if "vaultNeedleTail" in payload and isinstance(payload["vaultNeedleTail"], bool):
                 CONFIG["vaultNeedleTail"] = payload["vaultNeedleTail"]
+            if "regionDBuf" in payload and isinstance(payload["regionDBuf"], bool):
+                CONFIG["regionDBuf"] = payload["regionDBuf"]
             if "neonLayout" in payload and isinstance(payload["neonLayout"], int):
                 if payload["neonLayout"] not in (0, 1, 2):
                     self.send_json({"error": "invalid_neon_layout"}, HTTPStatus.BAD_REQUEST)
                     return
                 CONFIG["neonLayout"] = int(payload["neonLayout"])
+            if "neonFont" in payload and type(payload["neonFont"]) is int:
+                if payload["neonFont"] not in (0, 1):
+                    self.send_json({"error": "invalid_neon_font"}, HTTPStatus.BAD_REQUEST)
+                    return
+                CONFIG["neonFont"] = int(payload["neonFont"])
             if "neonPreset" in payload and isinstance(payload["neonPreset"], int):
-                if payload["neonPreset"] not in (0, 1, 2):
+                if payload["neonPreset"] not in (0, 1, 2, 3):
                     self.send_json({"error": "invalid_neon_preset"}, HTTPStatus.BAD_REQUEST)
                     return
                 CONFIG["neonPreset"] = int(payload["neonPreset"])

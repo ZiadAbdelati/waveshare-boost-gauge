@@ -20,18 +20,31 @@ boost_neon_layout_t boost_neon_layout_clamp(uint8_t stored)
  * box. '1' advances only 409 but still carries a 133 bearing, so its ink sits
  * far right of the advance centre - centring on the advance alone left a 25 px
  * hole between the sign and the digit. */
-static const uint16_t k_adv_per_mille[10] = {
-    780, 409, 767, 753, 673, 767, 762, 677, 770, 763
+const boost_neon_digit_metrics_t boost_neon_sf_metrics = {
+    { 780, 409, 767, 753, 673, 767, 762, 677, 770, 763 },
+    { 133, 133, 113,  92,  99, 107, 133, 126, 128, 147 },
+    0,
 };
-static const uint16_t k_lsb_per_mille[10] = {
-    133, 133, 113,  92,  99, 107, 133, 126, 128, 147
+/* Doto ROND=100 / wght=700 is tabular: every digit shares one advance and one
+ * bearing (600 and 13 per mille). The post-processed period's ink centre sits
+ * 100 units left of the digit ink centre, so shift it right by that amount to
+ * balance the visible gaps on both sides. */
+const boost_neon_digit_metrics_t boost_neon_doto_metrics = {
+    { 600, 600, 600, 600, 600, 600, 600, 600, 600, 600 },
+    { 13, 13, 13, 13, 13, 13, 13, 13, 13, 13 },
+    100,
 };
 
 void boost_neon_layout_readout(float psi, int slot_w, int dot_w,
-                               int sign_w, int sign_gap, int font_px,
+                               int sign_w, int sign_gap, int negative_shift,
+                               int font_px,
+                               const boost_neon_digit_metrics_t *metrics,
                                boost_neon_readout_t *out)
 {
     if (out == NULL) return;
+    if (metrics == NULL) metrics = &boost_neon_sf_metrics;
+    const uint16_t *k_adv_per_mille = metrics->adv_per_mille;
+    const uint16_t *k_lsb_per_mille = metrics->lsb_per_mille;
 
     /* Round once, then decompose. Rounding per-digit lets 8.95 print as
      * "8.10" when the tenths carry but the whole part is taken from the
@@ -70,7 +83,17 @@ void boost_neon_layout_readout(float psi, int slot_w, int dot_w,
     int x = -total / 2;
     for (uint8_t i = 0; i < out->count; ++i) {
         out->cells[i].x = (int16_t)(x + width[i] / 2);
+        if (out->cells[i].ch == '.') {
+            out->cells[i].x += (int16_t)(((int32_t)metrics->dot_center_per_mille *
+                                          (int32_t)font_px) / 1000);
+        }
         x += width[i];
+    }
+
+    if (out->sign) {
+        for (uint8_t i = 0; i < out->count; ++i) {
+            out->cells[i].x += (int16_t)negative_shift;
+        }
     }
 
     /* Hang the sign off the first glyph's ink edge rather than the cell edge,
@@ -86,9 +109,10 @@ void boost_neon_layout_readout(float psi, int slot_w, int dot_w,
     /* Left edge of the INK, not of the advance box. */
     const int glyph_left = out->cells[0].x - gw / 2 + lsb;
     out->sign_x = (int16_t)(glyph_left - sign_gap - sign_w / 2);
-    const int sign_edge = -(out->sign_x - sign_w / 2);
-    out->half_w = (int16_t)(out->sign && sign_edge > total / 2 ? sign_edge
-                                                               : total / 2);
+    const int left_edge = out->sign ? -(out->sign_x - sign_w / 2)
+                                    : total / 2;
+    const int right_edge = total / 2 + (out->sign ? negative_shift : 0);
+    out->half_w = (int16_t)(left_edge > right_edge ? left_edge : right_edge);
 }
 
 void boost_neon_sign_bars(int cx, int cy, int size, int width,

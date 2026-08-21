@@ -118,6 +118,7 @@ const state = {
   vaultNeedleRed: false,
   vaultNeedleTail: false,
   neonLayout: 1,
+  neonFont: 0,
   neonPreset: 0,
   hudTrueBlack: false,
   /* Whole GET /sensors/calibration body, folded back in from every response so
@@ -636,7 +637,7 @@ function drawNeonGauge(sample, psi, g) {
   const sweep = ARC_RANGE;
   const zero = psiToSweep(0, start, start + sweep, range);
   const value = psiToSweep(psi, start, start + sweep, range);
-  const zone = psi >= range.psiOverboost ? "OVERBOOST" : psi > 0.05 ? "BOOST" : "VACUUM";
+  const zone = psi >= range.psiOverboost ? "OVERBOOST" : psi >= 0.35 ? "BOOST" : psi > -0.35 ? "ATMO" : "VACUUM";
   const accent = psi >= range.psiOverboost ? p.overboost : psi > 0.05 ? p.boost : p.vacuum;
   const lit = neonLitColor(accent);
   const tubeMid = neonTrackMiddle(accent);
@@ -815,6 +816,7 @@ function drawNeonGauge(sample, psi, g) {
     }
   }
 
+  const doto = Number(state.neonFont) === 1;
   const tenthsTotal = Math.round(Math.abs(psi) * 10);
   const whole = Math.floor(tenthsTotal / 10);
   const chars = `${whole >= 10 ? Math.floor(whole / 10) : ""}${whole % 10}.${tenthsTotal % 10}`;
@@ -823,30 +825,58 @@ function drawNeonGauge(sample, psi, g) {
    * badly once (64/33 against the panel's 88/34), which made the mirror draw
    * a visibly tighter readout than the panel ever showed. The marquee scales
    * these by mq (NEON_MARQUEE_CENTER_SCALE) to match its smaller sprites. */
-  const widths = [...chars].map((ch) => ch === "." ? 34 * mq : 88 * mq);
+  const slotW = doto ? 68 : 88;
+  const dotW = doto ? 26 : 34;
+  const widths = [...chars].map((ch) => ch === "." ? dotW * mq : slotW * mq);
   const total = widths.reduce((a, b) => a + b, 0);
-  let x = -total / 2;
+  const negativeShift = doto && psi < 0 && tenthsTotal !== 0 ? 16 * mq : 0;
+  let x = -total / 2 + negativeShift;
   const readoutTop = -42 * mq - readoutLift;
-  const fontPx = 118 * mq;
+  const fontPx = (doto ? 126 : 118) * mq;
   /* Weight 400, matching what styles.css actually declares for this face. It
    * asked for 700, which the family does not provide - the browser then shapes
    * the SYSTEM fallback instead, silently, and canvas never corrects itself
    * because it does not watch for webfont swaps. That is why the readout lost
    * its typeface. */
-  ctx.font = `italic ${fontPx}px "SF Alien Encounters", sans-serif`;
+  ctx.font = doto
+    ? `700 ${fontPx}px "Doto", sans-serif`
+    : `italic ${fontPx}px "SF Alien Encounters", sans-serif`;
   /* Alphabetic, not "top". lv_draw_label anchors to the TOP OF ITS BOX and this
    * font has base_line 0, so its ink runs from the box top down 0.70 em. Canvas
    * "top" anchors to the font's ASCENT metric, which sits above the ink here -
    * so the same y drew the readout low. Placing the baseline at
    * readoutTop + 0.70 em puts the INK top where the panel puts it. */
   ctx.textAlign = "center"; ctx.textBaseline = "alphabetic";
-  const readoutBaseline = readoutTop + fontPx * NEON_INK_EM;
+  const readoutBaseline = readoutTop + fontPx * (doto ? 85 / 126 : NEON_INK_EM);
   ctx.fillStyle = lit;
   withGlow(lit, () => {
     let gx = x;
-    for (let i = 0; i < chars.length; i++) { const w = widths[i]; ctx.fillText(chars[i], gx + w / 2, readoutBaseline); gx += w; }
+    for (let i = 0; i < chars.length; i++) {
+      const w = widths[i];
+      const dotShift = doto && chars[i] === "." ? 12 * mq : 0;
+      ctx.fillText(chars[i], gx + w / 2 + dotShift, readoutBaseline);
+      gx += w;
+    }
   });
   if (psi < 0 && tenthsTotal !== 0) {
+    if (doto) {
+      const firstCell = slotW * mq;
+      const glyphLeft = -total / 2 + firstCell / 2 - 0.6 * fontPx / 2 + 0.013 * fontPx;
+      const sw = 42 * mq;
+      const signGap = 20 * mq;
+      const sx = glyphLeft + negativeShift - signGap - sw / 2;
+      const dot = 10 * mq;
+      const gap = 6 * mq;
+      const cy = readoutTop + Math.floor(85 * mq / 2) + 11 * mq;
+      ctx.fillStyle = lit;
+      withGlow(lit, () => {
+        for (let i = 0; i < 3; i++) {
+          ctx.beginPath();
+          ctx.arc(sx - sw / 2 + dot / 2 + i * (dot + gap), cy, dot / 2, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      });
+    } else {
     const adv = [780, 409, 767, 753, 673, 767, 762, 677, 770, 763];
     const lsb = [133, 133, 113, 92, 99, 107, 133, 126, 128, 147];
     const first = Number(chars[0]);
@@ -892,6 +922,7 @@ function drawNeonGauge(sample, psi, g) {
       }
       ctx.fill();
     });
+    }
   }
   /* The zone word and the unit mark share the firmware's 24 px neon_label, not
    * a system font - they are set in the same typeface as the readout.
@@ -914,8 +945,9 @@ function drawNeonGauge(sample, psi, g) {
   /* The zone word glows too now - it is baked through the same blur as the
    * readout on the panel, having been the one lit element there with no glow
    * at all. */
-  ctx.fillStyle = lit;
-  withGlow(lit, () => ctx.fillText(zone, 0, -95));
+  const wordLit = zone === "ATMO" ? neonLitColor(p.text) : lit;
+  ctx.fillStyle = wordLit;
+  withGlow(wordLit, () => ctx.fillText(zone, 0, -95));
   /* NEON_UNIT_Y / NEON_RULE_Y / NEON_PEAK_Y, which moved down 40 as a unit.
    * The unit mark's y is UNIT_Y + 2 because neon_label has base_line 0 and an
    * alphabetic baseline IS the ink bottom - see the note above. */
@@ -1622,6 +1654,7 @@ if (typeof document !== "undefined" && document.fonts) {
     document.fonts.load('italic 154px "SF Alien Encounters"'),
     document.fonts.load('italic 24px "SF Alien Encounters"'),
     document.fonts.load('24px "SF Alien Encounters"'),
+    document.fonts.load('700 126px "Doto"'),
     document.fonts.load('400 56px "Archivo Black"'),
   ]).then(() => scheduleGaugeRender()).catch(() => { /* fallback face is fine */ });
 }
@@ -2268,6 +2301,7 @@ function applyThemePayload(payload, fallback = {}) {
   set("vaultNeedleRed", bool("vaultNeedleRed"));
   set("vaultNeedleTail", bool("vaultNeedleTail"));
   set("neonLayout", (() => { const v = pick("neonLayout"); return v === undefined ? undefined : ([0, 1, 2].includes(Number(v)) ? Number(v) : 1); })());
+  set("neonFont", (() => { const v = pick("neonFont"); return v === undefined ? undefined : ([0, 1].includes(Number(v)) ? Number(v) : 0); })());
   set("neonPreset", (() => { const v = pick("neonPreset"); return v === undefined ? undefined : ([0, 1, 2, 3].includes(Number(v)) ? Number(v) : 0); })());
 }
 
@@ -2438,6 +2472,21 @@ function themeEditor(theme) {
   }
 
   if (theme.style === "neon") {
+    const fontRow = document.createElement("label");
+    fontRow.className = "theme-select-row";
+    const font = document.createElement("select");
+    font.innerHTML = `<option value="0">SF Alien</option><option value="1">Doto</option>`;
+    font.value = String([0, 1].includes(Number(state.neonFont)) ? Number(state.neonFont) : 0);
+    font.addEventListener("change", () => {
+      state.neonFont = Number(font.value);
+      scheduleGaugeRender();
+      queueThemeConfig({ neonFont: state.neonFont }, `Neon ${font.options[font.selectedIndex].text} readout`);
+    });
+    const fontName = document.createElement("span");
+    fontName.textContent = "Readout font";
+    fontRow.append(fontName, font);
+    wrap.append(fontRow);
+
     const row = document.createElement("label");
     row.className = "theme-select-row";
     const select = document.createElement("select");
@@ -2587,8 +2636,8 @@ function renderThemes() {
     const edit = document.createElement("button");
     edit.type = "button";
     edit.className = "theme-edit";
-    edit.title = `Edit ${theme.name} colors`;
-    edit.textContent = openThemeEditor === theme.id ? "Close" : "Colors";
+    edit.title = `Edit ${theme.name} options`;
+    edit.textContent = openThemeEditor === theme.id ? "Close" : "Options";
     edit.addEventListener("click", () => {
       openThemeEditor = openThemeEditor === theme.id ? null : theme.id;
       renderThemes();

@@ -29,7 +29,7 @@ int main(void)
     assert(boost_neon_layout_clamp(255) == BOOST_NEON_LAYOUT_DEFAULT);
 
     boost_neon_readout_t r;
-    boost_neon_layout_readout(8.5f, 64, 33, 31, 8, 108, &r);
+    boost_neon_layout_readout(8.5f, 64, 33, 31, 8, 0, 108, &boost_neon_sf_metrics, &r);
     assert(r.count == 3);
     assert(r.sign == false);
     assert(r.cells[0].ch == '8');
@@ -40,7 +40,7 @@ int main(void)
     assert(r.cells[0].x == -48);
     assert(r.cells[2].x == 49);
 
-    boost_neon_layout_readout(19.5f, 64, 33, 31, 8, 108, &r);
+    boost_neon_layout_readout(19.5f, 64, 33, 31, 8, 0, 108, &boost_neon_sf_metrics, &r);
     assert(r.count == 4);
     assert(r.cells[0].ch == '1');
     assert(r.cells[1].ch == '9');
@@ -48,7 +48,7 @@ int main(void)
     assert(r.cells[2].x == 32);
     assert(r.half_w == 112);
 
-    boost_neon_layout_readout(-12.0f, 64, 33, 31, 8, 108, &r);
+    boost_neon_layout_readout(-12.0f, 64, 33, 31, 8, 0, 108, &boost_neon_sf_metrics, &r);
     assert(r.count == 4);
     assert(r.sign == true);
     assert(r.cells[0].ch == '1');
@@ -62,12 +62,33 @@ int main(void)
     assert(r.sign_x == -88 - 8 - 31 / 2);
     assert(r.cells[2].x == 32);
 
-    boost_neon_layout_readout(8.95f, 64, 33, 31, 8, 108, &r);
+    boost_neon_layout_readout(8.95f, 64, 33, 31, 8, 0, 108, &boost_neon_sf_metrics, &r);
     assert(r.cells[0].ch == '9');
     assert(r.cells[2].ch == '0');
-    boost_neon_layout_readout(-0.02f, 64, 33, 31, 8, 108, &r);
+    boost_neon_layout_readout(-0.02f, 64, 33, 31, 8, 0, 108, &boost_neon_sf_metrics, &r);
     assert(r.sign == false);
     assert(r.cells[0].ch == '0');
+
+    /* Doto's period contour sits left of its tabular advance centre. The
+     * production 100/1000-em correction moves the visible dot 12 px right at
+     * 126 px, while the block itself remains centred and stable. */
+    boost_neon_layout_readout(8.5f, 68, 26, 31, 8, 16, 126,
+                              &boost_neon_doto_metrics, &r);
+    assert(r.count == 3);
+    assert(r.cells[0].x == -47);
+    assert(r.cells[1].x == 12);
+    assert(r.cells[2].x == 47);
+    assert(r.half_w == 81);
+    boost_neon_layout_readout(-99.9f, 68, 26, 42, 20, 16, 126,
+                              &boost_neon_doto_metrics, &r);
+    assert(r.sign == true);
+    assert(r.cells[0].x == -65);
+    assert(r.sign_x == -142);
+    assert(r.half_w == 163);
+    assert(r.half_w < 167);   /* clears the segments ring's inner edge */
+    const int first_ink_left = r.cells[0].x - (600 * 126 / 1000) / 2
+                              + 13 * 126 / 1000;
+    assert(first_ink_left - (r.sign_x + 42 / 2) == 20);
 
     boost_neon_bar_t bars[BOOST_NEON_SIGN_BARS];
     boost_neon_sign_bars(0, 0, 108, 31, bars);

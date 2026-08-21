@@ -35,6 +35,7 @@
 #define NVS_KEY_VRED    "vault_red"
 #define NVS_KEY_VTAIL   "vault_tail"
 #define NVS_KEY_NEONLAY "neon_layout"
+#define NVS_KEY_NEONFONT "neon_font"
 #define NVS_KEY_NEONPRE "neon_preset"
 #define NVS_KEY_DEMO    "demo_mode"
 #define NVS_KEY_FASTS   "demo_fast_sweep"
@@ -150,6 +151,7 @@ static uint8_t s_vault_vig_pct = 60u;
 static bool s_vault_needle_red;
 static bool s_vault_needle_tail;
 static uint8_t s_neon_layout = (uint8_t)BOOST_NEON_LAYOUT_DEFAULT;
+static uint8_t s_neon_font = (uint8_t)BOOST_NEON_FONT_ALIEN;
 static uint8_t s_neon_preset = (uint8_t)BOOST_NEON_PRESET_VIOLET;
 
 typedef struct {
@@ -214,6 +216,12 @@ static boost_neon_preset_t boost_neon_preset_clamp(uint8_t preset)
 {
     return preset <= BOOST_NEON_PRESET_BLOODMOON ? (boost_neon_preset_t)preset
                                                   : BOOST_NEON_PRESET_VIOLET;
+}
+
+static boost_neon_font_t boost_neon_font_clamp(uint8_t font)
+{
+    return font <= BOOST_NEON_FONT_DOTO ? (boost_neon_font_t)font
+                                         : BOOST_NEON_FONT_ALIEN;
 }
 
 static void apply_neon_preset(void)
@@ -301,6 +309,7 @@ static void persist(void)
     nvs_set_u8(h, NVS_KEY_VRED, s_vault_needle_red ? 1 : 0);
     nvs_set_u8(h, NVS_KEY_VTAIL, s_vault_needle_tail ? 1 : 0);
     nvs_set_u8(h, NVS_KEY_NEONLAY, s_neon_layout);
+    nvs_set_u8(h, NVS_KEY_NEONFONT, s_neon_font);
     nvs_set_u8(h, NVS_KEY_NEONPRE, s_neon_preset);
     nvs_set_u8(h, NVS_KEY_DEMO, s_demo_mode ? 1 : 0);
     nvs_set_u8(h, NVS_KEY_FASTS, boost_sim_fast_sweep() ? 1 : 0);
@@ -353,6 +362,10 @@ void boost_theme_init(void)
     uint8_t nl = 0;
     if (nvs_get_u8(h, NVS_KEY_NEONLAY, &nl) == ESP_OK) {
         s_neon_layout = (uint8_t)boost_neon_layout_clamp(nl);
+    }
+    uint8_t nf = 0;
+    if (nvs_get_u8(h, NVS_KEY_NEONFONT, &nf) == ESP_OK) {
+        s_neon_font = (uint8_t)boost_neon_font_clamp(nf);
     }
     uint8_t np = 0;
     if (nvs_get_u8(h, NVS_KEY_NEONPRE, &np) == ESP_OK) {
@@ -848,6 +861,18 @@ void boost_theme_set_neon_layout(boost_neon_layout_t layout)
 {
     ensure_loaded();
     s_neon_layout = (uint8_t)boost_neon_layout_clamp((uint8_t)layout);
+    persist();
+}
+
+boost_neon_font_t boost_theme_neon_font(void)
+{
+    return boost_neon_font_clamp(s_neon_font);
+}
+
+void boost_theme_set_neon_font(boost_neon_font_t font)
+{
+    ensure_loaded();
+    s_neon_font = (uint8_t)boost_neon_font_clamp((uint8_t)font);
     persist();
 }
 
