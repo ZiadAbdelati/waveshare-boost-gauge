@@ -7,6 +7,11 @@ manual could stay short while nothing was lost. Do not add new rows here unless
 you are also reflecting the resulting invariant in the condensed guard rails in
 AGENTS.md.
 
+Many rows below are executable through the regression runners: the host suite
+in `tools/tests/` (run via `python3 tools/test_suite.py`) and the hardware
+release gates (`python3 tools/check_hardware_gates.py`). See
+[`tools/tests/README.md`](../tools/tests/README.md) for the row -> test mapping.
+
 The ledger table below has one row per entry: | Sequence | Symptom / finding | Root cause | Fix | Guard now required |.
 
 ## Chronological regression ledger

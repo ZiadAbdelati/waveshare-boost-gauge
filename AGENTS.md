@@ -4,6 +4,8 @@ This repository is an ESP-IDF 5.5.1 firmware/dashboard for an ESP32-S3 AMOLED bo
 
 Current verified release is **`v0.8.1`** (ESP-IDF 5.5.1, app image ~2.5 MB in `release/`). Preserve that identity in hardware and release notes for current measurements. The full historical regression ledger lives in [`docs/regression-ledger.md`](docs/regression-ledger.md); the condensed guard rails below are the currently-actionable invariants, grouped by area. When a change touches one of these areas, re-read the relevant ledger rows for the measurement detail behind the rule.
 
+Regression tooling: run `python3 tools/test_suite.py` (host suite, before every commit) and `python3 tools/check_hardware_gates.py` (hardware release gates, before every release/flash-to-car); see `tools/tests/README.md`.
+
 ## Working agreements
 
 - For every non-trivial change, the coordinator MUST use `Task` subagents heavily: delegate independent research, implementation slices, and verification/testing slices in parallel where possible. The coordinator owns the top-level contract, integration, and final acceptance; do not delegate away the architecture decision.
