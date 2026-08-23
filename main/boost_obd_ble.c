@@ -664,15 +664,30 @@ void boost_obd_ble_init(void)
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA));
         return;
     }
-    nimble_port_freertos_init(host_task);
     s_init_done = true;
-    ESP_LOGI(TAG, "NimBLE host up");
+    ESP_LOGI(TAG, "NimBLE host mounted (task start deferred)");
+}
+
+void boost_obd_ble_host_start(void)
+{
+    static bool s_host_started;
+    if (!s_init_done || s_host_started) return;
+    s_host_started = true;
+    /* Starts the host task. GATT service registration must complete BEFORE
+     * this call (boost_app_ble_init registers between mount and start). */
+    nimble_port_freertos_init(host_task);
+}
+
+bool boost_obd_ble_host_up(void)
+{
+    return s_init_done;
 }
 
 void boost_obd_ble_start(void)
 {
     if (!s_init_done) boost_obd_ble_init();
     if (!s_init_done) return;   /* host failed to come up (RAM guard); stay idle */
+    boost_obd_ble_host_start();
     if (s_enabled) return;
     if (s_task == NULL) {
         if (xTaskCreate(driver_task, "boost_obd_ble", 4096, NULL, 6, &s_task) != pdPASS) {

@@ -35,6 +35,7 @@
 #include "boost_network.h"
 #include "boost_media_store.h"
 #include "boost_obd.h"
+#include "boost_app_ble.h"
 #include "boost_tpms.h"
 #include "boost_tpms_protocol.h"
 #include "generated_web_assets.h"
@@ -575,13 +576,14 @@ static void config_json(char *json, size_t len)
              "{\"brightnessHigh\":%d,\"brightnessLow\":%d,"
              "\"dimSchedule\":{\"enabled\":%s,\"startMinutes\":%d,\"endMinutes\":%d},"
              "\"timezoneOffsetMinutes\":%d,\"timezoneTz\":\"%s\",\"activeThemeId\":\"%s\","
-             "\"psiMin\":%.2f,\"psiMax\":%.2f,\"psiOverboost\":%.2f,\"zeroAngle\":%.2f}",
+             "\"psiMin\":%.2f,\"psiMax\":%.2f,\"psiOverboost\":%.2f,\"zeroAngle\":%.2f,"
+             "\"appBle\":%s}",
              cfg.brightness_high, cfg.brightness_low,
              cfg.dim_schedule.enabled ? "true" : "false",
              cfg.dim_schedule.start_minutes, cfg.dim_schedule.end_minutes,
              cfg.timezone_offset_minutes, cfg.timezone_tz, cfg.active_theme_id,
              (double)cfg.psi_min, (double)cfg.psi_max, (double)cfg.psi_overboost,
-             (double)cfg.zero_angle);
+             (double)cfg.zero_angle, boost_app_ble_enabled() ? "true" : "false");
 }
 
 static esp_err_t config_get(httpd_req_t *req)
@@ -682,6 +684,12 @@ static esp_err_t config_put(httpd_req_t *req)
         patch.zero_angle = ftmp;
         fields |= BOOST_CONFIG_ZERO_ANGLE;
     }
+    /* Companion-app BLE peripheral toggle. Runtime, persisted, no reboot
+     * needed: enable advertises the GATT server, disable tears the link. */
+    const cJSON *able = cJSON_GetObjectItemCaseSensitive(root, "appBle");
+    if (cJSON_IsBool(able)) {
+        boost_app_ble_set_enabled(cJSON_IsTrue(able));
+    }
     cJSON_Delete(root);
     esp_err_t err = boost_model_update_config(&patch, fields);
     if (err != ESP_OK) {
@@ -700,7 +708,7 @@ static esp_err_t config_put(httpd_req_t *req)
             boost_display_unlock();
         }
     }
-    char json[416];
+    char json[512];
     config_json(json, sizeof(json));
     return send_json(req, json);
 }

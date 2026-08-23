@@ -31,6 +31,17 @@ typedef void (*boost_obd_ble_rx_cb_t)(const uint8_t *data, size_t len, void *ctx
  * later disabled. */
 void boost_obd_ble_init(void);
 
+/* True once the shared NimBLE host/controller is mounted (i.e. the RAM-guarded
+ * init path in boost_obd_ble_init() succeeded). The companion peripheral in
+ * boost_app_ble.c uses this to know whether it may start advertising. */
+bool boost_obd_ble_host_up(void);
+
+/* Start the NimBLE host task (nimble_port_freertos_init). Idempotent; no-op
+ * until a successful boost_obd_ble_init(). GATT service registration MUST
+ * complete before this — the companion peripheral registers its service
+ * between mount (init) and start. */
+void boost_obd_ble_host_start(void);
+
 /* Begin the scan/connect/reconnect loop. No-op if already running. */
 void boost_obd_ble_start(void);
 

@@ -50,15 +50,21 @@ CONFIG_BT_ENABLED=y
 CONFIG_BT_NIMBLE_ENABLED=y
 CONFIG_BT_CTRL_RUN_IN_FLASH_ONLY=y
 CONFIG_BT_CTRL_BLE_MASTER=y
-# One central connection, but the scan->connect handoff briefly holds two
-# controller "activity instances" (scan + connection). Each instance is only
-# 828 bytes, so 3 costs ~2.5 kB and avoids the connect-time
-# "Memory Capacity Exceeded" (HCI 0x07) that a value of 1 caused.
-CONFIG_BT_CTRL_BLE_MAX_ACT=3
+# Dual-role NimBLE: the OBD2 central's scan->connect handoff briefly holds two
+# controller "activity instances" (scan + connection), and the companion-app
+# peripheral adds advertising + a phone connection, so up to four instances can
+# be simultaneous (central handoff + peripheral adv + phone). 5 keeps ~828 B of
+# headroom per extra instance over the old 3 (which fixed the connect-time
+# "Memory Capacity Exceeded", HCI 0x07, that a value of 1 caused).
+CONFIG_BT_CTRL_BLE_MAX_ACT=5
 # Internal DRAM is shared with Wi-Fi, the QSPI display double-buffer and the
 # region-dbuf scratch strips. Park the NimBLE host mempools (msys/ACL) in PSRAM
 # so the BT controller's own internal block is the only new internal demand.
 CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y
+# The companion-app GATT contract requires the LE-SC pairing bond to survive
+# reboots ("pair once, then silent reconnect in the car"). NimBLE only writes
+# bonds through its NVS-backed config store when this is on.
+CONFIG_BT_NIMBLE_NVS_PERSIST=y
 
 # The LVGL worker and HTTP server do not perform flash writes; keep their stacks in PSRAM.
 CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=y
