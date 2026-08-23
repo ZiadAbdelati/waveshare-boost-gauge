@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- BoostGauge master app icon: flat minimal boost gauge face, no text (digits are illegible at icon sizes). -->
+  <rect x="0" y="0" width="1024" height="1024" fill="#0B0C0E"/>
+  <!-- dark rounded-square plate with thin bezel -->
+  <rect x="24" y="24" width="976" height="976" rx="228" fill="#0B0C0E" stroke="#24282E" stroke-width="12"/>
+  <g id="gauge-art">
+    <path d="M 512.0 212.0 A 300.0 300.0 0 1 1 512.0 812.0 A 300.0 300.0 0 1 1 512.0 212.0" fill="none" stroke="#191C20" stroke-width="40"/>
+    <path d="M 299.868 724.132 A 300.0 300.0 0 0 1 241.709 642.165" fill="none" stroke="#00E676" stroke-width="46.0" stroke-linecap="round"/>
+    <path d="M 241.709 642.165 A 300.0 300.0 0 0 1 213.886 545.589" fill="none" stroke="#26E267" stroke-width="46.0" stroke-linecap="round"/>
+    <path d="M 213.886 545.589 A 300.0 300.0 0 0 1 219.522 445.244" fill="none" stroke="#4DDE58" stroke-width="46.0" stroke-linecap="round"/>
+    <path d="M 219.522 445.244 A 300.0 300.0 0 0 1 257.983 352.390" fill="none" stroke="#73DA49" stroke-width="46.0" stroke-linecap="round"/>
+    <path d="M 257.983 352.390 A 300.0 300.0 0 0 1 324.953 277.451" fill="none" stroke="#9AD63A" stroke-width="46.0" stroke-linecap="round"/>
+    <path d="M 324.953 277.451 A 300.0 300.0 0 0 1 412.916 228.835" fill="none" stroke="#C0D22B" stroke-width="46.0" stroke-linecap="round"/>
+    <path d="M 412.916 228.835 A 300.0 300.0 0 0 1 512.000 212.000" fill="none" stroke="#E7CE1C" stroke-width="46.0" stroke-linecap="round"/>
+    <path d="M 512.000 212.000 A 300.0 300.0 0 0 1 611.084 228.835" fill="none" stroke="#FAC117" stroke-width="46.0" stroke-linecap="round"/>
+    <path d="M 611.084 228.835 A 300.0 300.0 0 0 1 699.047 277.451" fill="none" stroke="#FBAB1B" stroke-width="46.0" stroke-linecap="round"/>
+    <path d="M 699.047 277.451 A 300.0 300.0 0 0 1 766.017 352.390" fill="none" stroke="#FC941F" stroke-width="46.0" stroke-linecap="round"/>
+    <path d="M 766.017 352.390 A 300.0 300.0 0 0 1 804.478 445.244" fill="none" stroke="#FD7E24" stroke-width="46.0" stroke-linecap="round"/>
+    <path d="M 804.478 445.244 A 300.0 300.0 0 0 1 810.114 545.589" fill="none" stroke="#FD6828" stroke-width="46.0" stroke-linecap="round"/>
+    <path d="M 810.114 545.589 A 300.0 300.0 0 0 1 782.291 642.165" fill="none" stroke="#FE512C" stroke-width="46.0" stroke-linecap="round"/>
+    <path d="M 782.291 642.165 A 300.0 300.0 0 0 1 724.132 724.132" fill="none" stroke="#FF3B30" stroke-width="46.0" stroke-linecap="round"/>
+    <path d="M 512.0 512.0 L 678.170 345.830" fill="none" stroke="#ECEFF1" stroke-width="46" stroke-linecap="round"/>
+    <path d="M 512.0 456.0 A 56.0 56.0 0 1 1 512.0 568.0 A 56.0 56.0 0 1 1 512.0 456.0" fill="#14171A" stroke="#3A3F46" stroke-width="6"/>
+    <path d="M 512.0 494.0 A 18.0 18.0 0 1 1 512.0 530.0 A 18.0 18.0 0 1 1 512.0 494.0" fill="#E8EAED"/>
+    <path d="M 426.000 668.000 H 598.000 Q 630.000 668.000 630.000 700.000 V 732.000 Q 630.000 764.000 598.000 764.000 H 426.000 Q 394.000 764.000 394.000 732.000 V 700.000 Q 394.000 668.000 426.000 668.000 Z" fill="#101215" stroke="#2A2E33" stroke-width="6"/>
+    <path d="M 452.000 698.000 H 572.000 Q 590.000 698.000 590.000 716.000 V 716.000 Q 590.000 734.000 572.000 734.000 H 452.000 Q 434.000 734.000 434.000 716.000 V 716.000 Q 434.000 698.000 452.000 698.000 Z" fill="#00E676"/>
+  </g>
+</svg>

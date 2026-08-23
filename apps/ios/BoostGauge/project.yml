@@ -1,0 +1,85 @@
+name: BoostGauge
+options:
+  bundleIdPrefix: com.boostgauge
+  deploymentTarget:
+    iOS: "15.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+configs:
+  Debug: debug
+  Release: release
+targets:
+  BoostGauge:
+    type: application
+    platform: iOS
+    sources:
+      - BoostGauge
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.boostgauge.app
+        PRODUCT_NAME: BoostGauge
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: 1
+        INFOPLIST_FILE: BoostGauge/Info.plist
+        SWIFT_VERSION: "5.0"
+        SWIFT_STRICT_CONCURRENCY: minimal
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: 4654PWP45B
+        CODE_SIGN_IDENTITY: "Apple Development"
+        IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+        GENERATE_INFOPLIST_FILE: NO
+        ENABLE_TESTABILITY: YES
+    scheme:
+      testTargets:
+        - BoostGaugeTests
+  BoostGaugeTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - BoostGaugeTests
+    dependencies:
+      - target: BoostGauge
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.boostgauge.app.tests
+        SWIFT_VERSION: "5.0"
+        SWIFT_STRICT_CONCURRENCY: minimal
+        IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+        GENERATE_INFOPLIST_FILE: YES
+  BoostGaugeUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - BoostGaugeUITests
+    dependencies:
+      - target: BoostGauge
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.boostgauge.app.uitests
+        SWIFT_VERSION: "5.0"
+        SWIFT_STRICT_CONCURRENCY: minimal
+        IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: BoostGauge
+schemes:
+  BoostGauge:
+    build:
+      targets:
+        BoostGauge: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - BoostGaugeTests
+  BoostGaugeE2E:
+    build:
+      targets:
+        BoostGauge: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - BoostGaugeUITests
