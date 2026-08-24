@@ -534,6 +534,38 @@ def gate_ap_join() -> GateResult:
     gate = GateResult("ap-join")
     router = "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport"
     try:
+        # Manual-join support FIRST (HeliPort/itlwm machines): networksetup may
+        # not list the Wi-Fi port at all, and CLI join is impossible. If ANY
+        # interface holds a 192.168.4.x lease, verify HTTP over it directly.
+        try:
+            ifconfig_all = subprocess.run(["ifconfig", "-a"], capture_output=True,
+                                          text=True, timeout=10).stdout
+        except subprocess.SubprocessError:
+            ifconfig_all = ""
+        manual_if = None
+        cur = None
+        for line in ifconfig_all.splitlines():
+            m = re.match(r"^(\w+):\s", line)
+            if m:
+                cur = m.group(1)
+            elif cur and re.search(r"inet 192\.168\.4\.\d+", line):
+                manual_if = cur
+                break
+        if manual_if:
+            gate.line(f"{manual_if} already on the gauge AP (manual/HeliPort join); verifying HTTP")
+            ok = False
+            for _ in range(3):
+                r = subprocess.run(["curl", "-s", "--interface", manual_if,
+                                    "--connect-timeout", "5",
+                                    "http://192.168.4.1/api/v1/state"],
+                                   capture_output=True, text=True, timeout=20)
+                if '"psi"' in (r.stdout or ""):
+                    gate.line("GET /state over the AP: 200 with psi - AP data path OK")
+                    ok = True
+                    break
+                time.sleep(2)
+            gate.finish(ok)
+            return gate
         hw = subprocess.run(["networksetup", "-listallhardwareports"],
                             capture_output=True, text=True, check=True).stdout
         m = re.search(r"Hardware Port: Wi-Fi\s*\n\s*Device: (en\d+)", hw)
