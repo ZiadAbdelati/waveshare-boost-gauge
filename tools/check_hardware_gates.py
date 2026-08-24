@@ -542,6 +542,28 @@ def gate_ap_join() -> GateResult:
             gate.finish(False)
             return gate
         device = m.group(1)
+        # HeliPort/itlwm machines: CoreWLAN sees no interface, CLI join is
+        # impossible, and even after a GUI join the data path may be dead
+        # (hardware-verified 2026-08-23). Accept a manual GUI join: if the
+        # interface already holds a 192.168.4.x lease, skip scan+join and
+        # verify HTTP directly.
+        probe = subprocess.run(["ifconfig", device], capture_output=True, text=True)
+        if re.search(r"inet 192\.168\.4\.\d+", probe.stdout):
+            gate.line(f"{device} already on the gauge AP (manual/HeliPort join); verifying HTTP")
+            ap_ip = "192.168.4.1"
+            ok = False
+            for _ in range(3):
+                r = subprocess.run(["curl", "-s", "--interface", device,
+                                    "--connect-timeout", "5",
+                                    f"http://{ap_ip}/api/v1/state"],
+                                   capture_output=True, text=True, timeout=20)
+                if '"psi"' in (r.stdout or ""):
+                    gate.line("GET /state over the AP: 200 with psi - AP data path OK")
+                    ok = True
+                    break
+                time.sleep(2)
+            gate.finish(ok)
+            return gate
         prior_ssid = ""
         try:
             prior_ssid = subprocess.run(
