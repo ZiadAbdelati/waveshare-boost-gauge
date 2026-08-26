@@ -1,0 +1,243 @@
+{
+  "builtTestProducts" : [
+
+  ],
+  "copyCommands" : {
+
+  },
+  "explicitTargetDependencyImportCheckingMode" : {
+    "none" : {
+
+    }
+  },
+  "generatedSourceTargetSet" : [
+
+  ],
+  "pluginDescriptions" : [
+
+  ],
+  "swiftCommands" : {
+    "C.ble_central_test-x86_64-apple-macosx15.0-release.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/chaotic/Documents/GitHub/waveshare-boost-gauge/tools/ble_central_test/.build/x86_64-apple-macosx/release/ble_central_test.build/sources",
+      "importPath" : "/Users/chaotic/Documents/GitHub/waveshare-boost-gauge/tools/ble_central_test/.build/x86_64-apple-macosx/release/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/chaotic/Documents/GitHub/waveshare-boost-gauge/tools/ble_central_test/Sources/ble_central_test/main.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/chaotic/Documents/GitHub/waveshare-boost-gauge/tools/ble_central_test/.build/x86_64-apple-macosx/release/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/chaotic/Documents/GitHub/waveshare-boost-gauge/tools/ble_central_test/.build/x86_64-apple-macosx/release/ble_central_test.build/sources"
+        }
+      ],
+      "isLibrary" : false,
+      "moduleName" : "ble_central_test",
+      "moduleOutputPath" : "/Users/chaotic/Documents/GitHub/waveshare-boost-gauge/tools/ble_central_test/.build/x86_64-apple-macosx/release/Modules/ble_central_test.swiftmodule",
+      "objects" : [
+        "/Users/chaotic/Documents/GitHub/waveshare-boost-gauge/tools/ble_central_test/.build/x86_64-apple-macosx/release/ble_central_test.build/main.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "x86_64-apple-macosx12.0",
+        "-whole-module-optimization",
+        "-num-threads",
+        "8",
+        "-serialize-diagnostics",
+        "-O",
+        "-j8",
+        "-DSWIFT_PACKAGE",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/chaotic/Documents/GitHub/waveshare-boost-gauge/tools/ble_central_test/.build/x86_64-apple-macosx/release/ModuleCache",
+        "-parseable-output",
+        "-Xfrontend",
+        "-entry-point-function-name",
+        "-Xfrontend",
+        "ble_central_test_main",
+        "-swift-version",
+        "5",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "ble_central_test"
+      ],
+      "outputFileMapPath" : "/Users/chaotic/Documents/GitHub/waveshare-boost-gauge/tools/ble_central_test/.build/x86_64-apple-macosx/release/ble_central_test.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/chaotic/Documents/GitHub/waveshare-boost-gauge/tools/ble_central_test/.build/x86_64-apple-macosx/release/ble_central_test.build/main.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/chaotic/Documents/GitHub/waveshare-boost-gauge/tools/ble_central_test/.build/x86_64-apple-macosx/release/Modules/ble_central_test.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/chaotic/Documents/GitHub/waveshare-boost-gauge/tools/ble_central_test/Sources/ble_central_test/main.swift"
+      ],
+      "tempsPath" : "/Users/chaotic/Documents/GitHub/waveshare-boost-gauge/tools/ble_central_test/.build/x86_64-apple-macosx/release/ble_central_test.build",
+      "wholeModuleOptimization" : true
+    }
+  },
+  "swiftFrontendCommands" : {
+
+  },
+  "swiftTargetScanArgs" : {
+    "ble_central_test" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "ble_central_test",
+      "-package-name",
+      "ble_central_test",
+      "-c",
+      "/Users/chaotic/Documents/GitHub/waveshare-boost-gauge/tools/ble_central_test/Sources/ble_central_test/main.swift",
+      "-I",
+      "/Users/chaotic/Documents/GitHub/waveshare-boost-gauge/tools/ble_central_test/.build/x86_64-apple-macosx/release/Modules",
+      "-target",
+      "x86_64-apple-macosx12.0",
+      "-whole-module-optimization",
+      "-num-threads",
+      "8",
+      "-serialize-diagnostics",
+      "-O",
+      "-j8",
+      "-DSWIFT_PACKAGE",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/chaotic/Documents/GitHub/waveshare-boost-gauge/tools/ble_central_test/.build/x86_64-apple-macosx/release/ModuleCache",
+      "-parseable-output",
+      "-Xfrontend",
+      "-entry-point-function-name",
+      "-Xfrontend",
+      "ble_central_test_main",
+      "-swift-version",
+      "5",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "ble_central_test",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ]
+  },
+  "targetDependencyMap" : {
+    "ble_central_test" : [
+
+    ]
+  },
+  "testDiscoveryCommands" : {
+
+  },
+  "testEntryPointCommands" : {
+
+  },
+  "traitConfiguration" : {
+    "default" : {
+
+    }
+  },
+  "writeCommands" : {
+    "/Users/chaotic/Documents/GitHub/waveshare-boost-gauge/tools/ble_central_test/.build/x86_64-apple-macosx/release/ble_central_test.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/chaotic/Documents/GitHub/waveshare-boost-gauge/tools/ble_central_test/Sources/ble_central_test/main.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/chaotic/Documents/GitHub/waveshare-boost-gauge/tools/ble_central_test/.build/x86_64-apple-macosx/release/ble_central_test.build/sources"
+    },
+    "/Users/chaotic/Documents/GitHub/waveshare-boost-gauge/tools/ble_central_test/.build/x86_64-apple-macosx/release/ble_central_test.product/Objects.LinkFileList" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<link-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/chaotic/Documents/GitHub/waveshare-boost-gauge/tools/ble_central_test/.build/x86_64-apple-macosx/release/ble_central_test.build/main.swift.o"
+        }
+      ],
+      "outputFilePath" : "/Users/chaotic/Documents/GitHub/waveshare-boost-gauge/tools/ble_central_test/.build/x86_64-apple-macosx/release/ble_central_test.product/Objects.LinkFileList"
+    },
+    "/Users/chaotic/Documents/GitHub/waveshare-boost-gauge/tools/ble_central_test/.build/x86_64-apple-macosx/release/swift-version--58304C5D6DBC2206.txt" : {
+      "alwaysOutOfDate" : true,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<swift-get-version>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+        }
+      ],
+      "outputFilePath" : "/Users/chaotic/Documents/GitHub/waveshare-boost-gauge/tools/ble_central_test/.build/x86_64-apple-macosx/release/swift-version--58304C5D6DBC2206.txt"
+    }
+  }
+}

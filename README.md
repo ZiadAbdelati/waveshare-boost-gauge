@@ -112,6 +112,10 @@ preview/    simulator reference renders
 
 Flash the factory image from the [Waveshare releases](https://github.com/waveshareteam/ESP32-S3-Touch-AMOLED-1.75/releases).
 
+## BLE central test harness (Intel hackintosh)
+
+`tools/ble_central_test` scans for the gauge (`B6A00000`) and connects; it absorbs the IntelBluetoothFirmware 5→1 state flap (releases the central, waits 3 s, recreates it, retries the scan once) and self-exits instead of hanging. If a connection still fails with `saw N reset(s)`, the Intel stack cannot sustain a GATT link: add `-btlfxbeta` to the boot-args and ensure BlueToolFixup/IntelBTPatcher are current, stop concurrent `itlwm` WiFi scans (`sudo wdutil scan` or assoc churn) during the test, and if it persists prefer a `THIRD_PARTY_DONGLE` USB Bluetooth adapter over the internal Intel radio.
+
 ## License
 
 Third-party code and OFL fonts are attributed in their sources. Doto's license ships as [`web/OFL-Doto.txt`](web/OFL-Doto.txt).
