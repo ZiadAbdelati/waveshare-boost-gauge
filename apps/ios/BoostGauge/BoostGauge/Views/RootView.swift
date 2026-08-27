@@ -22,7 +22,26 @@ struct RootView: View {
                 .tabItem { Label("Logs", systemImage: "list.bullet.rectangle") }
                 .tag(4)
         }
-        .task { session.startConnectionMonitoring() }
+        .overlay(alignment: .top) {
+            if session.hardwareBleE2ERequested {
+                VStack(spacing: 2) {
+                    Text(session.hardwareBleE2EStatus ?? "STARTING")
+                        .accessibilityIdentifier("hardwareBLEE2EStatus")
+                    ForEach(session.hardwareBleE2ESteps.keys.sorted(), id: \.self) { step in
+                        Text(session.hardwareBleE2ESteps[step] ?? "PENDING")
+                            .accessibilityLabel(session.hardwareBleE2ESteps[step] ?? "PENDING")
+                            .accessibilityIdentifier("hardwareBLEE2EStep.\(step)")
+                    }
+                }
+                .font(.caption2.monospaced())
+                .padding(4)
+                .background(.thinMaterial)
+            }
+        }
+        .task {
+            session.startConnectionMonitoring()
+            await session.startHardwareBleE2EIfRequested()
+        }
     }
 
     private static func initialTabIndex() -> Int {

@@ -1,6 +1,6 @@
 import Foundation
 
-struct ThemeColors: Decodable {
+struct ThemeColors: Codable {
     let face: String?
     let track: String?
     let text: String?
@@ -11,7 +11,7 @@ struct ThemeColors: Decodable {
     let zero: String?
 }
 
-struct Theme: Decodable, Identifiable {
+struct Theme: Codable, Identifiable {
     let id: String
     let name: String
     let style: String?
@@ -19,11 +19,13 @@ struct Theme: Decodable, Identifiable {
     let customized: Bool?
 }
 
-struct ThemeList: Decodable {
+struct ThemeList: Codable {
     let activeThemeId: String?
     let themes: [Theme]?
     let bigDigitStaticBg: Bool?
     let bigDigitColorText: Bool?
+    let bigDigitStaticColor: String?
+    let bigDigitTextColor: String?
     let arcGradient: Bool?
     let hudGradient: Bool?
     let hudTrueBlack: Bool?
@@ -42,6 +44,7 @@ struct ThemeList: Decodable {
     let vaultNeedleRed: Bool?
     let vaultNeedleTail: Bool?
     let neonLayout: Int?
+    let neonFont: Int?
     let neonPreset: Int?
 }
 

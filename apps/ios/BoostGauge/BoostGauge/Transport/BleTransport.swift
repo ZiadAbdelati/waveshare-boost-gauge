@@ -12,6 +12,7 @@ struct BleDeviceInfo {
     let name: String
     let firmware: String
     let api: Int
+    let ip: String?
 }
 
 struct BleFramedResponse {
@@ -62,7 +63,7 @@ final class BleRequestFramer {
         return BleFramedResponse(id: id.uint32Value, status: status.intValue, body: body)
     }
 
-    private func extractFirstJSONObject(from bytes: [UInt8]) -> Data? {
+    func extractFirstJSONObject(from bytes: [UInt8]) -> Data? {
         var depth = 0
         var startIndex: Int?
         var inString = false
@@ -101,7 +102,7 @@ final class BleRequestFramer {
     }
 }
 
-final class BleTransport: NSObject, GaugeTransport, CBCentralManagerDelegate, CBPeripheralDelegate {
+final class BleTransport: NSObject, BLELinkTransport, CBCentralManagerDelegate, CBPeripheralDelegate {
     let transportKind = "BLE"
 
     static let serviceUUID = CBUUID(string: "b6a00000-0000-4000-8000-00000000b6a0")
@@ -120,9 +121,11 @@ final class BleTransport: NSObject, GaugeTransport, CBCentralManagerDelegate, CB
     private var deviceInfoChar: CBCharacteristic?
     private var scannedPeripherals: [UUID: CBPeripheral] = [:]
     private var scannedRSSI: [UUID: Int] = [:]
-    private var isConnected = false
+    private(set) var isConnected = false
+    private var controlNotifyEnabled = false
     private var statusNotifyEnabled = false
     private var lastStatusData: Data?
+    private var statusBuffer = Data()
 
     private var isPoweredOn = false
     private var powerCont: CheckedContinuation<Void, Error>?
@@ -130,7 +133,9 @@ final class BleTransport: NSObject, GaugeTransport, CBCentralManagerDelegate, CB
     private var connectPending: ConnectPending?
     private var readPending: ReadPending?
     private var requestPending: RequestPending?
+    private var sendWaiters: [() -> Void] = []
     private var statusCont: AsyncStream<Result<Data, Error>>.Continuation?
+    private var linkCont: AsyncStream<Bool>.Continuation?
 
     private struct ScanPending {
         let continuation: CheckedContinuation<[BleDevice], Error>
@@ -164,7 +169,14 @@ final class BleTransport: NSObject, GaugeTransport, CBCentralManagerDelegate, CB
 
     override init() {
         super.init()
-        central = CBCentralManager(delegate: self, queue: queue)
+        // State restoration keeps the link alive when the app is backgrounded
+        // (UIBackgroundModes bluetooth-central) and lets the system relaunch
+        // into a restore instead of losing the peer, mirroring Android's
+        // foreground-service resilience with the iOS-native mechanism.
+        let options: [String: Any] = [
+            CBCentralManagerOptionRestoreIdentifierKey: "com.boostgauge.central",
+        ]
+        central = CBCentralManager(delegate: self, queue: queue, options: options)
     }
 
     deinit {
@@ -212,6 +224,8 @@ final class BleTransport: NSObject, GaugeTransport, CBCentralManagerDelegate, CB
                 }
                 self.peripheral = peripheral
                 peripheral.delegate = self
+                self.controlNotifyEnabled = false
+                self.statusNotifyEnabled = false
                 self.connectPending = ConnectPending(continuation)
                 self.central.connect(peripheral, options: nil)
                 let timeout = DispatchWorkItem { [weak self] in
@@ -222,20 +236,75 @@ final class BleTransport: NSObject, GaugeTransport, CBCentralManagerDelegate, CB
         }
     }
 
+    /// Retrieve a previously connected CoreBluetooth peer by its stable UUID
+    /// and reconnect without requiring the user to scan again.
+    func connect(toSavedIdentifier identifier: UUID, name: String) async throws {
+        try await waitForPower()
+        let device = try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<BleDevice, Error>) in
+            queue.async {
+                guard let peripheral = self.central.retrievePeripherals(withIdentifiers: [identifier]).first else {
+                    continuation.resume(throwing: TransportError.deviceNotFound)
+                    return
+                }
+                self.scannedPeripherals[identifier] = peripheral
+                self.scannedRSSI[identifier] = 0
+                continuation.resume(returning: BleDevice(
+                    identifier: identifier,
+                    name: peripheral.name ?? name,
+                    rssi: 0
+                ))
+            }
+        }
+        try await connect(to: device)
+    }
+
+    /// Whether `disconnect()` must call `cancelPeripheralConnection`. Always
+    /// true while a peripheral is known: CoreBluetooth can hold a connection the
+    /// transport has already forgotten — a connect timeout that raced a
+    /// completed `didConnect`, or a cancel skipped under the old
+    /// (isConnected || connectPending) predicate — and that zombie link keeps
+    /// the board from resuming advertising, so the saved-peer reconnect loop
+    /// can never find it again.
+    static func shouldCancelConnection(hasPeripheral: Bool, isConnected: Bool, hasPendingConnect: Bool) -> Bool {
+        hasPeripheral
+    }
+
     func disconnect() {
         queue.async { [weak self] in
             guard let self else { return }
             self.central.stopScan()
-            if let peripheral = self.peripheral, self.isConnected || self.connectPending != nil {
+            let wasConnected = self.isConnected
+            // Full teardown: cancel whenever a peripheral is known at all, even
+            // if the app believes the link is already down (see
+            // `shouldCancelConnection`). The board only resumes advertising
+            // after the central's detach lands.
+            if let peripheral = self.peripheral {
                 self.central.cancelPeripheralConnection(peripheral)
             }
             self.isConnected = false
+            self.controlNotifyEnabled = false
+            self.statusNotifyEnabled = false
+            // Fail every in-flight operation so no continuation hangs behind a
+            // cancelled link (a stale 10 s request timer resuming a torn-down
+            // session is a zombie writer). Send waiters are dropped first so
+            // `drainSendWaiters` cannot re-queue a write onto the dead link.
+            self.sendWaiters.removeAll()
+            self.failConnectIfPending(TransportError.notConnected)
+            self.failReadIfPending(TransportError.notConnected)
+            self.failRequestIfPending(TransportError.notConnected)
+            self.framer.clearBuffer()
+            self.lastStatusData = nil
+            self.statusBuffer.removeAll()
+            if wasConnected {
+                self.linkCont?.yield(false)
+            }
         }
     }
 
     func readDeviceInfo() async throws -> BleDeviceInfo {
         guard let characteristic = deviceInfoChar else { throw TransportError.notConnected }
-        let data = try await readValue(from: characteristic)
+        let data = try await readValueQuiescingStatus(from: characteristic)
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw TransportError.badResponse
         }
@@ -247,15 +316,24 @@ final class BleTransport: NSObject, GaugeTransport, CBCentralManagerDelegate, CB
         } else if let number = object["fw"] as? NSNumber {
             firmware = number.stringValue
         }
-        return BleDeviceInfo(name: name, firmware: firmware, api: api)
+        let ip = object["ip"] as? String
+        return BleDeviceInfo(name: name, firmware: firmware, api: api, ip: ip)
     }
 
-    func readStatus() async throws -> Data {
+    func readStatus(forceRead: Bool = false) async throws -> Data {
+        // The live status is the full Control /state (polled by
+        // liveStatusStream). Return the latest polled sample; if none has
+        // arrived yet, fetch it directly via the Control route.
         if let lastStatusData {
             return lastStatusData
         }
-        guard let characteristic = statusChar else { throw TransportError.notConnected }
-        return try await readValue(from: characteristic)
+        let response = try await send("GET", path: "state", body: [:])
+        guard (200...299).contains(response.status) else {
+            throw TransportError.badResponse
+        }
+        let body = response.body
+        queue.async { self.lastStatusData = body }
+        return body
     }
 
     func readLog() async throws -> [LogSample] {
@@ -299,40 +377,135 @@ final class BleTransport: NSObject, GaugeTransport, CBCentralManagerDelegate, CB
     }
 
     func send(_ method: String, path: String, body: [String: Any]) async throws -> Resp {
-        guard let peripheral, let controlChar, isConnected else {
+        do {
+            return try await sendOnce(method, path: path, body: body)
+        } catch let error as TransportError {
+            guard error == .writeFailed || error == .operationTimeout || error == .busy else { throw error }
+            let retryBackoffNs: [UInt64] = [200_000_000, 800_000_000, 1_500_000_000, 2_500_000_000]
+            var lastError: Error = error
+            for delayNs in retryBackoffNs {
+                NSLog("[BLE] send %@ %@ failed %@, retry in %.1fs (busy/writeFail share queue)", method, path, String(describing: lastError), Double(delayNs)/1e9)
+                if lastError as? TransportError == .writeFailed || lastError as? TransportError == .operationTimeout {
+                    resubscribeNotifications()
+                }
+                try? await Task.sleep(nanoseconds: delayNs)
+                do {
+                    return try await sendOnce(method, path: path, body: body)
+                } catch let retryError as TransportError {
+                    guard retryError == .writeFailed || retryError == .operationTimeout || retryError == .busy else { throw retryError }
+                    lastError = retryError
+                }
+            }
+            throw lastError
+        }
+    }
+
+    private func resubscribeNotifications() {
+        queue.async { [weak self] in
+            guard let self, let peripheral = self.peripheral,
+                  self.canIssueATT(peripheral, "resubscribe control notify") else { return }
+            if let controlChar = self.controlChar {
+                peripheral.setNotifyValue(true, for: controlChar)
+            }
+            // Status characteristic deliberately not resubscribed: the live
+            // status stream polls the Control /state route instead (the
+            // full-state notification push starves raw reads on this link).
+        }
+    }
+
+    private func sendOnce(_ method: String, path: String, body: [String: Any]) async throws -> Resp {
+        guard let _ = peripheral, let _ = controlChar, isConnected else {
             throw TransportError.notConnected
         }
         let wirePath = path.hasPrefix("/") ? path : "/" + path
-        let request = try framer.makeRequest(method: method, path: wirePath, body: body)
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Resp, Error>) in
             queue.async {
-                guard self.requestPending == nil else {
-                    continuation.resume(throwing: TransportError.busy)
-                    return
-                }
-                self.framer.clearBuffer()
-                self.requestPending = RequestPending(id: request.id, continuation: continuation)
-                peripheral.writeValue(request.data, for: controlChar, type: .withResponse)
-                let timeout = DispatchWorkItem { [weak self] in
-                    self?.failRequestIfPending(TransportError.operationTimeout)
-                }
-                self.queue.asyncAfter(deadline: .now() + 10, execute: timeout)
+                self.enqueueSend(method: method, path: wirePath, body: body, continuation: continuation)
             }
         }
     }
 
+    private func enqueueSend(method: String, path: String, body: [String: Any], continuation: CheckedContinuation<Resp, Error>) {
+        if requestPending != nil {
+            sendWaiters.append { [weak self] in
+                guard let self else {
+                    continuation.resume(throwing: TransportError.notConnected)
+                    return
+                }
+                self.performSendOnce(method: method, path: path, body: body, continuation: continuation)
+            }
+            return
+        }
+        performSendOnce(method: method, path: path, body: body, continuation: continuation)
+    }
+
+    private func performSendOnce(method: String, path: String, body: [String: Any], continuation: CheckedContinuation<Resp, Error>) {
+        guard let peripheral, let controlChar else {
+            continuation.resume(throwing: TransportError.notConnected)
+            return
+        }
+        guard canIssueATT(peripheral, "control write") else {
+            // Link dropped between connect and write: the request can never be
+            // issued, so the continuation must fail NOW — returning without
+            // resuming (or arming the timeout) hangs send() forever and, via
+            // enqueueSend's drain gate, every later request behind it.
+            continuation.resume(throwing: TransportError.notConnected)
+            return
+        }
+        let request: (id: UInt32, data: Data)
+        do {
+            request = try framer.makeRequest(method: method, path: path, body: body)
+        } catch {
+            continuation.resume(throwing: error)
+            return
+        }
+        framer.clearBuffer()
+        requestPending = RequestPending(id: request.id, continuation: continuation)
+        peripheral.writeValue(request.data, for: controlChar, type: .withResponse)
+        let timeout = DispatchWorkItem { [weak self] in
+            self?.failRequestIfPending(TransportError.operationTimeout)
+        }
+        queue.asyncAfter(deadline: .now() + 10, execute: timeout)
+    }
+
     func liveStatusStream() -> AsyncStream<Result<Data, Error>> {
         AsyncStream { continuation in
-            queue.async {
-                if let lastStatusData = self.lastStatusData {
-                    continuation.yield(.success(lastStatusData))
+            let task = Task { [weak self] in
+                var consecutiveFailures = 0
+                while !Task.isCancelled {
+                    guard let self else { return }
+                    do {
+                        let response = try await self.get("state")
+                        consecutiveFailures = 0
+                        self.queue.async { self.lastStatusData = response.body }
+                        continuation.yield(.success(response.body))
+                    } catch {
+                        consecutiveFailures += 1
+                        continuation.yield(.failure(error))
+                    }
+                    let delay = consecutiveFailures > 0 ? Self.failurePollInterval : Self.pollInterval
+                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                 }
-                self.statusCont = continuation
-                self.ensureStatusNotify()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    private static let pollInterval: TimeInterval = 1.0
+    private static let failurePollInterval: TimeInterval = 3.0
+
+    /// Yields true when the GATT session is up (characteristics discovered),
+    /// false on link loss or explicit disconnect. Lets the session keep
+    /// `connectionState` honest for BLE — link loss is otherwise invisible.
+    func linkStateStream() -> AsyncStream<Bool> {
+        AsyncStream { continuation in
+            queue.async {
+                continuation.yield(self.isConnected)
+                self.linkCont = continuation
             }
             continuation.onTermination = { [weak self] _ in
                 self?.queue.async {
-                    self?.statusCont = nil
+                    self?.linkCont = nil
                 }
             }
         }
@@ -375,6 +548,12 @@ final class BleTransport: NSObject, GaugeTransport, CBCentralManagerDelegate, CB
                     continuation.resume(throwing: TransportError.busy)
                     return
                 }
+                guard self.canIssueATT(peripheral, "read \(characteristic.uuid.uuidString)") else {
+                    // Same orphan-suspension hazard as the control-write guard:
+                    // fail fast so the caller's timeout/retry path owns recovery.
+                    continuation.resume(throwing: TransportError.notConnected)
+                    return
+                }
                 self.readPending = ReadPending(continuation, characteristic: characteristic)
                 peripheral.readValue(for: characteristic)
                 let timeoutItem = DispatchWorkItem { [weak self] in
@@ -385,8 +564,45 @@ final class BleTransport: NSObject, GaugeTransport, CBCentralManagerDelegate, CB
         }
     }
 
+    /// A raw GATT read while the 1 Hz status stream is flooding the ATT path
+    /// is starved on the firmware side (hardware-verified: readDeviceInfo timed
+    /// out deterministically while the full-state status fragments streamed,
+    /// and passed as soon as the status push was disabled). Quiesce status
+    /// notifications around the read, mirroring the readStatus pattern that
+    /// the firmware/companion BLE gate already validated.
+    private func readValueQuiescingStatus(from characteristic: CBCharacteristic, timeout: TimeInterval = 10) async throws -> Data {
+        guard let peripheral, let statusChar, statusNotifyEnabled else {
+            return try await readValue(from: characteristic, timeout: timeout)
+        }
+        queue.async {
+            guard self.canIssueATT(peripheral, "quiesce status notify off") else { return }
+            peripheral.setNotifyValue(false, for: statusChar)
+            // Any fragment already buffered belongs to a sample the firmware
+            // stops mid-flight; drop it so the next sample reassembles clean
+            // (otherwise the stale tail merges with the new sample and yields
+            // a malformed object).
+            self.statusBuffer.removeAll()
+        }
+        try await Task.sleep(nanoseconds: 300_000_000)
+        do {
+            let value = try await readValue(from: characteristic, timeout: timeout)
+            queue.async {
+                guard self.canIssueATT(peripheral, "restore status notify") else { return }
+                peripheral.setNotifyValue(true, for: statusChar)
+            }
+            return value
+        } catch {
+            queue.async {
+                guard self.canIssueATT(peripheral, "restore status notify") else { return }
+                peripheral.setNotifyValue(true, for: statusChar)
+            }
+            throw error
+        }
+    }
+
     private func ensureStatusNotify() {
-        guard let statusChar, let peripheral, !statusNotifyEnabled else { return }
+        guard let statusChar, let peripheral, !statusNotifyEnabled,
+              canIssueATT(peripheral, "status notify") else { return }
         peripheral.setNotifyValue(true, for: statusChar)
     }
 
@@ -417,6 +633,7 @@ final class BleTransport: NSObject, GaugeTransport, CBCentralManagerDelegate, CB
         guard let pending = connectPending else { return }
         connectPending = nil
         isConnected = true
+        linkCont?.yield(true)
         pending.continuation.resume()
     }
 
@@ -436,12 +653,33 @@ final class BleTransport: NSObject, GaugeTransport, CBCentralManagerDelegate, CB
         guard let pending = requestPending else { return }
         requestPending = nil
         pending.continuation.resume(throwing: error)
+        drainSendWaiters()
     }
 
     private func finishRequest(_ response: Resp) {
         guard let pending = requestPending else { return }
         requestPending = nil
         pending.continuation.resume(returning: response)
+        drainSendWaiters()
+    }
+
+    private func drainSendWaiters() {
+        guard requestPending == nil, !sendWaiters.isEmpty else { return }
+        let waiter = sendWaiters.removeFirst()
+        waiter()
+    }
+
+    /// CoreBluetooth asserts "API misuse" if `writeValue`/`setNotifyValue`/
+    /// `readValue` is issued on a peripheral that is not `.connected`
+    /// (observed at the exact board power-down instant). Refuse the call and
+    /// let the in-flight request fail through its normal timeout path instead
+    /// of issuing the misuse on a dropped link.
+    private func canIssueATT(_ peripheral: CBPeripheral, _ action: String) -> Bool {
+        guard peripheral.state == .connected else {
+            NSLog("[BLE] %@ skipped: peripheral state %ld != .connected", action, peripheral.state.rawValue)
+            return false
+        }
+        return true
     }
 
     private func handleControlData(_ data: Data) {
@@ -454,8 +692,15 @@ final class BleTransport: NSObject, GaugeTransport, CBCentralManagerDelegate, CB
 
     // MARK: - CBCentralManagerDelegate
 
-    func centralManagerDidUpdateState(_ central: CBCentralManager) {
-        switch central.state {
+    func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
+        let restored = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] ?? []
+        for peripheral in restored {
+            scannedPeripherals[peripheral.identifier] = peripheral
+            peripheral.delegate = self
+        }
+    }
+
+    func centralManagerDidUpdateState(_ central: CBCentralManager) {        switch central.state {
         case .poweredOn:
             isPoweredOn = true
             if let pending = powerCont {
@@ -499,8 +744,13 @@ final class BleTransport: NSObject, GaugeTransport, CBCentralManagerDelegate, CB
                 failConnectIfPending(error ?? TransportError.notConnected)
             } else if isConnected {
                 isConnected = false
+                linkCont?.yield(false)
                 statusCont?.yield(.failure(TransportError.notConnected))
+            } else {
+                linkCont?.yield(false)
             }
+            failReadIfPending(error ?? TransportError.notConnected)
+            failRequestIfPending(error ?? TransportError.notConnected)
         }
     }
 
@@ -534,14 +784,29 @@ final class BleTransport: NSObject, GaugeTransport, CBCentralManagerDelegate, CB
             failConnectIfPending(TransportError.characteristicNotFound)
             return
         }
+        guard canIssueATT(peripheral, "control notify (connect)") else {
+            failConnectIfPending(TransportError.notConnected)
+            return
+        }
         peripheral.setNotifyValue(true, for: controlChar!)
-        peripheral.setNotifyValue(true, for: statusChar!)
-        finishConnect()
+        // The Status characteristic is NOT subscribed: its full-state push is
+        // ~5 ATT fragments/second, which hardware-verified starves raw GATT
+        // reads on the shared path. The live status stream polls the Control
+        // /state route instead (same full JSON, fragmented response that the
+        // framer reassembles), exactly like the HTTP transport.
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
-        if characteristic === statusChar && error == nil && characteristic.isNotifying {
-            statusNotifyEnabled = true
+        if characteristic === controlChar {
+            guard error == nil, characteristic.isNotifying else {
+                failConnectIfPending(error ?? TransportError.notConnected)
+                return
+            }
+            controlNotifyEnabled = true
+            finishConnect()
+        }
+        if characteristic === statusChar && error == nil {
+            statusNotifyEnabled = characteristic.isNotifying
         }
     }
 
@@ -554,10 +819,24 @@ final class BleTransport: NSObject, GaugeTransport, CBCentralManagerDelegate, CB
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         if characteristic === statusChar {
             if let error {
+                if !statusBuffer.isEmpty {
+                    statusBuffer.removeAll(keepingCapacity: false)
+                }
                 statusCont?.yield(.failure(error))
+                if readPending?.characteristic === characteristic {
+                    failReadIfPending(error)
+                }
             } else if let value = characteristic.value {
-                lastStatusData = value
-                statusCont?.yield(.success(value))
+                statusBuffer.append(contentsOf: value)
+                while let obj = framer.extractFirstJSONObject(from: [UInt8](statusBuffer)) {
+                    statusBuffer.removeFirst(obj.count)
+                    lastStatusData = obj
+                    statusCont?.yield(.success(obj))
+                    if let pending = readPending, pending.characteristic === characteristic {
+                        pending.data = obj
+                        finishRead()
+                    }
+                }
             }
             return
         }

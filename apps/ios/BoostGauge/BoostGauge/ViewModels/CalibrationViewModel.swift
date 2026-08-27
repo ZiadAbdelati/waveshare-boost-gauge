@@ -1,5 +1,7 @@
 import Foundation
 
+/// `@MainActor`: every `@Published` mutation is main-actor-isolated (r9 F1).
+@MainActor
 final class CalibrationViewModel: ObservableObject {
     @Published var calibration: Calibration?
     @Published var isLoading = false
@@ -10,6 +12,7 @@ final class CalibrationViewModel: ObservableObject {
     private weak var transport: GaugeTransport?
 
     func reset(transport: GaugeTransport?) {
+        assertMainThread()
         guard self.transport !== transport else { return }
         self.transport = transport
         calibration = nil
@@ -18,12 +21,16 @@ final class CalibrationViewModel: ObservableObject {
     }
 
     func load() async {
+        // `.task { await vm.load() }` runs on a background executor (SwiftUI);
+        // publish on main.
         guard let transport else {
-            errorMessage = "No active transport — choose HTTP or BLE in Settings."
+            await MainActor.run { self.errorMessage = "No active transport — connect in Settings." }
             return
         }
-        isLoading = true
-        errorMessage = nil
+        await MainActor.run {
+            self.isLoading = true
+            self.errorMessage = nil
+        }
         do {
             let response = try await transport.get("sensors/calibration")
             guard response.status == 200 else {

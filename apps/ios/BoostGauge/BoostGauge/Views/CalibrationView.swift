@@ -5,7 +5,7 @@ struct CalibrationView: View {
     @StateObject private var vm = CalibrationViewModel()
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             Form {
                 if let error = vm.errorMessage {
                     Section {
@@ -103,7 +103,8 @@ struct CalibrationView: View {
                         .foregroundColor(.secondary)
                 }
             }
-            .navigationTitle("Calibration")
+.gaugeScrollBottomMargin()
+                        .navigationTitle("Calibration")
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button(action: { Task { await vm.load() } }) {

@@ -1,6 +1,6 @@
 import Foundation
 
-enum TransportError: LocalizedError {
+enum TransportError: LocalizedError, Equatable {
     case invalidURL
     case badResponse
     case requestTooLarge
@@ -29,7 +29,7 @@ enum TransportError: LocalizedError {
         case .deviceNotFound: return "The selected gauge is no longer in range"
         case .serviceNotFound: return "Gauge service not found"
         case .characteristicNotFound: return "Gauge characteristic not found"
-        case .writeFailed: return "Failed to write to the gauge"
+        case .writeFailed: return "Failed to write to the gauge (v0.8.1-10 retry5+busy)"
         case .busy: return "Another Bluetooth operation is in progress"
         case .badLogFormat: return "Unsupported log format from the gauge"
         }
@@ -43,6 +43,17 @@ protocol GaugeTransport: AnyObject {
     func readLogSamples(limit: Int) async throws -> [LogSample]
     func liveStatusStream() -> AsyncStream<Result<Data, Error>>
     func disconnect()
+}
+
+/// The BLE link surface the reconnect loop and link monitor depend on.
+/// `linkStateStream()` is the single source of truth for GATT liveness
+/// (didDiscover/`finishConnect` publishes true, didDisconnect publishes
+/// false); the session mirrors it, never the loop's own bookkeeping.
+protocol BLELinkTransport: GaugeTransport {
+    var isConnected: Bool { get }
+    func connect(toSavedIdentifier identifier: UUID, name: String) async throws
+    func readDeviceInfo() async throws -> BleDeviceInfo
+    func linkStateStream() -> AsyncStream<Bool>
 }
 
 extension GaugeTransport {

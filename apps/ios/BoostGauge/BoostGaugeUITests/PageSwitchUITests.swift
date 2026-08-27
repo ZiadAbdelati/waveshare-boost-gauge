@@ -5,33 +5,24 @@ final class PageSwitchUITests: XCTestCase {
         continueAfterFailure = false
     }
 
-    func testStatusPageControlPutsPageAndReflectsState() throws {
+    /// The redundant Boost/TPMS segmented toggle was removed from Status: the
+    /// boost page already shows both the gauge and the TPMS card. The physical
+    /// page is still exercised by the AppSession hardware-BLE matrix steps
+    /// (putPage0/putPage1/putPage0Restore); this guards the UI surface instead.
+    func testStatusHasNoPageToggleAndShowsTPMSCard() throws {
         let app = XCUIApplication()
         app.launchArguments = ["-e2eHTTPURL", "http://127.0.0.1:18099", "-e2eTab", "status"]
         app.launch()
 
-        let boostButton = app.buttons["Boost"]
-        let tpmsButton = app.buttons["TPMS"]
-        XCTAssertTrue(boostButton.waitForExistence(timeout: 15), "Boost segment should appear on Status")
-        // Accept either page as the starting point (the mock persists the last
-        // page across launches); tap whichever is not currently selected.
-        let originallyTPMS = tpmsButton.isSelected
-        let target = originallyTPMS ? boostButton : tpmsButton
-        let other = originallyTPMS ? tpmsButton : boostButton
-        XCTAssertTrue(other.isSelected, "One page segment should be selected")
-
-        target.tap()
-
-        // The picker optimistically reflects the tap, then the 1 Hz state poll
-        // confirms the server-side activePage flip.
-        let selected = NSPredicate(format: "isSelected == true")
-        let expectation = XCTNSPredicateExpectation(predicate: selected, object: target)
-        let result = XCTWaiter.wait(for: [expectation], timeout: 10)
-        XCTAssertEqual(result, .completed, "Tapped segment should become selected via /page PUT + state poll")
-        XCTAssertFalse(other.isSelected)
+        XCTAssertTrue(app.navigationBars["Boost Gauge"].waitForExistence(timeout: 15))
+        // The segmented picker exposed these as buttons; neither may exist now.
+        XCTAssertFalse(app.buttons["Boost"].exists, "page toggle must be removed from Status")
+        XCTAssertFalse(app.buttons["TPMS"].exists, "page toggle must be removed from Status")
+        // The TPMS card is shown unconditionally below the gauge card.
+        XCTAssertTrue(app.staticTexts["TPMS"].firstMatch.exists, "TPMS card section title")
 
         let shot = XCTAttachment(screenshot: app.screenshot())
-        shot.name = "status-page-\(originallyTPMS ? "boost" : "tpms")"
+        shot.name = "status-no-page-toggle"
         shot.lifetime = .keepAlways
         add(shot)
     }

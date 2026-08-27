@@ -85,6 +85,30 @@ struct OBDSummary: Decodable {
     }
 }
 
+/// The four pill states of the OBD2 Scanner settings page, derived from the
+/// firmware's `boost_obd_ble_state_t` int (0 DOWN, 1 SCANNING, 2 CONNECTING,
+/// 3 DISCOVERING, 4 READY, 5 DISCONNECTED).
+enum OBDPhase: Equatable {
+    case idle
+    case scanning
+    case connecting(name: String?)
+    case connected
+}
+
+extension OBDSummary {
+    var phase: OBDPhase {
+        switch state ?? 0 {
+        case 1: return .scanning
+        case 2, 3: return .connecting(name: peer)
+        case 4: return .connected
+        // DISCONNECTED means the firmware reconnect loop is already back at
+        // the stored peer (Connecting) or has dropped to a fresh scan.
+        case 5: return (peer ?? "").isEmpty ? .scanning : .connecting(name: peer)
+        default: return .idle
+        }
+    }
+}
+
 struct GaugeState: Decodable {
     let psi: Double
     let peakPsi: Double

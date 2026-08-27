@@ -2,7 +2,7 @@ name: BoostGauge
 options:
   bundleIdPrefix: com.boostgauge
   deploymentTarget:
-    iOS: "15.0"
+    iOS: "17.0"
   createIntermediateGroups: true
   generateEmptyDirectories: true
 configs:
@@ -14,6 +14,16 @@ targets:
     platform: iOS
     sources:
       - BoostGauge
+      - path: ../../../web/index.html
+        buildPhase: resources
+      - path: ../../../web/styles.css
+        buildPhase: resources
+      - path: ../../../web/app.js
+        buildPhase: resources
+      - path: ../../../web/doto.ttf
+        buildPhase: resources
+      - path: ../../../web/tpms_powertrain.png
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.boostgauge.app
@@ -27,12 +37,9 @@ targets:
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 4654PWP45B
         CODE_SIGN_IDENTITY: "Apple Development"
-        IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+        IPHONEOS_DEPLOYMENT_TARGET: "17.0"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_TESTABILITY: YES
-    scheme:
-      testTargets:
-        - BoostGaugeTests
   BoostGaugeTests:
     type: bundle.unit-test
     platform: iOS
@@ -45,7 +52,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.boostgauge.app.tests
         SWIFT_VERSION: "5.0"
         SWIFT_STRICT_CONCURRENCY: minimal
-        IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+        IPHONEOS_DEPLOYMENT_TARGET: "17.0"
         GENERATE_INFOPLIST_FILE: YES
   BoostGaugeUITests:
     type: bundle.ui-testing
@@ -57,9 +64,11 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.boostgauge.app.uitests
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: 4654PWP45B
         SWIFT_VERSION: "5.0"
         SWIFT_STRICT_CONCURRENCY: minimal
-        IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+        IPHONEOS_DEPLOYMENT_TARGET: "17.0"
         GENERATE_INFOPLIST_FILE: YES
         TEST_TARGET_NAME: BoostGauge
 schemes:
@@ -69,6 +78,8 @@ schemes:
         BoostGauge: all
     run:
       config: Debug
+      commandLineArguments:
+        "-e2eSimBle": true
     test:
       config: Debug
       targets:

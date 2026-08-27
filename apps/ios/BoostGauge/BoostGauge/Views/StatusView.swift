@@ -1,31 +1,66 @@
 import SwiftUI
+import UIKit
 
 struct StatusView: View {
     @EnvironmentObject var session: AppSession
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     @StateObject private var vm = StatusViewModel()
 
     private let wheelLabels = ["FL", "FR", "RL", "RR"]
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             ScrollView {
                 VStack(spacing: 16) {
                     if let state = vm.state {
-                        gaugeCard(state)
-                        sensorCard(state)
-                        tpmsCard(state)
-                        obdCard(state)
+                        // Landscape uses the extra width as two panes: the gauge
+                        // readout on the left, TPMS/sensors/OBD2 on the right.
+                        // No letterboxing or stretching — same cards, same style.
+                        // Both panes are width-flexible so the split spans the
+                        // full landscape width on every device (a content-sized
+                        // HStack cramped the layout into the left third on the
+                        // Pro Max).
+                        if verticalSizeClass == .compact {
+                            HStack(alignment: .top, spacing: 16) {
+                                gaugeCard(state)
+                                    .frame(maxWidth: .infinity)
+                                VStack(spacing: 16) {
+                                    tpmsMirrorCard(state, title: "TPMS")
+                                    sensorCard(state)
+                                    obdCard(state)
+                                }
+                                .frame(maxWidth: .infinity)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .topLeading)
+                        } else {
+                            gaugeCard(state)
+                            tpmsMirrorCard(state, title: "TPMS")
+                            sensorCard(state)
+                            obdCard(state)
+                        }
                     } else {
                         placeholderCard
                     }
-                    if let error = vm.errorMessage {
+                    // The transport footer already renders link failures as
+                    // "Unreachable — …"; only surface errors the footer does
+                    // not cover (decode failures, API errors, no-transport).
+                    // Also suppress while the auto-reconnect loop is retrying:
+                    // the footer's "Reconnecting… (attempt N)" and a
+                    // "No active transport — connect in Settings." banner would
+                    // contradict each other on one screen (r9 F4).
+                    if let error = vm.errorMessage,
+                       !session.connectionState.isUnreachable,
+                       session.reconnectAttempt == nil {
                         errorBanner(error)
                     }
                     transportFooter
                 }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
                 .padding()
             }
-            .navigationTitle("Boost Gauge")
+            .frame(maxWidth: .infinity)
+            .gaugeScrollBottomMargin()
+                        .navigationTitle("Boost Gauge")
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button(action: { Task { await vm.forceRefresh() } }) {
@@ -34,13 +69,21 @@ struct StatusView: View {
                 }
             }
             .onAppear {
+                session.refreshBLELinkState()
                 if session.transport?.transportKind == "HTTP" {
                     vm.reset(transport: session.transport, statusStream: session.statusStream())
                 } else {
                     vm.reset(transport: session.transport)
                 }
+                Task { await vm.forceRefresh() }
             }
             .onDisappear { vm.stop() }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
+                session.refreshBLELinkState()
+            }
+            .onChange(of: session.transportID) { _ in
+                configureTransport()
+            }
         }
     }
 
@@ -98,23 +141,24 @@ struct StatusView: View {
             ) {
                 infoCell("Theme", vm.themeName ?? state.activeThemeId ?? "—")
                 infoCell("Uptime", state.uptimeMs.map { Format.uptime($0) } ?? "—")
-                infoCell("Firmware", state.firmwareVersion ?? "—")
+                infoCell("Firmware", state.firmwareVersion ?? session.bleInfo?.firmware ?? "—")
                 infoCell("Page", state.activePage.map { $0 == 1 ? "TPMS" : "Boost" } ?? "Boost")
             }
-            Picker("Page", selection: Binding(
-                get: { vm.displayedPage },
-                set: { page in Task { await vm.setPage(page) } }
-            )) {
-                Text("Boost").tag(0)
-                Text("TPMS").tag(1)
-            }
-            .pickerStyle(.segmented)
         }
         .padding()
         .frame(maxWidth: .infinity)
         .background(
             RoundedRectangle(cornerRadius: 16).fill(Color(.secondarySystemBackground))
         )
+    }
+
+    private func configureTransport() {
+        if session.transport?.transportKind == "HTTP" {
+            vm.reset(transport: session.transport, statusStream: session.statusStream())
+        } else {
+            vm.reset(transport: session.transport)
+        }
+        Task { await vm.forceRefresh() }
     }
 
     private func infoCell(_ title: String, _ value: String) -> some View {
@@ -172,12 +216,12 @@ struct StatusView: View {
         }
     }
 
-    private func tpmsCard(_ state: GaugeState) -> some View {
+    private func tpmsMirrorCard(_ state: GaugeState, title: String) -> some View {
         Group {
             if let tpms = state.tpms {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 10) {
                     HStack {
-                        sectionTitle("TPMS")
+                        sectionTitle(title)
                         Spacer()
                         if let lowPsi = tpms.lowPsi {
                             Text("low \(Format.psi(lowPsi))")
@@ -186,30 +230,49 @@ struct StatusView: View {
                         }
                     }
                     LazyVGrid(
-                        columns: Array(repeating: GridItem(.flexible()), count: 4),
-                        spacing: 8
+                        columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)],
+                        spacing: 10
                     ) {
-                        ForEach(Array(tpms.wheels.enumerated()), id: \.offset) { index, wheel in
-                            VStack(spacing: 4) {
-                                Text(wheelLabels[index < wheelLabels.count ? index : 0])
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                                Text(Format.psi(wheel.psi))
-                                    .font(.headline.monospacedDigit())
-                                    .foregroundColor(wheel.valid ? .primary : .red)
-                                Circle()
-                                    .fill(wheel.valid ? Color.green : Color.gray)
-                                    .frame(width: 7, height: 7)
-                            }
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 8)
-                            .background(RoundedRectangle(cornerRadius: 10).fill(Color(.tertiarySystemFill)))
+                        ForEach(Array(tpms.wheels.prefix(4).enumerated()), id: \.offset) { index, wheel in
+                            tireCapsule(wheel, label: wheelLabels[index], lowPsi: tpms.lowPsi)
                         }
+                    }
+                    if let status = tpms.status {
+                        Text("TPMS status \(status)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                     }
                 }
                 .card()
             }
         }
+    }
+
+    private func tireCapsule(_ wheel: TpmsWheel, label: String, lowPsi: Double?) -> some View {
+        let low = wheel.valid && (lowPsi.map { wheel.psi <= $0 } ?? false)
+        let tint: Color = !wheel.valid ? .gray : (low ? .orange : .green)
+        return VStack(spacing: 5) {
+            Text(label)
+                .font(.caption.weight(.semibold))
+                .foregroundColor(.secondary)
+            Text(wheel.valid ? Format.psi(wheel.psi) : "--.-")
+                .font(.title3.weight(.semibold).monospacedDigit())
+                .foregroundColor(tint)
+            Circle()
+                .fill(wheel.valid ? tint : Color.clear)
+                .overlay(Circle().stroke(tint.opacity(0.8), lineWidth: 1))
+                .frame(width: 8, height: 8)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 12).fill(tint.opacity(0.12))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12).stroke(tint.opacity(0.35), lineWidth: 1)
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(label) \(wheel.valid ? "\(Format.psi(wheel.psi)) psi" : "no data")\(low ? ", low pressure" : "")")
     }
 
     private func obdCard(_ state: GaugeState) -> some View {
@@ -242,7 +305,9 @@ struct StatusView: View {
                             metricRow("Age", "\(Format.uptime(UInt64(age)))")
                         }
                     } else {
-                        Text("No OBD2 link. Enable tpmsBle in Settings.")
+                        Text(vm.tpmsBleEnabled == false
+                             ? "No OBD2 link. Enable tpmsBle in Settings."
+                             : "No OBD2 adapter connected.")
                             .font(.subheadline)
                             .foregroundColor(.secondary)
                     }
@@ -296,10 +361,16 @@ struct StatusView: View {
     private var transportLabel: String {
         switch session.connectionState {
         case .notConfigured:
-            return "Not configured — set a host in Settings"
+            return "Not configured — pair a gauge in Settings"
         case .connecting:
+            if session.kind == .ble, let attempt = session.reconnectAttempt {
+                return AppSession.reconnectingMessage(attempt: attempt)
+            }
             return "Connecting…"
         case .notConnected:
+            if session.kind == .ble, let attempt = session.reconnectAttempt {
+                return AppSession.reconnectingMessage(attempt: attempt)
+            }
             return "Not connected"
         case .unreachable(let error):
             return "Unreachable — \(error)"
@@ -307,7 +378,7 @@ struct StatusView: View {
             if vm.transportKind == "BLE" {
                 return "Live · BLE notify"
             }
-            return "Live · HTTP 1 Hz"
+            return "Live · 1 Hz"
         }
     }
 }

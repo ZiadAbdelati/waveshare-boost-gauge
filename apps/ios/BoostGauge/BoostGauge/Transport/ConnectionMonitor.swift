@@ -6,6 +6,33 @@ enum GaugeConnectionState: Equatable {
     case connected
     case unreachable(String)
     case notConnected
+
+    /// The transport footer already renders this state as "Unreachable — …",
+    /// so StatusView suppresses the redundant amber banner for it.
+    var isUnreachable: Bool {
+        if case .unreachable = self { return true }
+        return false
+    }
+}
+
+/// Exponential reconnect backoff for the BLE link, matching Android's
+/// GaugeRepository.backoffDelayMs: 1→1 s, 2→2 s, 3→5 s, 4→10 s, 5→30 s,
+/// 6+→60 s cap. Resets on any successful connect.
+enum BLEBackoff {
+    static func delayMs(forAttempt attempt: Int) -> UInt64 {
+        switch attempt {
+        case ...1: return 1_000
+        case 2: return 2_000
+        case 3: return 5_000
+        case 4: return 10_000
+        case 5: return 30_000
+        default: return 60_000
+        }
+    }
+
+    static func delayNs(forAttempt attempt: Int) -> UInt64 {
+        delayMs(forAttempt: attempt) * 1_000_000
+    }
 }
 
 final class HTTPConnectionMonitor {
