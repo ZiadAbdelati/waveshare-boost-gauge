@@ -81,7 +81,7 @@ fun BoostGaugeApp(container: AppContainer) {
         ) { innerPadding ->
             NavHost(
                 navController = navController,
-                startDestination = "status",
+                startDestination = com.boostgauge.app.MainActivity.initialNavRoute ?: "status",
                 modifier = Modifier.padding(innerPadding),
             ) {
                 composable("status") { DashboardScreen(container) }

@@ -128,6 +128,7 @@ data class ThemesPayload(
     val vaultNeedleRed: Boolean = false,
     val vaultNeedleTail: Boolean = false,
     val neonLayout: Int = 0,
+    val neonFont: Int = 0,
     val neonPreset: Int = 0,
     val demoMode: Boolean = false,
     val demoFastSweep: Boolean = false,

@@ -39,7 +39,7 @@ class FakeBleTransportTest {
         val api = GaugeApi { transport }
 
         try {
-            api.syncTime(1L, 0)
+            api.syncTime(-240, "EST5EDT,M3.2.0/2,M11.1.0/2")
             fail("expected ApiException")
         } catch (e: ApiException) {
             assertEquals(409, e.status)

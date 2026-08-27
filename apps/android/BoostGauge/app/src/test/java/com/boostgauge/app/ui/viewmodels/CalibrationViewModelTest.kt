@@ -1,11 +1,13 @@
 package com.boostgauge.app.ui.viewmodels
 
+import com.boostgauge.app.data.ConnectionStatus
 import com.boostgauge.app.data.api.ApiFixtures
 import com.boostgauge.app.data.api.GaugeApi
 import com.boostgauge.app.data.transport.FakeBleTransport
 import com.boostgauge.app.data.transport.Resp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
@@ -91,5 +93,27 @@ class CalibrationViewModelTest {
         assertEquals("Calibration stored", viewModel.state.value.message)
         assertEquals(4, viewModel.state.value.calibration!!.calibration.version)
         assertEquals(CalibrationViewModel.UiMode.CONTENT, viewModel.state.value.mode())
+    }
+
+    @Test
+    fun transportLossResetsCachedCalibrationToEmptyPlaceholder() = runTest(dispatcher) {
+        val transport = FakeBleTransport { method, path, _ ->
+            when {
+                path == "sensors/calibration" && method == "GET" -> Resp(200, ApiFixtures.CALIBRATION)
+                else -> Resp(404, "{}")
+            }
+        }
+        val connectionStatus = MutableStateFlow(ConnectionStatus.Connected)
+        val viewModel = CalibrationViewModel(GaugeApi { transport }, connectionStatus)
+        viewModel.state.first { !it.loading }
+        assertEquals(CalibrationViewModel.UiMode.CONTENT, viewModel.state.value.mode())
+
+        // Transport loss (explicit Disconnect): the cached live diagnostics must
+        // not stay on screen — reset to the not-loaded EMPTY placeholder.
+        connectionStatus.value = ConnectionStatus.Disconnected
+        runCurrent()
+
+        assertEquals(CalibrationViewModel.UiMode.EMPTY, viewModel.state.value.mode())
+        assertNull(viewModel.state.value.calibration)
     }
 }

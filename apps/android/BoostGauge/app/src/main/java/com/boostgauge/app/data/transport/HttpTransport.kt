@@ -21,7 +21,7 @@ class HttpTransport(baseUrl: String) : GaugeTransport {
     private val baseUrl: String = run {
         val trimmed = baseUrl.trim().trimEnd('/')
         if (trimmed.isEmpty()) {
-            "http://192.168.4.1"
+            throw IllegalArgumentException("HTTP host is empty — BLE-derived LAN ip required")
         } else if (trimmed.contains("://")) {
             trimmed
         } else {

@@ -48,14 +48,14 @@ fun BoostCard(
     }
 }
 
-/** iOS inset-grouped Form/List section header (uppercase caption over a pale group). */
+/** iOS inset-grouped Form/List section header (headline-style caption over a pale group). */
 @Composable
 fun GroupedSectionHeader(title: String, modifier: Modifier = Modifier) {
     Text(
-        text = title.uppercase(),
-        style = BoostCaptionSemibold,
+        text = title,
+        style = BoostMetric,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = modifier.padding(start = 4.dp),
+        modifier = modifier.padding(start = 16.dp, bottom = 2.dp),
     )
 }
 
@@ -64,7 +64,7 @@ fun GroupedSectionHeader(title: String, modifier: Modifier = Modifier) {
 fun GroupedSection(
     title: String? = null,
     modifier: Modifier = Modifier,
-    contentPadding: PaddingValues = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+    contentPadding: PaddingValues = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -77,7 +77,7 @@ fun GroupedSection(
         ) {
             Column(
                 modifier = Modifier.padding(contentPadding),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
+                verticalArrangement = Arrangement.spacedBy(0.dp),
                 content = content,
             )
         }
@@ -105,7 +105,9 @@ fun MetricRow(
     valueWeight: FontWeight = FontWeight.Normal,
 ) {
     Row(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = 12.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {

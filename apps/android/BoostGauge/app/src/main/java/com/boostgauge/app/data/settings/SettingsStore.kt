@@ -15,34 +15,46 @@ data class TransportSelection(
     val type: TransportType,
     val httpAddress: String,
     val bleAddress: String,
+    val bleName: String = "",
 )
 
-/** Persists the last transport and per-transport address (one transport at a time). */
-class SettingsStore(private val context: Context) {
+interface TransportSettingsStore {
+    val selection: Flow<TransportSelection>
+    suspend fun setTransport(type: TransportType, address: String, name: String? = null)
+}
 
-    val selection: Flow<TransportSelection> = context.dataStore.data.map { prefs ->
+/** Persists the last transport and per-transport address (one transport at a time). */
+class SettingsStore(private val context: Context) : TransportSettingsStore {
+
+    override val selection: Flow<TransportSelection> = context.dataStore.data.map { prefs ->
         TransportSelection(
             type = runCatching { TransportType.valueOf(prefs[KEY_TRANSPORT] ?: "") }
-                .getOrDefault(TransportType.HTTP),
-            httpAddress = prefs[KEY_HTTP_ADDRESS] ?: DEFAULT_HTTP_ADDRESS,
+                .getOrDefault(TransportType.BLE),
+            httpAddress = prefs[KEY_HTTP_ADDRESS] ?: "",
             bleAddress = prefs[KEY_BLE_ADDRESS] ?: "",
+            bleName = prefs[KEY_BLE_NAME] ?: "",
         )
     }
 
-    suspend fun setTransport(type: TransportType, address: String) {
+    override suspend fun setTransport(type: TransportType, address: String, name: String?) {
         context.dataStore.edit { prefs ->
             prefs[KEY_TRANSPORT] = type.name
             when (type) {
                 TransportType.HTTP -> prefs[KEY_HTTP_ADDRESS] = address
-                TransportType.BLE -> prefs[KEY_BLE_ADDRESS] = address
+                TransportType.BLE -> {
+                    prefs[KEY_BLE_ADDRESS] = address
+                    if (!name.isNullOrBlank()) prefs[KEY_BLE_NAME] = name
+                }
             }
         }
     }
 
     companion object {
-        const val DEFAULT_HTTP_ADDRESS = "192.168.4.1"
+        // Retained only for log-fetch URL construction from device-info IP;
+        // never used as a persisted default or user-visible address.
         private val KEY_TRANSPORT = stringPreferencesKey("transport_type")
         private val KEY_HTTP_ADDRESS = stringPreferencesKey("http_address")
         private val KEY_BLE_ADDRESS = stringPreferencesKey("ble_address")
+        private val KEY_BLE_NAME = stringPreferencesKey("ble_name")
     }
 }

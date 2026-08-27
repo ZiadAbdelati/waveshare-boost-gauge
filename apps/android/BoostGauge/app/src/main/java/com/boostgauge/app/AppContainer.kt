@@ -13,8 +13,12 @@ class AppContainer(appContext: Context) {
     val api = GaugeApi { transportController.current() }
     val repository = GaugeRepository(api, transportController.transport)
 
-    /** Restores the persisted transport selection before the live loop starts. */
-    suspend fun initialize() {
-        transportController.restore()
+    /**
+     * Restores the persisted transport selection before the live loop starts.
+     * [simBle] (Intent extra `transport=simBle`) swaps in the in-process BLE
+     * simulator for emulator iteration; it never persists.
+     */
+    suspend fun initialize(simBle: Boolean = false) {
+        if (simBle) transportController.useSimBle() else transportController.restore()
     }
 }

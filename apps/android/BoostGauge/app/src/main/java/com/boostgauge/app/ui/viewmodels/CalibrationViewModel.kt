@@ -2,6 +2,7 @@ package com.boostgauge.app.ui.viewmodels
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.boostgauge.app.data.ConnectionStatus
 import com.boostgauge.app.data.api.Calibration
 import com.boostgauge.app.data.api.GaugeApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -10,7 +11,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-class CalibrationViewModel(private val api: GaugeApi) : ViewModel() {
+class CalibrationViewModel(
+    private val api: GaugeApi,
+    connectionStatus: StateFlow<ConnectionStatus> = MutableStateFlow(ConnectionStatus.Connected),
+) : ViewModel() {
 
     /** Mutually exclusive, exhaustive UI branches for the Calibrate tab. */
     enum class UiMode { LOADING, CONTENT, ERROR, EMPTY }
@@ -42,6 +46,25 @@ class CalibrationViewModel(private val api: GaugeApi) : ViewModel() {
 
     init {
         load()
+        // Transport loss must never leave the previous live diagnostics on
+        // screen: reset to the not-loaded placeholder (EMPTY) instead of
+        // holding stale values. Only resets when there is actually a cached
+        // payload, so an already-disconnected first load stays untouched.
+        viewModelScope.launch {
+            connectionStatus.collect { status ->
+                if (status != ConnectionStatus.Connected && _state.value.calibration != null) {
+                    _state.update {
+                        it.copy(
+                            loading = false,
+                            calibration = null,
+                            calibrating = false,
+                            error = null,
+                            message = null,
+                        )
+                    }
+                }
+            }
+        }
     }
 
     fun load() {

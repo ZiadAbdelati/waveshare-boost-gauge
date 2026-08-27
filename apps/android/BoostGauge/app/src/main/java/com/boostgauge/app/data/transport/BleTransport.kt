@@ -11,7 +11,6 @@ import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
-import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.BroadcastReceiver
@@ -26,13 +25,16 @@ import com.boostgauge.app.data.api.ApiJson
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
@@ -40,6 +42,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.buildJsonObject
@@ -79,21 +82,73 @@ internal object BleLogParser {
      * Kept pure so it is unit-testable without a radio.
      */
     fun parse(payload: String): List<BleLogRow> {
+        if (!payload.startsWith("BGL1\n")) {
+            throw TransportException("unsupported BLE log format")
+        }
         val body = payload.removePrefix("BGL1\n")
         return body.lineSequence()
             .filter { it.isNotBlank() }
             .mapNotNull { line ->
                 val parts = line.split(",")
                 if (parts.size < 5) return@mapNotNull null
+                if (parts[0].trim() == "t_ms") return@mapNotNull null
+                val tMs = parts[0].trim().toLongOrNull() ?: return@mapNotNull null
+                val psi = parts[1].trim().toDoubleOrNull() ?: return@mapNotNull null
+                val peakPsi = parts[2].trim().toDoubleOrNull() ?: return@mapNotNull null
                 BleLogRow(
-                    tMs = parts[0].trim().toLongOrNull() ?: 0L,
-                    psi = parts[1].trim().toDoubleOrNull() ?: 0.0,
-                    peakPsi = parts[2].trim().toDoubleOrNull() ?: 0.0,
+                    tMs = tMs,
+                    psi = psi,
+                    peakPsi = peakPsi,
                     zone = parts[3].trim(),
                     demo = parts[4].trim().toIntOrNull() == 1,
                 )
             }
             .toList()
+    }
+}
+
+/** Reassembles concatenated or fragmented JSON objects from Control notifications. */
+internal class BleControlFramer {
+    private val buffer = StringBuilder()
+
+    fun clear() = buffer.setLength(0)
+
+    fun append(bytes: ByteArray): List<String> {
+        buffer.append(bytes.decodeToString())
+        val frames = mutableListOf<String>()
+        while (true) {
+            val end = firstObjectEnd() ?: break
+            frames += buffer.substring(0, end + 1)
+            buffer.delete(0, end + 1)
+        }
+        return frames
+    }
+
+    private fun firstObjectEnd(): Int? {
+        var depth = 0
+        var started = false
+        var inString = false
+        var escaped = false
+        for (index in buffer.indices) {
+            val ch = buffer[index]
+            if (inString) {
+                when {
+                    escaped -> escaped = false
+                    ch == '\\' -> escaped = true
+                    ch == '"' -> inString = false
+                }
+                continue
+            }
+            when (ch) {
+                '"' -> inString = true
+                '{' -> {
+                    started = true
+                    depth++
+                }
+                '}' -> if (started && --depth == 0) return index
+            }
+        }
+        return null
     }
 }
 
@@ -135,7 +190,12 @@ private sealed interface GattEvent {
 class BleTransport(
     private val context: Context,
     private val deviceAddress: String,
-) : GaugeTransport {
+    /** Test seam: how a BluetoothGatt is created for a device. Production uses
+     *  connectGatt; tests inject a controllable fake to prove the gatt object
+     *  is closed on every disconnect/teardown path. */
+    private val gattFactory: (device: BluetoothDevice, callback: BluetoothGattCallback) -> BluetoothGatt? =
+        { device, callback -> device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE) },
+) : BleGaugeTransport {
 
     private val bleDispatcher = Executors.newSingleThreadExecutor { r ->
         Thread(r, "boost-ble").apply { isDaemon = true }
@@ -144,22 +204,34 @@ class BleTransport(
     private val events = Channel<GattEvent>(Channel.UNLIMITED)
 
     private val mutex = Mutex()
+    private val connectMutex = Mutex()
+    private val controlFramer = BleControlFramer()
+    private val statusFramer = BleControlFramer()
+    private var statusPollJob: Job? = null
     private val pendingResponses = mutableMapOf<Int, CancellableContinuation<GattResponse>>()
     private val pendingWaits = mutableMapOf<String, CancellableContinuation<GattEvent>>()
     private var nextRequestId = 1
+    private var activeRequestId: Int? = null
 
     private var gatt: BluetoothGatt? = null
     private var controlCharacteristic: BluetoothGattCharacteristic? = null
-    private var statusCharacteristic: BluetoothGattCharacteristic? = null
     private var logCharacteristic: BluetoothGattCharacteristic? = null
     private var deviceInfoCharacteristic: BluetoothGattCharacteristic? = null
     private var mtu = 23
     private var closed = false
+    @Volatile private var linkReady = false
+
+    override val transportKind: String = "BLE"
 
     private val _statusLine = MutableStateFlow<String?>(null)
 
     /** Raw /state-shaped JSON published by the Status characteristic (~1 Hz). */
-    val statusLine: StateFlow<String?> = _statusLine.asStateFlow()
+    override val statusLine: StateFlow<String?> = _statusLine.asStateFlow()
+
+    private val _linkUp = MutableStateFlow(false)
+
+    /** True while the GATT link is established (see BleGaugeTransport.linkUp). */
+    override val linkUp: StateFlow<Boolean> = _linkUp.asStateFlow()
 
     init {
         scope.launch {
@@ -172,11 +244,27 @@ class BleTransport(
     private fun handleEvent(event: GattEvent) {
         when (event) {
             is GattEvent.ConnectionState -> {
+                if (event.gatt !== gatt) return
                 if (event.newState == BluetoothProfile.STATE_CONNECTED) {
                     gatt = event.gatt
                     completeWait("connect", event)
                 } else {
+                    linkReady = false
+                    _linkUp.value = false
                     failAll("gauge disconnected")
+                    // A dropped link is a ZOMBIE unless the client is torn down
+                    // for good: disconnect() alone leaves the ACL up, so the
+                    // board never restarts advertising and the next reconnect
+                    // attempt times out forever. close() releases the link.
+                    val dead = gatt
+                    gatt = null
+                    controlCharacteristic = null
+                    logCharacteristic = null
+                    deviceInfoCharacteristic = null
+                    scope.launch {
+                        runCatching { dead?.disconnect() }
+                        runCatching { dead?.close() }
+                    }
                 }
             }
             is GattEvent.ServicesDiscovered -> completeWait("discover", event)
@@ -187,7 +275,7 @@ class BleTransport(
             is GattEvent.CharacteristicChanged -> {
                 when (event.characteristic.uuid) {
                     GaugeGatt.control -> handleControlNotify(event.value)
-                    GaugeGatt.status -> _statusLine.value = event.value.decodeToString()
+                    GaugeGatt.status -> handleStatusNotify(event.value)
                     else -> Unit
                 }
             }
@@ -196,9 +284,19 @@ class BleTransport(
             }
             is GattEvent.CharacteristicWritten -> {
                 completeWait("write:${event.characteristic.uuid}", event)
+                if (event.characteristic.uuid == GaugeGatt.control &&
+                    event.status != BluetoothGatt.GATT_SUCCESS
+                ) {
+                    activeRequestId?.let { id ->
+                        pendingResponses.remove(id)?.resumeWith(
+                            Result.failure(TransportException("control write failed (${event.status})")),
+                        )
+                    }
+                    activeRequestId = null
+                }
             }
             is GattEvent.DescriptorWritten -> {
-                completeWait("desc:${event.descriptor.uuid}", event)
+                completeWait("desc:${event.descriptor.characteristic.uuid}", event)
             }
             is GattEvent.CommandWrite -> {
                 val characteristic = event.characteristic
@@ -209,20 +307,29 @@ class BleTransport(
                     pendingResponses.remove(event.id)?.resumeWith(
                         Result.failure(TransportException("writeCharacteristic failed")),
                     )
+                    if (activeRequestId == event.id) activeRequestId = null
                 }
             }
         }
     }
 
     private fun handleControlNotify(bytes: ByteArray) {
-        val text = bytes.decodeToString()
-        val obj = runCatching { ApiJson.json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return
-        val id = obj["id"]?.jsonPrimitive?.intOrNull ?: return
-        val pending = pendingResponses.remove(id) ?: return
-        val status = obj["status"]?.jsonPrimitive?.intOrNull ?: -1
-        val body = obj["body"]
-        val bodyText = if (body == null || body is JsonNull) "" else body.toString()
-        pending.resumeWith(Result.success(GattResponse(status, bodyText)))
+        for (text in controlFramer.append(bytes)) {
+            val obj = runCatching { ApiJson.json.parseToJsonElement(text).jsonObject }.getOrNull() ?: continue
+            val id = obj["id"]?.jsonPrimitive?.intOrNull ?: continue
+            val pending = pendingResponses.remove(id) ?: continue
+            if (activeRequestId == id) activeRequestId = null
+            val status = obj["status"]?.jsonPrimitive?.intOrNull ?: -1
+            val body = obj["body"]
+            val bodyText = if (body == null || body is JsonNull) "" else body.toString()
+            pending.resumeWith(Result.success(GattResponse(status, bodyText)))
+        }
+    }
+
+    private fun handleStatusNotify(bytes: ByteArray) {
+        for (text in statusFramer.append(bytes)) {
+            _statusLine.value = text
+        }
     }
 
     private fun completeWait(key: String, event: GattEvent) {
@@ -235,62 +342,132 @@ class BleTransport(
         pendingWaits.clear()
         pendingResponses.values.forEach { it.resumeWith(Result.failure(failure)) }
         pendingResponses.clear()
+        activeRequestId = null
+        controlFramer.clear()
+        statusFramer.clear()
+        stopStatusPoll()
     }
 
-    private suspend fun await(key: String, timeoutMs: Long, eventMatches: (GattEvent) -> Boolean): GattEvent {
-        return withTimeout(timeoutMs) {
-            val event = suspendCancellableCoroutine<GattEvent> { cont ->
-                pendingWaits[key] = cont
-                cont.invokeOnCancellation { if (pendingWaits[key] === cont) pendingWaits.remove(key) }
+    private suspend fun await(
+        key: String,
+        timeoutMs: Long,
+        start: (() -> Boolean)? = null,
+        eventMatches: (GattEvent) -> Boolean,
+    ): GattEvent {
+        // A GATT operation timeout must surface as a TransportException, never a
+        // TimeoutCancellationException: the reconnect loop treats
+        // CancellationException as "this loop is cancelled" and dies forever,
+        // which is exactly the "app never reconnects after restart" bug.
+        try {
+            return withTimeout(timeoutMs) {
+                val event = suspendCancellableCoroutine<GattEvent> { cont ->
+                    scope.launch {
+                        pendingWaits[key] = cont
+                        cont.invokeOnCancellation {
+                            scope.launch {
+                                if (pendingWaits[key] === cont) pendingWaits.remove(key)
+                            }
+                        }
+                        if (start != null && !runCatching(start).getOrDefault(false)) {
+                            pendingWaits.remove(key)
+                            cont.resumeWith(Result.failure(TransportException("GATT operation '$key' did not start")))
+                        }
+                    }
+                }
+                if (!eventMatches(event)) {
+                    throw TransportException("unexpected GATT event for '$key'")
+                }
+                event
             }
-            if (!eventMatches(event)) {
-                throw TransportException("unexpected GATT event for '$key'")
-            }
-            event
+        } catch (e: TimeoutCancellationException) {
+            throw TransportException("GATT operation '$key' timed out", e)
         }
     }
 
-    /** Connect, discover, negotiate MTU and subscribe to control/status notifications. */
-    suspend fun connect() {
+    /** Connect, discover, negotiate MTU and subscribe to control notifications. */
+    override suspend fun connect() = connectMutex.withLock {
+        if (linkReady) return@withLock
         check(!closed) { "transport closed" }
-        val g = withContext(bleDispatcher) {
-            val device = requireDevice()
-            attemptBond(device)
-            device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
-                ?: throw TransportException("connectGatt returned null")
+        gatt?.let { stale ->
+            runCatching { stale.disconnect() }
+            runCatching { stale.close() }
         }
-        gatt = g
-        await("connect", CONNECT_TIMEOUT_MS) {
-            it is GattEvent.ConnectionState && it.status == BluetoothGatt.GATT_SUCCESS
-        }
-        withContext(bleDispatcher) {
-            if (!g.discoverServices()) throw TransportException("discoverServices failed")
-        }
-        await("discover", DISCOVER_TIMEOUT_MS) {
-            it is GattEvent.ServicesDiscovered && it.status == BluetoothGatt.GATT_SUCCESS
-        }
+        gatt = null
+        _linkUp.value = false
+        val device = requireDevice()
+        attemptBond(device)
+        try {
+            val connected = await("connect", CONNECT_TIMEOUT_MS, start = {
+                val created = gattFactory(device, callback)
+                gatt = created
+                created != null
+            }) {
+                it is GattEvent.ConnectionState && it.status == BluetoothGatt.GATT_SUCCESS
+            }
+            val g = (connected as GattEvent.ConnectionState).gatt
+            await("discover", DISCOVER_TIMEOUT_MS, start = { g.discoverServices() }) {
+                it is GattEvent.ServicesDiscovered && it.status == BluetoothGatt.GATT_SUCCESS
+            }
 
-        withContext(bleDispatcher) {
-            runCatching { g.requestMtu(MTU_TARGET) }
-        }
-        runCatching { await("mtu", MTU_TIMEOUT_MS) { it is GattEvent.MtuChanged } }
+            runCatching {
+                await("mtu", MTU_TIMEOUT_MS, start = { g.requestMtu(MTU_TARGET) }) {
+                    it is GattEvent.MtuChanged
+                }
+            }
 
-        val service = g.getService(GaugeGatt.service)
-            ?: throw TransportException("BoostGauge service not found")
-        val control = service.getCharacteristic(GaugeGatt.control)
-            ?: throw TransportException("control characteristic missing")
-        val status = service.getCharacteristic(GaugeGatt.status)
-            ?: throw TransportException("status characteristic missing")
-        val log = service.getCharacteristic(GaugeGatt.log)
-            ?: throw TransportException("log characteristic missing")
-        val info = service.getCharacteristic(GaugeGatt.deviceInfo)
-            ?: throw TransportException("device info characteristic missing")
-        controlCharacteristic = control
-        statusCharacteristic = status
-        logCharacteristic = log
-        deviceInfoCharacteristic = info
-        enableNotify(control)
-        enableNotify(status)
+            val service = g.getService(GaugeGatt.service)
+                ?: throw TransportException("BoostGauge service not found")
+            val control = service.getCharacteristic(GaugeGatt.control)
+                ?: throw TransportException("control characteristic missing")
+            val log = service.getCharacteristic(GaugeGatt.log)
+                ?: throw TransportException("log characteristic missing")
+            val info = service.getCharacteristic(GaugeGatt.deviceInfo)
+                ?: throw TransportException("device info characteristic missing")
+            controlCharacteristic = control
+            logCharacteristic = log
+            deviceInfoCharacteristic = info
+            // The Status characteristic is deliberately NOT subscribed: its full
+            // /state mirror (~1 KB) fragments into ~5 ATT notifications per sample,
+            // and the flood dropped the BLE link during the Android E2E matrix.
+            // Full state is served by the Control /state route via statusPollJob.
+            enableNotify(control)
+            linkReady = true
+            _linkUp.value = true
+            startStatusPoll()
+        } catch (error: Throwable) {
+            // A failed or aborted connect must release the freshly created gatt
+            // (disconnect alone leaves the ACL up, so the board never restarts
+            // advertising) and never masquerade a dead link as healthy.
+            val failed = gatt
+            gatt = null
+            controlCharacteristic = null
+            logCharacteristic = null
+            deviceInfoCharacteristic = null
+            runCatching { failed?.disconnect() }
+            runCatching { failed?.close() }
+            _linkUp.value = false
+            throw error
+        }
+    }
+
+    /**
+     * Poll the Control /state route ~1 Hz so statusLine stays fresh without the
+     * Status-characteristic notification flood. Mirrors iOS
+     * BleTransport.liveStatusStream (which polls get("state")).
+     */
+    private fun startStatusPoll() {
+        statusPollJob?.cancel()
+        statusPollJob = scope.launch {
+            while (isActive) {
+                if (linkReady) runCatching { get("state") }
+                delay(STATUS_POLL_MS)
+            }
+        }
+    }
+
+    private fun stopStatusPoll() {
+        statusPollJob?.cancel()
+        statusPollJob = null
     }
 
     private suspend fun attemptBond(device: BluetoothDevice) {
@@ -338,33 +515,53 @@ class BleTransport(
 
     private suspend fun enableNotify(characteristic: BluetoothGattCharacteristic) {
         val g = requireGatt()
-        withContext(bleDispatcher) {
+        val descriptor = withContext(bleDispatcher) {
             if (!g.setCharacteristicNotification(characteristic, true)) {
                 throw TransportException("setCharacteristicNotification failed")
             }
-            val descriptor = characteristic.getDescriptor(GaugeGatt.clientCharacteristicConfig)
-            if (descriptor == null) return@withContext
-            descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-            if (!g.writeDescriptor(descriptor)) {
-                throw TransportException("writeDescriptor failed")
-            }
+            characteristic.getDescriptor(GaugeGatt.clientCharacteristicConfig)
+                ?: throw TransportException("CCCD missing for ${characteristic.uuid}")
         }
-        await("desc:${GaugeGatt.clientCharacteristicConfig}", WRITE_TIMEOUT_MS) {
+        val key = "desc:${characteristic.uuid}"
+        await(key, WRITE_TIMEOUT_MS, start = {
+            descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+            g.writeDescriptor(descriptor)
+        }) {
             it is GattEvent.DescriptorWritten &&
-                it.descriptor.uuid == GaugeGatt.clientCharacteristicConfig &&
+                it.descriptor.characteristic.uuid == characteristic.uuid &&
                 it.status == BluetoothGatt.GATT_SUCCESS
         }
     }
 
     override suspend fun send(method: String, path: String, bodyJson: String?): Resp = mutex.withLock {
+        var lastFailure: Throwable? = null
+        for ((attempt, delayMs) in RETRY_DELAYS_MS.withIndex()) {
+            if (delayMs > 0) kotlinx.coroutines.delay(delayMs)
+            try {
+                return@withLock sendOnce(method, path, bodyJson)
+            } catch (error: Throwable) {
+                if (!isTransientRequestFailure(error)) throw error
+                lastFailure = error
+                if (attempt == RETRY_DELAYS_MS.lastIndex) break
+            }
+        }
+        throw TransportException("BLE request failed after ${RETRY_DELAYS_MS.size} attempts", lastFailure)
+    }
+
+    private suspend fun sendOnce(method: String, path: String, bodyJson: String?): Resp {
+        if (closed) throw TransportException("transport closed")
+        if (!linkReady) throw TransportException("BLE not connected")
         val char = requireControl()
         val id = nextRequestId++
+        // GaugeApi uses HTTP-style relative routes ("state", "config", ...),
+        // while the GATT contract routes are slash-prefixed ("/state").
+        val route = if (path.startsWith('/')) path else "/$path"
         val body: JsonElement = bodyJson?.let {
             runCatching { ApiJson.json.parseToJsonElement(it) }.getOrDefault(buildJsonObject {})
         } ?: buildJsonObject {}
         val request = buildJsonObject {
             put("id", id)
-            put("path", path)
+            put("path", route)
             put("method", method.uppercase())
             put("body", body)
         }
@@ -372,31 +569,69 @@ class BleTransport(
         if (encoded.size > MAX_REQUEST_BYTES) {
             throw TransportException("BLE request exceeds $MAX_REQUEST_BYTES bytes")
         }
-        withTimeout(REQUEST_TIMEOUT_MS) {
-            val response = suspendCancellableCoroutine<GattResponse> { cont ->
-                pendingResponses[id] = cont
-                cont.invokeOnCancellation { pendingResponses.remove(id) }
-                events.trySend(GattEvent.CommandWrite(char, id, encoded))
+        controlFramer.clear()
+        val response = try {
+            withTimeout(REQUEST_TIMEOUT_MS) {
+                suspendCancellableCoroutine<GattResponse> { cont ->
+                    scope.launch {
+                        activeRequestId = id
+                        pendingResponses[id] = cont
+                        cont.invokeOnCancellation {
+                            scope.launch {
+                                pendingResponses.remove(id)
+                                if (activeRequestId == id) activeRequestId = null
+                            }
+                        }
+                        events.trySend(GattEvent.CommandWrite(char, id, encoded))
+                    }
+                }
             }
-            if (path == "state") _statusLine.value = response.body
-            Resp(response.status, response.body)
+        } catch (error: TimeoutCancellationException) {
+            throw error
         }
+        if (route == "/state") _statusLine.value = response.body
+        return Resp(response.status, response.body)
     }
+
+    private fun isTransientRequestFailure(error: Throwable): Boolean =
+        error is TimeoutCancellationException ||
+            (error is TransportException &&
+                (error.message?.contains("write", ignoreCase = true) == true ||
+                    error.message?.contains("busy", ignoreCase = true) == true))
 
     override suspend fun get(path: String): Resp = send("GET", path, null)
 
     /** Read the Log characteristic (Android reassembles GATT long reads). */
-    suspend fun readLog(): String = readValue(requireLog())
+    override suspend fun readLog(): String = mutex.withLock {
+        readValue(requireLog(), LOG_READ_TIMEOUT_MS).also { BleLogParser.parse(it) }
+    }
 
     /** Read the DeviceInfo characteristic. */
-    suspend fun readDeviceInfo(): String = readValue(requireDeviceInfo())
+    override suspend fun readDeviceInfo(): String = mutex.withLock { readValue(requireDeviceInfo()) }
 
-    private suspend fun readValue(char: BluetoothGattCharacteristic): String {
-        val g = requireGatt()
-        withContext(bleDispatcher) {
-            if (!g.readCharacteristic(char)) throw TransportException("readCharacteristic failed")
+    /**
+     * Full /state via the Control route (iOS readStatus parity). The Status
+     * characteristic is neither subscribed nor read (its notification flood
+     * dropped the Android link), so return the latest polled Control /state
+     * sample, or fetch one directly.
+     */
+    override suspend fun readStatus(): String {
+        _statusLine.value?.let { return it }
+        val response = send("GET", "state", null)
+        if (response.status !in 200..299) {
+            throw TransportException("status read failed (${response.status})")
         }
-        val event = await("read:${char.uuid}", READ_TIMEOUT_MS) { it is GattEvent.CharacteristicRead }
+        return response.body
+    }
+
+    private suspend fun readValue(
+        char: BluetoothGattCharacteristic,
+        timeoutMs: Long = READ_TIMEOUT_MS,
+    ): String {
+        val g = requireGatt()
+        val event = await("read:${char.uuid}", timeoutMs, start = { g.readCharacteristic(char) }) {
+            it is GattEvent.CharacteristicRead && it.characteristic.uuid == char.uuid
+        }
         if (event !is GattEvent.CharacteristicRead || event.status != BluetoothGatt.GATT_SUCCESS) {
             throw TransportException("characteristic read failed")
         }
@@ -406,11 +641,16 @@ class BleTransport(
     override suspend fun close() {
         if (closed) return
         closed = true
+        linkReady = false
+        _linkUp.value = false
         failAll("transport closed")
         scope.cancel()
         withContext(Dispatchers.IO) {
             val g = gatt
             gatt = null
+            controlCharacteristic = null
+            logCharacteristic = null
+            deviceInfoCharacteristic = null
             runCatching { g?.disconnect() }
             runCatching { g?.close() }
         }
@@ -511,8 +751,11 @@ class BleTransport(
         private const val MTU_TIMEOUT_MS = 10_000L
         private const val WRITE_TIMEOUT_MS = 10_000L
         private const val READ_TIMEOUT_MS = 15_000L
+        private const val LOG_READ_TIMEOUT_MS = 20_000L
         private const val REQUEST_TIMEOUT_MS = 20_000L
         private const val BOND_TIMEOUT_MS = 15_000L
+        private const val STATUS_POLL_MS = 1_000L
+        private val RETRY_DELAYS_MS = longArrayOf(0L, 200L, 800L, 1_500L, 2_500L)
     }
 }
 
@@ -526,9 +769,6 @@ class BleScanner(private val context: Context) {
             ?: throw TransportException("Bluetooth LE scanner unavailable")
         val results = mutableListOf<BleScanResult>()
         val failures = Channel<IOException>(Channel.CONFLATED)
-        val filter = ScanFilter.Builder()
-            .setServiceUuid(ParcelUuid(GaugeGatt.service))
-            .build()
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
@@ -553,7 +793,10 @@ class BleScanner(private val context: Context) {
                 failures.trySend(TransportException("BLE scan failed (code $errorCode)"))
             }
         }
-        scanner.startScan(listOf(filter), settings, callback)
+        // Scan broadly and filter in the callback. Some controllers do not
+        // deliver this legacy advertisement to a hardware service filter when
+        // the UUID and local name arrive across ADV + scan-response packets.
+        scanner.startScan(null, settings, callback)
         return try {
             withTimeoutOrNull(timeoutMs) { failures.receive() }?.let { throw it }
             results.toList()
@@ -566,4 +809,5 @@ class BleScanner(private val context: Context) {
         val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
         return manager?.adapter
     }
+
 }

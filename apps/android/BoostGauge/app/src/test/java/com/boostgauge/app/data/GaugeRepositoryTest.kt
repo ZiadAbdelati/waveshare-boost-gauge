@@ -16,6 +16,7 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -91,6 +92,64 @@ class GaugeRepositoryTest {
 
         assertFalse(repository.connected.value)
         assertTrue(repository.lastError.value != null)
+
+        scope.cancel()
+    }
+
+    @Test
+    fun explicitTransportLossResetsStatusAndConnectionState() = runTest {
+        val transportFlow = MutableStateFlow<GaugeTransport?>(null)
+        val transport = FakeBleTransport { _, path, _ ->
+            when (path) {
+                "state" -> Resp(200, ApiFixtures.STATE)
+                else -> Resp(404, "{}")
+            }
+        }
+        val repository = GaugeRepository(GaugeApi { transport }, transportFlow)
+        transportFlow.value = transport
+
+        assertTrue(repository.refresh())
+        assertEquals("BOOST", repository.status.value?.zone)
+        assertTrue(repository.connected.value)
+        assertEquals(ConnectionStatus.Connected, repository.connectionStatus.value)
+
+        // Explicit Disconnect: transport torn down, repository resets the link
+        // flags AND the last-known payload so screens show placeholders.
+        transportFlow.value = null
+        repository.onTransportDisconnected()
+
+        assertFalse(repository.connected.value)
+        assertNull(repository.reconnectAttempt.value)
+        assertNull(repository.status.value)
+        assertNull(repository.lastError.value)
+        assertEquals(ConnectionStatus.Disconnected, repository.connectionStatus.value)
+    }
+
+    @Test
+    fun statusLoopClearsStalePayloadWhenTransportGoesNull() = runTest {
+        val transportFlow = MutableStateFlow<GaugeTransport?>(null)
+        val transport = FakeBleTransport { _, _, _ -> Resp(200, ApiFixtures.STATE) }
+        val repository = GaugeRepository(GaugeApi { transport }, transportFlow)
+        val scope = CoroutineScope(StandardTestDispatcher(testScheduler) + Job())
+        repository.start(scope)
+        runCurrent()
+        assertFalse(repository.connected.value)
+
+        transportFlow.value = transport
+        advanceTimeBy(1_100L)
+        runCurrent()
+        assertEquals("BOOST", repository.status.value?.zone)
+        assertTrue(repository.connected.value)
+
+        // The transport disappears (disconnect or radio loss): the loop's
+        // no-peer branch must also drop the stale payload, never hold it.
+        transportFlow.value = null
+        advanceTimeBy(1_100L)
+        runCurrent()
+
+        assertFalse(repository.connected.value)
+        assertNull(repository.status.value)
+        assertEquals(ConnectionStatus.Disconnected, repository.connectionStatus.value)
 
         scope.cancel()
     }

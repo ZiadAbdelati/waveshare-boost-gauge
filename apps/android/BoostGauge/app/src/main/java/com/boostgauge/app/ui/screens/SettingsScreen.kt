@@ -3,34 +3,59 @@ package com.boostgauge.app.ui.screens
 import android.Manifest
 import android.app.Application
 import android.content.pm.PackageManager
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.SwapHoriz
+import androidx.compose.material.icons.filled.TireRepair
+import androidx.compose.material.icons.filled.Tv
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.ui.graphics.Color
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -40,8 +65,9 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.boostgauge.app.AppContainer
+import com.boostgauge.app.data.ConnectionStatus
+import com.boostgauge.app.data.api.Obd
 import com.boostgauge.app.data.settings.TransportSelection
-import com.boostgauge.app.data.settings.TransportType
 import com.boostgauge.app.data.transport.BleScanResult
 import com.boostgauge.app.data.transport.BleScanner
 import com.boostgauge.app.ui.BoostCaption
@@ -49,9 +75,26 @@ import com.boostgauge.app.ui.BoostCaptionSemibold
 import com.boostgauge.app.ui.BoostColors
 import com.boostgauge.app.ui.BoostFootnote
 import com.boostgauge.app.ui.BoostMetric
+import com.boostgauge.app.ui.BoostMetricValue
 import com.boostgauge.app.ui.BoostNavTitle
+import com.boostgauge.app.ui.BoostSubheadline
+import com.boostgauge.app.ui.Timezones
+import com.boostgauge.app.ui.components.CaptionText
 import com.boostgauge.app.ui.components.GroupedSection
+import com.boostgauge.app.ui.components.MetricRow
+import com.boostgauge.app.ui.components.Pill
+import com.boostgauge.app.ui.displayLabel
 import com.boostgauge.app.ui.viewmodels.SettingsViewModel
+
+internal enum class SettingsPage(val title: String) {
+    Connection("Connection"),
+    Display("Display"),
+    Range("Range"),
+    ThemeDemo("Theme & demo"),
+    ClockTimezone("Clock & Timezone"),
+    Tpms("TPMS"),
+    ObdScanner("OBD2 Scanner"),
+}
 
 @Composable
 fun SettingsScreen(container: AppContainer) {
@@ -62,17 +105,37 @@ fun SettingsScreen(container: AppContainer) {
                 SettingsViewModel(
                     api = container.api,
                     selection = container.transportController.selection,
-                    selectTransport = { type, address -> container.transportController.select(type, address) },
+                    selectTransport = { type, address, name ->
+                        container.transportController.select(type, address, name)
+                    },
                     repository = container.repository,
                     scanDevices = { BleScanner(app).scan() },
+                    disconnectTransport = { container.transportController.disconnect() },
                 )
             }
         },
     )
     val state by viewModel.state.collectAsState()
     val selection by viewModel.transportSelection.collectAsState()
-    val connected by viewModel.connected.collectAsState()
+    val connectionStatus by viewModel.connectionStatus.collectAsState()
+    val status by viewModel.status.collectAsState()
     val fields = state.fields
+    LaunchedEffect(Unit) { viewModel.refreshAll() }
+    LaunchedEffect(connectionStatus) {
+        if (connectionStatus == ConnectionStatus.Connected) viewModel.refreshAll()
+    }
+    var page by rememberSaveable {
+        mutableStateOf<SettingsPage?>(
+            com.boostgauge.app.MainActivity.debugInitialSettingsPage?.let { name ->
+                SettingsPage.entries.firstOrNull { it.name == name }
+                    ?: SettingsPage.entries.firstOrNull { it.title == name }
+            },
+        )
+    }
+    BackHandler(enabled = page != null) { page = null }
+    // Success toasts ("Range saved") belong to the sub-page that raised them;
+    // leaving the page clears them so they can't leak onto other pages.
+    LaunchedEffect(page) { viewModel.clearMessage() }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -82,14 +145,23 @@ fun SettingsScreen(container: AppContainer) {
         item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                if (page != null) {
+                    IconButton(onClick = { page = null }) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back",
+                            tint = MaterialTheme.colorScheme.onBackground,
+                        )
+                    }
+                }
                 Text(
-                    text = "Settings",
+                    text = page?.title ?: "Settings",
                     style = BoostNavTitle,
                     color = MaterialTheme.colorScheme.onBackground,
                 )
+                Spacer(modifier = Modifier.weight(1f))
                 IconButton(onClick = { viewModel.refreshAll() }) {
                     Icon(
                         Icons.Filled.Refresh,
@@ -117,48 +189,123 @@ fun SettingsScreen(container: AppContainer) {
                 )
             }
         }
-        item {
-            TransportSection(
-                selection = selection,
-                connected = connected,
-                scanning = state.scanning,
-                scannedDevices = state.scannedDevices,
-                httpAddress = fields.httpAddress,
-                onHttpAddressChange = { address -> viewModel.updateFields { it.copy(httpAddress = address) } },
-                onHttpSelected = viewModel::saveHttpAddress,
-                onBleSelected = viewModel::connectBle,
-                onScan = viewModel::scanForDevices,
-            )
+        when (page) {
+            null -> item {
+                SettingsMenu(onNavigate = { page = it })
+            }
+            SettingsPage.Connection -> item {
+                val reconnectAttempt by viewModel.reconnectAttempt.collectAsState()
+                TransportSection(
+                    selection = selection,
+                    connectionStatus = connectionStatus,
+                    reconnectAttempt = reconnectAttempt,
+                    scanning = state.scanning,
+                    scanCompleted = state.scanCompleted,
+                    scannedDevices = state.scannedDevices,
+                    onBleSelected = viewModel::connectBle,
+                    onScan = viewModel::scanForDevices,
+                    onDisconnect = viewModel::disconnectBle,
+                    onConnectSaved = viewModel::connectSavedGauge,
+                )
+            }
+            SettingsPage.Display -> item {
+                DisplaySection(
+                    fields = fields,
+                    saving = state.saving,
+                    onFieldChange = viewModel::updateFields,
+                    onSave = viewModel::saveDisplay,
+                )
+            }
+            SettingsPage.Range -> item {
+                RangeSection(
+                    fields = fields,
+                    saving = state.saving,
+                    onFieldChange = viewModel::updateFields,
+                    onSave = viewModel::saveRange,
+                )
+            }
+            SettingsPage.ThemeDemo -> item {
+                ThemeDemoSection(
+                    fields = fields,
+                    saving = state.saving,
+                    onFieldChange = viewModel::updateFields,
+                    onSave = viewModel::saveThemeFlags,
+                )
+            }
+            SettingsPage.ClockTimezone -> item {
+                ClockTimezoneSection(
+                    fields = fields,
+                    saving = state.saving,
+                    onFieldChange = viewModel::updateFields,
+                    onApply = viewModel::applyTimezone,
+                    onSync = viewModel::syncTime,
+                )
+            }
+            SettingsPage.Tpms -> item {
+                TpmsSection(
+                    fields = fields,
+                    saving = state.saving,
+                    onFieldChange = viewModel::updateFields,
+                    onSave = viewModel::saveTpms,
+                    onBleSave = viewModel::saveTpmsBle,
+                )
+            }
+            SettingsPage.ObdScanner -> item {
+                ObdScannerSection(
+                    obd = status?.obd,
+                    saving = state.saving,
+                    onForget = viewModel::forgetObdPeer,
+                )
+            }
         }
-        item {
-            ConfigSection(
-                fields = fields,
-                saving = state.saving,
-                onFieldChange = viewModel::updateFields,
-                onSave = viewModel::saveConfig,
-            )
-        }
-        item {
-            ThemeFlagsSection(
-                fields = fields,
-                saving = state.saving,
-                onFieldChange = viewModel::updateFields,
-                onSave = viewModel::saveThemeFlags,
-            )
-        }
-        item {
-            TpmsSection(
-                fields = fields,
-                saving = state.saving,
-                onFieldChange = viewModel::updateFields,
-                onSave = viewModel::saveTpms,
-            )
-        }
-        item {
-            ClockSection(
-                saving = state.saving,
-                onSync = viewModel::syncTime,
-            )
+    }
+}
+
+@Composable
+private fun SettingsMenu(onNavigate: (SettingsPage) -> Unit) {
+    GroupedSection {
+        SettingsPage.entries.forEachIndexed { index, entry ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onNavigate(entry) }
+                    .padding(vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Icon(
+                        imageVector = when (entry) {
+                            SettingsPage.Connection -> Icons.Default.Wifi
+                            SettingsPage.Display -> Icons.Default.Tv
+                            SettingsPage.Range -> Icons.Default.SwapHoriz
+                            SettingsPage.ThemeDemo -> Icons.Default.Palette
+                            SettingsPage.ClockTimezone -> Icons.Default.Schedule
+                            SettingsPage.Tpms -> Icons.Default.TireRepair
+                            SettingsPage.ObdScanner -> Icons.Default.Build
+                        },
+                        contentDescription = null,
+                        tint = BoostColors.navBlue,
+                        modifier = Modifier.size(22.dp),
+                    )
+                    Text(
+                        text = entry.title,
+                        style = BoostMetric,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+                Icon(
+                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (index < SettingsPage.entries.lastIndex) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
+            }
         }
     }
 }
@@ -166,153 +313,252 @@ fun SettingsScreen(container: AppContainer) {
 @Composable
 private fun TransportSection(
     selection: TransportSelection,
-    connected: Boolean,
+    connectionStatus: ConnectionStatus,
+    reconnectAttempt: Int?,
     scanning: Boolean,
+    scanCompleted: Boolean,
     scannedDevices: List<BleScanResult>,
-    httpAddress: String,
-    onHttpAddressChange: (String) -> Unit,
-    onHttpSelected: () -> Unit,
-    onBleSelected: (String) -> Unit,
+    onBleSelected: (BleScanResult) -> Unit,
     onScan: () -> Unit,
+    onDisconnect: () -> Unit,
+    onConnectSaved: () -> Unit,
 ) {
-    GroupedSection(title = "Transport") {
-        val statusColor = when {
-            connected -> BoostColors.success
-            else -> MaterialTheme.colorScheme.error
+    GroupedSection(title = "Connection") {
+        val peerKnown = selection.bleAddress.isNotBlank()
+        val statusColor = if (connectionStatus == ConnectionStatus.Connected) {
+            BoostColors.success
+        } else {
+            MaterialTheme.colorScheme.error
         }
         Text(
-            text = if (connected) "Live · ${selection.type.name}" else "Disconnected",
+            text = connectionStatus.displayLabel(peerKnown, reconnectAttempt),
             style = BoostCaptionSemibold,
             color = statusColor,
             modifier = Modifier.padding(vertical = 4.dp),
         )
-        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-            SegmentedButton(
-                selected = selection.type == TransportType.HTTP,
-                onClick = {
-                    if (selection.type != TransportType.HTTP) {
-                        onHttpSelected()
-                    }
-                },
-                shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
-            ) {
-                Text("HTTP (Wi-Fi)")
-            }
-            SegmentedButton(
-                selected = selection.type == TransportType.BLE,
-                onClick = { /* BLE panel below */ },
-                shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
-            ) {
-                Text("BLE")
-            }
+        val context = LocalContext.current
+        val permissionLauncher = rememberLauncherForActivityResult(
+            ActivityResultContracts.RequestMultiplePermissions(),
+        ) { grants ->
+            if (grants.values.all { it }) onScan() else Unit
         }
-        when (selection.type) {
-            TransportType.HTTP -> {
-                OutlinedTextField(
-                    value = httpAddress,
-                    onValueChange = onHttpAddressChange,
-                    label = { Text("Gauge IP / host") },
-                    singleLine = true,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 4.dp),
-                )
-                Button(
-                    onClick = onHttpSelected,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text("Save & connect HTTP")
+        Button(
+            onClick = {
+                val missing = listOf(
+                    Manifest.permission.BLUETOOTH_SCAN,
+                    Manifest.permission.BLUETOOTH_CONNECT,
+                ).filter {
+                    ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
                 }
+                if (missing.isEmpty()) onScan() else permissionLauncher.launch(missing.toTypedArray())
+            },
+            enabled = !scanning,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            if (scanning) {
+                CircularProgressIndicator(modifier = Modifier.padding(end = 8.dp), strokeWidth = 2.dp)
             }
-            TransportType.BLE -> {
-                val context = LocalContext.current
-                val permissionLauncher = rememberLauncherForActivityResult(
-                    ActivityResultContracts.RequestMultiplePermissions(),
-                ) { grants ->
-                    if (grants.values.all { it }) onScan() else Unit
-                }
-                Button(
-                    onClick = {
-                        val missing = listOf(
-                            Manifest.permission.BLUETOOTH_SCAN,
-                            Manifest.permission.BLUETOOTH_CONNECT,
-                        ).filter {
-                            ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
-                        }
-                        if (missing.isEmpty()) onScan() else permissionLauncher.launch(missing.toTypedArray())
-                    },
-                    enabled = !scanning,
+            Text(if (scanning) "Scanning…" else "Scan for BoostGauge")
+        }
+        // Saved gauge row: shown whenever a peer is remembered AND the link is
+        // not connected (incl. auto-reconnect + fresh launch). Hidden entirely
+        // while connected — a Connect action against a live link is meaningless.
+        when (savedRowAction(connectionStatus, peerKnown)) {
+            SavedRowAction.Connected -> {
+                // Live identity while connected (mirrors iOS): the gauge this
+                // session is talking to, no Connect action.
+                Row(
                     modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    if (scanning) {
-                        CircularProgressIndicator(modifier = Modifier.padding(end = 8.dp), strokeWidth = 2.dp)
+                    Column {
+                        Text(selection.bleName.ifBlank { "BoostGauge" }, style = BoostMetric, color = MaterialTheme.colorScheme.onSurface)
+                        Text(
+                            selection.bleAddress,
+                            style = BoostCaption,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
-                    Text(if (scanning) "Scanning…" else "Scan for BoostGauge")
-                }
-                if (scannedDevices.isEmpty() && !scanning) {
                     Text(
-                        text = "No gauge found. Make sure the gauge is advertising.",
+                        text = "Connected",
                         style = BoostFootnote,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(vertical = 2.dp),
+                        color = BoostColors.success,
                     )
                 }
-                scannedDevices.forEach { device ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column {
-                            Text(device.name, style = BoostMetric, color = MaterialTheme.colorScheme.onSurface)
-                            Text(
-                                device.address,
-                                style = BoostCaption,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        TextButton(onClick = { onBleSelected(device.address) }) {
-                            Text("Connect")
-                        }
+            }
+            SavedRowAction.Connect -> {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column {
+                        Text(selection.bleName.ifBlank { "BoostGauge" }, style = BoostMetric, color = MaterialTheme.colorScheme.onSurface)
+                        Text(
+                            selection.bleAddress,
+                            style = BoostCaption,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
+                    TextButton(onClick = onConnectSaved) {
+                        Text("Connect")
+                    }
+                }
+                CaptionText("Saved gauge — reconnect to ${selection.bleName.ifBlank { "this gauge" }}")
+            }
+            SavedRowAction.Reconnecting -> {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column {
+                        Text(selection.bleName.ifBlank { "BoostGauge" }, style = BoostMetric, color = MaterialTheme.colorScheme.onSurface)
+                        Text(
+                            selection.bleAddress,
+                            style = BoostCaption,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    // No Connect button while the loop is retrying — the pill
+                    // above carries the "Reconnecting… (attempt N)" banner.
+                    Text(
+                        text = "Auto-reconnecting…",
+                        style = BoostFootnote,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                CaptionText("Saved gauge — ${selection.bleName.ifBlank { "this gauge" }}")
+            }
+            null -> Unit
+        }
+        if (connectionStatus != ConnectionStatus.Disconnected) {
+            TextButton(
+                onClick = onDisconnect,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Disconnect")
+            }
+        }
+        // "No gauge found" is ONLY the empty result of a user-initiated scan —
+        // never while a peer is remembered (it would contradict the saved row).
+        if (scanCompleted && !scanning && scannedDevices.isEmpty() && !peerKnown) {
+            Text(
+                text = "No gauge found. Make sure the gauge is advertising.",
+                style = BoostFootnote,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(vertical = 2.dp),
+            )
+        }
+        scannedDevices.forEach { device ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column {
+                    Text(device.name, style = BoostMetric, color = MaterialTheme.colorScheme.onSurface)
+                    Text(
+                        device.address,
+                        style = BoostCaption,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                TextButton(onClick = { onBleSelected(device) }) {
+                    Text("Connect")
                 }
             }
         }
     }
 }
 
+/** Round-8 saved-row visibility rule (see PARITY.md): the row is visible
+ *  whenever a peer is remembered AND the link is not connected, and is hidden
+ *  entirely while connected. Returns the action area to render, or null. */
+internal enum class SavedRowAction { Connected, Connect, Reconnecting }
+
+internal fun savedRowAction(connectionStatus: ConnectionStatus, peerKnown: Boolean): SavedRowAction? = when {
+    !peerKnown -> null
+    connectionStatus == ConnectionStatus.Connected -> SavedRowAction.Connected
+    connectionStatus == ConnectionStatus.Disconnected -> SavedRowAction.Connect
+    else -> SavedRowAction.Reconnecting
+}
+
 @Composable
-private fun ConfigSection(
+private fun DisplaySection(
     fields: SettingsViewModel.FieldState,
     saving: Boolean,
     onFieldChange: ((SettingsViewModel.FieldState) -> SettingsViewModel.FieldState) -> Unit,
     onSave: () -> Unit,
 ) {
-    GroupedSection(title = "Display & range") {
-        NumberField("Brightness high (%)", fields.brightnessHigh) { value ->
-            onFieldChange { it.copy(brightnessHigh = value) }
+    GroupedSection(title = "Display") {
+        StepperRow(
+            label = "Brightness high",
+            value = fields.brightnessHigh,
+            suffix = "%",
+            min = 1,
+            max = 100,
+            enabled = !saving,
+        ) { value ->
+            onFieldChange { it.copy(brightnessHigh = value.toString()) }
         }
-        NumberField("Brightness low (%)", fields.brightnessLow) { value ->
-            onFieldChange { it.copy(brightnessLow = value) }
+        StepperRow(
+            label = "Brightness low",
+            value = fields.brightnessLow,
+            suffix = "%",
+            min = 1,
+            max = 100,
+            enabled = !saving,
+        ) { value ->
+            onFieldChange { it.copy(brightnessLow = value.toString()) }
         }
-        Row(
+        ToggleRow("Dim schedule", fields.dimEnabled, enabled = !saving) { enabled ->
+            onFieldChange { it.copy(dimEnabled = enabled) }
+        }
+        if (fields.dimEnabled) {
+            StepperRow(
+                label = "Start",
+                value = fields.dimStart,
+                display = { minutes -> "%02d:%02d".format(minutes / 60, minutes % 60) },
+                min = 0,
+                max = 24 * 60 - 1,
+                enabled = !saving,
+            ) { value ->
+                onFieldChange { it.copy(dimStart = value.toString()) }
+            }
+            StepperRow(
+                label = "End",
+                value = fields.dimEnd,
+                display = { minutes -> "%02d:%02d".format(minutes / 60, minutes % 60) },
+                min = 0,
+                max = 24 * 60 - 1,
+                enabled = !saving,
+            ) { value ->
+                onFieldChange { it.copy(dimEnd = value.toString()) }
+            }
+        }
+        ToggleRow("Companion app advertising", fields.appBle, enabled = !saving) { value ->
+            onFieldChange { it.copy(appBle = value) }
+        }
+        Button(
+            onClick = onSave,
+            enabled = !saving,
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("Dim schedule", style = BoostMetric, color = MaterialTheme.colorScheme.onSurface)
-            Switch(checked = fields.dimEnabled, onCheckedChange = { enabled ->
-                onFieldChange { it.copy(dimEnabled = enabled) }
-            })
+            Text("Save")
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            NumberField("Start (min of day)", fields.dimStart, Modifier.weight(1f)) { value ->
-                onFieldChange { it.copy(dimStart = value) }
-            }
-            NumberField("End (min of day)", fields.dimEnd, Modifier.weight(1f)) { value ->
-                onFieldChange { it.copy(dimEnd = value) }
-            }
-        }
+    }
+}
+
+@Composable
+private fun RangeSection(
+    fields: SettingsViewModel.FieldState,
+    saving: Boolean,
+    onFieldChange: ((SettingsViewModel.FieldState) -> SettingsViewModel.FieldState) -> Unit,
+    onSave: () -> Unit,
+) {
+    GroupedSection(title = "Range") {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             NumberField("psiMin", fields.psiMin, Modifier.weight(1f)) { value ->
                 onFieldChange { it.copy(psiMin = value) }
@@ -325,46 +571,279 @@ private fun ConfigSection(
             NumberField("psiOverboost", fields.psiOverboost, Modifier.weight(1f)) { value ->
                 onFieldChange { it.copy(psiOverboost = value) }
             }
-            NumberField("zeroAngle °", fields.zeroAngle, Modifier.weight(1f)) { value ->
+            NumberField("zeroAngle", fields.zeroAngle, Modifier.weight(1f)) { value ->
                 onFieldChange { it.copy(zeroAngle = value) }
             }
-        }
-        ToggleRow("Companion BLE advertising (appBle)", fields.appBle) { value ->
-            onFieldChange { it.copy(appBle = value) }
         }
         Button(
             onClick = onSave,
             enabled = !saving,
             modifier = Modifier.fillMaxWidth(),
         ) {
-            Text("Save config")
+            Text("Save")
         }
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ThemeFlagsSection(
+private fun ThemeDemoSection(
     fields: SettingsViewModel.FieldState,
     saving: Boolean,
     onFieldChange: ((SettingsViewModel.FieldState) -> SettingsViewModel.FieldState) -> Unit,
     onSave: () -> Unit,
 ) {
     GroupedSection(title = "Theme & demo") {
-        ToggleRow("Demo mode", fields.demoMode) { value ->
+        ToggleRow("Demo mode", fields.demoMode, enabled = !saving) { value ->
             onFieldChange { it.copy(demoMode = value) }
         }
-        ToggleRow("Demo fast sweep (9.789 psi/s)", fields.demoFastSweep) { value ->
-            onFieldChange { it.copy(demoFastSweep = value) }
+        var waveformExpanded by remember { mutableStateOf(false) }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Demo waveform", style = BoostMetric, color = MaterialTheme.colorScheme.onSurface)
+            ExposedDropdownMenuBox(
+                expanded = waveformExpanded,
+                onExpandedChange = { waveformExpanded = it },
+            ) {
+                Surface(
+                    onClick = { waveformExpanded = true },
+                    enabled = !saving && fields.demoMode,
+                    modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable),
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text(
+                            text = if (fields.demoFastSweep) "Linear sweep (9.789 psi/s)" else "Organic swell",
+                            style = BoostSubheadline,
+                            color = if (fields.demoMode && !saving) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                        ExposedDropdownMenuDefaults.TrailingIcon(expanded = waveformExpanded)
+                    }
+                }
+                ExposedDropdownMenu(
+                    expanded = waveformExpanded,
+                    onDismissRequest = { waveformExpanded = false },
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Organic swell") },
+                        onClick = {
+                            waveformExpanded = false
+                            onFieldChange { it.copy(demoFastSweep = false) }
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Linear sweep (9.789 psi/s)") },
+                        onClick = {
+                            waveformExpanded = false
+                            onFieldChange { it.copy(demoFastSweep = true) }
+                        },
+                    )
+                }
+            }
         }
-        ToggleRow("TPMS BLE link (gauge OBD2 central)", fields.tpmsBle) { value ->
-            onFieldChange { it.copy(tpmsBle = value) }
+        var rotationExpanded by remember { mutableStateOf(false) }
+        Surface(
+            onClick = { rotationExpanded = true },
+            enabled = !saving,
+            shape = RoundedCornerShape(10.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHighest,
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "Rotation",
+                    style = BoostMetric,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "${fields.rotation}°",
+                        style = BoostMetricValue,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Icon(
+                        Icons.Filled.ArrowDropDown,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        DropdownMenu(expanded = rotationExpanded, onDismissRequest = { rotationExpanded = false }) {
+            listOf(0, 90, 180, 270).forEach { value ->
+                DropdownMenuItem(
+                    text = { Text("$value°") },
+                    onClick = {
+                        rotationExpanded = false
+                        onFieldChange { it.copy(rotation = value) }
+                    },
+                )
+            }
+        }
+        ToggleRow("Region double-buffer", fields.regionDBuf, enabled = !saving) { value ->
+            onFieldChange { it.copy(regionDBuf = value) }
+        }
+        ToggleRow("TE sync", fields.teSync, enabled = !saving) { value ->
+            onFieldChange { it.copy(teSync = value) }
+        }
+        ToggleRow("TE scanline", fields.teScanline, enabled = !saving) { value ->
+            onFieldChange { it.copy(teScanline = value) }
+        }
+        ToggleRow("Pixel shift", fields.pixelShift, enabled = !saving) { value ->
+            onFieldChange { it.copy(pixelShift = value) }
+        }
+        if (fields.pixelShift) {
+            StepperRow(
+                label = "Pixel shift interval",
+                value = fields.pixelShiftSec,
+                suffix = "s",
+                min = 30,
+                max = 3600,
+                step = 30,
+                enabled = !saving,
+            ) { value ->
+                onFieldChange { it.copy(pixelShiftSec = value.toString()) }
+            }
         }
         Button(
             onClick = onSave,
             enabled = !saving,
             modifier = Modifier.fillMaxWidth(),
         ) {
-            Text("Save flags")
+            Text("Save")
+        }
+    }
+}
+
+@Composable
+private fun ClockTimezoneSection(
+    fields: SettingsViewModel.FieldState,
+    saving: Boolean,
+    onFieldChange: ((SettingsViewModel.FieldState) -> SettingsViewModel.FieldState) -> Unit,
+    onApply: (Int, String) -> Unit,
+    onSync: () -> Unit,
+) {
+    GroupedSection(title = "Clock & Timezone") {
+        val currentPosix = fields.timezoneTz
+        val matched = Timezones.curated.firstOrNull { it.posix == currentPosix }
+        var customPicked by rememberSaveable { mutableStateOf(false) }
+        val isCustom = customPicked || (matched == null && currentPosix.isNotEmpty())
+        val selectedLabel = when {
+            isCustom -> "Custom"
+            matched != null -> matched.label
+            else -> "UTC"
+        }
+        var expanded by remember { mutableStateOf(false) }
+        Surface(
+            onClick = { expanded = true },
+            enabled = !saving,
+            color = Color.Transparent,
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "Timezone",
+                    style = BoostMetric,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = selectedLabel,
+                        style = BoostMetricValue,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Icon(
+                        Icons.Filled.ArrowDropDown,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            Timezones.curated.forEach { entry ->
+                DropdownMenuItem(
+                    text = { Text(entry.label) },
+                    onClick = {
+                        expanded = false
+                        customPicked = false
+                        onApply(entry.offsetMinutes, entry.posix)
+                    },
+                )
+            }
+            DropdownMenuItem(
+                text = { Text("Custom") },
+                onClick = {
+                    expanded = false
+                    customPicked = true
+                },
+            )
+        }
+        if (isCustom) {
+            OutlinedTextField(
+                value = currentPosix,
+                onValueChange = { value ->
+                    onFieldChange { it.copy(timezoneTz = value) }
+                },
+                label = { Text("POSIX TZ string") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            TextButton(
+                onClick = { onApply(fields.timezoneOffsetMinutes, fields.timezoneTz) },
+                enabled = !saving && fields.timezoneTz.isNotBlank(),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Apply custom timezone")
+            }
+        }
+        Button(
+            onClick = onSync,
+            enabled = !saving,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            if (saving) {
+                CircularProgressIndicator(
+                    strokeWidth = 2.dp,
+                    modifier = Modifier.size(18.dp),
+                    color = MaterialTheme.colorScheme.onPrimary,
+                )
+            } else {
+                Text(
+                    text = "Sync timezone to gauge",
+                    maxLines = 1,
+                    softWrap = false,
+                )
+            }
         }
     }
 }
@@ -375,6 +854,7 @@ private fun TpmsSection(
     saving: Boolean,
     onFieldChange: ((SettingsViewModel.FieldState) -> SettingsViewModel.FieldState) -> Unit,
     onSave: () -> Unit,
+    onBleSave: () -> Unit,
 ) {
     GroupedSection(title = "TPMS") {
         NumberField("Low pressure (psi)", fields.lowPsi) { value ->
@@ -383,42 +863,81 @@ private fun TpmsSection(
         NumberField("Stale after (ms)", fields.staleAfterMs) { value ->
             onFieldChange { it.copy(staleAfterMs = value) }
         }
+        ToggleRow("TPMS BLE link", fields.tpmsBle, enabled = !saving) { value ->
+            onFieldChange { it.copy(tpmsBle = value) }
+            onBleSave()
+        }
         Button(
             onClick = onSave,
             enabled = !saving,
             modifier = Modifier.fillMaxWidth(),
         ) {
-            Text("Save TPMS config")
+            Text("Save")
         }
     }
 }
 
 @Composable
-private fun ClockSection(saving: Boolean, onSync: () -> Unit) {
-    GroupedSection(title = "Clock") {
-        Row(
+private fun ObdScannerSection(
+    obd: Obd?,
+    saving: Boolean,
+    onForget: () -> Unit,
+) {
+    GroupedSection(title = "OBD2 Scanner") {
+        val pillColor = when (obd?.state ?: 0) {
+            3 -> BoostColors.success
+            1, 2 -> BoostColors.navBlue
+            else -> if ((obd?.lastError ?: 0L) != 0L) BoostColors.warning else MaterialTheme.colorScheme.onSurfaceVariant
+        }
+        Pill(
+            text = obdPillLabel(obd),
+            containerColor = pillColor.copy(alpha = 0.16f),
+            textColor = pillColor,
+            modifier = Modifier.padding(vertical = 4.dp),
+        )
+        MetricRow(label = "Peer", value = obdPeerLine(obd))
+        Button(
+            onClick = onForget,
+            enabled = !saving,
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                text = "Sync device clock to phone",
-                style = BoostMetric,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            Button(onClick = onSync, enabled = !saving) {
-                Text("Sync now")
+            if (saving) {
+                CircularProgressIndicator(
+                    strokeWidth = 2.dp,
+                    modifier = Modifier.size(18.dp),
+                    color = MaterialTheme.colorScheme.onPrimary,
+                )
+            } else {
+                Text("Forget")
             }
         }
-        Text(
-            text = "Sends the phone epoch and timezone to the device.",
-            style = BoostFootnote,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        if (saving) {
-            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-        }
+        CaptionText("Gauge → OBD2 dongle link. Gauge auto-scans when the TPMS BLE link is on.")
     }
+}
+
+/** Live OBD state pill text, from `/state.obd` (state 1 scanning, 2 connecting,
+ *  3 ready; 0 disabled / 4 disconnected idle). */
+internal fun obdPillLabel(obd: Obd?): String {
+    val state = obd?.state ?: 0
+    val label = when (state) {
+        1 -> "Scanning"
+        2 -> {
+            val name = obd?.peer?.ifBlank { obd?.peerAddr } ?: ""
+            "Connecting to ${name.ifBlank { "adapter" }}"
+        }
+        3 -> "Connected"
+        else -> "Idle"
+    }
+    val error = obd?.lastError ?: 0L
+    return if (label == "Idle" && error != 0L) "Idle · error $error" else label
+}
+
+/** Peer row value: name + address, em dash when none. */
+internal fun obdPeerLine(obd: Obd?): String {
+    if (obd == null) return "—"
+    val name = obd.peer.ifBlank { "—" }
+    val addr = obd.peerAddr.ifBlank { "—" }
+    return if (name == "—" && addr == "—") "—" else "$name · $addr"
 }
 
 @Composable
@@ -438,13 +957,49 @@ private fun NumberField(
 }
 
 @Composable
-private fun ToggleRow(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+private fun StepperRow(
+    label: String,
+    value: String,
+    suffix: String = "",
+    min: Int,
+    max: Int,
+    step: Int = 1,
+    enabled: Boolean = true,
+    display: (Int) -> String = { it.toString() },
+    onValueChange: (Int) -> Unit,
+) {
+    val current = value.toIntOrNull()?.coerceIn(min, max) ?: min
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(label, style = BoostMetric, color = MaterialTheme.colorScheme.onSurface)
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(enabled = enabled && current > min, onClick = { onValueChange((current - step).coerceAtLeast(min)) }) {
+                Text("-")
+            }
+            Text("${display(current)}$suffix", style = BoostMetricValue, color = MaterialTheme.colorScheme.onSurface)
+            TextButton(enabled = enabled && current < max, onClick = { onValueChange((current + step).coerceAtMost(max)) }) {
+                Text("+")
+            }
+        }
+    }
+}
+
+@Composable
+private fun ToggleRow(
+    label: String,
+    checked: Boolean,
+    enabled: Boolean = true,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, style = BoostMetric, color = MaterialTheme.colorScheme.onSurface)
+        Switch(checked = checked, enabled = enabled, onCheckedChange = onCheckedChange)
     }
 }

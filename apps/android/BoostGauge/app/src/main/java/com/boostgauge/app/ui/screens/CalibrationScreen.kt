@@ -13,6 +13,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -44,7 +45,7 @@ import java.time.format.DateTimeFormatter
 fun CalibrationScreen(container: AppContainer) {
     val viewModel: CalibrationViewModel = viewModel(
         factory = viewModelFactory {
-            initializer { CalibrationViewModel(container.api) }
+            initializer { CalibrationViewModel(container.api, container.repository.connectionStatus) }
         },
     )
     val state by viewModel.state.collectAsState()
@@ -118,12 +119,13 @@ fun CalibrationScreen(container: AppContainer) {
                                     strokeWidth = 2.dp,
                                 )
                             }
-                            Text(if (state.calibrating) "Calibrating…" else "Calibrate to atmosphere")
+                            Text(if (state.calibrating) "Calibrating…" else "Calibrate to Atmosphere")
                         }
                         Text(
                             text = "Takes about 2 seconds while the device observes the atmosphere.",
                             style = BoostFootnote,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 4.dp, bottom = 4.dp),
                         )
                     }
                 }
@@ -171,21 +173,37 @@ fun CalibrationScreen(container: AppContainer) {
 private fun LiveSensorsSection(live: CalibrationLive) {
     GroupedSection(title = "Live sensors") {
         PresenceRow("ADS1115", present = live.adsPresent)
+        HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
         PresenceRow("BMP280", present = live.bmpPresent)
         if (live.fault) {
+            HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
             Text(
                 text = "Sensor fault",
                 style = BoostFootnote,
                 color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(vertical = 12.dp),
             )
         }
+        HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
         MetricRow("MAP volts", Format.fmt(live.mapVolts, 4))
+        HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
         MetricRow("Nominal kPa", Format.fmt(live.nominalKpa, 2))
+        HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
         MetricRow("Corrected kPa", Format.fmt(live.correctedKpa, 2))
+        HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
         MetricRow("BMP kPa", Format.fmt(live.bmpKpa, 2))
+        HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
         MetricRow("MAP age", ageText(live.mapAgeMs))
+        HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
         MetricRow("BMP age", ageText(live.bmpAgeMs))
-        MetricRow("Ambient", if (live.ambientIsFallback) "fallback" else "live", valueColor = if (live.ambientIsFallback) BoostColors.warning else MaterialTheme.colorScheme.onSurface)
+        if (live.bmpUpdates != null) {
+            HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+            MetricRow("BMP updates", live.bmpUpdates.toString())
+        }
+        if (live.ambientIsFallback) {
+            HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+            MetricRow("Ambient", "fallback", valueColor = BoostColors.warning)
+        }
     }
 }
 
@@ -197,15 +215,32 @@ private fun SavedCalibrationSection(cal: com.boostgauge.app.data.api.Calibration
                 text = "Not calibrated",
                 style = BoostMetric,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(vertical = 12.dp),
             )
         } else {
-            MetricRow("Valid", "yes")
-            MetricRow("Version", cal.version.toString())
-            MetricRow("Offset", "${Format.fmt(cal.offsetPsi, 2)} psi / ${Format.fmt(cal.offsetKpa, 2)} kPa")
-            MetricRow("Supply", "${Format.fmt(cal.supplyVolts, 2)} V")
-            MetricRow("Ref MAP volts", Format.fmt(cal.refMapVolts, 4))
-            MetricRow("Samples", cal.samples.toString())
+            MetricRow("Offset", "${Format.fmt(cal.offsetPsi, 2)} psi")
+            if (cal.offsetKpa != null) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                MetricRow("Offset kPa", Format.fmt(cal.offsetKpa, 2))
+            }
+            if (cal.version != null) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                MetricRow("Version", cal.version.toString())
+            }
+            if (cal.supplyVolts != null) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                MetricRow("Supply", "${Format.fmt(cal.supplyVolts, 2)} V")
+            }
+            if (cal.refMapVolts != null) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                MetricRow("Ref MAP volts", Format.fmt(cal.refMapVolts, 4))
+            }
+            if (cal.samples != null) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                MetricRow("Samples", cal.samples.toString())
+            }
             if (cal.epochMs > 0L) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
                 MetricRow("Calibrated", CALIBRATED_FORMAT.format(Instant.ofEpochMilli(cal.epochMs).atZone(ZoneId.systemDefault())))
             }
         }

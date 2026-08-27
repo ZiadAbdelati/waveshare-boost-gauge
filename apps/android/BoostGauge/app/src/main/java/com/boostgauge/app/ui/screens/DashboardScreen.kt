@@ -1,14 +1,20 @@
 package com.boostgauge.app.ui.screens
 
+import android.content.res.Configuration
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.CallMade
@@ -24,11 +30,14 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -36,12 +45,13 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.boostgauge.app.AppContainer
+import com.boostgauge.app.data.ConnectionStatus
 import com.boostgauge.app.data.api.Obd
 import com.boostgauge.app.data.api.Sensors
 import com.boostgauge.app.data.api.Status
 import com.boostgauge.app.data.api.Tpms
+import com.boostgauge.app.data.api.ThemesPayload
 import com.boostgauge.app.data.api.Wheel
-import com.boostgauge.app.data.settings.TransportType
 import com.boostgauge.app.ui.BoostCaption
 import com.boostgauge.app.ui.BoostCaption2
 import com.boostgauge.app.ui.BoostCaptionSemibold
@@ -62,6 +72,7 @@ import com.boostgauge.app.ui.components.MetricRow
 import com.boostgauge.app.ui.components.Pill
 import com.boostgauge.app.ui.components.PresenceBadge
 import com.boostgauge.app.ui.components.PresenceDot
+import com.boostgauge.app.ui.displayLabel
 import com.boostgauge.app.ui.viewmodels.StatusViewModel
 
 @Composable
@@ -72,10 +83,13 @@ fun DashboardScreen(container: AppContainer) {
         },
     )
     val status by viewModel.status.collectAsState()
-    val connected by viewModel.connected.collectAsState()
+    val connectionStatus by viewModel.connectionStatus.collectAsState()
+    val reconnectAttempt by viewModel.reconnectAttempt.collectAsState()
     val lastError by viewModel.lastError.collectAsState()
     val themeNames by viewModel.themeNames.collectAsState()
+    val themes by viewModel.themes.collectAsState()
     val selection by container.transportController.selection.collectAsState()
+    LaunchedEffect(Unit) { viewModel.refresh() }
 
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
@@ -99,37 +113,44 @@ fun DashboardScreen(container: AppContainer) {
             }
         }
 
-        val transportLabel = when (selection.type) {
-            TransportType.HTTP -> "HTTP"
-            TransportType.BLE -> "BLE"
+        val cards: List<@Composable () -> Unit> = buildList {
+            add { BoostHeroCard(status, status == null, themeNames[status?.activeThemeId] ?: status?.activeThemeId ?: "—") }
+            add { SensorsCard(status?.sensors) }
+            add { TpmsCard(status) }
+            add { ObdCard(status?.obd, themes?.tpmsBle == true) }
+            // While reconnecting, the status is "Reconnecting… (attempt N)", not an error banner.
+            if (lastError != null && reconnectAttempt == null) add { ErrorBanner(lastError!!) }
+            add { TransportFooter(connectionStatus, peerKnown = selection.bleAddress.isNotBlank(), reconnectAttempt) }
         }
 
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            item {
-                BoostHeroCard(
-                    status = status,
-                    loading = status == null,
-                    themeName = themeNames[status?.activeThemeId] ?: status?.activeThemeId ?: "—",
-                )
+        if (LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE) {
+            Row(
+                modifier = Modifier.fillMaxSize().padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                DashboardPane(cards.subList(0, 2), Modifier.weight(1f))
+                DashboardPane(cards.subList(2, cards.size), Modifier.weight(1f))
             }
-            item { SensorsCard(status?.sensors) }
-            item { TpmsCard(status?.tpms) }
-            item { ObdCard(status?.obd) }
-            if (lastError != null) {
-                item(key = "error-banner") { ErrorBanner(lastError!!) }
-            }
-            item {
-                TransportFooter(
-                    connected = connected,
-                    transportLabel = transportLabel,
-                    hasError = lastError != null,
-                )
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                cards.forEach { item { it() } }
             }
         }
+    }
+}
+
+/** Side-by-side scroll pane used by the landscape dashboard layout. */
+@Composable
+private fun DashboardPane(cards: List<@Composable () -> Unit>, modifier: Modifier = Modifier) {
+    LazyColumn(
+        modifier = modifier.fillMaxHeight(),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        cards.forEach { item { it() } }
     }
 }
 
@@ -217,11 +238,6 @@ private fun BoostHeroCard(status: Status?, loading: Boolean, themeName: String) 
                         MetadataTile(
                             title = "Firmware",
                             value = status.firmwareVersion.ifBlank { "—" },
-                            modifier = Modifier.weight(1f),
-                        )
-                        MetadataTile(
-                            title = "Page",
-                            value = if (status.activePage == 1) "TPMS" else "Boost",
                             modifier = Modifier.weight(1f),
                         )
                     }
@@ -326,7 +342,8 @@ private fun SensorsCard(sensors: Sensors?) {
 }
 
 @Composable
-private fun TpmsCard(tpms: Tpms?) {
+private fun TpmsCard(status: Status?) {
+    val tpms = status?.tpms
     BoostCard {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -342,68 +359,72 @@ private fun TpmsCard(tpms: Tpms?) {
                 )
             }
         }
-        val labels = listOf("FL", "FR", "RL", "RR")
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            labels.forEachIndexed { index, label ->
-                TpmsTile(
-                    label = label,
-                    wheel = tpms?.wheels?.getOrNull(index),
-                    lowPsi = tpms?.lowPsi ?: 0.0,
-                    modifier = Modifier.weight(1f),
-                )
+        if (tpms != null) {
+            val wheels = (0 until 4).map { tpms.wheels.getOrNull(it) ?: Wheel() }
+            val labels = listOf("FL", "FR", "RL", "RR")
+            (0 until 2).forEach { row ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    (0 until 2).forEach { col ->
+                        val index = row * 2 + col
+                        TireCapsule(
+                            wheel = wheels[index],
+                            label = labels[index],
+                            lowPsi = tpms.lowPsi,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
             }
-        }
-    }
-}
-
-@Composable
-private fun TpmsTile(label: String, wheel: Wheel?, lowPsi: Double, modifier: Modifier = Modifier) {
-    val valid = wheel != null && wheel.valid
-    val valueColor = when {
-        wheel == null || !wheel.valid -> MaterialTheme.colorScheme.onSurfaceVariant
-        lowPsi > 0.0 && wheel.psi < lowPsi -> BoostColors.warning
-        else -> MaterialTheme.colorScheme.onSurface
-    }
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(10.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHighest,
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 4.dp, vertical = 8.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
             Text(
-                text = label,
-                style = BoostCaption2,
+                text = "TPMS status ${tpms.status}",
+                style = BoostFootnote,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Text(
-                text = if (valid) Format.fmt(wheel.psi, 1) else "—",
-                style = BoostTileValue,
-                color = valueColor,
-                maxLines = 1,
-            )
-            PresenceDot(
-                size = 7.dp,
-                color = if (valid) {
-                    BoostColors.success
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                },
-            )
         }
     }
 }
 
+/** Native tire capsule mirroring the iOS 2x2 TPMS card. */
 @Composable
-private fun ObdCard(obd: Obd?) {
+private fun TireCapsule(wheel: Wheel, label: String, lowPsi: Double, modifier: Modifier = Modifier) {
+    val low = wheel.valid && lowPsi > 0.0 && wheel.psi <= lowPsi
+    val tint = when {
+        !wheel.valid -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+        low -> BoostColors.warning
+        else -> BoostColors.success
+    }
+    Column(
+        modifier = modifier
+            .background(tint.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
+            .border(1.dp, tint.copy(alpha = 0.35f), RoundedCornerShape(12.dp))
+            .padding(vertical = 10.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        Text(
+            text = label,
+            style = BoostCaptionSemibold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            text = if (wheel.valid) Format.fmt(wheel.psi, 1) else "--.-",
+            style = BoostTileValue,
+            color = tint,
+        )
+        Box(
+            modifier = Modifier
+                .size(8.dp)
+                .background(if (wheel.valid) tint else Color.Transparent, CircleShape)
+                .border(1.dp, tint.copy(alpha = 0.8f), CircleShape),
+        )
+    }
+}
+
+@Composable
+private fun ObdCard(obd: Obd?, tpmsBle: Boolean) {
     BoostCard {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -427,7 +448,11 @@ private fun ObdCard(obd: Obd?) {
             MetricRow("Battery", "${Format.fmt(obd.batteryV, 1)} V")
         } else {
             Text(
-                text = "No OBD2 link. Enable tpmsBle in Settings.",
+                text = if (tpmsBle) {
+                    "No OBD2 adapter connected."
+                } else {
+                    "No OBD2 link. Enable tpmsBle in Settings."
+                },
                 style = BoostMetric,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -468,11 +493,11 @@ private fun ErrorBanner(message: String) {
 }
 
 @Composable
-private fun TransportFooter(connected: Boolean, transportLabel: String, hasError: Boolean) {
-    val dotColor = when {
-        connected -> BoostColors.success
-        hasError -> MaterialTheme.colorScheme.error
-        else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+private fun TransportFooter(connectionStatus: ConnectionStatus, peerKnown: Boolean, reconnectAttempt: Int?) {
+    val dotColor = when (connectionStatus) {
+        ConnectionStatus.Connected -> BoostColors.success
+        ConnectionStatus.Reconnecting -> MaterialTheme.colorScheme.error
+        ConnectionStatus.Disconnected -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
     }
     Row(
         modifier = Modifier.padding(top = 4.dp),
@@ -481,7 +506,7 @@ private fun TransportFooter(connected: Boolean, transportLabel: String, hasError
     ) {
         PresenceDot(size = 8.dp, color = dotColor)
         Text(
-            text = if (connected) "Live · $transportLabel" else "Disconnected",
+            text = connectionStatus.displayLabel(peerKnown, reconnectAttempt),
             style = BoostFooter,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

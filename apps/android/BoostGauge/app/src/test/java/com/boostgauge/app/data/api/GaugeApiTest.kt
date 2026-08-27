@@ -1,7 +1,11 @@
 package com.boostgauge.app.data.api
 
+import com.boostgauge.app.data.transport.BleGaugeTransport
 import com.boostgauge.app.data.transport.FakeBleTransport
 import com.boostgauge.app.data.transport.Resp
+import com.boostgauge.app.data.transport.SimBleTransport
+import com.boostgauge.app.data.transport.TransportException
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -110,6 +114,24 @@ class GaugeApiTest {
     }
 
     @Test
+    fun timeSyncSendsTimezoneOnlyAndNeverThePhoneEpoch() = runBlocking {
+        val transport = FakeBleTransport { method, path, _ ->
+            assertEquals("POST", method)
+            assertEquals("time", path)
+            Resp(200, ApiFixtures.STATE)
+        }
+        val api = GaugeApi { transport }
+
+        api.syncTime(-240, "EST5EDT,M3.2.0/2,M11.1.0/2")
+
+        val body = transport.requests.single().bodyJson!!
+        assertTrue(body.contains("\"timezoneOffsetMinutes\":-240"))
+        assertTrue(body.contains("\"timezoneTz\":\"EST5EDT,M3.2.0/2,M11.1.0/2\""))
+        // The DS3231 RTC is the sole time authority; the phone epoch must never be sent.
+        assertFalse(body.contains("epochMs"))
+    }
+
+    @Test
     fun logsAndCalibrationParse() = runBlocking {
         val transport = FakeBleTransport { _, path, _ ->
             when (path) {
@@ -129,5 +151,36 @@ class GaugeApiTest {
         assertTrue(calibration.calibration.valid)
         assertEquals(3, calibration.calibration.version)
         assertEquals(1.1821, calibration.live.mapVolts, 0.0001)
+    }
+
+    @Test
+    fun logsOverBleSimServesFullFiveMinuteWindow() = runBlocking {
+        val transport = SimBleTransport()
+        try {
+            val api = GaugeApi { transport }
+            val logs = api.getLogs(1500)
+            assertEquals(1500, logs.samples.size)
+        } finally {
+            transport.close()
+        }
+    }
+
+    @Test
+    fun logsOverBleWithoutLanThrowsInsteadOfEightSampleWindow() = runBlocking {
+        val transport = object : BleGaugeTransport {
+            override val transportKind: String = "BLE"
+            override val statusLine = MutableStateFlow<String?>(null)
+            override val linkUp = MutableStateFlow(true)
+            override suspend fun get(path: String) = Resp(404, """{"error":"not found"}""")
+            override suspend fun send(method: String, path: String, bodyJson: String?) = get(path)
+            override suspend fun readLog(): String = "BGL1\n"
+            override suspend fun readStatus(): String = "{}"
+        }
+        val api = GaugeApi { transport }
+
+        val error = runCatching { api.getLogs(1500) }.exceptionOrNull()
+
+        assertTrue(error is TransportException)
+        assertTrue(error!!.message!!.contains("5-minute log window"))
     }
 }

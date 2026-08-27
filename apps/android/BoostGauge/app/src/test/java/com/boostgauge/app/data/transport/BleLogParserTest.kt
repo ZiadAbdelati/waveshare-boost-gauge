@@ -2,6 +2,7 @@ package com.boostgauge.app.data.transport
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class BleLogParserTest {
@@ -10,6 +11,7 @@ class BleLogParserTest {
     fun parsesBgl1HeaderAndCsvRows() {
         val payload = """
             BGL1
+            t_ms,psi,peak_psi,zone,demo
             1000,0.12,0.34,ATMO,1
             1200,1.02,1.02,BOOST,1
         """.trimIndent()
@@ -24,8 +26,9 @@ class BleLogParserTest {
     }
 
     @Test
-    fun emptyPayloadYieldsNoRows() {
-        assertTrue(BleLogParser.parse("").isEmpty())
+    fun requiresBgl1Header() {
+        assertThrows(TransportException::class.java) { BleLogParser.parse("") }
+        assertThrows(TransportException::class.java) { BleLogParser.parse("not-a-log") }
         assertTrue(BleLogParser.parse("BGL1\n").isEmpty())
     }
 

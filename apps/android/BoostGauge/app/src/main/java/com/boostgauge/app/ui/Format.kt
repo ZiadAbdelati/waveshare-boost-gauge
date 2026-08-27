@@ -6,6 +6,7 @@ object Format {
     fun fmt(value: Double, decimals: Int = 2): String =
         String.format(Locale.US, "%.${decimals}f", value)
 
+
     fun formatUptime(uptimeMs: Long): String {
         val totalSeconds = uptimeMs / 1000
         val hours = totalSeconds / 3600

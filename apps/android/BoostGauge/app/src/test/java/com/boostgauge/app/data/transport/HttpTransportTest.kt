@@ -59,14 +59,14 @@ class HttpTransportTest {
     fun postTimeBodyAndMethod() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(200).setBody(ApiFixtures.STATE))
         val transport = HttpTransport(server.url("/").toString())
-        val body = """{"epochMs":1780000000000,"timezoneOffsetMinutes":-240}"""
+        val body = """{"timezoneOffsetMinutes":-240,"timezoneTz":"EST5EDT,M3.2.0/2,M11.1.0/2"}"""
 
         transport.send("POST", "time", body)
 
         val recorded = server.takeRequest()
         assertEquals("POST", recorded.method)
         assertEquals("/api/v1/time", recorded.path)
-        assertTrue(recorded.body.readUtf8().contains("\"epochMs\":1780000000000"))
+        assertTrue(recorded.body.readUtf8().contains("\"timezoneOffsetMinutes\":-240"))
     }
 
     @Test
@@ -89,7 +89,7 @@ class HttpTransportTest {
         )
         val transport = HttpTransport(server.url("/").toString())
 
-        val resp = transport.send("POST", "time", """{"epochMs":1,"timezoneOffsetMinutes":0}""")
+        val resp = transport.send("POST", "time", """{"timezoneOffsetMinutes":-240,"timezoneTz":"EST5"}""")
 
         assertEquals(409, resp.status)
         assertTrue(resp.body.contains("clock_rejected"))
