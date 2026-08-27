@@ -215,6 +215,7 @@ These are the currently-actionable invariants distilled from the regression ledg
 | MX-5 ND TPMS pressure DIDs (0x2A05–0x2A08) answer with a SINGLE data byte (a 4-byte `0x62 DID-hi DID-lo value` response); the UDS parser must accept `length==4` (and may accept `length==5`) — never hard-require a two-byte raw. Mapping: FL=0x2A08, FR=0x2A06, RL=0x2A07, RR=0x2A05 | 2026-08-15 |
 | TPMS alert threshold (lowPsi) and staleness (staleAfterMs) are persisted in `boost_tpms` NVS (defaults 220 kPa ≈ 32 psi / 15 s); default staleness is sized above the ~4.5 s poll rotation so a single missed DID never flips the page amber | 2026-08-15 |
 | TPMS drawn capsules inflate +2 px (`TPMS_CAPSULE_GROW 2`) beyond the art's tire bounds so anti-aliased white edge pixels cannot peek through | 2026-08-15 |
+| Companion `boost_app_ble` GATT surface is the full HTTP API mirror: Control responses up to `APP_BLE_CTRL_RESP_MAX` 4096 B (fragmented, reassembled by clients), `/themes` and `/state` carry the same JSON as HTTP, `/themes/config` PUT handles `neonFont` and echoes the full themes payload, and device-info JSON carries the STA `ip` (`boost_app_ble_set_sta_ip` from `IP_EVENT_STA_GOT_IP`) so BLE-only clients can derive the HTTP host. The iOS/Android apps do NOT subscribe to the Status char (live state = 1 Hz Control `/state` poll); the Status char stays a legacy broadcast. BLE Log is an 8-sample diagnostic window by ATT design — the one-hour ring is HTTP-only. Any further Control expansion requires re-running the physical iOS BLE gate 3/3 | 2026-08-25 |
 
 ### Boot / NVS / clock / RAM
 
@@ -254,3 +255,10 @@ These are the currently-actionable invariants distilled from the regression ledg
 ## Commit hygiene
 
 Keep commits narrow and reviewable: source, generated web output, documentation/ledger, and release artifacts should be separable when practical. Never mix drive-by formatting or unrelated refactors with a regression fix. A commit that changes web sources must include regenerated embedded assets; a commit that changes architecture or a regression must include the README and these guard rails in the same change. Before handoff, report exact files changed, commands actually run, hardware versus host-only evidence, and any unverified risk.
+
+## Cross-platform parity (2026-08-25)
+
+`apps/PARITY.md` is the canonical settings IA + preview spec. Both companion
+apps must match it exactly; any UI change lands on both platforms in the same
+change-set. Subagents MUST read it before view work and end reports with a
+PARITY conformance line.
