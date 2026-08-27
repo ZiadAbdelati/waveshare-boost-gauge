@@ -20,16 +20,6 @@ extern "C" {
  * touches the radio unless either persisted toggle is on.
  */
 
-/** Display hook for the six-digit pairing passkey; rendered by
- *  boost_app_ble_ui.c as a panel overlay. The callback runs on the NimBLE host
- *  task and must not touch LVGL directly. */
-typedef void (*boost_app_ble_passkey_cb_t)(uint32_t passkey, void *ctx);
-
-/** Pair-result hook: pairing finished (BLE_GAP_EVENT_ENC_CHANGE; ok=true on
- *  success) or a repeat-pairing attempt arrived. The passkey overlay dismisses
- *  on any call. Runs on the NimBLE host task. */
-typedef void (*boost_app_ble_pair_result_cb_t)(bool ok, void *ctx);
-
 /**
  * Register the companion GATT service definitions, set the shared host's
  * security config, and create this module's serializing driver task.
@@ -52,11 +42,9 @@ void boost_app_ble_stop(void);
 /** True while exactly one phone is connected to the companion peripheral. */
 bool boost_app_ble_connected(void);
 
-/** Install the passkey display hook; pass NULL to clear. */
-void boost_app_ble_set_passkey_display_cb(boost_app_ble_passkey_cb_t cb, void *ctx);
-
-/** Install the pair-result hook; pass NULL to clear. */
-void boost_app_ble_set_pair_result_cb(boost_app_ble_pair_result_cb_t cb, void *ctx);
+/* Rebuild the BLE device-info JSON with the current STA IP so BLE-only
+ * clients can learn the board's HTTP host and fetch the full log ring. */
+void boost_app_ble_set_sta_ip(const char *ip);
 
 #ifdef __cplusplus
 }

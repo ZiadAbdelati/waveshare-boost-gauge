@@ -15,7 +15,6 @@
 #include "boost_tpms.h"
 #include "boost_tpms_mock.h"
 #include "boost_app_ble.h"
-#include "boost_app_ble_ui.h"
 #include "boost_obd.h"
 #include "boost_obd_ble.h"
 #include "esp_ota_ops.h"
@@ -208,7 +207,6 @@ void app_main(void)
      * (both toggles off), boost_app_ble_start() performs mount -> register ->
      * start itself on demand. */
     boost_obd_init();
-    boost_app_ble_ui_init();
     const bool obd_ble = boost_theme_tpms_ble();
     if (obd_ble) {
         boost_obd_ble_init();

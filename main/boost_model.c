@@ -811,6 +811,30 @@ esp_err_t boost_model_set_time(int64_t epoch_ms, int timezone_offset_minutes, co
     return err;
 }
 
+esp_err_t boost_model_set_timezone(int timezone_offset_minutes, const char *timezone_tz)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_config.timezone_offset_minutes = clamp_tz_offset(timezone_offset_minutes);
+    if (timezone_tz != NULL && timezone_tz[0] != '\0') {
+        strlcpy(s_config.timezone_tz, timezone_tz, sizeof(s_config.timezone_tz));
+    }
+    apply_timezone();
+    s_state.timezone_offset_minutes =
+        boost_model_utc_offset_minutes_at(time(NULL));
+    s_state.epoch_ms = epoch_ms_now();
+    esp_err_t err = ESP_OK;
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
+        err = save_config_locked();
+        if (err == ESP_OK) {
+            err = nvs_commit(h);
+        }
+        nvs_close(h);
+    }
+    xSemaphoreGive(s_lock);
+    return err;
+}
+
 esp_err_t boost_model_seed_clock_from_rtc(void)
 {
     if (!boost_sensors_rtc_present()) {

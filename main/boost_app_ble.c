@@ -6,6 +6,7 @@
 
 #include "cJSON.h"
 #include "esp_app_desc.h"
+#include "esp_bt.h"
 #include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -23,6 +24,7 @@
 #include "boost_model.h"
 #include "boost_obd_ble.h"
 #include "boost_sensors.h"
+#include "boost_sim.h"
 #include "boost_theme.h"
 #include "boost_tpms.h"
 #include "boost_tpms_protocol.h"
@@ -82,9 +84,14 @@ static const char *TAG = "boost_app_ble";
  * payload). Oversize requests/responses are answered with status 413
  * {"error":"too_large"}. */
 #define APP_BLE_CTRL_MAX      480u
+/* Responses mirror the HTTP JSON (full /themes ~1.7 KB, full /state ~1 KB),
+ * so a response is not bounded by the 480-byte request cap. The response is
+ * still fragmented to the ATT MTU on the wire and reassembled by the client;
+ * 4096 keeps every current HTTP payload plus headroom. */
+#define APP_BLE_CTRL_RESP_MAX 4096u
 /* Preferred ATT MTU: 480-byte notifications need MTU >= 483. 517 is the
  * conventional "512-byte value" size and stays under BLE_ATT_MTU_MAX (527). */
-#define APP_BLE_MTU           517u
+#define APP_BLE_MTU           256u // Intel hackintosh (NUC8) wedges on 517 during SC MTU exchange; 256 is iOS-safe and Intel-stable
 /* Advertising interval: 160-250 ms in 0.625 ms units. */
 #define APP_BLE_ADV_ITVL_MIN  256u
 #define APP_BLE_ADV_ITVL_MAX  400u
@@ -94,12 +101,12 @@ static const char *TAG = "boost_app_ble";
 #define APP_BLE_STATUS_MS     1000u
 /* One status sample must fit a single notification after the 480-byte rule;
  * the /state-shaped mirror is deliberately compact. */
-#define APP_BLE_STATUS_BUF    512u
+#define APP_BLE_STATUS_BUF    1280u
 
 #define APP_BLE_NAME         "BoostGauge"
 
 #define APP_BLE_QUEUE_LEN    8
-#define APP_BLE_TASK_STACK   4096
+#define APP_BLE_TASK_STACK   6144
 #define APP_BLE_TASK_PRIO    6
 
 /* Persistence mirrors tpmsBle: same NVS namespace ("boost"), same u8/0-or-1
@@ -171,7 +178,30 @@ static uint16_t s_status_val_handle;
 static uint16_t s_log_val_handle;
 static uint16_t s_dev_info_val_handle;
 
-static char s_device_info[96];
+static char s_device_info[128];
+static char s_ble_sta_ip[32] = "";
+
+static void app_device_info_rebuild(void)
+{
+    const esp_app_desc_t *desc = esp_app_get_description();
+    char ip_part[48];
+    if (s_ble_sta_ip[0] != '\0') {
+        snprintf(ip_part, sizeof(ip_part), ",\"ip\":\"%s\"", s_ble_sta_ip);
+    } else {
+        ip_part[0] = '\0';
+    }
+    snprintf(s_device_info, sizeof(s_device_info),
+             "{\"name\":\"BoostGauge\",\"fw\":\"%s\",\"api\":1%s}",
+             desc != NULL ? desc->version : "unknown", ip_part);
+}
+
+void boost_app_ble_set_sta_ip(const char *ip)
+{
+    if (ip != NULL) {
+        snprintf(s_ble_sta_ip, sizeof(s_ble_sta_ip), "%s", ip);
+    }
+    app_device_info_rebuild();
+}
 
 /* Per-connection log CSV cache ("generate on demand into a heap buffer").
  * Built by the first Log read of a connection and freed on disconnect. */
@@ -179,10 +209,6 @@ static char *s_log_cache;
 static size_t s_log_cache_len;
 static uint16_t s_log_cache_conn;
 
-static boost_app_ble_passkey_cb_t s_passkey_cb;
-static void *s_passkey_ctx;
-static boost_app_ble_pair_result_cb_t s_pair_result_cb;
-static void *s_pair_result_ctx;
 static volatile bool s_host_synced;
 
 static void app_ble_register_host_config(void);
@@ -222,8 +248,9 @@ static void app_ble_nvs_persist(bool enabled)
 /* --- response helpers ---------------------------------------------------- */
 
 /* Build the full Control notification payload {"id":...,"status":...,"body":...}.
- * If the body would push the payload over APP_BLE_CTRL_MAX the returned
- * message is a 413 {"error":"too_large"} instead. Heap-owned; caller frees. */
+ * The response body may exceed the 480-byte request cap (it is fragmented to
+ * the ATT MTU and reassembled by the client); only the request write path is
+ * bounded by APP_BLE_CTRL_MAX. Heap-owned; caller frees. */
 static char *app_ble_make_response(uint32_t id, int status, const char *body)
 {
     const size_t body_len = body != NULL ? strlen(body) : 0;
@@ -238,7 +265,7 @@ static char *app_ble_make_response(uint32_t id, int status, const char *body)
         free(tmp);
         tmp = NULL;
     }
-    if (tmp != NULL && (size_t)n > APP_BLE_CTRL_MAX) {
+    if (tmp != NULL && (size_t)n > APP_BLE_CTRL_RESP_MAX) {
         free(tmp);
         n = snprintf(NULL, 0, "{\"id\":%lu,\"status\":413,\"body\":{\"error\":\"too_large\"}}",
                      (unsigned long)id);
@@ -349,21 +376,40 @@ static int app_status_json(char *json, size_t len)
     boost_model_get_state(&st);
     boost_tpms_config_t tpms_cfg;
     boost_tpms_get_config(&tpms_cfg);
+    /* Mirror the HTTP /state shape (boost_web.c state_json) byte-for-byte so
+     * the companion decoders behave identically over BLE and HTTP. */
     return snprintf(json, len,
                     "{\"psi\":%.2f,\"peakPsi\":%.2f,\"zone\":\"%s\",\"demo\":%s,"
                     "\"brightness\":%d,\"firmwareVersion\":\"%s\",\"uptimeMs\":%llu,"
                     "\"epochMs\":%lld,\"timezoneOffsetMinutes\":%d,\"activeThemeId\":\"%s\",\"activePage\":%d,"
+                    "\"display\":{\"renderFps\":%lu,\"gaugeDemandPerSecond\":%lu,\"flushesPerSecond\":%lu,\"pixelsPerSecond\":%lu,"
+                    "\"worstRenderUs\":%lu,\"renderGapP50Us\":%lu,"
+                    "\"renderGapMaxUs\":%lu,\"framesOverBudget\":%lu,"
+                    "\"tePeriodUs\":%lu,\"teWaits\":%lu,\"teTimeouts\":%lu,\"teSkips\":%lu,"
+                    "\"teScanlineWaits\":%lu},"
                     "\"sensors\":{\"adsPresent\":%s,\"bmpPresent\":%s,\"fault\":%s,"
                     "\"mapVolts\":%.4f,\"mapAbsKpa\":%.2f,\"ambientKpa\":%.2f},"
-                    "\"tpms\":{\"status\":%d,\"lowPsi\":%.1f,"
-                    "\"wheels\":[{\"psi\":%.1f,\"valid\":%s},{\"psi\":%.1f,\"valid\":%s},"
-                    "{\"psi\":%.1f,\"valid\":%s},{\"psi\":%.1f,\"valid\":%s}]},"
-                    "\"obd\":{\"state\":%d,\"lastError\":%u,\"peer\":\"%s\",\"peerAddr\":\"%s\","
-                    "\"uptimeMs\":%lu,\"ageMs\":%lu,\"valid\":%s},"
-                    "\"transport\":\"ble\"}",
+                    "\"tpms\":{\"status\":%d,\"lowPsi\":%.1f,\"wheels\":[{\"psi\":%.1f,\"valid\":%s},{\"psi\":%.1f,\"valid\":%s},{\"psi\":%.1f,\"valid\":%s},{\"psi\":%.1f,\"valid\":%s}]},"
+                    "\"obd\":{\"state\":%d,\"lastError\":%u,\"peer\":\"%s\",\"peerAddr\":\"%s\",\"uptimeMs\":%lu,\"ageMs\":%lu,\"valid\":%s,"
+                    "\"lastReply\":\"%s\",\"protocol\":\"%s\","
+                    "\"rpm\":%.1f,\"speedKph\":%.1f,\"coolantC\":%.1f,\"mapKpa\":%.1f,\"iatC\":%.1f,"
+                    "\"throttlePct\":%.1f,\"mafGps\":%.1f,\"fuelPct\":%.1f,\"batteryV\":%.1f}}",
                     (double)st.psi, (double)st.peak_psi, st.zone, st.demo ? "true" : "false",
                     st.brightness, st.firmware_version, (unsigned long long)st.uptime_ms,
                     (long long)st.epoch_ms, st.timezone_offset_minutes, st.active_theme_id, st.active_page,
+                    (unsigned long)st.display.render_fps,
+                    (unsigned long)st.display.gauge_demand_per_second,
+                    (unsigned long)st.display.flushes_per_second,
+                    (unsigned long)st.display.pixels_per_second,
+                    (unsigned long)st.display.worst_render_us,
+                    (unsigned long)st.display.render_gap_p50_us,
+                    (unsigned long)st.display.render_gap_max_us,
+                    (unsigned long)st.display.frames_over_budget,
+                    (unsigned long)st.display.te_period_us,
+                    (unsigned long)st.display.te_waits,
+                    (unsigned long)st.display.te_timeouts,
+                    (unsigned long)st.display.te_skips,
+                    (unsigned long)st.display.te_scanline_waits,
                     st.ads_present ? "true" : "false",
                     st.bmp_present ? "true" : "false",
                     st.sensor_fault ? "true" : "false",
@@ -375,7 +421,12 @@ static int app_status_json(char *json, size_t len)
                     (double)st.tpms_psi[3], st.tpms_valid[3] ? "true" : "false",
                     st.obd_state, (unsigned)st.obd_last_error, st.obd_peer, st.obd_peer_addr,
                     (unsigned long)st.obd_uptime_ms, (unsigned long)st.obd_age_ms,
-                    st.obd_valid ? "true" : "false");
+                    st.obd_valid ? "true" : "false",
+                    st.obd_last_reply, st.obd_protocol,
+                    (double)st.obd_rpm, (double)st.obd_speed_kph, (double)st.obd_coolant_c,
+                    (double)st.obd_map_kpa, (double)st.obd_iat_c,
+                    (double)st.obd_throttle_pct, (double)st.obd_maf_gps,
+                    (double)st.obd_fuel_pct, (double)st.obd_battery_v);
 }
 
 static int app_config_json(char *json, size_t len)
@@ -444,27 +495,74 @@ static int app_calibration_json(char *json, size_t len)
                     cal_valid ? (long long)cal.epoch_ms : 0LL);
 }
 
-/* Compact theme listing: the HTTP /themes payload (~2.5 KB) cannot fit a
- * 480-byte Control response, so the BLE mirror carries id/name/style only. */
+/* Full theme listing mirroring the HTTP /themes payload (boost_web.c
+ * themes_get/append_theme_json). Larger than one 480-byte request but the
+ * response is fragmented to the ATT MTU and reassembled by the client. */
 static int app_themes_json(char *json, size_t len)
 {
     boost_config_t cfg;
     boost_model_get_config(&cfg);
-    int off = snprintf(json, len, "{\"activeThemeId\":\"%s\",\"themes\":[",
-                       cfg.active_theme_id);
-    for (size_t i = 0; i < boost_theme_count() && off > 0 && off < (int)len - 128; ++i) {
-        const boost_theme_t *t = boost_theme_at(i);
-        const int w = snprintf(json + off, len - (size_t)off,
-                               "%s{\"id\":\"%s\",\"name\":\"%s\",\"style\":\"%s\"}",
-                               i ? "," : "", t->id, t->name,
-                               boost_style_name(t->style));
-        if (w < 0) {
-            break;
-        }
-        off += w;
+    size_t off = 0;
+    int n = snprintf(json + off, len - off,
+                    "{\"activeThemeId\":\"%s\",\"bigDigitStaticBg\":%s,"
+                    "\"bigDigitColorText\":%s,\"bigDigitStaticColor\":\"#%06lx\","
+                    "\"bigDigitTextColor\":\"#%06lx\","
+                    "\"arcGradient\":%s,\"hudGradient\":%s,\"hudTrueBlack\":%s,\"neonMarqueeSpin\":%s,"
+                    "\"teSync\":%s,\"regionDBuf\":%s,\"teScanline\":%s,"
+                    "\"rotation\":%u,"
+                    "\"vaultFace\":\"#%06lx\",\"vaultVignette\":%u,\"vaultNeedleRed\":%s,"
+                    "\"vaultNeedleTail\":%s,\"neonLayout\":%u,\"neonFont\":%u,\"neonPreset\":%u,\"demoMode\":%s,\"demoFastSweep\":%s,"
+                    "\"tpmsBle\":%s,"
+                    "\"pixelShift\":%s,\"pixelShiftSec\":%u,\"themes\":[",
+                    cfg.active_theme_id,
+                    boost_theme_bigdigit_static_bg() ? "true" : "false",
+                    boost_theme_bigdigit_color_text() ? "true" : "false",
+                    (unsigned long)boost_theme_bigdigit_static_color(),
+                    (unsigned long)boost_theme_bigdigit_text_color(),
+                    boost_theme_arc_gradient() ? "true" : "false",
+                    boost_theme_hud_gradient() ? "true" : "false",
+                    boost_theme_hud_true_black() ? "true" : "false",
+                    boost_theme_neon_marquee_spin() ? "true" : "false",
+                    boost_theme_te_sync() ? "true" : "false",
+                    boost_theme_region_dbuf() ? "true" : "false",
+                    boost_theme_te_scanline() ? "true" : "false",
+                    (unsigned)boost_theme_rotation(),
+                    (unsigned long)boost_theme_vault_face(),
+                    (unsigned)boost_theme_vault_vignette_pct(),
+                    boost_theme_vault_needle_red() ? "true" : "false",
+                    boost_theme_vault_needle_tail() ? "true" : "false",
+                    (unsigned)boost_theme_neon_layout(),
+                    (unsigned)boost_theme_neon_font(),
+                    (unsigned)boost_theme_neon_preset(),
+                    boost_theme_demo_mode() ? "true" : "false",
+                    boost_sim_fast_sweep() ? "true" : "false",
+                    boost_theme_tpms_ble() ? "true" : "false",
+                    boost_theme_pixel_shift() ? "true" : "false",
+                    (unsigned)boost_theme_pixel_shift_sec());
+    if (n < 0) {
+        return n;
     }
-    if (off > 0 && off < (int)len) {
-        (void)snprintf(json + off, len - (size_t)off, "]}");
+    off += (size_t)n;
+    for (size_t i = 0; i < boost_theme_count() && off < len; ++i) {
+        const boost_theme_t *t = boost_theme_at(i);
+        n = snprintf(json + off, len - off,
+                     "%s{\"id\":\"%s\",\"name\":\"%s\",\"style\":\"%s\",\"colors\":{\"face\":\"#%06lx\","
+                     "\"track\":\"#%06lx\",\"text\":\"#%06lx\",\"muted\":\"#%06lx\","
+                     "\"vacuum\":\"#%06lx\",\"boost\":\"#%06lx\",\"overboost\":\"#%06lx\","
+                     "\"zero\":\"#%06lx\"},\"customized\":%s}",
+                     i ? "," : "", t->id, t->name, boost_style_name(t->style),
+                     (unsigned long)t->face, (unsigned long)t->track,
+                     (unsigned long)t->text, (unsigned long)t->muted,
+                     (unsigned long)t->vacuum, (unsigned long)t->boost,
+                     (unsigned long)t->overboost, (unsigned long)t->zero,
+                     boost_theme_is_customized(t->id) ? "true" : "false");
+        if (n < 0) {
+            return n;
+        }
+        off += (size_t)n;
+    }
+    if (off + 2U < len) {
+        (void)snprintf(json + off, len - off, "]}");
     }
     return (int)strlen(json);
 }
@@ -474,6 +572,9 @@ static int app_themes_json(char *json, size_t len)
 static int route_state(const cJSON *body, char *out, size_t cap)
 {
     (void)body;
+    /* Full /state mirror (tpms/sensors/display/obd): responses are no longer
+     * capped at 480 bytes — they fragment to the ATT MTU and the client
+     * reassembles, so the Control route matches the Status characteristic. */
     const int n = app_status_json(out, cap);
     return n > 0 && n < (int)cap ? 200 : 500;
 }
@@ -725,6 +826,13 @@ static int route_themes_config_put(const cJSON *body, char *out, size_t cap)
             boost_theme_set_neon_preset((boost_neon_preset_t)(int)v);
         }
     }
+    const cJSON *nfont = cJSON_GetObjectItemCaseSensitive(body, "neonFont");
+    if (cJSON_IsNumber(nfont)) {
+        const double v = nfont->valuedouble;
+        if (v >= 0.0 && v <= 1.0) {
+            boost_theme_set_neon_font((boost_neon_font_t)(int)v);
+        }
+    }
     const cJSON *tid = cJSON_GetObjectItemCaseSensitive(body, "id");
     if (cJSON_IsString(tid)) {
         if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(body, "reset"))) {
@@ -766,8 +874,10 @@ static int route_themes_config_put(const cJSON *body, char *out, size_t cap)
         boost_gauge_apply_theme(boost_model_active_theme());
         boost_display_unlock();
     }
-    snprintf(out, cap, "{\"ok\":true}");
-    return 200;
+    /* Echo the full /themes payload so the client can fold the response back
+     * into local state (mirroring the HTTP PUT), not just {"ok":true}. */
+    const int n = app_themes_json(out, cap);
+    return n > 0 && n < (int)cap ? 200 : 500;
 }
 
 static int route_tpms_get(const cJSON *body, char *out, size_t cap)
@@ -972,23 +1082,30 @@ static void app_control_handle(uint16_t conn_handle, uint32_t id,
     }
 
     int status = 404;
-    char resp_body[APP_BLE_CTRL_MAX + 64];
+    char *resp_body = malloc(APP_BLE_CTRL_RESP_MAX);
+    if (resp_body == NULL) {
+        cJSON_Delete(root);
+        app_ble_enqueue_tx(conn_handle,
+                           app_ble_make_response(id, 500, "{\"error\":\"no_mem\"}"));
+        return;
+    }
     resp_body[0] = '\0';
     bool routed = false;
     for (size_t i = 0; i < sizeof(s_routes) / sizeof(s_routes[0]); ++i) {
         if (strcmp(s_routes[i].path, path->valuestring) == 0 &&
             strcmp(s_routes[i].method, method->valuestring) == 0) {
-            status = s_routes[i].handle(body, resp_body, sizeof(resp_body));
+            status = s_routes[i].handle(body, resp_body, APP_BLE_CTRL_RESP_MAX);
             routed = true;
             break;
         }
     }
     if (!routed) {
-        snprintf(resp_body, sizeof(resp_body), "{\"error\":\"not_found\"}");
+        snprintf(resp_body, APP_BLE_CTRL_RESP_MAX, "{\"error\":\"not_found\"}");
         status = 404;
     }
     cJSON_Delete(root);
     app_ble_enqueue_tx(conn_handle, app_ble_make_response(id, status, resp_body));
+    free(resp_body);
 }
 
 static int app_control_access(uint16_t conn_handle, uint16_t attr_handle,
@@ -998,6 +1115,7 @@ static int app_control_access(uint16_t conn_handle, uint16_t attr_handle,
     (void)arg;
     if (ctxt->op == BLE_GATT_ACCESS_OP_WRITE_CHR) {
         const uint16_t len = OS_MBUF_PKTLEN(ctxt->om);
+        ESP_LOGI(TAG, "control write: %u B from handle %u", (unsigned)len, conn_handle);
         if (len > APP_BLE_CTRL_MAX) {
             /* Can only happen with a peer that negotiated a very large MTU;
              * answer with the spec'd 413 and drop the rest. */
@@ -1043,9 +1161,13 @@ static int app_status_access(uint16_t conn_handle, uint16_t attr_handle,
     }
     char json[APP_BLE_STATUS_BUF];
     const int n = app_status_json(json, sizeof(json));
-    if (n <= 0 || n >= (int)sizeof(json) || ctxt->offset >= (uint16_t)n) {
-        return ctxt->offset >= (uint16_t)n ? BLE_ATT_ERR_INVALID_OFFSET
-                                           : BLE_ATT_ERR_UNLIKELY;
+    if (n <= 0 || n >= (int)sizeof(json)) {
+        return BLE_ATT_ERR_UNLIKELY;
+    }
+    if (ctxt->offset >= (uint16_t)n) {
+        /* CoreBluetooth probes the next blob offset even after a bounded
+         * value; a zero-length chunk terminates its assembled read cleanly. */
+        return 0;
     }
     const int rc = os_mbuf_append(ctxt->om, json + ctxt->offset,
                                   (uint16_t)n - ctxt->offset);
@@ -1061,6 +1183,9 @@ static int app_dev_info_access(uint16_t conn_handle, uint16_t attr_handle,
     if (ctxt->op != BLE_GATT_ACCESS_OP_READ_CHR) {
         return BLE_ATT_ERR_UNLIKELY;
     }
+    ESP_LOGI(TAG, "device info read: conn=%u offset=%u len=%u",
+             (unsigned)conn_handle, (unsigned)ctxt->offset,
+             (unsigned)strlen(s_device_info));
     const size_t len = strlen(s_device_info);
     if (ctxt->offset >= len) {
         return BLE_ATT_ERR_INVALID_OFFSET;
@@ -1087,10 +1212,10 @@ static void app_log_cache_free(void)
  * Build the "BGL1"+header+samples CSV on demand into a (preferably PSRAM)
  * heap buffer, cached for the connection. The ATT Read Blob offset field is
  * 16-bit, so a client cannot address past 64 KB: the BLE Log characteristic
- * therefore mirrors the most recent APP_LOG_MAX_SAMPLES (~46 KB) and
+ * BLE reads therefore expose a bounded recent diagnostic window and
  * /logs.csv keeps serving the full one-hour ring.
  */
-#define APP_LOG_MAX_SAMPLES 1200u
+#define APP_LOG_MAX_SAMPLES 8u
 
 static char *app_log_cache_build(size_t *out_len)
 {
@@ -1199,7 +1324,7 @@ static const struct ble_gatt_svc_def s_svc_defs[] = {
                 .access_cb = app_svc_access,
                 .val_handle = &s_ctl_val_handle,
                 .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_NOTIFY |
-                         BLE_GATT_CHR_F_WRITE_ENC | BLE_GATT_CHR_F_WRITE_AUTHEN,
+                         BLE_GATT_CHR_F_WRITE_ENC,
             },
             {
                 /* Status: read + notify ~1 Hz while connected. */
@@ -1213,8 +1338,7 @@ static const struct ble_gatt_svc_def s_svc_defs[] = {
                 .uuid = &s_uuid_log.u,
                 .access_cb = app_svc_access,
                 .val_handle = &s_log_val_handle,
-                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_READ_ENC |
-                         BLE_GATT_CHR_F_READ_AUTHEN,
+                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_READ_ENC,
             },
             {
                 /* Device info: read. */
@@ -1272,23 +1396,10 @@ static int app_gap_event(struct ble_gap_event *event, void *arg)
         }
         return 0;
     case BLE_GAP_EVENT_PASSKEY_ACTION:
-        if (event->passkey.params.action == BLE_SM_IOACT_DISP) {
-            const uint32_t passkey = esp_random() % 1000000u;
-            ESP_LOGI(TAG, "pairing passkey: %06lu", (unsigned long)passkey);
-            if (s_passkey_cb != NULL) {
-                s_passkey_cb(passkey, s_passkey_ctx);
-            }
-            struct ble_sm_io io = { 0 };
-            io.action = BLE_SM_IOACT_DISP;
-            io.passkey = passkey;
-            const int rc = ble_sm_inject_io(event->passkey.conn_handle, &io);
-            if (rc != 0) {
-                ESP_LOGW(TAG, "passkey inject failed: %d", rc);
-            }
-        } else {
-            ESP_LOGW(TAG, "unexpected passkey action %u",
-                     (unsigned)event->passkey.params.action);
-        }
+        /* Unreachable with Just Works (BLE_HS_IO_NO_INPUT_OUTPUT, MITM off);
+         * kept as a diagnostic in case the security config ever changes. */
+        ESP_LOGW(TAG, "unexpected passkey action %u",
+                 (unsigned)event->passkey.params.action);
         return 0;
     case BLE_GAP_EVENT_MTU:
         if (event->mtu.channel_id == BLE_L2CAP_CID_ATT) {
@@ -1298,15 +1409,35 @@ static int app_gap_event(struct ble_gap_event *event, void *arg)
                  (unsigned)event->mtu.value, (unsigned)event->mtu.channel_id);
         return 0;
     case BLE_GAP_EVENT_ENC_CHANGE:
-        if (s_pair_result_cb != NULL) {
-            s_pair_result_cb(event->enc_change.status == 0, s_pair_result_ctx);
+        ESP_LOGI(TAG, "encryption changed: handle %u status %u (0=encrypted)",
+                 (unsigned)event->enc_change.conn_handle,
+                 (unsigned)event->enc_change.status);
+        if (event->enc_change.status != 0) {
+            /* Failed encryption usually means the peer holds a bond whose
+             * keys we lost (RAM store before NVS_PERSIST, or a flash wipe).
+             * Drop OUR copy so the next pairing attempt starts clean instead
+             * of deadlocking (phone thinks it is bonded, never re-pairs). */
+            struct ble_gap_conn_desc enc_desc;
+            if (ble_gap_conn_find(event->enc_change.conn_handle, &enc_desc) == 0) {
+                ESP_LOGW(TAG, "encryption failed; deleting our bond for the peer");
+                ble_store_util_delete_peer(&enc_desc.peer_id_addr);
+            }
         }
         return 0;
     case BLE_GAP_EVENT_REPEAT_PAIRING:
-        if (s_pair_result_cb != NULL) {
-            s_pair_result_cb(false, s_pair_result_ctx);
+        /* The phone re-paired from an address we still hold a bond for
+         * (app reinstall wipes the phone's bond; ours persists in NVS).
+         * Returning 0/IGNORE keeps the stale bond whose keys the phone does
+         * not have, so encryption can never re-establish and every encrypted
+         * Control/Log write fails (hardware-verified 2026-08-23). Delete the
+         * conflicting bond and let pairing retry; the passkey overlay fires
+         * again via the normal PASSKEY_ACTION path. */
+        ESP_LOGW(TAG, "repeat pairing from bonded peer; deleting stale bond and retrying");
+        struct ble_gap_conn_desc rp_desc;
+        if (ble_gap_conn_find(event->repeat_pairing.conn_handle, &rp_desc) == 0) {
+            ble_store_util_delete_peer(&rp_desc.peer_id_addr);
         }
-        return 0;
+        return BLE_GAP_REPEAT_PAIRING_RETRY;
     case BLE_GAP_EVENT_ADV_COMPLETE:
         /* Undirected connectable advertising runs forever; if the controller
          * ever completes it anyway, restart on the driver task. */
@@ -1363,6 +1494,13 @@ static void app_adv_attempt(uint32_t *retries)
         ESP_LOGW(TAG, "addr type failed: %d", rc);
         (*retries)++;
         return;
+    }
+    /* This dashboard's antenna path measured near the Intel Mac's receive
+     * floor (-100 dBm). Make the peripheral's advertising link budget
+     * explicit rather than relying on the controller's inherited default. */
+    rc = esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_P9);
+    if (rc != ESP_OK) {
+        ESP_LOGW(TAG, "advertising TX power set failed: %s", esp_err_to_name(rc));
     }
     struct ble_gap_adv_params params;
     memset(&params, 0, sizeof(params));
@@ -1427,17 +1565,6 @@ static void app_driver_task(void *arg)
             if (ble_gap_adv_active()) {
                 (void)ble_gap_adv_stop();
             }
-            /* Start authenticated pairing (passkey, display-only) right away.
-             * (The GATT doc words this as "triggered by the first access"; in
-             * SC-only mode NimBLE rejects an unsecured access to an encrypted
-             * characteristic without initiating pairing itself, so the server
-             * starts it at connect to make protected attrs usable immediately.) */
-            {
-                const int rc = ble_gap_security_initiate(ev.conn_handle);
-                if (rc != 0 && rc != BLE_HS_EALREADY) {
-                    ESP_LOGW(TAG, "security initiate failed: %d", rc);
-                }
-            }
             break;
         case APP_EV_DISCONNECTED:
             s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
@@ -1468,7 +1595,12 @@ static void app_driver_task(void *arg)
             char *payload = ev.payload;
             if (payload != NULL &&
                 ev.conn_handle == s_conn_handle &&
-                s_ctl_val_handle != 0 && s_ctl_subscribed) {
+                s_ctl_val_handle != 0) {
+                /* CoreBluetooth can restore a cached notify state without
+                 * generating a fresh GAP_SUBSCRIBE event after reconnect.
+                 * notify_custom remains the authority (and fails safely when
+                 * the peer truly has no CCCD); do not discard a response only
+                 * because our advisory mirror missed that event. */
                 app_notify_fragmented(ev.conn_handle, s_ctl_val_handle,
                                       payload, strlen(payload));
             } else if (payload != NULL) {
@@ -1546,11 +1678,16 @@ static void app_ble_register_host_config(void)
 
     /* Security config applies to the shared host before it starts: LE Secure
      * Connections + MITM, display-only passkey, bonding enabled. */
-    ble_hs_cfg.sm_io_cap = BLE_HS_IO_DISPLAY_ONLY;
+    /* Just Works pairing (user decision 2026-08-23): encrypted + bonded, no
+     * passkey. Trades MITM protection for a zero-interaction pairing UX —
+     * the panel-passkey overlay cost a full debug cycle and never won the
+     * user's attention race against the phone's own dialog. Writes still
+     * require an encrypted link; unpaired peers get ATT insufficient-auth. */
+    ble_hs_cfg.sm_io_cap = BLE_HS_IO_NO_INPUT_OUTPUT;
     ble_hs_cfg.sm_bonding = 1;
-    ble_hs_cfg.sm_mitm = 1;
-    ble_hs_cfg.sm_sc = 1;
-    ble_hs_cfg.sm_sc_only = 1;
+    ble_hs_cfg.sm_mitm = 0;
+    ble_hs_cfg.sm_sc = 0; // Intel 8265 on hackintosh wedges on LE Secure Connections; use legacy pairing for NUC8 stability (iPhone falls back cleanly)
+    ble_hs_cfg.sm_sc_only = 0;
     ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
     ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
     ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
@@ -1608,10 +1745,7 @@ void boost_app_ble_init(void)
         s_enabled = app_ble_nvs_read_enabled();
     }
 
-    const esp_app_desc_t *desc = esp_app_get_description();
-    snprintf(s_device_info, sizeof(s_device_info),
-             "{\"name\":\"BoostGauge\",\"fw\":\"%s\",\"api\":1}",
-             desc != NULL ? desc->version : "unknown");
+    app_device_info_rebuild();
 
     /* Host-dependent config only when the shared host is already mounted
      * (tpmsBle boot path). Otherwise start() registers after mounting. */
@@ -1684,18 +1818,6 @@ void boost_app_ble_stop(void)
 bool boost_app_ble_connected(void)
 {
     return s_conn_handle != BLE_HS_CONN_HANDLE_NONE;
-}
-
-void boost_app_ble_set_passkey_display_cb(boost_app_ble_passkey_cb_t cb, void *ctx)
-{
-    s_passkey_cb = cb;
-    s_passkey_ctx = ctx;
-}
-
-void boost_app_ble_set_pair_result_cb(boost_app_ble_pair_result_cb_t cb, void *ctx)
-{
-    s_pair_result_cb = cb;
-    s_pair_result_ctx = ctx;
 }
 
 #else /* APP_BLE_BUILT */

@@ -86,6 +86,7 @@ tpmsPowertrainImg.src = TPMS_POWERTRAIN_SRC;
 
 const state = {
   activeThemeId: "dyno-cell",
+  themeReady: false, // gauge canvas holds blank until the real theme payload lands (no dyno-cell flash)
   activePage: 0,
   tpms: { status: 2, wheels: [] },
   themes: [],
@@ -330,6 +331,10 @@ function canvasAngle(aDeg) {
  * identity (the :root CSS vars) and does not re-skin with the gauge. */
 function setTheme(theme) {
   if (!theme || !theme.colors) return;
+  if (!state.themeReady) {
+    state.themeReady = true;
+    el.gaugeDevice?.classList.add("theme-ready");
+  }
   state.palette = {
     face: theme.colors.face || "#000",
     track: theme.colors.track,
@@ -1649,18 +1654,31 @@ function scheduleGaugeRender() {
  * before the font is usable and simply stay wrong. Ask for both neon sizes
  * explicitly and repaint once they report ready. */
 if (typeof document !== "undefined" && document.fonts) {
-  Promise.all([
+  /* Force-fetch every face the readout can draw with BEFORE the first paint.
+   * document.fonts.ready resolves as soon as the CSS-declared faces settle,
+   * but canvas only pulls a face at first USE - so a preview whose first
+   * drawGauge lands before the fetch keeps the fallback glyph shapes. The
+   * mirror's reveal gate also polls us; eager loading makes its first
+   * post-ready frame already correct. */
+  const preloadFaces = Promise.all([
     document.fonts.load('italic 108px "SF Alien Encounters"'),
     document.fonts.load('italic 154px "SF Alien Encounters"'),
     document.fonts.load('italic 24px "SF Alien Encounters"'),
     document.fonts.load('24px "SF Alien Encounters"'),
     document.fonts.load('700 126px "Doto"'),
+    document.fonts.load('400 126px "Doto"'),
+    document.fonts.load('700 108px "Archivo Black"'),
     document.fonts.load('400 56px "Archivo Black"'),
-  ]).then(() => scheduleGaugeRender()).catch(() => { /* fallback face is fine */ });
+    document.fonts.load('700 65px "Archivo Black"'),
+  ]);
+  preloadFaces.then(() => scheduleGaugeRender()).catch(() => { /* fallback face is fine */ });
+  // If the real theme payload arrives before fonts finish, repaint on ready.
+  document.fonts.addEventListener?.('loadingdone', () => scheduleGaugeRender());
 }
 
 function renderGaugeFrame(at) {
   state.gaugeRaf = null;
+  if (!state.themeReady) return; // no default-palette flash: first paint waits for the real theme
   const target = state.gaugeTarget;
   if (!target) return;
 

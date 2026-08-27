@@ -117,6 +117,7 @@ esp_err_t boost_model_set_active_theme(const char *id);
 esp_err_t boost_model_set_active_page(int page);
 const boost_theme_t *boost_model_active_theme(void);
 esp_err_t boost_model_set_time(int64_t epoch_ms, int timezone_offset_minutes, const char *timezone_tz);
+esp_err_t boost_model_set_timezone(int timezone_offset_minutes, const char *timezone_tz);
 /** Current effective UTC offset in minutes (DST-aware) for the given epoch,
  *  from the applied timezone. newlib lacks tm_gmtoff/timegm, so it is derived
  *  by comparing localtime against gmtime via days-from-civil. */

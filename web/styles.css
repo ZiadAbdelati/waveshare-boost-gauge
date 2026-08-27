@@ -323,6 +323,13 @@ h1 {
   aspect-ratio: 1;
   border-radius: 50%;
   background: #000;
+  /* Hold the pod invisible until the real theme's first paint (app.js adds
+   * .theme-ready in setTheme) — kills the default-palette flash on load.
+   * Layout is reserved, so nothing reflows when it appears. */
+  visibility: hidden;
+}
+.gauge-device.theme-ready {
+  visibility: visible;
   position: relative;
   overflow: hidden;
   box-shadow:

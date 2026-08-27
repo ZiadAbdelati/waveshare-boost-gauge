@@ -65,6 +65,10 @@ CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y
 # reboots ("pair once, then silent reconnect in the car"). NimBLE only writes
 # bonds through its NVS-backed config store when this is on.
 CONFIG_BT_NIMBLE_NVS_PERSIST=y
+# Companion GATT request routing parses JSON and serializes responses from the
+# NimBLE host callback. ESP-IDF's 4096-byte default overflows on the first
+# encrypted Control request; keep enough stack for the full 480-byte envelope.
+CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=8192
 
 # The LVGL worker and HTTP server do not perform flash writes; keep their stacks in PSRAM.
 CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=y

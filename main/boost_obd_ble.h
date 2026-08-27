@@ -72,3 +72,7 @@ uint32_t boost_obd_ble_uptime_ms(void);
 #ifdef __cplusplus
 }
 #endif
+
+/* Clear the stored OBD peer (NVS obd_peer) and drop the live link if any.
+ * Safe to call while scanning/connected; the central returns to idle. */
+void boost_obd_ble_forget_peer(void);

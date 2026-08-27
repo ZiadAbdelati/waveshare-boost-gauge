@@ -31,7 +31,6 @@ idf_component_register(
         "boost_network.c"
         ${OBD_SRCS}
         "boost_app_ble.c"
-        "boost_app_ble_ui.c"
         "generated_web_assets.c"
         # Vendored GIF playback layer. The upstream copies under
         # managed_components/lvgl__lvgl/src/libs/gif/ are excluded from the
