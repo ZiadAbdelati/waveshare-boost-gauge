@@ -173,29 +173,64 @@ class SettingsViewModel(
 
     fun saveDisplay() {
         val fields = _state.value.fields
+        viewModelScope.launch {
+            _state.update { it.copy(saving = true, error = null) }
+            runCatching {
+                val configPatch = buildJsonObject {
+                    fields.brightnessHigh.toIntOrNull()?.let { put("brightnessHigh", it) }
+                    fields.brightnessLow.toIntOrNull()?.let { put("brightnessLow", it) }
+                    put(
+                        "dimSchedule",
+                        buildJsonObject {
+                            put("enabled", fields.dimEnabled)
+                            fields.dimStart.toIntOrNull()?.let { put("startMinutes", it) }
+                            fields.dimEnd.toIntOrNull()?.let { put("endMinutes", it) }
+                        },
+                    )
+                }
+                val config = api.updateConfig(configPatch)
+                val themePatch = buildJsonObject {
+                    put("rotation", fields.rotation)
+                    put("regionDBuf", fields.regionDBuf)
+                    put("teSync", fields.teSync)
+                    put("teScanline", fields.teScanline)
+                    put("pixelShift", fields.pixelShift)
+                    fields.pixelShiftSec.toIntOrNull()?.let { put("pixelShiftSec", it) }
+                }
+                val themes = api.updateThemesConfig(themePatch)
+                Pair(config, themes)
+            }.onSuccess { (config, themes) ->
+                _state.update {
+                    it.copy(
+                        saving = false,
+                        config = config,
+                        themes = themes,
+                        fields = it.fields.withConfig(config).withThemes(themes),
+                        message = "Display saved",
+                    )
+                }
+            }.onFailure { e ->
+                _state.update { it.copy(saving = false, error = e.message ?: "save failed") }
+            }
+        }
+    }
+
+    fun saveDemoMode() {
+        val fields = _state.value.fields
         val patch = buildJsonObject {
-            fields.brightnessHigh.toIntOrNull()?.let { put("brightnessHigh", it) }
-            fields.brightnessLow.toIntOrNull()?.let { put("brightnessLow", it) }
-            put(
-                "dimSchedule",
-                buildJsonObject {
-                    put("enabled", fields.dimEnabled)
-                    fields.dimStart.toIntOrNull()?.let { put("startMinutes", it) }
-                    fields.dimEnd.toIntOrNull()?.let { put("endMinutes", it) }
-                },
-            )
-            put("appBle", fields.appBle)
+            put("demoMode", fields.demoMode)
+            put("demoFastSweep", fields.demoFastSweep)
         }
         viewModelScope.launch {
             _state.update { it.copy(saving = true, error = null) }
-            runCatching { api.updateConfig(patch) }
-                .onSuccess { config ->
+            runCatching { api.updateThemesConfig(patch) }
+                .onSuccess { themes ->
                     _state.update {
                         it.copy(
                             saving = false,
-                            config = config,
-                            fields = it.fields.withConfig(config),
-                            message = "Display saved",
+                            themes = themes,
+                            fields = it.fields.withThemes(themes),
+                            message = "Demo settings saved",
                         )
                     }
                 }
@@ -234,36 +269,7 @@ class SettingsViewModel(
         }
     }
 
-    fun saveThemeFlags() {
-        val fields = _state.value.fields
-        val patch = buildJsonObject {
-            put("demoMode", fields.demoMode)
-            put("demoFastSweep", fields.demoFastSweep)
-            put("rotation", fields.rotation)
-            put("regionDBuf", fields.regionDBuf)
-            put("teSync", fields.teSync)
-            put("teScanline", fields.teScanline)
-            put("pixelShift", fields.pixelShift)
-            fields.pixelShiftSec.toIntOrNull()?.let { put("pixelShiftSec", it) }
-        }
-        viewModelScope.launch {
-            _state.update { it.copy(saving = true, error = null) }
-            runCatching { api.updateThemesConfig(patch) }
-                .onSuccess { themes ->
-                    _state.update {
-                        it.copy(
-                            saving = false,
-                            themes = themes,
-                            fields = it.fields.withThemes(themes),
-                            message = "Theme settings saved",
-                        )
-                    }
-                }
-                .onFailure { e ->
-                    _state.update { it.copy(saving = false, error = e.message ?: "save failed") }
-                }
-        }
-    }
+    fun saveThemeFlags() = saveDemoMode()
 
     fun saveTpms() {
         val fields = _state.value.fields

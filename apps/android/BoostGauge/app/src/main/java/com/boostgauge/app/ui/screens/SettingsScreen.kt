@@ -90,7 +90,7 @@ internal enum class SettingsPage(val title: String) {
     Connection("Connection"),
     Display("Display"),
     Range("Range"),
-    ThemeDemo("Theme & demo"),
+    DemoMode("Demo mode"),
     ClockTimezone("Clock & Timezone"),
     Tpms("TPMS"),
     ObdScanner("OBD2 Scanner"),
@@ -127,8 +127,10 @@ fun SettingsScreen(container: AppContainer) {
     var page by rememberSaveable {
         mutableStateOf<SettingsPage?>(
             com.boostgauge.app.MainActivity.debugInitialSettingsPage?.let { name ->
-                SettingsPage.entries.firstOrNull { it.name == name }
+                val aliased = if (name == "ThemeDemo" || name == "Theme & demo") "DemoMode" else name
+                SettingsPage.entries.firstOrNull { it.name == aliased }
                     ?: SettingsPage.entries.firstOrNull { it.title == name }
+                    ?: SettingsPage.entries.firstOrNull { it.title == aliased }
             },
         )
     }
@@ -190,8 +192,13 @@ fun SettingsScreen(container: AppContainer) {
             }
         }
         when (page) {
-            null -> item {
-                SettingsMenu(onNavigate = { page = it })
+            null -> {
+                item {
+                    SettingsMenu(onNavigate = { page = it })
+                }
+                item {
+                    AboutSection(status = status)
+                }
             }
             SettingsPage.Connection -> item {
                 val reconnectAttempt by viewModel.reconnectAttempt.collectAsState()
@@ -224,12 +231,12 @@ fun SettingsScreen(container: AppContainer) {
                     onSave = viewModel::saveRange,
                 )
             }
-            SettingsPage.ThemeDemo -> item {
-                ThemeDemoSection(
+            SettingsPage.DemoMode -> item {
+                DemoModeSection(
                     fields = fields,
                     saving = state.saving,
                     onFieldChange = viewModel::updateFields,
-                    onSave = viewModel::saveThemeFlags,
+                    onSave = viewModel::saveDemoMode,
                 )
             }
             SettingsPage.ClockTimezone -> item {
@@ -282,7 +289,7 @@ private fun SettingsMenu(onNavigate: (SettingsPage) -> Unit) {
                             SettingsPage.Connection -> Icons.Default.Wifi
                             SettingsPage.Display -> Icons.Default.Tv
                             SettingsPage.Range -> Icons.Default.SwapHoriz
-                            SettingsPage.ThemeDemo -> Icons.Default.Palette
+                            SettingsPage.DemoMode -> Icons.Default.Palette
                             SettingsPage.ClockTimezone -> Icons.Default.Schedule
                             SettingsPage.Tpms -> Icons.Default.TireRepair
                             SettingsPage.ObdScanner -> Icons.Default.Build
@@ -323,7 +330,7 @@ private fun TransportSection(
     onDisconnect: () -> Unit,
     onConnectSaved: () -> Unit,
 ) {
-    GroupedSection(title = "Connection") {
+    GroupedSection {
         val peerKnown = selection.bleAddress.isNotBlank()
         val statusColor = if (connectionStatus == ConnectionStatus.Connected) {
             BoostColors.success
@@ -451,7 +458,9 @@ private fun TransportSection(
                 modifier = Modifier.padding(vertical = 2.dp),
             )
         }
-        scannedDevices.forEach { device ->
+        // The saved gauge is already shown as the dedicated Saved row — don't
+        // repeat it in the scan list (same hardware would appear twice).
+        scannedDevices.filterNot { it.address.equals(selection.bleAddress, ignoreCase = true) }.forEach { device ->
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -492,61 +501,136 @@ private fun DisplaySection(
     onFieldChange: ((SettingsViewModel.FieldState) -> SettingsViewModel.FieldState) -> Unit,
     onSave: () -> Unit,
 ) {
-    GroupedSection(title = "Display") {
-        StepperRow(
-            label = "Brightness high",
-            value = fields.brightnessHigh,
-            suffix = "%",
-            min = 1,
-            max = 100,
-            enabled = !saving,
-        ) { value ->
-            onFieldChange { it.copy(brightnessHigh = value.toString()) }
-        }
-        StepperRow(
-            label = "Brightness low",
-            value = fields.brightnessLow,
-            suffix = "%",
-            min = 1,
-            max = 100,
-            enabled = !saving,
-        ) { value ->
-            onFieldChange { it.copy(brightnessLow = value.toString()) }
-        }
-        ToggleRow("Dim schedule", fields.dimEnabled, enabled = !saving) { enabled ->
-            onFieldChange { it.copy(dimEnabled = enabled) }
-        }
-        if (fields.dimEnabled) {
+    androidx.compose.foundation.layout.Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        GroupedSection(title = "Brightness") {
             StepperRow(
-                label = "Start",
-                value = fields.dimStart,
-                display = { minutes -> "%02d:%02d".format(minutes / 60, minutes % 60) },
-                min = 0,
-                max = 24 * 60 - 1,
+                label = "Brightness high",
+                value = fields.brightnessHigh,
+                suffix = "%",
+                min = 1,
+                max = 100,
                 enabled = !saving,
             ) { value ->
-                onFieldChange { it.copy(dimStart = value.toString()) }
+                onFieldChange { it.copy(brightnessHigh = value.toString()) }
             }
             StepperRow(
-                label = "End",
-                value = fields.dimEnd,
-                display = { minutes -> "%02d:%02d".format(minutes / 60, minutes % 60) },
-                min = 0,
-                max = 24 * 60 - 1,
+                label = "Brightness low",
+                value = fields.brightnessLow,
+                suffix = "%",
+                min = 1,
+                max = 100,
                 enabled = !saving,
             ) { value ->
-                onFieldChange { it.copy(dimEnd = value.toString()) }
+                onFieldChange { it.copy(brightnessLow = value.toString()) }
             }
         }
-        ToggleRow("Companion app advertising", fields.appBle, enabled = !saving) { value ->
-            onFieldChange { it.copy(appBle = value) }
+        GroupedSection(title = "Dim schedule") {
+            ToggleRow("Dim schedule", fields.dimEnabled, enabled = !saving) { enabled ->
+                onFieldChange { it.copy(dimEnabled = enabled) }
+            }
+            if (fields.dimEnabled) {
+                StepperRow(
+                    label = "Start",
+                    value = fields.dimStart,
+                    display = { minutes -> "%02d:%02d".format(minutes / 60, minutes % 60) },
+                    min = 0,
+                    max = 24 * 60 - 1,
+                    enabled = !saving,
+                ) { value ->
+                    onFieldChange { it.copy(dimStart = value.toString()) }
+                }
+                StepperRow(
+                    label = "End",
+                    value = fields.dimEnd,
+                    display = { minutes -> "%02d:%02d".format(minutes / 60, minutes % 60) },
+                    min = 0,
+                    max = 24 * 60 - 1,
+                    enabled = !saving,
+                ) { value ->
+                    onFieldChange { it.copy(dimEnd = value.toString()) }
+                }
+            }
+        }
+        GroupedSection(title = "Panel") {
+            var rotationExpanded by remember { mutableStateOf(false) }
+            androidx.compose.material3.Surface(
+                onClick = { rotationExpanded = true },
+                enabled = !saving,
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHighest,
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "Rotation",
+                        style = BoostMetric,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "${fields.rotation}°",
+                            style = BoostMetricValue,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Icon(
+                            Icons.Filled.ArrowDropDown,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+            DropdownMenu(expanded = rotationExpanded, onDismissRequest = { rotationExpanded = false }) {
+                listOf(0, 90, 180, 270).forEach { value ->
+                    DropdownMenuItem(
+                        text = { Text("$value°") },
+                        onClick = {
+                            rotationExpanded = false
+                            onFieldChange { it.copy(rotation = value) }
+                        },
+                    )
+                }
+            }
+            ToggleRow("Region double-buffer", fields.regionDBuf, enabled = !saving) { value ->
+                onFieldChange { it.copy(regionDBuf = value) }
+            }
+            ToggleRow("TE sync", fields.teSync, enabled = !saving) { value ->
+                onFieldChange { it.copy(teSync = value) }
+            }
+            ToggleRow("TE scanline", fields.teScanline, enabled = !saving) { value ->
+                onFieldChange { it.copy(teScanline = value) }
+            }
+            ToggleRow("Pixel shift", fields.pixelShift, enabled = !saving) { value ->
+                onFieldChange { it.copy(pixelShift = value) }
+            }
+            if (fields.pixelShift) {
+                StepperRow(
+                    label = "Pixel shift interval",
+                    value = fields.pixelShiftSec,
+                    suffix = "s",
+                    min = 30,
+                    max = 3600,
+                    step = 30,
+                    enabled = !saving,
+                ) { value ->
+                    onFieldChange { it.copy(pixelShiftSec = value.toString()) }
+                }
+            }
         }
         Button(
             onClick = onSave,
             enabled = !saving,
             modifier = Modifier.fillMaxWidth(),
         ) {
-            Text("Save")
+            Text("Save display settings")
         }
     }
 }
@@ -558,7 +642,7 @@ private fun RangeSection(
     onFieldChange: ((SettingsViewModel.FieldState) -> SettingsViewModel.FieldState) -> Unit,
     onSave: () -> Unit,
 ) {
-    GroupedSection(title = "Range") {
+    GroupedSection {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             NumberField("psiMin", fields.psiMin, Modifier.weight(1f)) { value ->
                 onFieldChange { it.copy(psiMin = value) }
@@ -587,13 +671,13 @@ private fun RangeSection(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ThemeDemoSection(
+private fun DemoModeSection(
     fields: SettingsViewModel.FieldState,
     saving: Boolean,
     onFieldChange: ((SettingsViewModel.FieldState) -> SettingsViewModel.FieldState) -> Unit,
     onSave: () -> Unit,
 ) {
-    GroupedSection(title = "Theme & demo") {
+    GroupedSection {
         ToggleRow("Demo mode", fields.demoMode, enabled = !saving) { value ->
             onFieldChange { it.copy(demoMode = value) }
         }
@@ -653,84 +737,12 @@ private fun ThemeDemoSection(
                 }
             }
         }
-        var rotationExpanded by remember { mutableStateOf(false) }
-        Surface(
-            onClick = { rotationExpanded = true },
-            enabled = !saving,
-            shape = RoundedCornerShape(10.dp),
-            color = MaterialTheme.colorScheme.surfaceContainerHighest,
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 12.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "Rotation",
-                    style = BoostMetric,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = "${fields.rotation}°",
-                        style = BoostMetricValue,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                    Icon(
-                        Icons.Filled.ArrowDropDown,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
-        DropdownMenu(expanded = rotationExpanded, onDismissRequest = { rotationExpanded = false }) {
-            listOf(0, 90, 180, 270).forEach { value ->
-                DropdownMenuItem(
-                    text = { Text("$value°") },
-                    onClick = {
-                        rotationExpanded = false
-                        onFieldChange { it.copy(rotation = value) }
-                    },
-                )
-            }
-        }
-        ToggleRow("Region double-buffer", fields.regionDBuf, enabled = !saving) { value ->
-            onFieldChange { it.copy(regionDBuf = value) }
-        }
-        ToggleRow("TE sync", fields.teSync, enabled = !saving) { value ->
-            onFieldChange { it.copy(teSync = value) }
-        }
-        ToggleRow("TE scanline", fields.teScanline, enabled = !saving) { value ->
-            onFieldChange { it.copy(teScanline = value) }
-        }
-        ToggleRow("Pixel shift", fields.pixelShift, enabled = !saving) { value ->
-            onFieldChange { it.copy(pixelShift = value) }
-        }
-        if (fields.pixelShift) {
-            StepperRow(
-                label = "Pixel shift interval",
-                value = fields.pixelShiftSec,
-                suffix = "s",
-                min = 30,
-                max = 3600,
-                step = 30,
-                enabled = !saving,
-            ) { value ->
-                onFieldChange { it.copy(pixelShiftSec = value.toString()) }
-            }
-        }
         Button(
             onClick = onSave,
             enabled = !saving,
             modifier = Modifier.fillMaxWidth(),
         ) {
-            Text("Save")
+            Text("Save demo settings")
         }
     }
 }
@@ -743,7 +755,7 @@ private fun ClockTimezoneSection(
     onApply: (Int, String) -> Unit,
     onSync: () -> Unit,
 ) {
-    GroupedSection(title = "Clock & Timezone") {
+    GroupedSection {
         val currentPosix = fields.timezoneTz
         val matched = Timezones.curated.firstOrNull { it.posix == currentPosix }
         var customPicked by rememberSaveable { mutableStateOf(false) }
@@ -856,7 +868,7 @@ private fun TpmsSection(
     onSave: () -> Unit,
     onBleSave: () -> Unit,
 ) {
-    GroupedSection(title = "TPMS") {
+    GroupedSection {
         NumberField("Low pressure (psi)", fields.lowPsi) { value ->
             onFieldChange { it.copy(lowPsi = value) }
         }
@@ -883,7 +895,7 @@ private fun ObdScannerSection(
     saving: Boolean,
     onForget: () -> Unit,
 ) {
-    GroupedSection(title = "OBD2 Scanner") {
+    GroupedSection {
         val pillColor = when (obd?.state ?: 0) {
             3 -> BoostColors.success
             1, 2 -> BoostColors.navBlue
@@ -1001,5 +1013,36 @@ private fun ToggleRow(
     ) {
         Text(label, style = BoostMetric, color = MaterialTheme.colorScheme.onSurface)
         Switch(checked = checked, enabled = enabled, onCheckedChange = onCheckedChange)
+    }
+}
+
+@Composable
+private fun AboutSection(status: com.boostgauge.app.data.api.Status?) {
+    val context = LocalContext.current
+    val appVersion = try {
+        val info = context.packageManager.getPackageInfo(context.packageName, 0)
+        "${info.versionName} (${info.longVersionCode})"
+    } catch (_: Exception) {
+        "0.9.1"
+    }
+    val firmware = status?.firmwareVersion?.takeIf { it.isNotBlank() } ?: "Not connected"
+    GroupedSection(title = "About") {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("App", style = BoostCaption, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(appVersion, style = BoostCaption, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Gauge firmware", style = BoostCaption, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(firmware, style = BoostCaption, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }

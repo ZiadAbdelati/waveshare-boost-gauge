@@ -143,7 +143,6 @@ final class SettingsViewModel: ObservableObject {
             "psiMax": psiMax,
             "psiOverboost": psiOverboost,
             "zeroAngle": zeroAngle,
-            "appBle": appBle,
         ]
         await save(transport, method: "PUT", path: "config", body: body) { [weak self] data in
             let decoded = try JSONDecoder().decode(GaugeConfig.self, from: data)
@@ -151,16 +150,22 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
-    func saveThemeFlags() async {
+    /// Display page saves both the brightness/dim schedule (PUT /config) and the
+    /// display flags (rotation/regionDBuf/teSync/teScanline/pixelShift) via
+    /// PUT /themes/config, keeping the two endpoints in one user action.
+    func saveDisplay() async {
         guard let transport else { return }
         savedMessage = nil
-        // Global/demo/debug flags only. THEME-SPECIFIC settings
-        // (vaultNeedleRed, vaultNeedleTail, bigDigitStaticBg) live exclusively
-        // in the Themes tab editor (PARITY.md) — this PUT must never clobber them.
-        let body: [String: Any] = [
-            "demoMode": demoMode,
-            "demoFastSweep": demoFastSweep,
-            "tpmsBle": tpmsBle,
+        let configBody: [String: Any] = [
+            "brightnessHigh": brightnessHigh,
+            "brightnessLow": brightnessLow,
+            "dimSchedule": [
+                "enabled": dimEnabled,
+                "startMinutes": dimStartMinutes,
+                "endMinutes": dimEndMinutes,
+            ],
+        ]
+        let themeBody: [String: Any] = [
             "rotation": rotation,
             "regionDBuf": regionDBuf,
             "teSync": teSync,
@@ -168,10 +173,44 @@ final class SettingsViewModel: ObservableObject {
             "pixelShift": pixelShift,
             "pixelShiftSec": pixelShiftSec,
         ]
+        do {
+            let configResp = try await transport.send("PUT", path: "config", body: configBody)
+            guard configResp.status == 200 else {
+                await MainActor.run { self.errorMessage = APIErrorText.from(configResp) }
+                return
+            }
+            let themeResp = try await transport.send("PUT", path: "themes/config", body: themeBody)
+            guard themeResp.status == 200 else {
+                await MainActor.run { self.errorMessage = APIErrorText.from(themeResp) }
+                return
+            }
+            let decodedConfig = try JSONDecoder().decode(GaugeConfig.self, from: configResp.body)
+            let decodedTheme = try JSONDecoder().decode(ThemeList.self, from: themeResp.body)
+            await MainActor.run {
+                self.applyConfig(decodedConfig)
+                self.applyThemeFlags(decodedTheme)
+                self.savedMessage = "Saved"
+            }
+        } catch {
+            await MainActor.run { self.errorMessage = error.localizedDescription }
+        }
+    }
+
+    func saveDemoMode() async {
+        guard let transport else { return }
+        savedMessage = nil
+        let body: [String: Any] = [
+            "demoMode": demoMode,
+            "demoFastSweep": demoFastSweep,
+        ]
         await save(transport, method: "PUT", path: "themes/config", body: body) { [weak self] data in
             let decoded = try JSONDecoder().decode(ThemeList.self, from: data)
             self?.applyThemeFlags(decoded)
         }
+    }
+
+    func saveThemeFlags() async {
+        await saveDemoMode()
     }
 
     func saveTPMSConfig() async {

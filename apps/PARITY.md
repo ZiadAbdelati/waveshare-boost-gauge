@@ -11,9 +11,9 @@ has not finished.
 | # | Page title | Contents |
 |---|-----------|----------|
 | 1 | Connection | BLE device picker, current selection, connection state; **Saved gauge row** shows the remembered peer identity at ALL times when a peer is known — Connected (name+address, "Connected" tag, no button), Reconnecting (identity, no button), Disconnected (identity + Connect button). "No gauge found" only after an empty user-initiated scan |
-| 2 | Display | Brightness high / low steppers, dim schedule toggle + start/end times, **Companion app advertising** toggle (`appBle`), Save button |
+| 2 | Display | 3 grouped sections: **Brightness** (high/low steppers), **Dim schedule** (toggle + start/end), **Display** (rotation dropdown, regionDBuf, teSync, teScanline, pixelShift + interval); single **Save display settings** button. `appBle` is NOT exposed in the app (firmware `PUT /api/v1/config {"appBle":bool}` only; web UI also hidden — toggling via BLE would trap the app disconnected with no UI to re-enable) |
 | 3 | Range | psiMin, psiMax, psiOverboost, zeroAngle fields, Save button |
-| 4 | Theme & demo | **Demo mode** toggle + when ON, **Demo waveform** dropdown: `Organic swell` (= `demoFastSweep` false) / `Linear sweep (9.789 psi/s)` (= true); plus rotation, regionDBuf, teSync, teScanline, pixelShift (+interval), Save button. THEME-SPECIFIC settings (vaultNeedleRed, vaultNeedleTail, bigDigitStaticBg) NEVER appear here — they live exclusively in the Themes tab inside the matching theme's editor dropdown |
+| 4 | Demo mode | **Demo mode** toggle + when ON, **Demo waveform** dropdown: `Organic swell` (= `demoFastSweep` false) / `Linear sweep (9.789 psi/s)` (= true); **Save demo settings** button. THEME-SPECIFIC settings (vaultNeedleRed, vaultNeedleTail, bigDigitStaticBg) NEVER appear here — they live exclusively in the Themes tab inside the matching theme's editor dropdown |
 | 5 | Clock & timezone | Timezone dropdown (curated list + Custom), one full-width primary button labelled exactly **"Sync timezone to gauge"** |
 | 6 | TPMS | lowPsi threshold, staleness (staleAfterMs), TPMS BLE link toggle |
 | 7 | OBD2 Scanner | Live OBD state pill (`Scanning` / `Connecting to <name>` / `Connected` / `Idle` + lastError), peer row (name + address) + **Forget** button (clears `obd_peer` NVS), and a one-line helper: "Gauge → OBD2 dongle link". Read-only when idle; no scan trigger needed (gauge auto-scans when `tpmsBle` is on) |
@@ -97,7 +97,7 @@ shadow. Never render the preview as an unclipped square. iOS reference:
 
 Settings that only affect one theme (vaultNeedleRed, vaultNeedleTail,
 bigDigitStaticBg) are edited ONLY in the Themes tab, inside that theme's
-editor dropdown — never in Settings → Theme & demo. Both apps must expose the
+editor dropdown — never in Settings → Demo mode. Both apps must expose the
 same per-theme controls with the same labels.
 
 ## Logs graph window (2026-08-26)

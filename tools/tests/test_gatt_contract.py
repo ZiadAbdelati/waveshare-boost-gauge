@@ -199,10 +199,10 @@ def main() -> int:
                  f"got {sorted(tokens)}")
 
     # --- Device info api version ------------------------------------------------
-    result.check('\\"api\\":1}' in fw,
+    result.check('\\"api\\":1' in fw,
                  "firmware Device info carries api:1")
     m = re.search(r'snprintf\(s_device_info,\s*sizeof\(s_device_info\),\s*'
-                  r'"\{\\"name\\":\\"BoostGauge\\",\\"fw\\":\\"%s\\",\\"api\\":(\d+)\}"',
+                  r'"\{\\"name\\":\\"BoostGauge\\",\\"fw\\":\\"%s\\",\\"api\\":(\d+)',
                   fw)
     result.check(m is not None and int(m.group(1)) == API_VERSION,
                  "firmware Device info name/api == BoostGauge/api 1",

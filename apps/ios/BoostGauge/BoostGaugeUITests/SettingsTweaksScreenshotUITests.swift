@@ -23,28 +23,30 @@ final class SettingsTweaksScreenshotUITests: XCTestCase {
             )
         }
 
-        // Display: renamed appBle toggle + helper caption underneath.
+        // Display: 3 grouped sections (Brightness / Dim schedule / Display), single Save.
         let displayRow = app.cells.containing(.staticText, identifier: "Display").firstMatch
         XCTAssertTrue(displayRow.waitForExistence(timeout: 8), "Display row")
         displayRow.tap()
         XCTAssertTrue(app.navigationBars["Display"].waitForExistence(timeout: 8))
-        let toggle = app.switches["Companion app advertising (phone → gauge)"]
-        XCTAssertTrue(toggle.waitForExistence(timeout: 8), "renamed appBle toggle")
-        bringIntoView(toggle, app: app)
-        XCTAssertTrue(app.staticTexts["Gauge advertises over BLE so companion apps can find it"].exists, "helper caption")
+        XCTAssertTrue(app.staticTexts["Brightness"].waitForExistence(timeout: 8), "Brightness subheader")
+        XCTAssertTrue(app.staticTexts["Dim schedule"].waitForExistence(timeout: 8), "Dim schedule subheader")
+        // appBle toggle removed — ensure it no longer exists.
+        XCTAssertFalse(app.switches["Companion app advertising (phone → gauge)"].exists, "appBle toggle removed")
+        // Display flags moved here from Theme & demo.
+        XCTAssertTrue(app.switches["Region double-buffer"].waitForExistence(timeout: 8), "display flags moved to Display")
         try capture("display")
         app.navigationBars["Display"].buttons.firstMatch.tap()
 
-        // Theme & demo: Demo mode toggle + Demo waveform dropdown (sim demoMode ON).
-        let themeRow = app.cells.containing(.staticText, identifier: "Theme & demo").firstMatch
-        XCTAssertTrue(themeRow.waitForExistence(timeout: 8), "Theme & demo row")
+        // Demo mode: Demo mode toggle + Demo waveform dropdown (sim demoMode ON).
+        let themeRow = app.cells.containing(.staticText, identifier: "Demo mode").firstMatch
+        XCTAssertTrue(themeRow.waitForExistence(timeout: 8), "Demo mode row")
         themeRow.tap()
-        XCTAssertTrue(app.navigationBars["Theme & demo"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.navigationBars["Demo mode"].waitForExistence(timeout: 8))
         XCTAssertFalse(app.switches["Demo fast sweep"].exists, "second demo toggle removed")
         let waveform = app.staticTexts["Demo waveform"]
         XCTAssertTrue(waveform.waitForExistence(timeout: 8), "Demo waveform dropdown row")
-        try capture("theme-demo")
-        app.navigationBars["Theme & demo"].buttons.firstMatch.tap()
+        try capture("demo-mode")
+        app.navigationBars["Demo mode"].buttons.firstMatch.tap()
 
         // OBD2 Scanner: live pill + peer row + helper.
         let obdRow = app.cells.containing(.staticText, identifier: "OBD2 Scanner").firstMatch

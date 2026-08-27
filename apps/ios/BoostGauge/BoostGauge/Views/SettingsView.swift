@@ -37,8 +37,8 @@ struct SettingsView: View {
                     NavigationLink(destination: rangePage) {
                         Label("Range", systemImage: "arrow.left.and.right")
                     }
-                    NavigationLink(destination: themeFlagsPage) {
-                        Label("Theme & demo", systemImage: "paintpalette")
+                    NavigationLink(destination: demoModePage) {
+                        Label("Demo mode", systemImage: "play.circle")
                     }
                     NavigationLink(destination: clockPage) {
                         Label("Clock & timezone", systemImage: "clock")
@@ -49,6 +49,26 @@ struct SettingsView: View {
                     NavigationLink(destination: obdScannerPage) {
                         Label("OBD2 Scanner", systemImage: "car")
                     }
+                }
+                Section("About") {
+                    HStack {
+                        Text("App")
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text(appVersion)
+                            .foregroundColor(.secondary)
+                            .monospacedDigit()
+                    }
+                    .accessibilityElement(children: .combine)
+                    HStack {
+                        Text("Gauge firmware")
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text(gaugeFirmware)
+                            .foregroundColor(.secondary)
+                            .monospacedDigit()
+                    }
+                    .accessibilityElement(children: .combine)
                 }
             }
 .gaugeScrollBottomMargin()
@@ -95,9 +115,9 @@ struct SettingsView: View {
             .navigationTitle("Range")
     }
 
-    private var themeFlagsPage: some View {
-        Form { themeFlagsSection }
-            .navigationTitle("Theme & demo")
+    private var demoModePage: some View {
+        Form { demoModeSection }
+            .navigationTitle("Demo mode")
     }
 
     private var clockPage: some View {
@@ -118,7 +138,7 @@ struct SettingsView: View {
     }
 
     private var transportSection: some View {
-        Section("Connection") {
+        Section {
             Button(action: { Task { await scan() } }) {
                 if isScanning {
                     HStack {
@@ -144,7 +164,7 @@ struct SettingsView: View {
                     .font(.footnote)
                     .foregroundColor(.secondary)
             }
-            ForEach(bleDevices) { device in
+            ForEach(filteredBleDevices) { device in
                 Button(action: { Task { await connect(device) } }) {
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
@@ -197,29 +217,46 @@ struct SettingsView: View {
     }
 
     private var displaySection: some View {
-        Section("Display") {
-            if vm.config == nil {
-                unavailableRow("gauge", loading: vm.isLoading)
+        Group {
+            if vm.config == nil || vm.themeFlags == nil {
+                Section { unavailableRow("gauge", loading: vm.isLoading) }
             } else {
-Stepper("Brightness high: \(vm.brightnessHigh)%", value: $vm.brightnessHigh, in: 1...100)
-            Stepper("Brightness low: \(vm.brightnessLow)%", value: $vm.brightnessLow, in: 1...100)
-            Toggle("Dim schedule", isOn: $vm.dimEnabled)
-            if vm.dimEnabled {
-                Stepper("Start: \(minutesText(vm.dimStartMinutes))", value: $vm.dimStartMinutes, in: 0...(24 * 60 - 1))
-                Stepper("End: \(minutesText(vm.dimEndMinutes))", value: $vm.dimEndMinutes, in: 0...(24 * 60 - 1))
-            }
-            Toggle("Companion app advertising", isOn: $vm.appBle)
-                .font(.footnote)
-                .foregroundColor(.secondary)
-            Button("Save gauge settings") {
-                Task { await vm.saveConfig() }
-            }
+                Section("Brightness") {
+                    Stepper("Brightness high: \(vm.brightnessHigh)%", value: $vm.brightnessHigh, in: 1...100)
+                    Stepper("Brightness low: \(vm.brightnessLow)%", value: $vm.brightnessLow, in: 1...100)
+                }
+                Section("Dim schedule") {
+                    Toggle("Dim schedule", isOn: $vm.dimEnabled)
+                    if vm.dimEnabled {
+                        Stepper("Start: \(minutesText(vm.dimStartMinutes))", value: $vm.dimStartMinutes, in: 0...(24 * 60 - 1))
+                        Stepper("End: \(minutesText(vm.dimEndMinutes))", value: $vm.dimEndMinutes, in: 0...(24 * 60 - 1))
+                    }
+                }
+                Section("Panel") {
+                    Picker("Rotation", selection: $vm.rotation) {
+                        ForEach([0, 90, 180, 270], id: \.self) { degrees in
+                            Text("\(degrees)°").tag(degrees)
+                        }
+                    }
+                    Toggle("Region double-buffer", isOn: $vm.regionDBuf)
+                    Toggle("TE sync", isOn: $vm.teSync)
+                    Toggle("TE scanline", isOn: $vm.teScanline)
+                    Toggle("Pixel shift", isOn: $vm.pixelShift)
+                    if vm.pixelShift {
+                        Stepper("Pixel shift interval: \(vm.pixelShiftSec)s", value: $vm.pixelShiftSec, in: 30...3600, step: 30)
+                    }
+                }
+                Section {
+                    Button("Save display settings") {
+                        Task { await vm.saveDisplay() }
+                    }
+                }
             }
         }
     }
 
     private var rangeSection: some View {
-        Section("Range") {
+        Section {
             if vm.config == nil {
                 unavailableRow("gauge", loading: vm.isLoading)
             } else {
@@ -266,38 +303,26 @@ Stepper("Brightness high: \(vm.brightnessHigh)%", value: $vm.brightnessHigh, in:
         }
     }
 
-    private var themeFlagsSection: some View {
-        Section("Theme & demo") {
+    private var demoModeSection: some View {
+        Section {
             if vm.themeFlags == nil {
                 unavailableRow("theme", loading: vm.isLoading)
             } else {
-            Toggle("Demo mode", isOn: $vm.demoMode)
-            Picker("Demo waveform", selection: $vm.demoFastSweep) {
-                Text("Organic swell").tag(false)
-                Text("Linear sweep (9.789 psi/s)").tag(true)
-            }
-            .disabled(!vm.demoMode)
-            Picker("Rotation", selection: $vm.rotation) {
-                ForEach([0, 90, 180, 270], id: \.self) { degrees in
-                    Text("\(degrees)°").tag(degrees)
+                Toggle("Demo mode", isOn: $vm.demoMode)
+                Picker("Demo waveform", selection: $vm.demoFastSweep) {
+                    Text("Organic swell").tag(false)
+                    Text("Linear sweep (9.789 psi/s)").tag(true)
                 }
-            }
-            Toggle("Region double-buffer", isOn: $vm.regionDBuf)
-            Toggle("TE sync", isOn: $vm.teSync)
-            Toggle("TE scanline", isOn: $vm.teScanline)
-            Toggle("Pixel shift", isOn: $vm.pixelShift)
-            if vm.pixelShift {
-                Stepper("Pixel shift interval: \(vm.pixelShiftSec)s", value: $vm.pixelShiftSec, in: 30...3600, step: 30)
-            }
-            Button("Save theme settings") {
-                Task { await vm.saveThemeFlags() }
-            }
+                .disabled(!vm.demoMode)
+                Button("Save demo settings") {
+                    Task { await vm.saveDemoMode() }
+                }
             }
         }
     }
 
     private var tpmsSection: some View {
-        Section("TPMS") {
+        Section {
             if vm.tpmsConfig == nil {
                 unavailableRow("TPMS", loading: vm.isLoading)
             } else {
@@ -316,7 +341,7 @@ Stepper("Brightness high: \(vm.brightnessHigh)%", value: $vm.brightnessHigh, in:
     }
 
     private var obdSection: some View {
-        Section("OBD2 Scanner") {
+        Section {
             Text("Gauge → OBD2 dongle link")
                 .font(.footnote)
                 .foregroundColor(.secondary)
@@ -384,7 +409,7 @@ Stepper("Brightness high: \(vm.brightnessHigh)%", value: $vm.brightnessHigh, in:
     }
 
     private var clockSection: some View {
-        Section("Clock & timezone") {
+        Section {
             if vm.config == nil {
                 unavailableRow("clock", loading: vm.isLoading)
             } else {
@@ -488,12 +513,34 @@ Stepper("Brightness high: \(vm.brightnessHigh)%", value: $vm.brightnessHigh, in:
         ms >= 60000 ? "\(ms / 60000) min" : "\(ms / 1000) s"
     }
 
+    /// Scan results that aren't already the saved gauge — prevents the same
+    /// hardware showing twice (once as Saved gauge, once as a scan hit).
+    private var filteredBleDevices: [BleDevice] {
+        guard let savedID = session.lastPeerID(), let uuid = UUID(uuidString: savedID) else {
+            return bleDevices
+        }
+        return bleDevices.filter { $0.identifier != uuid }
+    }
+
     private var savedGaugeName: String {
         session.blePeerName ?? "BoostGauge"
     }
 
     private var isReconnecting: Bool {
         session.connectionState == .connecting && session.reconnectAttempt != nil
+    }
+
+    private var appVersion: String {
+        let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
+        let b = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? ""
+        return b.isEmpty ? v : "\(v) (\(b))"
+    }
+
+    private var gaugeFirmware: String {
+        if session.connectionState == .connected, let fw = session.bleInfo?.firmware, !fw.isEmpty {
+            return fw
+        }
+        return "Not connected"
     }
 
     /// Saved-gauge row per the parity visibility matrix: visible whenever the

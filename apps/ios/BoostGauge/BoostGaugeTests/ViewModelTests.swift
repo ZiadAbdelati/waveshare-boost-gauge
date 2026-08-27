@@ -286,6 +286,9 @@ final class ViewModelTests: XCTestCase {
     }
 
     func testSettingsViewModelRoundTripsAppBle() async throws {
+        // appBle is still decoded from GET /config for backward compat, but the
+        // app no longer exposes it — toggling via BLE would trap the app with no
+        // UI to re-enable, so saveConfig/display must not echo appBle.
         let transport = FakeTransport()
         var enabledConfig = Fixtures.configObject
         enabledConfig["appBle"] = true
@@ -295,14 +298,12 @@ final class ViewModelTests: XCTestCase {
         await vm.loadAll()
         XCTAssertTrue(vm.appBle)
 
-        let disabledConfig = Fixtures.configObject
-        transport.responses["config"] = FakeTransport.resp(200, disabledConfig)
-        vm.appBle = false
-        await vm.saveConfig()
-        XCTAssertEqual(transport.recordedMethods.last, "PUT")
-        XCTAssertEqual(transport.recordedPaths.last, "config")
-        XCTAssertEqual(transport.recordedBodies.last?["appBle"] as? Bool, false)
-        XCTAssertFalse(vm.appBle)
+        transport.responses["config"] = FakeTransport.resp(200, Fixtures.configObject)
+        transport.responses["themes/config"] = FakeTransport.resp(200, Fixtures.themesObject)
+        vm.brightnessHigh = 80
+        await vm.saveDisplay()
+        XCTAssertTrue(transport.recordedBodies.contains { $0["brightnessHigh"] as? Int == 80 })
+        XCTAssertFalse(transport.recordedBodies.contains { $0["appBle"] != nil }, "Display save must not echo appBle")
     }
 
     func testSettingsViewModelLoadsOBDStateFromState() async throws {

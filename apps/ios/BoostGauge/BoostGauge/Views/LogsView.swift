@@ -104,6 +104,17 @@ struct LogsView: View {
                 }
                 vm.reset(transport: session.transport, historyTransport: history)
             }
+            .onChange(of: session.transportID) { _, _ in
+                let history: GaugeTransport?
+                if session.transport?.transportKind == "BLE", let host = session.effectiveHTTPHost,
+                   let url = URL(string: host), url.scheme != nil {
+                    history = HttpTransport(baseURL: url)
+                } else {
+                    history = nil
+                }
+                vm.reset(transport: session.transport, historyTransport: history)
+                Task { await vm.load() }
+            }
             .task { await vm.load() }
         }
     }

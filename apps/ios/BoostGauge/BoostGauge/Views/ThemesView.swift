@@ -53,6 +53,10 @@ struct ThemesView: View {
                 vm.reset(transport: session.transport)
                 Task { await vm.resyncActiveTheme() }
             }
+            .onChange(of: session.transportID) { _, _ in
+                vm.reset(transport: session.transport)
+                Task { await vm.load() }
+            }
             .task { await vm.load() }
         }
     }

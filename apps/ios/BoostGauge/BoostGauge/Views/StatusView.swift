@@ -81,7 +81,7 @@ struct StatusView: View {
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
                 session.refreshBLELinkState()
             }
-            .onChange(of: session.transportID) { _ in
+            .onChange(of: session.transportID) { _, _ in
                 configureTransport()
             }
         }

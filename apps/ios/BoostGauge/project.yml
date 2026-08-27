@@ -28,8 +28,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.boostgauge.app
         PRODUCT_NAME: BoostGauge
-        MARKETING_VERSION: "0.1.0"
-        CURRENT_PROJECT_VERSION: 1
+        MARKETING_VERSION: "0.9.1"
+        CURRENT_PROJECT_VERSION: 2
         INFOPLIST_FILE: BoostGauge/Info.plist
         SWIFT_VERSION: "5.0"
         SWIFT_STRICT_CONCURRENCY: minimal

@@ -103,11 +103,12 @@ class SettingsViewModelTest {
 
     @Test
     fun saveConfigRoundTripsEditedFieldsAndAppBleThroughServer() = runTest(dispatcher) {
+        // appBle decoded but no longer saved via UI — saveDisplay must not echo it.
         val transport = FakeBleTransport { method, path, _ ->
             when {
                 path == "config" && method == "GET" -> Resp(200, ApiFixtures.CONFIG)
-                path == "config" && method == "PUT" ->
-                    Resp(200, ApiFixtures.CONFIG.replace("\"appBle\": false", "\"appBle\": true"))
+                path == "config" && method == "PUT" -> Resp(200, ApiFixtures.CONFIG)
+                path == "themes/config" && method == "PUT" -> Resp(200, ApiFixtures.THEMES)
                 path == "themes" -> Resp(200, ApiFixtures.THEMES)
                 path == "tpms/config" -> Resp(200, ApiFixtures.TPMS_CONFIG)
                 else -> Resp(404, "{}")
@@ -117,19 +118,18 @@ class SettingsViewModelTest {
         viewModel.state.first { !it.loading }
 
         viewModel.updateFields { it.copy(brightnessHigh = "77", appBle = true) }
-        viewModel.saveConfig()
+        viewModel.saveDisplay()
         runCurrent()
 
-        val put = transport.requests.first { it.method == "PUT" && it.path == "config" }
-        assertTrue(put.bodyJson!!.contains("\"brightnessHigh\":77"))
-        assertTrue(put.bodyJson!!.contains("\"appBle\":true"))
+        val configPut = transport.requests.first { it.method == "PUT" && it.path == "config" }
+        assertTrue(configPut.bodyJson!!.contains("\"brightnessHigh\":77"))
+        assertFalse(configPut.bodyJson!!.contains("appBle"))
+        val themePut = transport.requests.first { it.method == "PUT" && it.path == "themes/config" }
+        assertTrue(themePut.bodyJson!!.contains("\"rotation\""))
 
-        // Save-response fold-back: the server's authoritative config becomes
-        // the field values (brightness folded back to the fixture's 92, and
-        // the echoed appBle=true is kept).
+        // Server fold-back: config fixture stays 92, appBle field untouched by save.
         assertEquals("92", viewModel.state.value.fields.brightnessHigh)
-        assertTrue(viewModel.state.value.fields.appBle)
-        assertTrue(viewModel.state.value.config!!.appBle)
+        assertTrue(viewModel.state.value.config!!.appBle == false)
     }
 
     @Test
@@ -161,9 +161,11 @@ class SettingsViewModelTest {
 
     @Test
     fun saveThemeFlagsRoundTripsNewFieldsThroughServer() = runTest(dispatcher) {
+        // Demo mode now only carries demoMode/demoFastSweep; display flags moved to Display.
         val transport = FakeBleTransport { method, path, _ ->
             when {
                 path == "config" && method == "GET" -> Resp(200, ApiFixtures.CONFIG)
+                path == "config" && method == "PUT" -> Resp(200, ApiFixtures.CONFIG)
                 path == "themes" -> Resp(200, ApiFixtures.THEMES)
                 path == "themes/config" && method == "PUT" -> Resp(200, ApiFixtures.THEMES)
                 path == "tpms/config" -> Resp(200, ApiFixtures.TPMS_CONFIG)
@@ -185,23 +187,37 @@ class SettingsViewModelTest {
                 pixelShiftSec = "120",
             )
         }
-        viewModel.saveThemeFlags()
+        // Demo save only demo fields
+        viewModel.saveDemoMode()
         runCurrent()
 
-        val put = transport.requests.first { it.method == "PUT" && it.path == "themes/config" }
+        var put = transport.requests.first { it.method == "PUT" && it.path == "themes/config" }
         assertTrue(put.bodyJson!!.contains("\"demoMode\":true"))
-        assertTrue(put.bodyJson.contains("\"demoFastSweep\":true"))
-        assertTrue(put.bodyJson.contains("\"rotation\":90"))
-        assertTrue(put.bodyJson.contains("\"regionDBuf\":false"))
-        assertTrue(put.bodyJson.contains("\"teSync\":true"))
-        assertTrue(put.bodyJson.contains("\"teScanline\":true"))
-        assertTrue(put.bodyJson.contains("\"pixelShift\":true"))
-        assertTrue(put.bodyJson.contains("\"pixelShiftSec\":120"))
-        // Theme-specific settings live ONLY in the Themes tab editor; the global
-        // Theme & demo save must never carry them.
-        assertFalse(put.bodyJson.contains("vaultNeedleRed"))
-        assertFalse(put.bodyJson.contains("vaultNeedleTail"))
-        assertFalse(put.bodyJson.contains("bigDigitStaticBg"))
+        assertTrue(put.bodyJson!!.contains("\"demoFastSweep\":true"))
+        assertFalse(put.bodyJson!!.contains("\"rotation\""))
+        assertFalse(put.bodyJson!!.contains("vaultNeedleRed"))
+
+        // Display save carries the moved display flags — re-seed after demo fold-back
+        viewModel.updateFields {
+            it.copy(
+                rotation = 90,
+                regionDBuf = false,
+                teSync = true,
+                teScanline = true,
+                pixelShift = true,
+                pixelShiftSec = "120",
+            )
+        }
+        transport.requests.clear()
+        viewModel.saveDisplay()
+        runCurrent()
+        put = transport.requests.last { it.method == "PUT" && it.path == "themes/config" }
+        assertTrue(put.bodyJson!!.contains("\"rotation\":90"))
+        assertTrue(put.bodyJson!!.contains("\"regionDBuf\":false"))
+        assertTrue(put.bodyJson!!.contains("\"teSync\":true"))
+        assertTrue(put.bodyJson!!.contains("\"teScanline\":true"))
+        assertTrue(put.bodyJson!!.contains("\"pixelShift\":true"))
+        assertTrue(put.bodyJson!!.contains("\"pixelShiftSec\":120"))
     }
 
     @Test
