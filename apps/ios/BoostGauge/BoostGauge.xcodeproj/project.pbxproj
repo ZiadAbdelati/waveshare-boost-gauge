@@ -1,0 +1,787 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		01341447E01F58E753326960 /* HttpTransportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08EB779A5DEC5C8FE9868046 /* HttpTransportTests.swift */; };
+		275FA4D05669464267417005 /* Round5BScreenshotUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCCAC3C963212532E0A2D791 /* Round5BScreenshotUITests.swift */; };
+		29572E66B505B4CAD9BB5232 /* LogSample.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59A3559F6361C4C5AA40A731 /* LogSample.swift */; };
+		2C9A0F963D637EB513AF385E /* index.html in Resources */ = {isa = PBXBuildFile; fileRef = B317341C7931D332A71FCEAC /* index.html */; };
+		2E786947C137D5C50EC42693 /* ThemesViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F54D076D3DF7B8E1AD8CED9A /* ThemesViewModel.swift */; };
+		302A4ABFAA8DFCBF9ED6EB27 /* HttpTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FECC7ED5D395A5D702FD2AC /* HttpTransport.swift */; };
+		3C69F035A2BE3A6E4B3DBF27 /* PageSwitchUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BE06F72910E71095D7623B9 /* PageSwitchUITests.swift */; };
+		4BD73E51E4E25BF472F8F7E5 /* CalibrationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80A072C77E64088921C34648 /* CalibrationView.swift */; };
+		51109CE7A2C2EC29612098AA /* Round6BigDigitScreenshotUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 314E6A638E32B9B9005CD705 /* Round6BigDigitScreenshotUITests.swift */; };
+		54B8A97529565D23118B184E /* LogsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECE10E09F1A9C3C294A59A35 /* LogsViewModel.swift */; };
+		58012FF76BFB98CD1AB2995D /* SettingsAppBleUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BA4CD44CB3B0E4C9A04CA81 /* SettingsAppBleUITests.swift */; };
+		58FBEA126F8A54A8E78BA2FD /* StatusViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1374D522E7C3E1A52C79030 /* StatusViewModel.swift */; };
+		64EF0EA2129048AF8E615D56 /* CalibrationViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3052AFCF6D30B3BE4F972C52 /* CalibrationViewModel.swift */; };
+		65776FE5014C70F16EB48420 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35CC7735E26CD0640EDABBF1 /* Theme.swift */; };
+		71AD51E97C06E2C002283004 /* SettingsTweaksScreenshotUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96FAE1C6008E57B5A6B961BC /* SettingsTweaksScreenshotUITests.swift */; };
+		7365E42B67E51C157ABDF8FE /* GaugeMirrorWebViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC6ACAC61BC71CA1A42C4306 /* GaugeMirrorWebViewTests.swift */; };
+		7536FC739E717B50D2B2BAD7 /* Round4ScreenshotUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D46392FCB14F1B8515CA2C66 /* Round4ScreenshotUITests.swift */; };
+		77A362F157755BCE370434E2 /* doto.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 33776F062876BA2260E287ED /* doto.ttf */; };
+		7A7F1CDE500CDB842F07F322 /* GaugeConnectionBadge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 048944795BAB95D6995E4A85 /* GaugeConnectionBadge.swift */; };
+		7D11F8D344B2DCE56540EFE3 /* GaugeMirrorWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7ED2D7F7C34E452B20255A2 /* GaugeMirrorWebView.swift */; };
+		7E99F1D3FDCFF3E04BA78212 /* GaugeConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63140745F81FB7B896216AAD /* GaugeConfig.swift */; };
+		80C30E7247C6739436927694 /* ConnectionMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FBC0B9D8A393BB35CD8A1AD /* ConnectionMonitor.swift */; };
+		817D3CC45B6F9C36920434F9 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D0DEDF4C351F92CAC128027 /* RootView.swift */; };
+		829A4CBBEC8A3DBB39BF4D92 /* SettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA15713F57038AAA60AD5F29 /* SettingsViewModel.swift */; };
+		84551FC9E5AF6EE0D9454170 /* styles.css in Resources */ = {isa = PBXBuildFile; fileRef = A0AD67121FCE5B5D2D828958 /* styles.css */; };
+		8533A09FC70354BEF305F486 /* FakeTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB90C67B29981C12B44F1C8D /* FakeTransport.swift */; };
+		8B1F8C91E40AEEE68C639E15 /* Calibration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BBE0C93B959E4B29EC8FF7E /* Calibration.swift */; };
+		8F7F0B41FF4DF096E97C4100 /* Round5ScreenshotUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43EF104021B952ADEE7B2296 /* Round5ScreenshotUITests.swift */; };
+		A1663C22211BCA61245C8FCB /* AppSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB1C201E0905C958F04B1487 /* AppSession.swift */; };
+		A3B14E6582DB63F64014F035 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2747EA9627FEA8A5D225DE5 /* SettingsView.swift */; };
+		A4719EB7EE39EBD21173F7E0 /* BoostGaugeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07E837BD363A8933FB2EB5B8 /* BoostGaugeApp.swift */; };
+		B36D9139741B339C907CC645 /* MockURLProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09774B16FCFBD623C75B406F /* MockURLProtocol.swift */; };
+		B70D036B3313504C8E66B987 /* Helpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9187AF015DADD0CA38760A10 /* Helpers.swift */; };
+		B8D509669E61CC4148B88B43 /* LogsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 958C42760D6732135D1C1479 /* LogsView.swift */; };
+		BA20AA9723ADB067058C3589 /* StatusView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD1C2249480CE5CB8D1033C9 /* StatusView.swift */; };
+		BC37737B8D2AA346BB95D23F /* SimAcceptanceUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A8B415E7E664DBF0D60097B /* SimAcceptanceUITests.swift */; };
+		BDA62F7C944A448E59962214 /* HardwareBleE2ETests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F659A5574AE7D3FB33DD1403 /* HardwareBleE2ETests.swift */; };
+		C2A312E565A9A543F0CE978C /* tpms_powertrain.png in Resources */ = {isa = PBXBuildFile; fileRef = FECFD4266F9455CAD14DED1F /* tpms_powertrain.png */; };
+		C31A3B872216AADF6E815AB8 /* app.js in Resources */ = {isa = PBXBuildFile; fileRef = 31CEF332D492DF1A9226F605 /* app.js */; };
+		C8FB4D90828F6A895080C180 /* GaugeTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A49E0FA2C7A32E6B0050B32 /* GaugeTransport.swift */; };
+		C943158A7FBBC64DF450123D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = EB331DA88BE61A26D9C46EAF /* Assets.xcassets */; };
+		D16176CBD27CBC46DBF35B09 /* ThemesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B537886013BC79B068E8E52A /* ThemesView.swift */; };
+		D399744C8D5A5C47A1214646 /* GaugeState.swift in Sources */ = {isa = PBXBuildFile; fileRef = E80A6E919810A44B67236CC1 /* GaugeState.swift */; };
+		D8121F67F550CB205A6AD426 /* ViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 271BC6942923A4F2C9E9B743 /* ViewModelTests.swift */; };
+		D83F1733D788B01FDD835965 /* SimBleTransportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CDA8DFBC2901A16163AF2242 /* SimBleTransportTests.swift */; };
+		DA426F3A53D3EAEB3269A361 /* BleRequestFramerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6EF740FF0FC5F94797305ABB /* BleRequestFramerTests.swift */; };
+		E1EF3B275B5DE2CB5BC2AD9E /* BleTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = F92077B482832C01F27EF984 /* BleTransport.swift */; };
+		E4D362D329BA6470C5F58F1D /* VisualAcceptanceUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A72D227A29D49C18B1CF672 /* VisualAcceptanceUITests.swift */; };
+		ED0CB6D71ECD29CB80EB7A15 /* SimBleTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3FE915C10CB522B0823C235 /* SimBleTransport.swift */; };
+		EE55814775EE4E56D72712DA /* ActivityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89A010C4F5E1C844261E756B /* ActivityView.swift */; };
+		FD0858B76D9DDAAB3DFDC553 /* ConnectionMonitorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72BEBD6DFDAE732A4F792530 /* ConnectionMonitorTests.swift */; };
+		FD20FE0505577211F81F27F9 /* Resp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32788C344794070DCAD76AEB /* Resp.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		1E09D52752E9449A77612DF7 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 7BDB11BC1CC9FB3D8C7795F2 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 0ABDBB3ECCF24C2EDDC8570D;
+			remoteInfo = BoostGauge;
+		};
+		51ED7E260D291545FE19D8B9 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 7BDB11BC1CC9FB3D8C7795F2 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 0ABDBB3ECCF24C2EDDC8570D;
+			remoteInfo = BoostGauge;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		048944795BAB95D6995E4A85 /* GaugeConnectionBadge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GaugeConnectionBadge.swift; sourceTree = "<group>"; };
+		07E837BD363A8933FB2EB5B8 /* BoostGaugeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoostGaugeApp.swift; sourceTree = "<group>"; };
+		08EB779A5DEC5C8FE9868046 /* HttpTransportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HttpTransportTests.swift; sourceTree = "<group>"; };
+		09774B16FCFBD623C75B406F /* MockURLProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockURLProtocol.swift; sourceTree = "<group>"; };
+		0A8B415E7E664DBF0D60097B /* SimAcceptanceUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimAcceptanceUITests.swift; sourceTree = "<group>"; };
+		1BE06F72910E71095D7623B9 /* PageSwitchUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PageSwitchUITests.swift; sourceTree = "<group>"; };
+		271BC6942923A4F2C9E9B743 /* ViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewModelTests.swift; sourceTree = "<group>"; };
+		2D0DEDF4C351F92CAC128027 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		3052AFCF6D30B3BE4F972C52 /* CalibrationViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalibrationViewModel.swift; sourceTree = "<group>"; };
+		314E6A638E32B9B9005CD705 /* Round6BigDigitScreenshotUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Round6BigDigitScreenshotUITests.swift; sourceTree = "<group>"; };
+		31CEF332D492DF1A9226F605 /* app.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = app.js; sourceTree = "<group>"; };
+		32788C344794070DCAD76AEB /* Resp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Resp.swift; sourceTree = "<group>"; };
+		33776F062876BA2260E287ED /* doto.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = doto.ttf; sourceTree = "<group>"; };
+		35CC7735E26CD0640EDABBF1 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		3BBE0C93B959E4B29EC8FF7E /* Calibration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Calibration.swift; sourceTree = "<group>"; };
+		43EF104021B952ADEE7B2296 /* Round5ScreenshotUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Round5ScreenshotUITests.swift; sourceTree = "<group>"; };
+		4533A7350CA61BF9E7547FC4 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		4BA4CD44CB3B0E4C9A04CA81 /* SettingsAppBleUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsAppBleUITests.swift; sourceTree = "<group>"; };
+		59A3559F6361C4C5AA40A731 /* LogSample.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogSample.swift; sourceTree = "<group>"; };
+		5C92FAEDB9D6ED51D7FD2D30 /* BoostGaugeUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = BoostGaugeUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		63140745F81FB7B896216AAD /* GaugeConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GaugeConfig.swift; sourceTree = "<group>"; };
+		6A72D227A29D49C18B1CF672 /* VisualAcceptanceUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisualAcceptanceUITests.swift; sourceTree = "<group>"; };
+		6EF740FF0FC5F94797305ABB /* BleRequestFramerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BleRequestFramerTests.swift; sourceTree = "<group>"; };
+		6FBC0B9D8A393BB35CD8A1AD /* ConnectionMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionMonitor.swift; sourceTree = "<group>"; };
+		6FECC7ED5D395A5D702FD2AC /* HttpTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HttpTransport.swift; sourceTree = "<group>"; };
+		72BEBD6DFDAE732A4F792530 /* ConnectionMonitorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionMonitorTests.swift; sourceTree = "<group>"; };
+		7A49E0FA2C7A32E6B0050B32 /* GaugeTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GaugeTransport.swift; sourceTree = "<group>"; };
+		80A072C77E64088921C34648 /* CalibrationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalibrationView.swift; sourceTree = "<group>"; };
+		89A010C4F5E1C844261E756B /* ActivityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityView.swift; sourceTree = "<group>"; };
+		9187AF015DADD0CA38760A10 /* Helpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Helpers.swift; sourceTree = "<group>"; };
+		958C42760D6732135D1C1479 /* LogsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogsView.swift; sourceTree = "<group>"; };
+		96FAE1C6008E57B5A6B961BC /* SettingsTweaksScreenshotUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsTweaksScreenshotUITests.swift; sourceTree = "<group>"; };
+		9F10503C6D99AB432E2813F4 /* BoostGauge.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = BoostGauge.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A0AD67121FCE5B5D2D828958 /* styles.css */ = {isa = PBXFileReference; lastKnownFileType = text.css; path = styles.css; sourceTree = "<group>"; };
+		AC6ACAC61BC71CA1A42C4306 /* GaugeMirrorWebViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GaugeMirrorWebViewTests.swift; sourceTree = "<group>"; };
+		AD1C2249480CE5CB8D1033C9 /* StatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusView.swift; sourceTree = "<group>"; };
+		B317341C7931D332A71FCEAC /* index.html */ = {isa = PBXFileReference; lastKnownFileType = text.html; path = index.html; sourceTree = "<group>"; };
+		B537886013BC79B068E8E52A /* ThemesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemesView.swift; sourceTree = "<group>"; };
+		BA15713F57038AAA60AD5F29 /* SettingsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViewModel.swift; sourceTree = "<group>"; };
+		C1374D522E7C3E1A52C79030 /* StatusViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusViewModel.swift; sourceTree = "<group>"; };
+		C7ED2D7F7C34E452B20255A2 /* GaugeMirrorWebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GaugeMirrorWebView.swift; sourceTree = "<group>"; };
+		CB12E4F4454E6D65F80B8E90 /* BoostGaugeTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = BoostGaugeTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		CB1C201E0905C958F04B1487 /* AppSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSession.swift; sourceTree = "<group>"; };
+		CB90C67B29981C12B44F1C8D /* FakeTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FakeTransport.swift; sourceTree = "<group>"; };
+		CDA8DFBC2901A16163AF2242 /* SimBleTransportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimBleTransportTests.swift; sourceTree = "<group>"; };
+		D3FE915C10CB522B0823C235 /* SimBleTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimBleTransport.swift; sourceTree = "<group>"; };
+		D46392FCB14F1B8515CA2C66 /* Round4ScreenshotUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Round4ScreenshotUITests.swift; sourceTree = "<group>"; };
+		DCCAC3C963212532E0A2D791 /* Round5BScreenshotUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Round5BScreenshotUITests.swift; sourceTree = "<group>"; };
+		E80A6E919810A44B67236CC1 /* GaugeState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GaugeState.swift; sourceTree = "<group>"; };
+		EB331DA88BE61A26D9C46EAF /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		ECE10E09F1A9C3C294A59A35 /* LogsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogsViewModel.swift; sourceTree = "<group>"; };
+		F2747EA9627FEA8A5D225DE5 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		F54D076D3DF7B8E1AD8CED9A /* ThemesViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemesViewModel.swift; sourceTree = "<group>"; };
+		F659A5574AE7D3FB33DD1403 /* HardwareBleE2ETests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HardwareBleE2ETests.swift; sourceTree = "<group>"; };
+		F92077B482832C01F27EF984 /* BleTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BleTransport.swift; sourceTree = "<group>"; };
+		FECFD4266F9455CAD14DED1F /* tpms_powertrain.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = tpms_powertrain.png; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		0C7E50ABEDCE4799531BDAB8 /* ViewModels */ = {
+			isa = PBXGroup;
+			children = (
+				CB1C201E0905C958F04B1487 /* AppSession.swift */,
+				3052AFCF6D30B3BE4F972C52 /* CalibrationViewModel.swift */,
+				ECE10E09F1A9C3C294A59A35 /* LogsViewModel.swift */,
+				BA15713F57038AAA60AD5F29 /* SettingsViewModel.swift */,
+				C1374D522E7C3E1A52C79030 /* StatusViewModel.swift */,
+				F54D076D3DF7B8E1AD8CED9A /* ThemesViewModel.swift */,
+			);
+			path = ViewModels;
+			sourceTree = "<group>";
+		};
+		34104887B56E9EDF216439E5 /* web */ = {
+			isa = PBXGroup;
+			children = (
+				31CEF332D492DF1A9226F605 /* app.js */,
+				33776F062876BA2260E287ED /* doto.ttf */,
+				B317341C7931D332A71FCEAC /* index.html */,
+				A0AD67121FCE5B5D2D828958 /* styles.css */,
+				FECFD4266F9455CAD14DED1F /* tpms_powertrain.png */,
+			);
+			path = web;
+			sourceTree = "<group>";
+		};
+		3C0766C3D7AB524EBBD6D643 /* waveshare-boost-gauge-companion */ = {
+			isa = PBXGroup;
+			children = (
+				34104887B56E9EDF216439E5 /* web */,
+			);
+			name = "waveshare-boost-gauge-companion";
+			path = ../../..;
+			sourceTree = "<group>";
+		};
+		65F1DF76CFF9CFCE8E129E9F /* Support */ = {
+			isa = PBXGroup;
+			children = (
+				C7ED2D7F7C34E452B20255A2 /* GaugeMirrorWebView.swift */,
+				9187AF015DADD0CA38760A10 /* Helpers.swift */,
+			);
+			path = Support;
+			sourceTree = "<group>";
+		};
+		6E686F6FEB67D4ED874D8F46 /* BoostGaugeTests */ = {
+			isa = PBXGroup;
+			children = (
+				6EF740FF0FC5F94797305ABB /* BleRequestFramerTests.swift */,
+				72BEBD6DFDAE732A4F792530 /* ConnectionMonitorTests.swift */,
+				CB90C67B29981C12B44F1C8D /* FakeTransport.swift */,
+				AC6ACAC61BC71CA1A42C4306 /* GaugeMirrorWebViewTests.swift */,
+				08EB779A5DEC5C8FE9868046 /* HttpTransportTests.swift */,
+				09774B16FCFBD623C75B406F /* MockURLProtocol.swift */,
+				CDA8DFBC2901A16163AF2242 /* SimBleTransportTests.swift */,
+				271BC6942923A4F2C9E9B743 /* ViewModelTests.swift */,
+			);
+			path = BoostGaugeTests;
+			sourceTree = "<group>";
+		};
+		7575097697A5CBB50283404B /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				9F10503C6D99AB432E2813F4 /* BoostGauge.app */,
+				CB12E4F4454E6D65F80B8E90 /* BoostGaugeTests.xctest */,
+				5C92FAEDB9D6ED51D7FD2D30 /* BoostGaugeUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		9874E90F6E49FD6031BE84BF /* BoostGaugeUITests */ = {
+			isa = PBXGroup;
+			children = (
+				F659A5574AE7D3FB33DD1403 /* HardwareBleE2ETests.swift */,
+				1BE06F72910E71095D7623B9 /* PageSwitchUITests.swift */,
+				D46392FCB14F1B8515CA2C66 /* Round4ScreenshotUITests.swift */,
+				DCCAC3C963212532E0A2D791 /* Round5BScreenshotUITests.swift */,
+				43EF104021B952ADEE7B2296 /* Round5ScreenshotUITests.swift */,
+				314E6A638E32B9B9005CD705 /* Round6BigDigitScreenshotUITests.swift */,
+				4BA4CD44CB3B0E4C9A04CA81 /* SettingsAppBleUITests.swift */,
+				96FAE1C6008E57B5A6B961BC /* SettingsTweaksScreenshotUITests.swift */,
+				0A8B415E7E664DBF0D60097B /* SimAcceptanceUITests.swift */,
+				6A72D227A29D49C18B1CF672 /* VisualAcceptanceUITests.swift */,
+			);
+			path = BoostGaugeUITests;
+			sourceTree = "<group>";
+		};
+		99E1549DBE1ACC2349A3ED22 /* BoostGauge */ = {
+			isa = PBXGroup;
+			children = (
+				EB331DA88BE61A26D9C46EAF /* Assets.xcassets */,
+				07E837BD363A8933FB2EB5B8 /* BoostGaugeApp.swift */,
+				4533A7350CA61BF9E7547FC4 /* Info.plist */,
+				F8FC8049C316F147966E9F66 /* Models */,
+				65F1DF76CFF9CFCE8E129E9F /* Support */,
+				BDD9CFD8CEF23563F4477F00 /* Transport */,
+				0C7E50ABEDCE4799531BDAB8 /* ViewModels */,
+				C3C2490716F0F61090873A9E /* Views */,
+			);
+			path = BoostGauge;
+			sourceTree = "<group>";
+		};
+		BDD9CFD8CEF23563F4477F00 /* Transport */ = {
+			isa = PBXGroup;
+			children = (
+				F92077B482832C01F27EF984 /* BleTransport.swift */,
+				6FBC0B9D8A393BB35CD8A1AD /* ConnectionMonitor.swift */,
+				7A49E0FA2C7A32E6B0050B32 /* GaugeTransport.swift */,
+				6FECC7ED5D395A5D702FD2AC /* HttpTransport.swift */,
+				32788C344794070DCAD76AEB /* Resp.swift */,
+				D3FE915C10CB522B0823C235 /* SimBleTransport.swift */,
+			);
+			path = Transport;
+			sourceTree = "<group>";
+		};
+		C3C2490716F0F61090873A9E /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				89A010C4F5E1C844261E756B /* ActivityView.swift */,
+				80A072C77E64088921C34648 /* CalibrationView.swift */,
+				048944795BAB95D6995E4A85 /* GaugeConnectionBadge.swift */,
+				958C42760D6732135D1C1479 /* LogsView.swift */,
+				2D0DEDF4C351F92CAC128027 /* RootView.swift */,
+				F2747EA9627FEA8A5D225DE5 /* SettingsView.swift */,
+				AD1C2249480CE5CB8D1033C9 /* StatusView.swift */,
+				B537886013BC79B068E8E52A /* ThemesView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		EEAD1A3447B10378A0F9118E = {
+			isa = PBXGroup;
+			children = (
+				99E1549DBE1ACC2349A3ED22 /* BoostGauge */,
+				6E686F6FEB67D4ED874D8F46 /* BoostGaugeTests */,
+				9874E90F6E49FD6031BE84BF /* BoostGaugeUITests */,
+				3C0766C3D7AB524EBBD6D643 /* waveshare-boost-gauge-companion */,
+				7575097697A5CBB50283404B /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		F8FC8049C316F147966E9F66 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				3BBE0C93B959E4B29EC8FF7E /* Calibration.swift */,
+				63140745F81FB7B896216AAD /* GaugeConfig.swift */,
+				E80A6E919810A44B67236CC1 /* GaugeState.swift */,
+				59A3559F6361C4C5AA40A731 /* LogSample.swift */,
+				35CC7735E26CD0640EDABBF1 /* Theme.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		0ABDBB3ECCF24C2EDDC8570D /* BoostGauge */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 711B44031C1816A2A0FC75C7 /* Build configuration list for PBXNativeTarget "BoostGauge" */;
+			buildPhases = (
+				81052571BFE8F7C8B7CF4763 /* Sources */,
+				D90449D357A0453C2D5AD80B /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = BoostGauge;
+			packageProductDependencies = (
+			);
+			productName = BoostGauge;
+			productReference = 9F10503C6D99AB432E2813F4 /* BoostGauge.app */;
+			productType = "com.apple.product-type.application";
+		};
+		A30065D3594EB9D89396A812 /* BoostGaugeTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E6831C303C54EAE757252D9C /* Build configuration list for PBXNativeTarget "BoostGaugeTests" */;
+			buildPhases = (
+				5B57573925979B35485B421B /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				79DCFF550A2AEAED8B40029F /* PBXTargetDependency */,
+			);
+			name = BoostGaugeTests;
+			packageProductDependencies = (
+			);
+			productName = BoostGaugeTests;
+			productReference = CB12E4F4454E6D65F80B8E90 /* BoostGaugeTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		F2CED8BD206D6C4CF3BABB01 /* BoostGaugeUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 92AAA77BA6E3BFFFC7EDCA6B /* Build configuration list for PBXNativeTarget "BoostGaugeUITests" */;
+			buildPhases = (
+				19622CCF42DEC23C8168E31B /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				387072B2A2B6DC181D499C37 /* PBXTargetDependency */,
+			);
+			name = BoostGaugeUITests;
+			packageProductDependencies = (
+			);
+			productName = BoostGaugeUITests;
+			productReference = 5C92FAEDB9D6ED51D7FD2D30 /* BoostGaugeUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		7BDB11BC1CC9FB3D8C7795F2 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					0ABDBB3ECCF24C2EDDC8570D = {
+						DevelopmentTeam = 4654PWP45B;
+						ProvisioningStyle = Automatic;
+					};
+					F2CED8BD206D6C4CF3BABB01 = {
+						DevelopmentTeam = 4654PWP45B;
+						ProvisioningStyle = Automatic;
+						TestTargetID = 0ABDBB3ECCF24C2EDDC8570D;
+					};
+				};
+			};
+			buildConfigurationList = A3D32180E5331F6C2CA4825F /* Build configuration list for PBXProject "BoostGauge" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = EEAD1A3447B10378A0F9118E;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 7575097697A5CBB50283404B /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				0ABDBB3ECCF24C2EDDC8570D /* BoostGauge */,
+				A30065D3594EB9D89396A812 /* BoostGaugeTests */,
+				F2CED8BD206D6C4CF3BABB01 /* BoostGaugeUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		D90449D357A0453C2D5AD80B /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C943158A7FBBC64DF450123D /* Assets.xcassets in Resources */,
+				C31A3B872216AADF6E815AB8 /* app.js in Resources */,
+				77A362F157755BCE370434E2 /* doto.ttf in Resources */,
+				2C9A0F963D637EB513AF385E /* index.html in Resources */,
+				84551FC9E5AF6EE0D9454170 /* styles.css in Resources */,
+				C2A312E565A9A543F0CE978C /* tpms_powertrain.png in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		19622CCF42DEC23C8168E31B /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BDA62F7C944A448E59962214 /* HardwareBleE2ETests.swift in Sources */,
+				3C69F035A2BE3A6E4B3DBF27 /* PageSwitchUITests.swift in Sources */,
+				7536FC739E717B50D2B2BAD7 /* Round4ScreenshotUITests.swift in Sources */,
+				275FA4D05669464267417005 /* Round5BScreenshotUITests.swift in Sources */,
+				8F7F0B41FF4DF096E97C4100 /* Round5ScreenshotUITests.swift in Sources */,
+				51109CE7A2C2EC29612098AA /* Round6BigDigitScreenshotUITests.swift in Sources */,
+				58012FF76BFB98CD1AB2995D /* SettingsAppBleUITests.swift in Sources */,
+				71AD51E97C06E2C002283004 /* SettingsTweaksScreenshotUITests.swift in Sources */,
+				BC37737B8D2AA346BB95D23F /* SimAcceptanceUITests.swift in Sources */,
+				E4D362D329BA6470C5F58F1D /* VisualAcceptanceUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5B57573925979B35485B421B /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				DA426F3A53D3EAEB3269A361 /* BleRequestFramerTests.swift in Sources */,
+				FD0858B76D9DDAAB3DFDC553 /* ConnectionMonitorTests.swift in Sources */,
+				8533A09FC70354BEF305F486 /* FakeTransport.swift in Sources */,
+				7365E42B67E51C157ABDF8FE /* GaugeMirrorWebViewTests.swift in Sources */,
+				01341447E01F58E753326960 /* HttpTransportTests.swift in Sources */,
+				B36D9139741B339C907CC645 /* MockURLProtocol.swift in Sources */,
+				D83F1733D788B01FDD835965 /* SimBleTransportTests.swift in Sources */,
+				D8121F67F550CB205A6AD426 /* ViewModelTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		81052571BFE8F7C8B7CF4763 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				EE55814775EE4E56D72712DA /* ActivityView.swift in Sources */,
+				A1663C22211BCA61245C8FCB /* AppSession.swift in Sources */,
+				E1EF3B275B5DE2CB5BC2AD9E /* BleTransport.swift in Sources */,
+				A4719EB7EE39EBD21173F7E0 /* BoostGaugeApp.swift in Sources */,
+				8B1F8C91E40AEEE68C639E15 /* Calibration.swift in Sources */,
+				4BD73E51E4E25BF472F8F7E5 /* CalibrationView.swift in Sources */,
+				64EF0EA2129048AF8E615D56 /* CalibrationViewModel.swift in Sources */,
+				80C30E7247C6739436927694 /* ConnectionMonitor.swift in Sources */,
+				7E99F1D3FDCFF3E04BA78212 /* GaugeConfig.swift in Sources */,
+				7A7F1CDE500CDB842F07F322 /* GaugeConnectionBadge.swift in Sources */,
+				7D11F8D344B2DCE56540EFE3 /* GaugeMirrorWebView.swift in Sources */,
+				D399744C8D5A5C47A1214646 /* GaugeState.swift in Sources */,
+				C8FB4D90828F6A895080C180 /* GaugeTransport.swift in Sources */,
+				B70D036B3313504C8E66B987 /* Helpers.swift in Sources */,
+				302A4ABFAA8DFCBF9ED6EB27 /* HttpTransport.swift in Sources */,
+				29572E66B505B4CAD9BB5232 /* LogSample.swift in Sources */,
+				B8D509669E61CC4148B88B43 /* LogsView.swift in Sources */,
+				54B8A97529565D23118B184E /* LogsViewModel.swift in Sources */,
+				FD20FE0505577211F81F27F9 /* Resp.swift in Sources */,
+				817D3CC45B6F9C36920434F9 /* RootView.swift in Sources */,
+				A3B14E6582DB63F64014F035 /* SettingsView.swift in Sources */,
+				829A4CBBEC8A3DBB39BF4D92 /* SettingsViewModel.swift in Sources */,
+				ED0CB6D71ECD29CB80EB7A15 /* SimBleTransport.swift in Sources */,
+				BA20AA9723ADB067058C3589 /* StatusView.swift in Sources */,
+				58FBEA126F8A54A8E78BA2FD /* StatusViewModel.swift in Sources */,
+				65776FE5014C70F16EB48420 /* Theme.swift in Sources */,
+				D16176CBD27CBC46DBF35B09 /* ThemesView.swift in Sources */,
+				2E786947C137D5C50EC42693 /* ThemesViewModel.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		387072B2A2B6DC181D499C37 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 0ABDBB3ECCF24C2EDDC8570D /* BoostGauge */;
+			targetProxy = 1E09D52752E9449A77612DF7 /* PBXContainerItemProxy */;
+		};
+		79DCFF550A2AEAED8B40029F /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 0ABDBB3ECCF24C2EDDC8570D /* BoostGauge */;
+			targetProxy = 51ED7E260D291545FE19D8B9 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		04E4B59A293F8C9E3658F1C3 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		5D77C35DC2E3F5F8988552AA /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.boostgauge.app.tests;
+				SDKROOT = iphoneos;
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/BoostGauge.app/BoostGauge";
+			};
+			name = Release;
+		};
+		737F749EEB1B000E7EF90D3B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		73F52971E17F44765CDBEE4D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 4654PWP45B;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.boostgauge.app.uitests;
+				SDKROOT = iphoneos;
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = BoostGauge;
+			};
+			name = Release;
+		};
+		90713FB36C1C56572DA04C37 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 4654PWP45B;
+				ENABLE_TESTABILITY = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = BoostGauge/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.boostgauge.app;
+				PRODUCT_NAME = BoostGauge;
+				SDKROOT = iphoneos;
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		9DFE18CCB167D9A329C92F1C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 4654PWP45B;
+				ENABLE_TESTABILITY = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = BoostGauge/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.boostgauge.app;
+				PRODUCT_NAME = BoostGauge;
+				SDKROOT = iphoneos;
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		ABCEF5BBC8F5F13781C9B9DB /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 4654PWP45B;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.boostgauge.app.uitests;
+				SDKROOT = iphoneos;
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = BoostGauge;
+			};
+			name = Debug;
+		};
+		E49C8E3ED11062F417429C7F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.boostgauge.app.tests;
+				SDKROOT = iphoneos;
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/BoostGauge.app/BoostGauge";
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		711B44031C1816A2A0FC75C7 /* Build configuration list for PBXNativeTarget "BoostGauge" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				90713FB36C1C56572DA04C37 /* Debug */,
+				9DFE18CCB167D9A329C92F1C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		92AAA77BA6E3BFFFC7EDCA6B /* Build configuration list for PBXNativeTarget "BoostGaugeUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				ABCEF5BBC8F5F13781C9B9DB /* Debug */,
+				73F52971E17F44765CDBEE4D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		A3D32180E5331F6C2CA4825F /* Build configuration list for PBXProject "BoostGauge" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				737F749EEB1B000E7EF90D3B /* Debug */,
+				04E4B59A293F8C9E3658F1C3 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		E6831C303C54EAE757252D9C /* Build configuration list for PBXNativeTarget "BoostGaugeTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E49C8E3ED11062F417429C7F /* Debug */,
+				5D77C35DC2E3F5F8988552AA /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 7BDB11BC1CC9FB3D8C7795F2 /* Project object */;
+}

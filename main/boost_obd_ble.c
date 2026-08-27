@@ -68,6 +68,7 @@ typedef enum {
     OBD_EV_READY,           /* subscription + MTU done; link usable */
     OBD_EV_WRITE,           /* outbound bytes (len + data) */
     OBD_EV_STOP,
+    OBD_EV_FORGET,      /* clear stored peer + drop link (HTTP /obd/forget) */
 } obd_ev_t;
 
 typedef struct {
@@ -485,6 +486,28 @@ static void driver_task(void *arg)
             publish_state(BOOST_OBD_BLE_DOWN);
             break;
         }
+        case OBD_EV_FORGET: {
+            if (s_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
+                ble_gap_terminate(s_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+            } else {
+                ble_gap_disc_cancel();
+                ble_gap_conn_cancel();
+            }
+            s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+            s_ready_start_ms = 0;
+            publish_state(BOOST_OBD_BLE_DOWN);
+            /* Forget: wipe the stored peer so the next start scans fresh. */
+            s_peer_addr[0] = '\0';
+            s_peer_name[0] = '\0';
+            memset(&s_peer, 0, sizeof(s_peer));
+            nvs_handle_t fh;
+            if (nvs_open(NVS_NS, NVS_READWRITE, &fh) == ESP_OK) {
+                nvs_erase_key(fh, NVS_KEY_OBD_PEER);
+                nvs_commit(fh);
+                nvs_close(fh);
+            }
+            break;
+        }
         case OBD_EV_SCAN_DISC: {
             if (!s_enabled) break;
             try_connect(&ev.addr);
@@ -664,15 +687,30 @@ void boost_obd_ble_init(void)
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA));
         return;
     }
-    nimble_port_freertos_init(host_task);
     s_init_done = true;
-    ESP_LOGI(TAG, "NimBLE host up");
+    ESP_LOGI(TAG, "NimBLE host mounted (task start deferred)");
+}
+
+void boost_obd_ble_host_start(void)
+{
+    static bool s_host_started;
+    if (!s_init_done || s_host_started) return;
+    s_host_started = true;
+    /* Starts the host task. GATT service registration must complete BEFORE
+     * this call (boost_app_ble_init registers between mount and start). */
+    nimble_port_freertos_init(host_task);
+}
+
+bool boost_obd_ble_host_up(void)
+{
+    return s_init_done;
 }
 
 void boost_obd_ble_start(void)
 {
     if (!s_init_done) boost_obd_ble_init();
     if (!s_init_done) return;   /* host failed to come up (RAM guard); stay idle */
+    boost_obd_ble_host_start();
     if (s_enabled) return;
     if (s_task == NULL) {
         if (xTaskCreate(driver_task, "boost_obd_ble", 4096, NULL, 6, &s_task) != pdPASS) {
@@ -683,6 +721,14 @@ void boost_obd_ble_start(void)
     s_enabled = true;
     obd_ble_event_t ev = { 0 };
     ev.type = OBD_EV_START;
+    xQueueSend(s_evq, &ev, 0);
+}
+
+void boost_obd_ble_forget_peer(void)
+{
+    if (!s_task) return; /* never initialised: nothing stored */
+    obd_ble_event_t ev = { 0 };
+    ev.type = OBD_EV_FORGET;
     xQueueSend(s_evq, &ev, 0);
 }
 

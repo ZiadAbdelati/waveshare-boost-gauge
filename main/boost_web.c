@@ -35,6 +35,8 @@
 #include "boost_network.h"
 #include "boost_media_store.h"
 #include "boost_obd.h"
+#include "boost_obd_ble.h"
+#include "boost_app_ble.h"
 #include "boost_tpms.h"
 #include "boost_tpms_protocol.h"
 #include "generated_web_assets.h"
@@ -575,13 +577,14 @@ static void config_json(char *json, size_t len)
              "{\"brightnessHigh\":%d,\"brightnessLow\":%d,"
              "\"dimSchedule\":{\"enabled\":%s,\"startMinutes\":%d,\"endMinutes\":%d},"
              "\"timezoneOffsetMinutes\":%d,\"timezoneTz\":\"%s\",\"activeThemeId\":\"%s\","
-             "\"psiMin\":%.2f,\"psiMax\":%.2f,\"psiOverboost\":%.2f,\"zeroAngle\":%.2f}",
+             "\"psiMin\":%.2f,\"psiMax\":%.2f,\"psiOverboost\":%.2f,\"zeroAngle\":%.2f,"
+             "\"appBle\":%s}",
              cfg.brightness_high, cfg.brightness_low,
              cfg.dim_schedule.enabled ? "true" : "false",
              cfg.dim_schedule.start_minutes, cfg.dim_schedule.end_minutes,
              cfg.timezone_offset_minutes, cfg.timezone_tz, cfg.active_theme_id,
              (double)cfg.psi_min, (double)cfg.psi_max, (double)cfg.psi_overboost,
-             (double)cfg.zero_angle);
+             (double)cfg.zero_angle, boost_app_ble_enabled() ? "true" : "false");
 }
 
 static esp_err_t config_get(httpd_req_t *req)
@@ -682,6 +685,12 @@ static esp_err_t config_put(httpd_req_t *req)
         patch.zero_angle = ftmp;
         fields |= BOOST_CONFIG_ZERO_ANGLE;
     }
+    /* Companion-app BLE peripheral toggle. Runtime, persisted, no reboot
+     * needed: enable advertises the GATT server, disable tears the link. */
+    const cJSON *able = cJSON_GetObjectItemCaseSensitive(root, "appBle");
+    if (cJSON_IsBool(able)) {
+        boost_app_ble_set_enabled(cJSON_IsTrue(able));
+    }
     cJSON_Delete(root);
     esp_err_t err = boost_model_update_config(&patch, fields);
     if (err != ESP_OK) {
@@ -700,7 +709,7 @@ static esp_err_t config_put(httpd_req_t *req)
             boost_display_unlock();
         }
     }
-    char json[416];
+    char json[512];
     config_json(json, sizeof(json));
     return send_json(req, json);
 }
@@ -716,13 +725,17 @@ static esp_err_t time_post(httpd_req_t *req)
     cJSON *epoch = cJSON_GetObjectItemCaseSensitive(root, "epochMs");
     cJSON *tz = cJSON_GetObjectItemCaseSensitive(root, "timezoneOffsetMinutes");
     cJSON *tzstr = cJSON_GetObjectItemCaseSensitive(root, "timezoneTz");
-    if (!cJSON_IsNumber(epoch) || !cJSON_IsNumber(tz)) {
+    if (!cJSON_IsNumber(tz)) {
         cJSON_Delete(root);
         return send_err(req, HTTPD_400, "invalid_time");
     }
     const char *tz_tz = (cJSON_IsString(tzstr) && tzstr->valuestring != NULL)
         ? tzstr->valuestring : NULL;
-    esp_err_t err = boost_model_set_time((int64_t)epoch->valuedouble, tz->valueint, tz_tz);
+    /* A timezone-only sync (no epochMs) just stores the zone: the DS3231 RTC
+     * is the time authority, and the phone clock is never allowed to move it. */
+    esp_err_t err = cJSON_IsNumber(epoch)
+        ? boost_model_set_time((int64_t)epoch->valuedouble, tz->valueint, tz_tz)
+        : boost_model_set_timezone(tz->valueint, tz_tz);
     cJSON_Delete(root);
     if (err == ESP_ERR_INVALID_STATE) {
         /* The client disagrees with a valid DS3231: it is the buggy clock, not
@@ -1262,18 +1275,41 @@ static esp_err_t logs_get(httpd_req_t *req)
     }
     size_t n = boost_model_copy_logs(logs, limit);
     set_common_headers(req, "application/json");
-    httpd_resp_sendstr_chunk(req, "{\"samples\":[");
-    char row[128];
-    for (size_t i = 0; i < n; ++i) {
-        snprintf(row, sizeof(row), "%s{\"tMs\":%lu,\"psi\":%.2f,\"peakPsi\":%.2f,"
-                 "\"zone\":\"%s\",\"demo\":%s}",
-                 i ? "," : "", (unsigned long)logs[i].t_ms, (double)logs[i].psi,
-                 (double)logs[i].peak_psi, logs[i].zone, logs[i].demo ? "true" : "false");
-        httpd_resp_sendstr_chunk(req, row);
+    const size_t cap = n * 128 + 32;
+    char *body = heap_caps_malloc(cap, MALLOC_CAP_SPIRAM);
+    if (body == NULL) {
+        body = malloc(cap);
     }
+    if (body == NULL) {
+        /* No room for a single buffered body: fall back to per-row chunks
+         * (slow on a full ring, but correct). */
+        httpd_resp_sendstr_chunk(req, "{\"samples\":[");
+        char row[128];
+        for (size_t i = 0; i < n; ++i) {
+            snprintf(row, sizeof(row), "%s{\"tMs\":%lu,\"psi\":%.2f,\"peakPsi\":%.2f,"
+                     "\"zone\":\"%s\",\"demo\":%s}",
+                     i ? "," : "", (unsigned long)logs[i].t_ms, (double)logs[i].psi,
+                     (double)logs[i].peak_psi, logs[i].zone, logs[i].demo ? "true" : "false");
+            httpd_resp_sendstr_chunk(req, row);
+        }
+        free(logs);
+        httpd_resp_sendstr_chunk(req, "]}");
+        return httpd_resp_sendstr_chunk(req, NULL);
+    }
+    size_t off = 0;
+    off += (size_t)snprintf(body + off, cap - off, "{\"samples\":[");
+    for (size_t i = 0; i < n; ++i) {
+        off += (size_t)snprintf(body + off, cap - off,
+                                "%s{\"tMs\":%lu,\"psi\":%.2f,\"peakPsi\":%.2f,"
+                                "\"zone\":\"%s\",\"demo\":%s}",
+                                i ? "," : "", (unsigned long)logs[i].t_ms, (double)logs[i].psi,
+                                (double)logs[i].peak_psi, logs[i].zone, logs[i].demo ? "true" : "false");
+    }
+    off += (size_t)snprintf(body + off, cap - off, "]}");
+    const esp_err_t err = httpd_resp_send(req, body, off);
+    free(body);
     free(logs);
-    httpd_resp_sendstr_chunk(req, "]}");
-    return httpd_resp_sendstr_chunk(req, NULL);
+    return err;
 }
 
 static esp_err_t logs_csv_get(httpd_req_t *req)
@@ -1788,6 +1824,15 @@ static esp_err_t socket_open_fn(httpd_handle_t hd, int sockfd)
     return ESP_OK;
 }
 
+static esp_err_t obd_forget_post(httpd_req_t *req)
+{
+    /* Clear the stored OBD peer and drop any live link. The central returns
+     * to its normal start/scan behavior afterwards (still gated by tpmsBle). */
+    boost_obd_ble_forget_peer();
+    set_common_headers(req, "application/json");
+    return httpd_resp_send(req, "{\"ok\":true}", -1);
+}
+
 esp_err_t boost_web_start(void)
 {
     ESP_RETURN_ON_ERROR(boost_media_store_init(), TAG, "media");
@@ -1833,6 +1878,7 @@ esp_err_t boost_web_start(void)
     register_uri(API_BASE "/themes/config", HTTP_PUT, themes_config_put);
     register_uri(API_BASE "/tpms/config", HTTP_GET, tpms_config_get);
     register_uri(API_BASE "/tpms/config", HTTP_PUT, tpms_config_put);
+    register_uri(API_BASE "/obd/forget", HTTP_POST, obd_forget_post);
     register_uri(API_BASE "/page", HTTP_PUT, page_put);
     register_uri(API_BASE "/logs", HTTP_GET, logs_get);
     register_uri(API_BASE "/logs", HTTP_DELETE, logs_delete);

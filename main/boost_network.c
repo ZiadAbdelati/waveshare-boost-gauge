@@ -13,6 +13,7 @@
 #include "freertos/timers.h"
 #include "nvs.h"
 #include "nvs_flash.h"
+#include "boost_app_ble.h"
 
 #if __has_include("boost_wifi_secrets.h")
 #include "boost_wifi_secrets.h"
@@ -354,6 +355,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
         }
         ESP_LOGI(TAG, "STA got IP %s", s_sta_ip);
         ESP_LOGI(TAG, "BOOST_WEB_IP=%s", s_sta_ip);
+        boost_app_ble_set_sta_ip(s_sta_ip);
         if (s_events) {
             xEventGroupSetBits(s_events, WIFI_BIT_GOT_IP);
         }

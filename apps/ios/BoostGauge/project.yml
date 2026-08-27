@@ -1,0 +1,96 @@
+name: BoostGauge
+options:
+  bundleIdPrefix: com.boostgauge
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+configs:
+  Debug: debug
+  Release: release
+targets:
+  BoostGauge:
+    type: application
+    platform: iOS
+    sources:
+      - BoostGauge
+      - path: ../../../web/index.html
+        buildPhase: resources
+      - path: ../../../web/styles.css
+        buildPhase: resources
+      - path: ../../../web/app.js
+        buildPhase: resources
+      - path: ../../../web/doto.ttf
+        buildPhase: resources
+      - path: ../../../web/tpms_powertrain.png
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.boostgauge.app
+        PRODUCT_NAME: BoostGauge
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: 1
+        INFOPLIST_FILE: BoostGauge/Info.plist
+        SWIFT_VERSION: "5.0"
+        SWIFT_STRICT_CONCURRENCY: minimal
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: 4654PWP45B
+        CODE_SIGN_IDENTITY: "Apple Development"
+        IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+        GENERATE_INFOPLIST_FILE: NO
+        ENABLE_TESTABILITY: YES
+  BoostGaugeTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - BoostGaugeTests
+    dependencies:
+      - target: BoostGauge
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.boostgauge.app.tests
+        SWIFT_VERSION: "5.0"
+        SWIFT_STRICT_CONCURRENCY: minimal
+        IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+        GENERATE_INFOPLIST_FILE: YES
+  BoostGaugeUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - BoostGaugeUITests
+    dependencies:
+      - target: BoostGauge
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.boostgauge.app.uitests
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: 4654PWP45B
+        SWIFT_VERSION: "5.0"
+        SWIFT_STRICT_CONCURRENCY: minimal
+        IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: BoostGauge
+schemes:
+  BoostGauge:
+    build:
+      targets:
+        BoostGauge: all
+    run:
+      config: Debug
+      commandLineArguments:
+        "-e2eSimBle": true
+    test:
+      config: Debug
+      targets:
+        - BoostGaugeTests
+  BoostGaugeE2E:
+    build:
+      targets:
+        BoostGauge: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - BoostGaugeUITests

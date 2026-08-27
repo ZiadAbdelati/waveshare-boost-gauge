@@ -14,7 +14,9 @@
 #include "boost_sensors.h"
 #include "boost_tpms.h"
 #include "boost_tpms_mock.h"
+#include "boost_app_ble.h"
 #include "boost_obd.h"
+#include "boost_obd_ble.h"
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
 #include "boost_web.h"
@@ -187,11 +189,36 @@ void app_main(void)
         ESP_LOGE(TAG, "web control plane failed: %s", esp_err_to_name(web_err));
     }
 
-    /* OBD2 BLE link. Brought up AFTER the web control plane so a BLE init
-     * failure can never precede OTA recovery (the RAM boot-loop class). Starts
-     * only when the persisted tpmsBle toggle is on; default off. */
+    /* BLE radio: the OBD2 BLE central and the companion-app GATT peripheral
+     * share one NimBLE host. Brought up AFTER the web control plane so a BLE
+     * init failure can never precede OTA recovery (the RAM boot-loop class).
+     *
+     * Ordering is load-bearing (hardware-verified 2026-08-23: a boot-looping
+     * LoadProhibited in ble_hs_lock when the host APIs ran unmounted):
+     *   1. boost_obd_ble_init() MOUNTS the host (nimble_port_init; RAM-guarded,
+     *      idempotent) whenever EITHER persisted toggle may need the radio.
+     *   2. boost_app_ble_init() reads its persisted toggle and registers the
+     *      companion GATT service — legal only while the host is mounted but
+     *      NOT started. Skipped safely when the mount was refused.
+     *   3. boost_obd_ble_host_start() starts the host task; ble_gatts_start()
+     *      then runs from the host sync callback.
+     * appBle gates ADVERTISING, not registration, so flipping it at runtime
+     * never needs the host to restart. If the host was never mounted at boot
+     * (both toggles off), boost_app_ble_start() performs mount -> register ->
+     * start itself on demand. */
     boost_obd_init();
-    boost_obd_set_enabled(boost_theme_tpms_ble());
+    const bool obd_ble = boost_theme_tpms_ble();
+    if (obd_ble) {
+        boost_obd_ble_init();
+    }
+    boost_app_ble_init();
+    boost_obd_ble_host_start();
+    boost_obd_set_enabled(obd_ble);
+    if (boost_app_ble_enabled()) {
+        boost_app_ble_start();
+    } else {
+        boost_app_ble_stop();
+    }
 
     /* OTA rollback gate. With CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE, a freshly
      * OTA'd image boots in PENDING_VERIFY and must confirm itself healthy or the

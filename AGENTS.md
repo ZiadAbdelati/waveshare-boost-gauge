@@ -4,6 +4,8 @@ This repository is an ESP-IDF 5.5.1 firmware/dashboard for an ESP32-S3 AMOLED bo
 
 Current verified release is **`v0.8.1`** (ESP-IDF 5.5.1, app image ~2.5 MB in `release/`). Preserve that identity in hardware and release notes for current measurements. The full historical regression ledger lives in [`docs/regression-ledger.md`](docs/regression-ledger.md); the condensed guard rails below are the currently-actionable invariants, grouped by area. When a change touches one of these areas, re-read the relevant ledger rows for the measurement detail behind the rule.
 
+Regression tooling: run `python3 tools/test_suite.py` (host suite, before every commit) and `python3 tools/check_hardware_gates.py` (hardware release gates, before every release/flash-to-car); see `tools/tests/README.md`.
+
 ## Working agreements
 
 - For every non-trivial change, the coordinator MUST use `Task` subagents heavily: delegate independent research, implementation slices, and verification/testing slices in parallel where possible. The coordinator owns the top-level contract, integration, and final acceptance; do not delegate away the architecture decision.
@@ -213,6 +215,7 @@ These are the currently-actionable invariants distilled from the regression ledg
 | MX-5 ND TPMS pressure DIDs (0x2A05–0x2A08) answer with a SINGLE data byte (a 4-byte `0x62 DID-hi DID-lo value` response); the UDS parser must accept `length==4` (and may accept `length==5`) — never hard-require a two-byte raw. Mapping: FL=0x2A08, FR=0x2A06, RL=0x2A07, RR=0x2A05 | 2026-08-15 |
 | TPMS alert threshold (lowPsi) and staleness (staleAfterMs) are persisted in `boost_tpms` NVS (defaults 220 kPa ≈ 32 psi / 15 s); default staleness is sized above the ~4.5 s poll rotation so a single missed DID never flips the page amber | 2026-08-15 |
 | TPMS drawn capsules inflate +2 px (`TPMS_CAPSULE_GROW 2`) beyond the art's tire bounds so anti-aliased white edge pixels cannot peek through | 2026-08-15 |
+| Companion `boost_app_ble` GATT surface is the full HTTP API mirror: Control responses up to `APP_BLE_CTRL_RESP_MAX` 4096 B (fragmented, reassembled by clients), `/themes` and `/state` carry the same JSON as HTTP, `/themes/config` PUT handles `neonFont` and echoes the full themes payload, and device-info JSON carries the STA `ip` (`boost_app_ble_set_sta_ip` from `IP_EVENT_STA_GOT_IP`) so BLE-only clients can derive the HTTP host. The iOS/Android apps do NOT subscribe to the Status char (live state = 1 Hz Control `/state` poll); the Status char stays a legacy broadcast. BLE Log is an 8-sample diagnostic window by ATT design — the one-hour ring is HTTP-only. Any further Control expansion requires re-running the physical iOS BLE gate 3/3 | 2026-08-25 |
 
 ### Boot / NVS / clock / RAM
 
@@ -231,6 +234,7 @@ These are the currently-actionable invariants distilled from the regression ledg
 | Internal DRAM is shared with Wi-Fi and display DMA: measure free internal at peak, keep a hard reserve, and anything that can brick the boot path needs a serial recovery plan before it is flashed | 2026-07-26 |
 | Wi-Fi STA scans before connecting across up to 5 saved NVS networks; scans and reconnects are suspended while SoftAP clients are connected to preserve airtime | 2026-08-15 |
 | BLE scan runs 25% duty cycle (80 ms interval, 20 ms window, 3 s burst) while disconnected, with an **exponential inter-scan backoff (10 s → 120 s cap) that grows while the stored peer is unreachable and resets on any connect** — an absent adapter must not hammer the shared radio (web p95 191 → 118 ms, max 291 → 169 ms, no timeouts) | 2026-08-15 |
+| The shared NimBLE host has exactly one valid bring-up order: **mount (`boost_obd_ble_init`, task start deferred) → register GATT services/host config → `boost_obd_ble_host_start()`**. Never call host APIs before a successful mount, never register after the task starts, and NEVER call `ble_gatts_start()` from app code (the host's own `ble_hs_start` does it; a second call faults — all three hardware-verified as panics 2026-08-23). `appBle` gates advertising only; the legacy adv payload is 31 bytes, so the name lives in the scan response | 2026-08-23 |
 | `CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=y` (82 KB DIRAM) buys nothing measurable — it is OFF; the RAM log ring lives in PSRAM, never internal `.bss` | 2026-07-26 |
 | A Kconfig symbol existing is not evidence it is being read; verify in the generated `sdkconfig` and on hardware | 2026-08-03 |
 | Never configure hardware from `managed_components/` (reverted by any dependency refresh); if a doc claims a hardware setting, there must be a line of code and a boot log to confirm it | 2026-07-26 |
@@ -251,3 +255,10 @@ These are the currently-actionable invariants distilled from the regression ledg
 ## Commit hygiene
 
 Keep commits narrow and reviewable: source, generated web output, documentation/ledger, and release artifacts should be separable when practical. Never mix drive-by formatting or unrelated refactors with a regression fix. A commit that changes web sources must include regenerated embedded assets; a commit that changes architecture or a regression must include the README and these guard rails in the same change. Before handoff, report exact files changed, commands actually run, hardware versus host-only evidence, and any unverified risk.
+
+## Cross-platform parity (2026-08-25)
+
+`apps/PARITY.md` is the canonical settings IA + preview spec. Both companion
+apps must match it exactly; any UI change lands on both platforms in the same
+change-set. Subagents MUST read it before view work and end reports with a
+PARITY conformance line.
