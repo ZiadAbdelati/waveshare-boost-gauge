@@ -176,6 +176,11 @@
           nudge costs one full-screen repaint (~45&nbsp;ms), so it waits up to 30&nbsp;s past the
           interval for a steady reading and lands where nothing is moving. More often is
           gentler on the panel; less often is fewer repaints.</p>
+        <label class="toggle-field">
+          <input id="companionBle" type="checkbox">
+          <span>Companion app BLE</span>
+        </label>
+        <p class="hint-text">Advertises the gauge as <code>BoostGauge</code> over BLE so companion apps can find it. Takes effect immediately — disabling while a companion is connected will drop that BLE link until re-enabled.</p>
       </section>
 
       <section class="panel obd-panel">

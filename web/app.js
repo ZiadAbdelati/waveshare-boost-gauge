@@ -169,6 +169,7 @@ const el = {
   tpmsBle: document.getElementById("tpmsBle"),
   tpmsLowPsi: document.getElementById("tpmsLowPsi"),
   tpmsStaleSec: document.getElementById("tpmsStaleSec"),
+  companionBle: document.getElementById("companionBle"),
   obdStateText: document.getElementById("obdStateText"),
   obdPeer: document.getElementById("obdPeer"),
   obdRpm: document.getElementById("obdRpm"),
@@ -2159,6 +2160,7 @@ function renderConfig(config) {
     if (el.brightnessLow) el.brightnessLow.value = config.brightnessLow ?? 12;
     if (el.brightnessHighOut) el.brightnessHighOut.textContent = `${el.brightnessHigh.value}%`;
     if (el.brightnessLowOut) el.brightnessLowOut.textContent = `${el.brightnessLow.value}%`;
+    if (el.companionBle) el.companionBle.checked = !!config.appBle;
   }
   const range = psiRange();
   if (el.psiMin && document.activeElement !== el.psiMin) el.psiMin.value = String(range.psiMin);
@@ -2789,6 +2791,22 @@ function wireDisplayToggles() {
       send({ tpmsBle: el.tpmsBle.checked },
            el.tpmsBle.checked ? "OBD2 BLE link on" : "OBD2 BLE link off"),
     );
+  }
+  if (el.companionBle) {
+    el.companionBle.addEventListener("change", async () => {
+      try {
+        clearError(ERR_USER);
+        const payload = await api("/config", {
+          method: "PUT",
+          body: JSON.stringify({ appBle: el.companionBle.checked }),
+        });
+        renderConfig(payload);
+        showOk(el.companionBle.checked ? "Companion BLE on" : "Companion BLE off");
+      } catch (error) {
+        if (el.companionBle) el.companionBle.checked = !el.companionBle.checked;
+        showError(error.message);
+      }
+    });
   }
   const saveTpmsField = async (body, label) => {
     try {
