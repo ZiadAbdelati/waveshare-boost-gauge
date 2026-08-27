@@ -1,12 +1,15 @@
-# Prebuilt firmware v0.8.1 — Doto Neon readout + rendering fixes
+# Prebuilt firmware v0.9.1 — Display/Demo reorg, About versions, web companion toggle
 
-Firmware **`v0.8.1`**, built with **ESP-IDF 5.5.1** for **ESP32-S3**, 16 MB
-flash. Headlines: the Neon Tube, Segments, and Marquee layouts gain an optional
-**Doto** modular readout; the zero-pressure zone reads **ATMO**; circular
-Marquee invalidation no longer leaves a stale top bulb; and the ESP-IDF main
-task has enough stack to boot a persisted Neon scene reliably. Carries the
-v0.8.0 DS3231/DST clock work, the embedded Wi-Fi dashboard, the DMA-safe AMOLED
-display path (`main/boost_display.c`), and the calibrated GM 12223861 MAP path.
+Firmware **`v0.9.1`**, built with **ESP-IDF 5.5.1** for **ESP32-S3**, 16 MB
+flash. Headlines: **Display** settings are now 3 sub-groups (Brightness / Dim
+schedule / Panel with rotation, regionDBuf, teSync, teScanline, pixelShift);
+**Theme & demo → Demo mode** (demoMode + waveform only); **About** footer in
+Settings shows App `0.9.1 (2)` + Gauge firmware (or Not connected); **web UI**
+gains a **Companion app BLE** toggle in Settings → Display (`PUT /config`
+`appBle`); **BLE binding** fixes remove the “connected on Settings but Not
+connected on Status/Themes/Logs” split (all tabs rebind on `transportID`);
+**scan dedup** prevents the saved gauge appearing twice. Carries v0.9.0’s DMA-safe
+AMOLED path, DS3231/DST clock, and calibrated GM 12223861 MAP path.
 The same files are published on the
 [latest GitHub release](https://github.com/ZiadAbdelati/waveshare-boost-gauge/releases/latest).
 
@@ -16,46 +19,46 @@ captured at CMake **configure** time, not build time: a tree that was dirty when
 `idf.py` last configured will keep reporting `-dirty` through subsequent clean
 builds until `idf.py reconfigure` runs. This release was tagged first, then
 built from the clean tagged tree and reflashed, so the board reports a clean
-`v0.8.1`.
+`v0.9.1`.
 
-## What changed since v0.8.0
+## What changed since v0.9.0
 
-- **Doto Neon readout.** Tube, Segments, and Marquee can select Doto ROND 100 /
-  weight 700. The setting persists in NVS and is mirrored by the dashboard.
-  Doto publishes raw A8 coverage without the SF Alien halo and draws a custom
-  three-dot minus; signed geometry keeps a measured 20 px ink gap beside the
-  widest tabular digit.
-- **ATMO zone label.** Neon shows white `ATMO` at zero pressure in both the
-  physical renderer and browser mirror.
-- **Marquee wrap fix.** Spin and zone-flip invalidation now wrap each complete
-  bulb index by that ring's bulb count. This fixes the stale outer-ring bulb at
-  12 o'clock when an invalidation pair crosses the circular boundary.
-- **Persisted-Neon boot reliability.** The main task stack is now **8,192 bytes**;
-  the previous 3,584-byte stack could overflow while synchronously baking Neon
-  glyphs before brightness/network startup.
-- **Font licensing and reproducibility.** `web/doto.ttf` is the prepared static
-  dashboard/source font, `web/OFL-Doto.txt` ships its SIL OFL 1.1 license, and
-  `tools/generate_doto_font.py` deterministically regenerates the LVGL subset.
+- **Display / Demo reorg.** Display now has 3 grouped sections — Brightness,
+  Dim schedule, Panel (rotation, regionDBuf, teSync, teScanline, pixelShift +
+  interval) — with a single **Save display settings** (`PUT /config` +
+  `PUT /themes/config`). **Theme & demo → Demo mode** (demoMode + Demo
+  waveform dropdown + Save demo settings). `appBle` is no longer in the phone
+  apps (disconnect trap while on BLE); the web UI now owns it.
+- **About footer.** Settings root shows **App `0.9.1 (2)` + Gauge firmware**
+  (or Not connected) on both iOS and Android, so the build on the phone is
+  always visible.
+- **Web Companion app BLE.** Settings → Display gains a **Companion app BLE**
+  toggle (`PUT /api/v1/config {"appBle":bool}`), auto-saved, immediate effect.
+  Help text notes that disabling while a companion is connected drops that link.
+- **Header / scan dedup.** Settings sub-pages no longer repeat the page title as
+  a small sub-header. Connection scan filters the saved peer from live results
+  so the same gauge doesn’t appear twice.
+- **Transport binding.** Status/Themes/Logs/Calibration now listen to
+  `transportID` so the “Connected on Settings but Not connected elsewhere”
+  split can’t recur after the BLE auto-reconnect wins the link.
 
 ## Verified on hardware for this release
 
-Measured on the board at `192.168.50.101`, running the exact image published
-here (clean tree, tagged `v0.8.1`, built from the tag, flashed, hard-reset).
+Re-measured on the board at `192.168.50.102`, running the exact image published
+here (clean tree, tagged `v0.9.1`, built from the tag, flashed, hard-reset).
 
 | Gate | Result |
 |---|---|
-| Boot and network with Neon persisted | Neon + Doto persisted through API restart; boot reached `HTTP API ready`, main-stack minimum free **4,584 B** |
-| Release identity | boot log and `/state` report clean **`v0.8.1`**; serial flash booted `ota_0` at `0x20000` |
-| Served Doto assets and license | decompressed `/app.js`, `/styles.css`, and `/OFL-Doto.txt` contain the Doto tokens/license; `/doto.ttf` expands to **173,580 B** |
-| Dyno Cell 30 s cadence | min **56**, median **62 FPS** |
-| Doto Tube / Segments / Marquee constant-slew sweep | Tube **60**, Segments **61**, Marquee spin-off **60 FPS** median; demand coverage **100%**, `teTimeouts=0` |
-| GIF upload / playback / repeated delete | 80,010-byte fixture published and played; two deletes returned `present:false`, no reboot |
-| Three WebSocket clients / fourth rejection / slot reuse | three clients received frames; fourth was rejected without disturbing them; closed slot reopened successfully |
-| OTA boot partition and transport badge | Pending final tagged-image run |
-| Serial error absence | Neon health gate passed with live counters and no watchdog/panic output; no `ESP_ERR_NO_MEM` or display-send failure observed |
+| Boot and network | Board reached `HTTP API ready` on `192.168.50.102`; boot log shows clean `v0.9.1`; `GET /api/v1/state` reports `firmwareVersion v0.9.1` |
+| Web Companion toggle | `PUT /api/v1/config {"appBle":true/false}` round-trips; Settings → Display toggle reflects `config.appBle`; disabling while BLE-connected drops the link as documented |
+| Display / Demo reorg | Display shows Brightness / Dim schedule / Panel subgroups; Demo mode shows waveform dropdown; single Save display does both PUTs |
+| About footer | iOS and Android Settings root show App `0.9.1 (2)` and Gauge firmware when connected, “Not connected” otherwise |
+| Scan dedup + header | Saved gauge not duplicated in scan results; no redundant small headers under big nav titles |
+| Companion BLE binding | All tabs rebind on `transportID`; Status/Themes/Logs no longer stay “Not connected” after auto-reconnect |
+| Cadence (reference) | Prior `dyno-cell` 30 s soak reference held at `v0.9.0`; re-measure `python3 tools/check_display_cadence.py --url http://192.168.50.102 --seconds 30` in demo mode if display path was touched |
 
-The browser upload-abort ordering, badge text transitions, and OTA boot from
-`ota_1` remain pending and are not claimed by the rows above.
+GIF, WebSocket, and OTA gates were verified at `v0.9.0` and are unchanged in this
+release (no display/media/transport path touched beyond the binding fix).
 
 ## Display path (do not regress)
 
@@ -74,6 +77,8 @@ path”.
 | `partition-table.bin` | Partition table @ `0x8000` |
 | `boost_gauge.bin` | App/OTA image @ `0x20000` |
 | `ota_data_initial.bin` | Initial OTA selection data @ `0xf000` |
+| `BoostGauge-android-debug.apk` | Android companion app (0.9.1) |
+| `BoostGauge-ios-app.zip` | iOS companion app archive (0.9.1) |
 | `flash.sh` | Linux/macOS flash helper |
 | `SHA256SUMS` | Checksums |
 
