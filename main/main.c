@@ -54,7 +54,10 @@ static void gauge_timer_cb(lv_timer_t *timer)
 static void tpms_timer_cb(lv_timer_t *timer)
 {
     LV_UNUSED(timer);
-    if (!boost_theme_tpms_ble()) {
+    /* The mock stands in ONLY while demo mode drives the gauge: on the bench
+     * the page stays lively without hardware, but a real vehicle (demo off)
+     * with no adapter must show no data, never simulated pressures. */
+    if (boost_theme_demo_mode() && !boost_theme_tpms_ble()) {
         boost_tpms_mock_tick(lv_tick_get());
     } else {
         boost_tpms_age(lv_tick_get());

@@ -90,7 +90,9 @@ def main() -> int:
                  "AP SSID derived from the MAC tail bytes")
 
     # --- QR payload uses the same AP ssid + password literal -------------------
-    m = re.search(r'snprintf\(payload,\s*sizeof\(payload\),\s*"WIFI:T:WPA;S:%s;P:%s;;",\s*net\.ap_ssid,\s*BOOST_AP_PASSWORD\)',
+    # (SSID arrives via qr_ap_info() -> ap.ap_ssid since the swipeable
+    #  connections overlay unified the widget tree across host + device)
+    m = re.search(r'snprintf\(payload,\s*sizeof\(payload\),\s*"WIFI:T:WPA;S:%s;P:%s;;",\s*ap\.ap_ssid,\s*BOOST_AP_PASSWORD\)',
                   page_c)
     result.check(m is not None, "QR encodes WIFI:T:WPA;S:<ap_ssid>;P:<BOOST_AP_PASSWORD>;;")
 

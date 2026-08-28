@@ -29,6 +29,8 @@ class SettingsViewModel(
     private val repository: GaugeRepository,
     private val scanDevices: suspend () -> List<BleScanResult> = { emptyList() },
     private val disconnectTransport: suspend () -> Unit = {},
+    var contextProvider: android.content.Context? = null,
+    private val forgetTransport: suspend () -> Unit = {},
 ) : ViewModel() {
 
     /**
@@ -120,6 +122,11 @@ class SettingsViewModel(
         val scanning: Boolean = false,
         val scanCompleted: Boolean = false,
         val scannedDevices: List<BleScanResult> = emptyList(),
+        val networkStatus: com.boostgauge.app.data.api.NetworkStatus? = null,
+        val wifiNetworks: List<com.boostgauge.app.data.api.WifiNetwork> = emptyList(),
+        val scanningWifi: Boolean = false,
+        val wifiSsid: String = "",
+        val wifiPassword: String = "",
     )
 
     private val _state = MutableStateFlow(UiState())
@@ -140,6 +147,7 @@ class SettingsViewModel(
             runCatching {
                 Triple(api.getConfig(), api.getTpmsConfig(), api.getThemes())
             }.onSuccess { (config, tpms, themes) ->
+                val network = runCatching { api.getNetworkStatus() }.getOrNull()
                 _state.update {
                     it.copy(
                         loading = false,
@@ -147,6 +155,7 @@ class SettingsViewModel(
                         tpms = tpms,
                         themes = themes,
                         fields = it.fields.withConfig(config).withThemes(themes).withTpms(tpms),
+                        networkStatus = network,
                     )
                 }
             }.onFailure { e ->
@@ -294,19 +303,22 @@ class SettingsViewModel(
         }
     }
 
-    /** Timezone-only sync: the gauge's RTC keeps time; this only sets the zone. */
+    /** Timezone-only sync: sends the SELECTED timezone (not the phone's zone —
+     * a phone-derived string overwrote the gauge's real POSIX TZ and the picker
+     * then flapped back to "Custom" on reload). */
     fun syncTime() {
         viewModelScope.launch {
             _state.update { it.copy(saving = true, error = null, message = null) }
-            val zone = Timezones.forDefault()
-            runCatching { api.syncTime(zone.offsetMinutes, zone.posix) }
+            val tz = _state.value.fields.timezoneTz.ifBlank { Timezones.forDefault().posix }
+            val offset = _state.value.fields.timezoneOffsetMinutes
+            runCatching { api.syncTime(offset, tz) }
                 .onSuccess { status ->
                     _state.update {
                         it.copy(
                             saving = false,
                             fields = it.fields.copy(
                                 timezoneOffsetMinutes = status.timezoneOffsetMinutes,
-                                timezoneTz = zone.posix,
+                                timezoneTz = tz,
                             ),
                             message = "Timezone sent to gauge",
                         )
@@ -318,31 +330,24 @@ class SettingsViewModel(
         }
     }
 
-    /** Apply a timezone selection (curated entry or custom raw string) immediately. */
+    /** Apply a timezone selection locally only — the gauge is updated only when
+     *  the user taps "Sync timezone to gauge" (previous immediate push caused
+     *  double toasts on every picker tap). */
     fun applyTimezone(offsetMinutes: Int, timezoneTz: String) {
         val tz = timezoneTz.trim()
         if (tz.isEmpty()) {
             _state.update { it.copy(error = "Timezone string cannot be empty") }
             return
         }
-        viewModelScope.launch {
-            _state.update { it.copy(saving = true, error = null, message = null) }
-            runCatching { api.syncTime(offsetMinutes, tz) }
-                .onSuccess { status ->
-                    _state.update {
-                        it.copy(
-                            saving = false,
-                            fields = it.fields.copy(
-                                timezoneOffsetMinutes = status.timezoneOffsetMinutes,
-                                timezoneTz = tz,
-                            ),
-                            message = "Timezone applied",
-                        )
-                    }
-                }
-                .onFailure { e ->
-                    _state.update { it.copy(saving = false, error = e.message ?: "timezone sync failed") }
-                }
+        _state.update {
+            it.copy(
+                fields = it.fields.copy(
+                    timezoneOffsetMinutes = offsetMinutes,
+                    timezoneTz = tz,
+                ),
+                error = null,
+                message = null,
+            )
         }
     }
 
@@ -437,6 +442,14 @@ class SettingsViewModel(
         }
     }
 
+    /** Forget the saved gauge: disconnect + erase the persisted peer. */
+    fun forgetSavedGauge() {
+        viewModelScope.launch {
+            runCatching { forgetTransport() }
+            _state.update { it.copy(message = null, error = null) }
+        }
+    }
+
     /** Reconnect to the persisted/remembered gauge without a fresh scan. */
     fun connectSavedGauge() {
         val saved = selection.value
@@ -463,6 +476,103 @@ class SettingsViewModel(
                 }
         }
     }
+
+    fun refreshWifi() {
+        viewModelScope.launch {
+            runCatching { api.getNetworkStatus() }.onSuccess { net ->
+                _state.update { it.copy(networkStatus = net) }
+            }.onFailure { e -> _state.update { it.copy(error = e.message ?: "wifi status failed") } }
+        }
+    }
+
+    fun scanWifi() {
+        viewModelScope.launch {
+            _state.update { it.copy(scanningWifi = true, error = null) }
+            // One retry: the gauge's first scan after connect can return an
+            // empty list while the radio settles.
+            var result: com.boostgauge.app.data.api.WifiScanPayload? = null
+            var failed = false
+            for (attempt in 0..1) {
+                runCatching { api.scanWifi() }
+                    .onSuccess { scanned ->
+                        result = scanned
+                    }
+                    .onFailure { e ->
+                        failed = true
+                        _state.update { it.copy(scanningWifi = false, error = e.message ?: "scan failed") }
+                    }
+                if (failed) break
+                if (result?.networks?.isNotEmpty() == true) break
+                if (attempt == 0) kotlinx.coroutines.delay(700)
+            }
+            if (!failed) {
+                _state.update { it.copy(scanningWifi = false, wifiNetworks = result?.networks ?: emptyList()) }
+            }
+        }
+    }
+
+    fun saveWifi() {
+        val ssid = _state.value.wifiSsid.trim()
+        if (ssid.isBlank()) { _state.update { it.copy(error = "SSID required") }; return }
+        val password = _state.value.wifiPassword.takeIf { it.isNotBlank() }
+        viewModelScope.launch {
+            _state.update { it.copy(saving = true, error = null, message = null) }
+            runCatching { api.updateNetwork(ssid, password) }.onSuccess { net ->
+                _state.update { it.copy(saving = false, networkStatus = net, wifiPassword = "", message = "Wi-Fi saved") }
+            }.onFailure { e ->
+                _state.update { it.copy(saving = false, error = e.message ?: "save failed") }
+            }
+        }
+    }
+
+    /** Sends the Wi-Fi the PHONE is on to the gauge (SSID only; the gauge
+     *  reuses the stored PSK for that SSID if it has one, else errors). */
+    fun usePhoneWifi() {
+        val context = contextProvider ?: return
+        viewModelScope.launch {
+            _state.update { it.copy(saving = true, error = null, message = null) }
+            val ssid = runCatching {
+                val wm = context.getSystemService(android.content.Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+                wm.connectionInfo?.ssid?.removeSurrounding("\"") ?: ""
+            }.getOrDefault("")
+            if (ssid.isBlank() || ssid == "<unknown ssid>") {
+                _state.update { it.copy(saving = false, error = "Could not read this phone's Wi-Fi network (grant Location, then retry)") }
+                return@launch
+            }
+            runCatching { api.usePhoneWifi(ssid) }
+                .onSuccess { net ->
+                    _state.update { it.copy(saving = false, networkStatus = net, message = "Gauge joining $ssid…") }
+                }
+                .onFailure { e ->
+                    _state.update { it.copy(saving = false, error = e.message ?: "failed") }
+                }
+        }
+    }
+
+    fun deleteSavedWifi(ssid: String) {
+        viewModelScope.launch {
+            _state.update { it.copy(saving = true, error = null, message = null) }
+            runCatching { api.deleteSavedNetwork(ssid) }.onSuccess { net ->
+                _state.update { it.copy(saving = false, networkStatus = net, message = "Removed $ssid") }
+            }.onFailure { e ->
+                _state.update { it.copy(saving = false, error = e.message ?: "delete failed") }
+            }
+        }
+    }
+
+    fun reconnectWifi() {
+        viewModelScope.launch {
+            _state.update { it.copy(saving = true, error = null, message = null) }
+            runCatching { api.reconnectNetwork() }.onSuccess { net ->
+                _state.update { it.copy(saving = false, networkStatus = net, message = "Reconnecting…") }
+            }.onFailure { e ->
+                _state.update { it.copy(saving = false, error = e.message ?: "reconnect failed") }
+            }
+        }
+    }
+
+    fun updateWifiSsid(value: String) { _state.update { it.copy(wifiSsid = value) } }
+    fun updateWifiPassword(value: String) { _state.update { it.copy(wifiPassword = value) } }
 
     fun clearMessage() {
         _state.update { it.copy(message = null, error = null) }

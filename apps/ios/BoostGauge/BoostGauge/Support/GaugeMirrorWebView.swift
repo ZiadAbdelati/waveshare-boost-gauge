@@ -13,6 +13,12 @@ import WebKit
 /// theme while the new theme paints.
 struct GaugeMirrorWebView: UIViewRepresentable {
     let payload: [String: Any]
+    /// Explicit change signal: `payload` is an opaque `[String: Any]`, so a
+    /// SwiftUI diff can silently skip `updateUIView` when only the nested
+    /// theme content changes. A plain `String?` property is a reliable diff
+    /// key — a theme switch always reaches the coordinator, even when the
+    /// dictionary payload "looks" equivalent to the previous one.
+    let themeID: String?
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -65,6 +71,7 @@ struct GaugeMirrorWebView: UIViewRepresentable {
 
     func updateUIView(_ container: UIView, context: Context) {
         context.coordinator.payload = payload
+        context.coordinator.themeID = themeID
         context.coordinator.renderIfReady()
     }
 
@@ -72,7 +79,14 @@ struct GaugeMirrorWebView: UIViewRepresentable {
         weak var webView: WKWebView?
         weak var overlayView: UIImageView?
         var payload: [String: Any] = [:]
+        var themeID: String?
         private var ready = false
+        /// The most recently REQUESTED payload key. `renderToken` advances only
+        /// when this changes — repeated same-theme `updateUIView` passes during
+        /// the hidden window must not keep aborting the in-flight reveal poll
+        /// (that starved the switch and left the previous theme frozen in the
+        /// overlay).
+        private var requestedKey: String?
         private var revealedKey: String?
         /// Bumped on every payload-key change; stale reveal polls abort when it
         /// moves, so a poll from the previous theme can never reveal the new one.
@@ -97,7 +111,7 @@ struct GaugeMirrorWebView: UIViewRepresentable {
         }
 
         private var payloadThemeID: String? {
-            (payload["theme"] as? [String: Any])?["id"] as? String
+            themeID ?? (payload["theme"] as? [String: Any])?["id"] as? String
         }
 
         private var payloadKey: String { payloadThemeID ?? "none" }
@@ -105,6 +119,7 @@ struct GaugeMirrorWebView: UIViewRepresentable {
         func loadCanonicalMirror() {
             guard let webView else { return }
             webView.alpha = 0
+            requestedKey = nil
             revealedKey = nil
             renderToken += 1
             let resourceBundle = Bundle(for: Coordinator.self)
@@ -165,17 +180,11 @@ struct GaugeMirrorWebView: UIViewRepresentable {
             let base = DispatchTimeInterval.milliseconds(Self.firstRenderDelayMs ?? 0)
             let render = { [weak self] in _ = self?.renderIfReady() }
             DispatchQueue.main.asyncAfter(deadline: .now() + base, execute: render)
-            // Canvas does not participate in webfont swapping: whatever face
-            // ctx.font resolved to when a frame was drawn is what that frame
-            // keeps. With font-display:swap and the large base64 faces, the
-            // first paint can land before the theme font is usable and stay
-            // wrong (Big Digit's readout). `document.fonts.ready` can resolve
-            // before the face is actually usable, so re-render deterministically
-            // at +400/+1200 ms after page finish — the same passes Android's
-            // preview uses — and the post-font-ready RAF reveal gate below
-            // guarantees the revealed frame uses the real face.
-            DispatchQueue.main.asyncAfter(deadline: .now() + base + .milliseconds(400), execute: render)
-            DispatchQueue.main.asyncAfter(deadline: .now() + base + .milliseconds(1200), execute: render)
+            // The +400/+1200 ms rescue re-renders are armed by
+            // `armRescueRenders()` the moment the first payload key is
+            // requested (and again on every theme switch), so the same
+            // deterministic font-ready pass Android's preview uses applies to
+            // both the first load and every later switch.
         }
 
         /// `-e2eMirrorFirstRenderDelay <ms>` (test/screenshot only).
@@ -196,13 +205,19 @@ struct GaugeMirrorWebView: UIViewRepresentable {
                   let json = String(data: data, encoding: .utf8) else { return }
             let key = payloadKey
             // A different payload arrived (theme switch): hide until the new
-            // theme actually paints, and freeze the last confirmed frame in the
-            // overlay so the circle never flashes blank or the previous theme.
-            if revealedKey != key {
+            // theme actually paints, freeze the last confirmed frame in the
+            // overlay so the circle never flashes blank or the previous theme,
+            // and re-arm the +400/+1200 rescue re-renders. Keyed on the
+            // REQUESTED key (not `revealedKey`) so repeated same-theme
+            // `updateUIView` passes while hidden cannot keep bumping the token
+            // and starving the reveal.
+            if requestedKey != key {
+                requestedKey = key
                 webView.alpha = 0
                 revealedKey = nil
                 renderToken += 1
                 overlayView?.alpha = 1
+                armRescueRenders()
             }
             let token = renderToken
             let script = """
@@ -290,6 +305,22 @@ struct GaugeMirrorWebView: UIViewRepresentable {
                     self.pollForRevealSnapshot(webView: webView, token: token, attempts: attempts + 1)
                 }
             }
+        }
+
+        /// Re-arms the deterministic +400/+1200 ms rescue re-renders for the
+        /// current payload. Canvas does not participate in webfont swapping:
+        /// whatever face `ctx.font` resolved to when a frame was drawn is what
+        /// that frame keeps, and `document.fonts.ready` can resolve before a
+        /// lazily-USED face (Doto / SF Alien, or Big Digit's readout) is
+        /// actually usable. A single render pass can also stall transiently
+        /// (font preload, RAF, canvas snapshot), so a theme switch after page
+        /// load gets the same rescue guarantee as the first load: the pass is
+        /// retried, and a stall can no longer freeze the previous theme in the
+        /// overlay forever.
+        private func armRescueRenders() {
+            let render = { [weak self] in _ = self?.renderIfReady() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(400), execute: render)
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(1200), execute: render)
         }
 
         private func applySnapshot(_ dataURL: String) {

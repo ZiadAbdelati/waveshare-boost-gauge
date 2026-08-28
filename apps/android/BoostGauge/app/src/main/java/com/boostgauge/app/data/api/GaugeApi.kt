@@ -98,8 +98,31 @@ class GaugeApi(private val transportProvider: () -> GaugeTransport) {
      */
     suspend fun syncTime(timezoneOffsetMinutes: Int, timezoneTz: String): Status =
         parse(send("POST", "time", buildJsonObject {
+            put("epochMs", System.currentTimeMillis())
             put("timezoneOffsetMinutes", timezoneOffsetMinutes)
             put("timezoneTz", timezoneTz)
+        }.toString()))
+
+    suspend fun getNetworkStatus(): NetworkStatus = parse(get("network"))
+    suspend fun scanWifi(): WifiScanPayload = parse(get("network/scan"))
+    suspend fun updateNetwork(ssid: String, password: String?): NetworkStatus =
+        parse(send("PUT", "network", buildJsonObject {
+            put("ssid", ssid)
+            if (!password.isNullOrBlank()) put("password", password)
+            put("mode", "apsta")
+        }.toString()))
+    suspend fun deleteSavedNetwork(ssid: String): NetworkStatus =
+        parse(send("DELETE", "network", buildJsonObject { put("ssid", ssid) }.toString()))
+    suspend fun reconnectNetwork(): NetworkStatus =
+        parse(send("POST", "network/reconnect", "{}"))
+
+    /** Password-less PUT with keepPassword=true: the gauge reuses the stored
+     *  PSK for this SSID if it has one (phone-network handoff). */
+    suspend fun usePhoneWifi(ssid: String): NetworkStatus =
+        parse(send("PUT", "network", buildJsonObject {
+            put("ssid", ssid)
+            put("mode", "apsta")
+            put("keepPassword", true)
         }.toString()))
 
     suspend fun clearLogs(): Resp = send("DELETE", "logs", null)

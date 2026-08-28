@@ -135,6 +135,14 @@ class TransportController(
         runCatching { serviceLauncher.stopBleService() }
     }
 
+    /** Forget the saved gauge: disconnect AND erase the persisted peer, so the
+     *  Connection page drops the saved row and a fresh scan re-adds it. */
+    suspend fun forget() {
+        disconnect()
+        runCatching { settingsStore.setTransport(TransportType.BLE, "", "") }
+        _selection.value = TransportSelection(TransportType.BLE, "", "", "")
+    }
+
     /** Screenshot/test hook: directly set the displayed selection and transport. */
     fun debugSetForScreenshot(selection: TransportSelection, transport: GaugeTransport?) {
         _selection.value = selection

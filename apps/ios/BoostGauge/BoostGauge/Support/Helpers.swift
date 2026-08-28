@@ -122,3 +122,15 @@ extension View {
         contentMargins(.bottom, 100, for: .scrollContent)
     }
 }
+
+extension Date {
+    /// Minutes-since-midnight <-> Date for the dim-schedule time pickers.
+    init(minutes: Int) {
+        self = Calendar.current.startOfDay(for: Date()).addingTimeInterval(TimeInterval(minutes * 60))
+    }
+
+    var minutesSinceMidnight: Int {
+        let comps = Calendar.current.dateComponents([.hour, .minute], from: self)
+        return (comps.hour ?? 0) * 60 + (comps.minute ?? 0)
+    }
+}

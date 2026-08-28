@@ -624,6 +624,16 @@ final class AppSession: ObservableObject {
         defaults.string(forKey: Keys.blePeerID)
     }
 
+    /// Forget the saved gauge: clears the persisted peer identity and drops the
+    /// live transport (the peer row disappears; scan can find it again fresh).
+    @MainActor
+    func forgetSavedGauge() {
+        defaults.removeObject(forKey: Keys.blePeerID)
+        defaults.removeObject(forKey: Keys.blePeerName)
+        blePeerName = nil
+        disconnectBLE()
+    }
+
     /// Status data fed by the single HTTP connection probe. BLE uses the
     /// transport's notify stream instead, so this is only consumed for HTTP.
     func statusStream() -> AsyncStream<Result<Data, Error>> {

@@ -13,6 +13,7 @@
 #include "esp_random.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
@@ -22,6 +23,7 @@
 #include "boost_display.h"
 #include "boost_gauge.h"
 #include "boost_model.h"
+#include "boost_network.h"
 #include "boost_obd_ble.h"
 #include "boost_sensors.h"
 #include "boost_sim.h"
@@ -143,6 +145,8 @@ typedef enum {
     APP_EV_SUBSCRIBE,
     APP_EV_TX,          /* heap response payload (owned) */
     APP_EV_CALIBRATE,   /* async /sensors/calibration POST (blocks ~2 s) */
+    APP_EV_LOGS,        /* async /logs GET (copy+JSON, must not block host) */
+    APP_EV_SCAN,        /* async /network/scan GET (Wi-Fi scan blocks for seconds) */
     APP_EV_ADV_RETRY,
 } app_ble_ev_type_t;
 
@@ -153,6 +157,7 @@ typedef struct {
     uint8_t cur_notify;
     uint32_t id;
     char *payload;       /* heap-owned for APP_EV_TX */
+    size_t logs_limit;   /* for APP_EV_LOGS */
 } app_ble_ev_t;
 
 typedef struct {
@@ -180,6 +185,7 @@ static uint16_t s_dev_info_val_handle;
 
 static char s_device_info[128];
 static char s_ble_sta_ip[32] = "";
+static size_t s_pending_logs_limit = 0;
 
 static void app_device_info_rebuild(void)
 {
@@ -370,6 +376,28 @@ static bool app_parse_hex_color(const cJSON *item, uint32_t *out)
     return true;
 }
 
+static void app_json_escape(const char *in, char *out, size_t out_len)
+{
+    size_t o = 0;
+    if (!in) {
+        if (out_len) out[0] = '\0';
+        return;
+    }
+    for (size_t i = 0; in[i] && o + 2 < out_len; ++i) {
+        char c = in[i];
+        if (c == '"' || c == '\\') {
+            if (o + 3 >= out_len) break;
+            out[o++] = '\\';
+            out[o++] = c;
+        } else if ((unsigned char)c < 0x20) {
+            continue;
+        } else {
+            out[o++] = c;
+        }
+    }
+    out[o] = '\0';
+}
+
 static int app_status_json(char *json, size_t len)
 {
     boost_state_t st;
@@ -493,6 +521,46 @@ static int app_calibration_json(char *json, size_t len)
                     cal_valid ? (double)cal.ref_bmp_kpa : 0.0,
                     cal_valid ? (unsigned)cal.samples : 0u,
                     cal_valid ? (long long)cal.epoch_ms : 0LL);
+}
+
+/* Mirror boost_web.c network_status_json() byte-for-byte so BLE-only clients
+ * decode the same /network shape they get over HTTP. */
+static int app_network_status_json(char *json, size_t len)
+{
+    boost_net_status_t st;
+    boost_network_get_status(&st);
+    char ssid_e[96];
+    char ap_e[64];
+    app_json_escape(st.sta_ssid, ssid_e, sizeof(ssid_e));
+    app_json_escape(st.ap_ssid, ap_e, sizeof(ap_e));
+    size_t off = 0;
+    int n = snprintf(json + off, len - off,
+                     "{\"mode\":\"%s\",\"staEnabled\":%s,\"staConnected\":%s,"
+                     "\"staSsid\":\"%s\",\"staIp\":\"%s\",\"apSsid\":\"%s\",\"apIp\":\"%s\","
+                     "\"rssi\":%d,\"hasPassword\":%s,\"saved\":[",
+                     st.mode == BOOST_NET_MODE_APSTA ? "apsta" : "ap",
+                     st.sta_enabled ? "true" : "false",
+                     st.sta_connected ? "true" : "false",
+                     ssid_e, st.sta_ip, ap_e, st.ap_ip, st.rssi,
+                     st.has_sta_pass ? "true" : "false");
+    if (n < 0) {
+        return n;
+    }
+    off += (size_t)n;
+    for (uint8_t i = 0; i < st.saved_count && off < len; ++i) {
+        char s_esc[96];
+        app_json_escape(st.saved[i].ssid, s_esc, sizeof(s_esc));
+        n = snprintf(json + off, len - off, "%s{\"ssid\":\"%s\"}",
+                     i == 0 ? "" : ",", s_esc);
+        if (n < 0) {
+            return n;
+        }
+        off += (size_t)n;
+    }
+    if (off + 2U < len) {
+        (void)snprintf(json + off, len - off, "]}");
+    }
+    return (int)strlen(json);
 }
 
 /* Full theme listing mirroring the HTTP /themes payload (boost_web.c
@@ -987,18 +1055,193 @@ static int route_restart_post(const cJSON *body, char *out, size_t cap)
 static int route_logs_get(const cJSON *body, char *out, size_t cap)
 {
     (void)body;
+    // Compact: ~22 B per sample {"tMs":123,"psi":12.34} vs 96 B verbose.
+    // With 4096 cap we fit ~128 compact points (4096/32) — 1500 raw (5m)
+    // decimated to 128 gives ~2.1 pts/triangle vs 0.7 at 42 verbose.
+    // LogSample decodes missing zone/demo with defaults, so compact is safe.
+    const size_t max_fit = (cap / 32) > 2 ? (cap / 32) : 2;
+    size_t want = s_pending_logs_limit;
+    s_pending_logs_limit = 0;
+    if (want == 0) want = max_fit;
+    if (want > 5000) want = 5000;
+    const size_t alloc = want > max_fit ? want : max_fit;
     boost_log_sample_t *samples = heap_caps_malloc(
-        BOOST_LOG_CAPACITY * sizeof(*samples), MALLOC_CAP_SPIRAM);
+        alloc * sizeof(*samples), MALLOC_CAP_SPIRAM);
     if (samples == NULL) {
-        samples = malloc(BOOST_LOG_CAPACITY * sizeof(*samples));
+        samples = malloc(alloc * sizeof(*samples));
     }
     if (samples == NULL) {
         snprintf(out, cap, "{\"error\":\"no_mem\"}");
         return 500;
     }
-    const size_t n = boost_model_copy_logs(samples, BOOST_LOG_CAPACITY);
+    const size_t n = boost_model_copy_logs(samples, want);
+    size_t stride_n = n;
+    if (n > max_fit) {
+        stride_n = max_fit;
+        for (size_t i = 0; i < stride_n; ++i) {
+            size_t src = i * n / stride_n;
+            if (src >= n) src = n - 1;
+            if (i != src) samples[i] = samples[src];
+        }
+    }
+    size_t used = (size_t)snprintf(out, cap, "{\"samples\":[");
+    for (size_t i = 0; i < stride_n; ++i) {
+        const boost_log_sample_t *s = &samples[i];
+        int line = snprintf(out + used, cap - used,
+            "%s{\"tMs\":%lu,\"psi\":%.2f}",
+            i == 0 ? "" : ",",
+            (unsigned long)s->t_ms, (double)s->psi);
+        if (line < 0 || (size_t)line >= cap - used) break;
+        used += (size_t)line;
+    }
+    snprintf(out + used, cap - used, "]}");
     free(samples);
-    snprintf(out, cap, "{\"count\":%u}", (unsigned)n);
+    return 200;
+}
+
+static int route_network_get(const cJSON *body, char *out, size_t cap)
+{
+    (void)body;
+    const int n = app_network_status_json(out, cap);
+    return n > 0 && n < (int)cap ? 200 : 500;
+}
+
+/* Mirror boost_web.c network_put(): NVS + immediate status return, cheap
+ * enough to run on the NimBLE host task like the other inline routes. */
+static int route_network_put(const cJSON *body, char *out, size_t cap)
+{
+    if (body == NULL) {
+        snprintf(out, cap, "{\"error\":\"invalid_json\"}");
+        return 400;
+    }
+    const char *ssid = NULL;
+    const char *password = NULL;
+    bool keep_password = true;
+    bool have_mode = false;
+    boost_net_mode_t mode = BOOST_NET_MODE_AP;
+
+    const cJSON *ssid_j = cJSON_GetObjectItemCaseSensitive(body, "ssid");
+    if (cJSON_IsString(ssid_j)) {
+        ssid = ssid_j->valuestring;
+    }
+    const cJSON *pass_j = cJSON_GetObjectItemCaseSensitive(body, "password");
+    if (cJSON_IsString(pass_j)) {
+        password = pass_j->valuestring;
+        keep_password = false;
+    }
+    const cJSON *keep_j = cJSON_GetObjectItemCaseSensitive(body, "keepPassword");
+    if (cJSON_IsBool(keep_j)) {
+        keep_password = cJSON_IsTrue(keep_j);
+        if (keep_password) {
+            password = "";
+        }
+    }
+    const cJSON *mode_j = cJSON_GetObjectItemCaseSensitive(body, "mode");
+    if (cJSON_IsString(mode_j) && mode_j->valuestring) {
+        have_mode = true;
+        if (strcmp(mode_j->valuestring, "apsta") == 0) {
+            mode = BOOST_NET_MODE_APSTA;
+        } else if (strcmp(mode_j->valuestring, "ap") == 0) {
+            mode = BOOST_NET_MODE_AP;
+        } else {
+            snprintf(out, cap, "{\"error\":\"invalid_mode\"}");
+            return 400;
+        }
+    }
+
+    const esp_err_t err = boost_network_update(ssid, password, keep_password,
+                                               mode, have_mode);
+    if (err != ESP_OK) {
+        snprintf(out, cap, "{\"error\":\"network_update_failed\"}");
+        return 400;
+    }
+    const int n = app_network_status_json(out, cap);
+    return n > 0 && n < (int)cap ? 200 : 500;
+}
+
+/* Mirror boost_web.c network_delete(): saved-network removal + status echo. */
+static int route_network_delete(const cJSON *body, char *out, size_t cap)
+{
+    if (body == NULL) {
+        snprintf(out, cap, "{\"error\":\"invalid_json\"}");
+        return 400;
+    }
+    const cJSON *ssid_j = cJSON_GetObjectItemCaseSensitive(body, "ssid");
+    const char *ssid = cJSON_IsString(ssid_j) ? ssid_j->valuestring : NULL;
+    if (ssid == NULL || ssid[0] == '\0') {
+        snprintf(out, cap, "{\"error\":\"missing_ssid\"}");
+        return 400;
+    }
+    const esp_err_t err = boost_network_delete_saved(ssid);
+    if (err == ESP_ERR_NOT_FOUND) {
+        snprintf(out, cap, "{\"error\":\"not_found\"}");
+        return 404;
+    } else if (err != ESP_OK) {
+        snprintf(out, cap, "{\"error\":\"delete_failed\"}");
+        return 400;
+    }
+    const int n = app_network_status_json(out, cap);
+    return n > 0 && n < (int)cap ? 200 : 500;
+}
+
+static int route_network_reconnect_post(const cJSON *body, char *out, size_t cap)
+{
+    (void)body;
+    const esp_err_t err = boost_network_reconnect();
+    if (err != ESP_OK && err != ESP_ERR_WIFI_CONN) {
+        snprintf(out, cap, "{\"error\":\"reconnect_failed\"}");
+        return 400;
+    }
+    const int n = app_network_status_json(out, cap);
+    return n > 0 && n < (int)cap ? 200 : 500;
+}
+
+/* Scanning takes seconds on the Wi-Fi radio, so this runs only on the driver
+ * task via APP_EV_SCAN, never inline on the NimBLE host task. */
+static int route_network_scan_get(const cJSON *body, char *out, size_t cap)
+{
+    (void)body;
+    /* Heap-allocate the records array: a large stack buffer in this task
+     * previously caused a boot-loop stack overflow panic. */
+    boost_wifi_scan_record_t *records = heap_caps_malloc(
+        BOOST_WIFI_SCAN_MAX_RECORDS * sizeof(*records), MALLOC_CAP_SPIRAM);
+    if (records == NULL) {
+        records = malloc(BOOST_WIFI_SCAN_MAX_RECORDS * sizeof(*records));
+    }
+    if (records == NULL) {
+        snprintf(out, cap, "{\"error\":\"no_mem\"}");
+        return 500;
+    }
+    memset(records, 0, BOOST_WIFI_SCAN_MAX_RECORDS * sizeof(*records));
+    uint16_t count = 0;
+    const esp_err_t err = boost_network_scan(records, BOOST_WIFI_SCAN_MAX_RECORDS,
+                                             &count);
+    if (err != ESP_OK) {
+        free(records);
+        snprintf(out, cap, "{\"error\":\"scan_failed\"}");
+        return 400;
+    }
+    size_t off = 0;
+    int n = snprintf(out, cap, "{\"networks\":[");
+    if (n > 0) {
+        off = (size_t)n;
+    }
+    for (uint16_t i = 0; i < count && off < cap; ++i) {
+        char ssid_e[96];
+        char item[160];
+        app_json_escape(records[i].ssid, ssid_e, sizeof(ssid_e));
+        snprintf(item, sizeof(item), "%s{\"ssid\":\"%s\",\"rssi\":%d,\"auth\":%d}",
+                 i == 0 ? "" : ",", ssid_e, records[i].rssi, records[i].authmode);
+        n = snprintf(out + off, cap - off, "%s", item);
+        if (n < 0) {
+            break;
+        }
+        off += (size_t)n;
+    }
+    if (off + 2U < cap) {
+        (void)snprintf(out + off, cap - off, "]}");
+    }
+    free(records);
     return 200;
 }
 
@@ -1033,6 +1276,11 @@ static const app_ble_route_t s_routes[] = {
     { "/time", "POST", route_time_post },
     { "/restart", "POST", route_restart_post },
     { "/logs", "GET", route_logs_get },
+    { "/network", "GET", route_network_get },
+    { "/network", "PUT", route_network_put },
+    { "/network", "DELETE", route_network_delete },
+    { "/network/scan", "GET", route_network_scan_get },
+    { "/network/reconnect", "POST", route_network_reconnect_post },
     { "/page", "PUT", route_page_put },
 };
 
@@ -1057,12 +1305,50 @@ static void app_control_handle(uint16_t conn_handle, uint32_t id,
         return;
     }
 
-    /* Async route: /sensors/calibration POST blocks ~2 s. Run it on the
+    /* Async routes that block (flash/NVS/I2C or copy+JSON) — run on the
      * driver task rather than stalling the NimBLE host event loop. */
     if (strcmp(path->valuestring, "/sensors/calibration") == 0 &&
         strcmp(method->valuestring, "POST") == 0) {
         app_ble_ev_t ev = { 0 };
         ev.type = APP_EV_CALIBRATE;
+        ev.conn_handle = conn_handle;
+        ev.id = id;
+        if (s_evq == NULL || xQueueSend(s_evq, &ev, 0) != pdTRUE) {
+            app_ble_enqueue_tx(conn_handle,
+                               app_ble_make_response(id, 503, "{\"error\":\"busy\"}"));
+        }
+        cJSON_Delete(root);
+        return;
+    }
+    if (strncmp(path->valuestring, "/logs", 5) == 0 &&
+        strcmp(method->valuestring, "GET") == 0) {
+        const char *q = strchr(path->valuestring, '?');
+        size_t lim = 0;
+        if (q != NULL) {
+            const char *p = strstr(q, "limit=");
+            if (p != NULL) {
+                long l = strtol(p + 6, NULL, 10);
+                if (l > 0 && l < 10000) lim = (size_t)l;
+            }
+        }
+        app_ble_ev_t ev = { 0 };
+        ev.type = APP_EV_LOGS;
+        ev.conn_handle = conn_handle;
+        ev.id = id;
+        ev.logs_limit = lim;
+        if (s_evq == NULL || xQueueSend(s_evq, &ev, 0) != pdTRUE) {
+            app_ble_enqueue_tx(conn_handle,
+                               app_ble_make_response(id, 503, "{\"error\":\"busy\"}"));
+        }
+        cJSON_Delete(root);
+        return;
+    }
+    if (strncmp(path->valuestring, "/network/scan", 13) == 0 &&
+        strcmp(method->valuestring, "GET") == 0) {
+        /* boost_network_scan() blocks for seconds on the Wi-Fi radio — run it
+         * on the driver task, never on the NimBLE host event loop. */
+        app_ble_ev_t ev = { 0 };
+        ev.type = APP_EV_SCAN;
         ev.conn_handle = conn_handle;
         ev.id = id;
         if (s_evq == NULL || xQueueSend(s_evq, &ev, 0) != pdTRUE) {
@@ -1091,8 +1377,12 @@ static void app_control_handle(uint16_t conn_handle, uint32_t id,
     }
     resp_body[0] = '\0';
     bool routed = false;
+    char route_path[96];
+    strlcpy(route_path, path->valuestring, sizeof(route_path));
+    char *qmark = strchr(route_path, '?');
+    if (qmark != NULL) *qmark = '\0';
     for (size_t i = 0; i < sizeof(s_routes) / sizeof(s_routes[0]); ++i) {
-        if (strcmp(s_routes[i].path, path->valuestring) == 0 &&
+        if (strcmp(s_routes[i].path, route_path) == 0 &&
             strcmp(s_routes[i].method, method->valuestring) == 0) {
             status = s_routes[i].handle(body, resp_body, APP_BLE_CTRL_RESP_MAX);
             routed = true;
@@ -1628,6 +1918,43 @@ static void app_driver_task(void *arg)
             }
             app_ble_enqueue_tx(ev.conn_handle,
                                app_ble_make_response(ev.id, status, body));
+            break;
+        }
+        case APP_EV_LOGS: {
+            // Copy+JSON for the bounded window; must not block the host.
+            ESP_LOGI(TAG, "logs: ev start (limit=%u, frag cap=%u)",
+                     (unsigned)ev.logs_limit, (unsigned)APP_BLE_CTRL_RESP_MAX);
+            s_pending_logs_limit = ev.logs_limit;
+            char *body = malloc(APP_BLE_CTRL_RESP_MAX);
+            if (body == NULL) {
+                app_ble_enqueue_tx(ev.conn_handle,
+                                   app_ble_make_response(ev.id, 500, "{\"error\":\"no_mem\"}"));
+                break;
+            }
+            const int64_t t0 = esp_timer_get_time();
+            int status = route_logs_get(NULL, body, APP_BLE_CTRL_RESP_MAX);
+            const int64_t build_us = esp_timer_get_time() - t0;
+            app_ble_enqueue_tx(ev.conn_handle,
+                               app_ble_make_response(ev.id, status, body));
+            ESP_LOGI(TAG, "logs: built %dB in %lldus; fragmenting to client",
+                     (unsigned)strlen(body), (long long)build_us);
+            free(body);
+            break;
+        }
+        case APP_EV_SCAN: {
+            /* Wi-Fi scan blocks for seconds; heap buffers only (a 4 KB stack
+             * buffer in this task previously caused a boot-loop stack
+             * overflow panic). */
+            char *body = malloc(APP_BLE_CTRL_RESP_MAX);
+            if (body == NULL) {
+                app_ble_enqueue_tx(ev.conn_handle,
+                                   app_ble_make_response(ev.id, 500, "{\"error\":\"no_mem\"}"));
+                break;
+            }
+            int status = route_network_scan_get(NULL, body, APP_BLE_CTRL_RESP_MAX);
+            app_ble_enqueue_tx(ev.conn_handle,
+                               app_ble_make_response(ev.id, status, body));
+            free(body);
             break;
         }
         default:

@@ -22,6 +22,13 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Boost Gauge uses your location to read the current Wi-Fi network name so the gauge can join it.</string>
+	<key>NSLocationTemporaryUsageDescriptionDictionary</key>
+	<dict>
+		<key>WifiSSID</key>
+		<string>Boost Gauge needs your precise location once to read the current Wi-Fi network name so the gauge can join it.</string>
+	</dict>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Boost Gauge connects to the boost gauge over Bluetooth to show live status and change settings.</string>
 	<key>NSAppTransportSecurity</key>

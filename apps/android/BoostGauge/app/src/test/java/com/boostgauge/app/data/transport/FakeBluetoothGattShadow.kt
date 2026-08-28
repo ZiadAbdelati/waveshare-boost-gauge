@@ -31,7 +31,9 @@ class FakeBluetoothGattShadow {
         var lastGatt: BluetoothGatt? = null
         var closeCount = 0
         var disconnectCount = 0
+        var writeDescriptorCount = 0
         var failWriteDescriptor = false
+        var failFirstWriteDescriptor = false
 
         fun reset() {
             callback = null
@@ -39,7 +41,9 @@ class FakeBluetoothGattShadow {
             lastGatt = null
             closeCount = 0
             disconnectCount = 0
+            writeDescriptorCount = 0
             failWriteDescriptor = false
+            failFirstWriteDescriptor = false
         }
     }
 
@@ -73,7 +77,10 @@ class FakeBluetoothGattShadow {
 
     @org.robolectric.annotation.Implementation
     fun writeDescriptor(descriptor: BluetoothGattDescriptor): Boolean {
-        if (failWriteDescriptor) return false
+        writeDescriptorCount++
+        val fail = failWriteDescriptor ||
+            (failFirstWriteDescriptor && writeDescriptorCount == 1)
+        if (fail) return false
         callback?.onDescriptorWrite(realGatt, descriptor, BluetoothGatt.GATT_SUCCESS)
         return true
     }

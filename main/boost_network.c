@@ -685,11 +685,13 @@ esp_err_t boost_network_scan(boost_wifi_scan_record_t *records, uint16_t max_rec
         };
         err = esp_wifi_scan_start(&scan, true);
     }
+    ESP_LOGI(TAG, "scan: mode_change=%d err=0x%x", needs_mode_change, err);
     if (err == ESP_OK) {
         uint16_t ap_count = max_records;
         wifi_ap_record_t aps[BOOST_WIFI_SCAN_MAX_RECORDS] = {0};
         err = esp_wifi_scan_get_ap_records(&ap_count, aps);
         if (err == ESP_OK) {
+        ESP_LOGI(TAG, "scan: %u APs visible", ap_count);
             for (uint16_t i = 0; i < ap_count && *out_count < max_records; ++i) {
                 if (aps[i].ssid[0] == '\0') {
                     continue;

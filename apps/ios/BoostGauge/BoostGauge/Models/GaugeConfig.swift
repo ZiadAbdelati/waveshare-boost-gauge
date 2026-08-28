@@ -25,3 +25,31 @@ struct TPMSConfig: Decodable {
     let lowPsi: Double?
     let staleAfterMs: Int?
 }
+
+struct SavedNetwork: Decodable, Hashable {
+    let ssid: String
+}
+
+struct NetworkStatus: Decodable {
+    let mode: String?
+    let staEnabled: Bool?
+    let staConnected: Bool?
+    let staSsid: String?
+    let staIp: String?
+    let apSsid: String?
+    let apIp: String?
+    let rssi: Int?
+    let hasPassword: Bool?
+    let saved: [SavedNetwork]?
+}
+
+struct WifiNetwork: Decodable, Identifiable, Hashable {
+    let ssid: String
+    let rssi: Int?
+    let auth: Int?
+    var id: String { ssid }
+}
+
+struct WifiScanResult: Decodable {
+    let networks: [WifiNetwork]?
+}

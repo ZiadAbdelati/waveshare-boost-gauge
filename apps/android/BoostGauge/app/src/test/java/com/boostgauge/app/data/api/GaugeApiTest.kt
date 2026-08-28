@@ -114,7 +114,7 @@ class GaugeApiTest {
     }
 
     @Test
-    fun timeSyncSendsTimezoneOnlyAndNeverThePhoneEpoch() = runBlocking {
+    fun timeSyncSendsEpochWithTimezone() = runBlocking {
         val transport = FakeBleTransport { method, path, _ ->
             assertEquals("POST", method)
             assertEquals("time", path)
@@ -127,8 +127,9 @@ class GaugeApiTest {
         val body = transport.requests.single().bodyJson!!
         assertTrue(body.contains("\"timezoneOffsetMinutes\":-240"))
         assertTrue(body.contains("\"timezoneTz\":\"EST5EDT,M3.2.0/2,M11.1.0/2\""))
-        // The DS3231 RTC is the sole time authority; the phone epoch must never be sent.
-        assertFalse(body.contains("epochMs"))
+        // Firmware /time REQUIRES epochMs (POST /time 400s with invalid_time
+        // without it); the phone is the time authority, same as the web UI.
+        assertTrue(Regex("\"epochMs\":\\d+").containsMatchIn(body))
     }
 
     @Test

@@ -9,24 +9,11 @@ struct SettingsView: View {
     @State private var isScanning = false
     @State private var isConnecting = false
     @State private var hasCompletedBLEScan = false
+    @State private var joinSheet: WifiJoinTarget?
 
     var body: some View {
         NavigationStack {
             List {
-                if let error = vm.errorMessage {
-                    Section {
-                        Text(error)
-                            .font(.footnote)
-                            .foregroundColor(.orange)
-                    }
-                }
-                if let message = vm.savedMessage {
-                    Section {
-                        Text(message)
-                            .font(.footnote)
-                            .foregroundColor(.green)
-                    }
-                }
                 Section {
                     NavigationLink(destination: connectionPage) {
                         Label("Connection", systemImage: "wave.3.right")
@@ -43,32 +30,17 @@ struct SettingsView: View {
                     NavigationLink(destination: clockPage) {
                         Label("Clock & timezone", systemImage: "clock")
                     }
-                    NavigationLink(destination: tpmsPage) {
-                        Label("TPMS", systemImage: "tirepressure")
-                    }
                     NavigationLink(destination: obdScannerPage) {
-                        Label("OBD2 Scanner", systemImage: "car")
+                        Label("TPMS & OBD2", systemImage: "car")
+                    }
+                    NavigationLink(destination: wifiPage) {
+                        Label("Wi-Fi", systemImage: "wifi")
                     }
                 }
-                Section("About") {
-                    HStack {
-                        Text("App")
-                            .foregroundColor(.secondary)
-                        Spacer()
-                        Text(appVersion)
-                            .foregroundColor(.secondary)
-                            .monospacedDigit()
+                Section {
+                    NavigationLink(destination: aboutPage) {
+                        Label("About", systemImage: "info.circle")
                     }
-                    .accessibilityElement(children: .combine)
-                    HStack {
-                        Text("Gauge firmware")
-                            .foregroundColor(.secondary)
-                        Spacer()
-                        Text(gaugeFirmware)
-                            .foregroundColor(.secondary)
-                            .monospacedDigit()
-                    }
-                    .accessibilityElement(children: .combine)
                 }
             }
 .gaugeScrollBottomMargin()
@@ -125,16 +97,33 @@ struct SettingsView: View {
             .navigationTitle("Clock & timezone")
     }
 
-    private var tpmsPage: some View {
-        Form { tpmsSection }
-            .navigationTitle("TPMS")
-    }
-
     private var obdScannerPage: some View {
         Form { obdSection }
             .navigationTitle("OBD2 Scanner")
             .onAppear { vm.startOBDPolling() }
             .onDisappear { vm.stopOBDPolling() }
+    }
+
+    private var wifiPage: some View {
+        Form { wifiSection }
+            .navigationTitle("Wi-Fi")
+            .onAppear { Task { await vm.refreshWifiStatus() } }
+            .sheet(item: $joinSheet) { target in
+                NavigationStack {
+                    WifiJoinView(ssid: target.ssid) { ssid, pass in
+                        vm.wifiSSID = ssid
+                        vm.wifiPassword = pass
+                        Task { await vm.saveWifi() }
+                    }
+                    .navigationTitle("Join Network")
+                    .navigationBarTitleDisplayMode(.inline)
+                }
+            }
+    }
+
+    private var aboutPage: some View {
+        Form { aboutSection }
+            .navigationTitle("About")
     }
 
     private var transportSection: some View {
@@ -228,8 +217,14 @@ struct SettingsView: View {
                 Section("Dim schedule") {
                     Toggle("Dim schedule", isOn: $vm.dimEnabled)
                     if vm.dimEnabled {
-                        Stepper("Start: \(minutesText(vm.dimStartMinutes))", value: $vm.dimStartMinutes, in: 0...(24 * 60 - 1))
-                        Stepper("End: \(minutesText(vm.dimEndMinutes))", value: $vm.dimEndMinutes, in: 0...(24 * 60 - 1))
+                        DatePicker("Start", selection: Binding(
+                            get: { Date(minutes: vm.dimStartMinutes) },
+                            set: { vm.dimStartMinutes = $0.minutesSinceMidnight }
+                        ), displayedComponents: .hourAndMinute)
+                        DatePicker("End", selection: Binding(
+                            get: { Date(minutes: vm.dimEndMinutes) },
+                            set: { vm.dimEndMinutes = $0.minutesSinceMidnight }
+                        ), displayedComponents: .hourAndMinute)
                     }
                 }
                 Section("Panel") {
@@ -311,7 +306,7 @@ struct SettingsView: View {
                 Toggle("Demo mode", isOn: $vm.demoMode)
                 Picker("Demo waveform", selection: $vm.demoFastSweep) {
                     Text("Organic swell").tag(false)
-                    Text("Linear sweep (9.789 psi/s)").tag(true)
+                    Text("Linear sweep").tag(true)
                 }
                 .disabled(!vm.demoMode)
                 Button("Save demo settings") {
@@ -321,67 +316,184 @@ struct SettingsView: View {
         }
     }
 
-    private var tpmsSection: some View {
-        Section {
-            if vm.tpmsConfig == nil {
-                unavailableRow("TPMS", loading: vm.isLoading)
-            } else {
-            Stepper("Low pressure: \(Format.psi(vm.tpmsLowPsi)) psi", value: $vm.tpmsLowPsi, in: 14.5...58.0, step: 0.5)
-            Picker("Stale after", selection: $vm.tpmsStaleAfterMs) {
-                ForEach([5000, 10000, 15000, 30000, 60000, 120000], id: \.self) { ms in
-                    Text(staleText(ms)).tag(ms)
-                }
-            }
-            Toggle("TPMS BLE link", isOn: $vm.tpmsBle)
-            Button("Save TPMS settings") {
-                Task { await vm.saveTPMSConfig() }
-            }
-            }
-        }
-    }
+
 
     private var obdSection: some View {
-        Section {
-            Text("Gauge → OBD2 dongle link")
-                .font(.footnote)
-                .foregroundColor(.secondary)
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(obdPillColor)
-                    .frame(width: 8, height: 8)
-                Text(obdPillText)
-                    .font(.footnote)
-                    .foregroundColor(obdPillColor)
+        Group {
+            Section("TPMS") {
+                Toggle("BLE link", isOn: $vm.tpmsBle)
+                    .onChange(of: vm.tpmsBle) { _ in Task { await vm.saveTpmsBle() } }
+                Stepper("Low pressure: \(Format.psi(vm.tpmsLowPsi)) psi", value: $vm.tpmsLowPsi, in: 14.5...58.0, step: 0.5)
+                Picker("Stale after", selection: $vm.tpmsStaleAfterMs) {
+                    // A custom value saved from the web (e.g. 25 s) isn't in the
+                    // preset list — prepend it so the picker shows the real state.
+                    ForEach(staleChoices, id: \.self) { ms in
+                        Text(staleText(ms)).tag(ms)
+                    }
+                }
+                Button("Save TPMS settings") {
+                    Task { await vm.saveTPMSConfig() }
+                }
             }
-            if let lastError = vm.obdState?.lastError, lastError != 0 {
-                Text("Last error \(String(format: "0x%04X", lastError))")
-                    .font(.footnote)
-                    .foregroundColor(.secondary)
-            }
-            HStack {
-                Text("Peer")
-                    .foregroundColor(.secondary)
-                Spacer()
-                VStack(alignment: .trailing, spacing: 2) {
+            Section("OBD2 link") {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(obdPillColor)
+                        .frame(width: 8, height: 8)
+                    Text(obdPillText)
+                        .foregroundColor(obdPillColor)
+                }
+                if let lastError = vm.obdState?.lastError, lastError != 0 {
+                    HStack {
+                        Text("Last error").foregroundColor(.secondary)
+                        Spacer()
+                        Text(String(format: "0x%04X", lastError))
+                    }
+                }
+                HStack {
+                    Text("Peer")
+                        .foregroundColor(.secondary)
+                    Spacer()
                     Text(vm.obdPeerName ?? "—")
-                    if let addr = vm.obdPeerAddr, !addr.isEmpty {
+                }
+                if let addr = vm.obdPeerAddr, !addr.isEmpty {
+                    HStack {
+                        Text("Address")
+                            .foregroundColor(.secondary)
+                        Spacer()
                         Text(addr)
-                            .font(.caption)
+                    }
+                }
+                Button("Forget", role: .destructive) {
+                    Task { await vm.forgetOBDPeer() }
+                }
+                .disabled(obdPhase == .idle || vm.isForgettingOBDPeer)
+                if vm.isForgettingOBDPeer {
+                    HStack {
+                        ProgressView()
+                        Text("Forgetting peer…")
                             .foregroundColor(.secondary)
                     }
                 }
             }
-            Button("Forget", role: .destructive) {
-                Task { await vm.forgetOBDPeer() }
+            Section {
+            } footer: {
+                Text("The BLE link connects the gauge to the ELM327 adapter in the car's OBD port for live tire pressures.")
             }
-            .disabled(obdPhase == .idle || vm.isForgettingOBDPeer)
-            if vm.isForgettingOBDPeer {
-                HStack {
-                    ProgressView()
-                    Text("Forgetting peer…")
-                        .font(.footnote)
-                        .foregroundColor(.secondary)
+        }
+    }
+
+    private var wifiSection: some View {
+        Group {
+            if vm.networkStatus == nil && vm.isLoading {
+                Section { ProgressView("Loading Wi-Fi…") }
+            } else {
+                Section("Status") {
+                    if let net = vm.networkStatus {
+                        HStack { Text("Mode").foregroundColor(.secondary); Spacer(); Text(net.mode ?? "—").foregroundColor(.secondary) }
+                        HStack { Text("STA").foregroundColor(.secondary); Spacer(); Text(net.staConnected == true ? "Connected" : "Not connected").foregroundColor(net.staConnected == true ? .green : .secondary) }
+                        if let ssid = net.staSsid, !ssid.isEmpty { HStack { Text("SSID").foregroundColor(.secondary); Spacer(); Text(ssid) } }
+                        if let ip = net.staIp, !ip.isEmpty { HStack { Text("IP").foregroundColor(.secondary); Spacer(); Text(ip).foregroundColor(.secondary) } }
+                        if let rssi = net.rssi, rssi != 0 { HStack { Text("RSSI").foregroundColor(.secondary); Spacer(); Text("\(rssi) dBm").foregroundColor(.secondary) } }
+                        HStack { Text("AP").foregroundColor(.secondary); Spacer(); Text(net.apSsid ?? "—") }
+                    } else {
+                        Text("Wi-Fi status unavailable").font(.footnote).foregroundColor(.secondary)
+                    }
+                    Button("Refresh status") { Task { await vm.refreshWifiStatus() } }
+                        .accessibilityIdentifier("wifi.refreshStatus")
+                    Button("Reconnect") { Task { await vm.reconnectWifi() } }.disabled(vm.networkStatus?.staEnabled != true)
                 }
+                Section("Saved networks") {
+                    if let saved = vm.networkStatus?.saved, !saved.isEmpty {
+                        ForEach(saved, id: \.ssid) { item in
+                            HStack {
+                                Text(item.ssid)
+                                Spacer()
+                                Button("Delete", role: .destructive) { Task { await vm.deleteSavedWifi(ssid: item.ssid) } }
+                            }
+                        }
+                    } else {
+                        Text("No saved networks").foregroundColor(.secondary)
+                    }
+                }
+                Section {
+                    Button(action: { Task { await vm.scanWifi() } }) {
+                        HStack {
+                            if vm.isScanningWifi { ProgressView(); Text("Scanning…") }
+                            else { Label("Scan networks", systemImage: "wifi") }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                    }
+                    .disabled(vm.isScanningWifi)
+                    Button(action: { Task { await vm.usePhoneWifi() } }) {
+                        Label("Use this iPhone's network", systemImage: "iphone.and.arrow.forward")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .accessibilityIdentifier("wifi.usePhoneWifi")
+                    ForEach(vm.wifiNetworks) { net in
+                        Button(action: { joinSheet = WifiJoinTarget(ssid: net.ssid) }) {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(net.ssid).foregroundColor(.primary)
+                                    if let rssi = net.rssi { Text("\(rssi) dBm").font(.caption).foregroundColor(.secondary) }
+                                }
+                                Spacer()
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Networks")
+                } footer: {
+                    Text("Tap a network to enter its password. \"Use this iPhone's network\" sends the Wi-Fi this phone is on — the gauge joins it itself; no password needed.")
+                }
+                Section("Manual") {
+                    HStack {
+                        Text("SSID").foregroundColor(.secondary)
+                        Spacer()
+                        TextField("MyWifi", text: $vm.wifiSSID)
+                            .multilineTextAlignment(.trailing)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
+                    HStack {
+                        Text("Password").foregroundColor(.secondary)
+                        Spacer()
+                        SecureField("password", text: $vm.wifiPassword)
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 160)
+                    }
+                    Button("Join") { Task { await vm.saveWifi() } }
+                        .disabled(vm.isSavingWifi || vm.wifiSSID.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+        }
+    }
+
+    private var aboutSection: some View {
+        Group {
+            Section("App") {
+                HStack {
+                    Text("Version")
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Text(appVersion)
+                        .foregroundColor(.secondary)
+                        .monospacedDigit()
+                }
+                .accessibilityElement(children: .combine)
+            }
+            Section("Gauge") {
+                HStack {
+                    Text("Firmware")
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Text(gaugeFirmware)
+                        .foregroundColor(.secondary)
+                        .monospacedDigit()
+                }
+                .accessibilityElement(children: .combine)
             }
         }
     }
@@ -505,12 +617,16 @@ struct SettingsView: View {
         isConnecting = false
     }
 
-    private func minutesText(_ minutes: Int) -> String {
-        String(format: "%02d:%02d", minutes / 60, minutes % 60)
-    }
-
     private func staleText(_ ms: Int) -> String {
         ms >= 60000 ? "\(ms / 60000) min" : "\(ms / 1000) s"
+    }
+
+    private var staleChoices: [Int] {
+        let presets = [5000, 10000, 15000, 30000, 60000, 120000]
+        if let current = vm.tpmsConfig?.staleAfterMs, !presets.contains(current) {
+            return presets + [current]
+        }
+        return presets
     }
 
     /// Scan results that aren't already the saved gauge — prevents the same
@@ -535,6 +651,7 @@ struct SettingsView: View {
         let b = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? ""
         return b.isEmpty ? v : "\(v) (\(b))"
     }
+
 
     private var gaugeFirmware: String {
         if session.connectionState == .connected, let fw = session.bleInfo?.firmware, !fw.isEmpty {
@@ -573,6 +690,9 @@ struct SettingsView: View {
                     Button("Connect") { Task { await connectSaved() } }
                         .disabled(isConnecting)
                 }
+                Button("Forget", role: .destructive) {
+                    Task { await session.forgetSavedGauge() }
+                }
             }
         }
     }
@@ -603,3 +723,46 @@ struct SettingsView: View {
         }
     }
 }
+
+
+struct WifiJoinTarget: Identifiable {
+    let ssid: String
+    var id: String { ssid }
+}
+
+struct WifiJoinView: View {
+    let ssid: String
+    let onJoin: (String, String) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var password = ""
+
+    var body: some View {
+        Form {
+            Section {
+                HStack { Text("SSID").foregroundColor(.secondary); Spacer(); Text(ssid) }
+            }
+            Section {
+                SecureField("Password", text: $password)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .submitLabel(.done)
+            } footer: {
+                Text("The gauge saves this network and joins it. The SoftAP stays available as fallback.")
+            }
+            Section {
+                Button("Join") { onJoin(ssid, password); dismiss() }
+                    .disabled(false)
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel") { dismiss() }
+            }
+        }
+    }
+}
+
+
+/// Non-shifting save/error indicator: floats over content without inserting
+/// list rows, so taps never move between touch-down and touch-up (the cause
+/// of the "dead button" reports). Auto-clears after 2 s.

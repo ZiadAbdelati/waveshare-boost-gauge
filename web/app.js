@@ -1671,6 +1671,8 @@ if (typeof document !== "undefined" && document.fonts) {
     document.fonts.load('700 108px "Archivo Black"'),
     document.fonts.load('400 56px "Archivo Black"'),
     document.fonts.load('700 65px "Archivo Black"'),
+    document.fonts.load('400 100px "Alvida Fatface"'),
+    document.fonts.load('400 126px "Alvida Fatface"'),
   ]);
   preloadFaces.then(() => scheduleGaugeRender()).catch(() => { /* fallback face is fine */ });
   // If the real theme payload arrives before fonts finish, repaint on ready.
@@ -2160,8 +2162,11 @@ function renderConfig(config) {
     if (el.brightnessLow) el.brightnessLow.value = config.brightnessLow ?? 12;
     if (el.brightnessHighOut) el.brightnessHighOut.textContent = `${el.brightnessHigh.value}%`;
     if (el.brightnessLowOut) el.brightnessLowOut.textContent = `${el.brightnessLow.value}%`;
-    if (el.companionBle) el.companionBle.checked = !!config.appBle;
   }
+  /* Both pages must reflect the device: the settings page owns the companion
+   * checkbox, so syncing it only under IS_COCKPIT left it stuck at the HTML
+   * default (unchecked) even when the device had BLE advertising ON. */
+  if (el.companionBle) el.companionBle.checked = !!config.appBle;
   const range = psiRange();
   if (el.psiMin && document.activeElement !== el.psiMin) el.psiMin.value = String(range.psiMin);
   if (el.psiMax && document.activeElement !== el.psiMax) el.psiMax.value = String(range.psiMax);

@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.TireRepair
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Button
@@ -92,8 +93,9 @@ internal enum class SettingsPage(val title: String) {
     Range("Range"),
     DemoMode("Demo mode"),
     ClockTimezone("Clock & Timezone"),
-    Tpms("TPMS"),
-    ObdScanner("OBD2 Scanner"),
+    ObdScanner("TPMS & OBD2"),
+    Wifi("Wi-Fi"),
+    About("About"),
 }
 
 @Composable
@@ -111,6 +113,8 @@ fun SettingsScreen(container: AppContainer) {
                     repository = container.repository,
                     scanDevices = { BleScanner(app).scan() },
                     disconnectTransport = { container.transportController.disconnect() },
+                    contextProvider = app,
+                    forgetTransport = { container.transportController.forget() },
                 )
             }
         },
@@ -139,6 +143,7 @@ fun SettingsScreen(container: AppContainer) {
     // leaving the page clears them so they can't leak onto other pages.
     LaunchedEffect(page) { viewModel.clearMessage() }
 
+    androidx.compose.foundation.layout.Box(modifier = Modifier.fillMaxSize()) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 16.dp),
@@ -173,31 +178,10 @@ fun SettingsScreen(container: AppContainer) {
                 }
             }
         }
-        state.error?.let {
-            item {
-                Text(
-                    text = it,
-                    style = BoostFootnote,
-                    color = BoostColors.warning,
-                )
-            }
-        }
-        state.message?.let {
-            item {
-                Text(
-                    text = it,
-                    style = BoostFootnote,
-                    color = BoostColors.success,
-                )
-            }
-        }
         when (page) {
             null -> {
                 item {
                     SettingsMenu(onNavigate = { page = it })
-                }
-                item {
-                    AboutSection(status = status)
                 }
             }
             SettingsPage.Connection -> item {
@@ -213,6 +197,7 @@ fun SettingsScreen(container: AppContainer) {
                     onScan = viewModel::scanForDevices,
                     onDisconnect = viewModel::disconnectBle,
                     onConnectSaved = viewModel::connectSavedGauge,
+                    onForgetSaved = viewModel::forgetSavedGauge,
                 )
             }
             SettingsPage.Display -> item {
@@ -248,23 +233,87 @@ fun SettingsScreen(container: AppContainer) {
                     onSync = viewModel::syncTime,
                 )
             }
-            SettingsPage.Tpms -> item {
-                TpmsSection(
-                    fields = fields,
-                    saving = state.saving,
-                    onFieldChange = viewModel::updateFields,
-                    onSave = viewModel::saveTpms,
-                    onBleSave = viewModel::saveTpmsBle,
-                )
-            }
             SettingsPage.ObdScanner -> item {
                 ObdScannerSection(
                     obd = status?.obd,
+                    fields = state.fields,
                     saving = state.saving,
+                    onFieldChange = viewModel::updateFields,
+                    onBleSave = viewModel::saveTpmsBle,
+                    onSave = viewModel::saveTpms,
                     onForget = viewModel::forgetObdPeer,
                 )
             }
+            SettingsPage.Wifi -> item {
+                var joinNetworkSsid by remember { mutableStateOf<String?>(null) }
+                // Reading the phone's current SSID needs FINE location on
+                // Android 8+; ask from the tap itself, like the system apps.
+                val context = LocalContext.current
+                val wifiPermissionLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestPermission(),
+                ) { granted ->
+                    if (granted) viewModel.usePhoneWifi()
+                }
+                joinNetworkSsid?.let { ssid ->
+                    JoinNetworkDialog(
+                        ssid = ssid,
+                        saving = state.saving,
+                        onDismiss = { joinNetworkSsid = null },
+                        onJoin = { pass ->
+                            viewModel.updateWifiSsid(ssid)
+                            viewModel.updateWifiPassword(pass)
+                            viewModel.saveWifi()
+                            joinNetworkSsid = null
+                        },
+                    )
+                }
+                WifiSection(
+                    networkStatus = state.networkStatus,
+                    wifiNetworks = state.wifiNetworks,
+                    scanningWifi = state.scanningWifi,
+                    wifiSsid = state.wifiSsid,
+                    wifiPassword = state.wifiPassword,
+                    saving = state.saving,
+                    onSsidChange = viewModel::updateWifiSsid,
+                    onPasswordChange = viewModel::updateWifiPassword,
+                    onScan = viewModel::scanWifi,
+                    onSave = viewModel::saveWifi,
+                    onDelete = viewModel::deleteSavedWifi,
+                    onReconnect = viewModel::reconnectWifi,
+                    onRefresh = viewModel::refreshWifi,
+                    onJoinNetwork = { ssid -> joinNetworkSsid = ssid },
+                    onUsePhoneWifi = {
+                        if (ContextCompat.checkSelfPermission(
+                                context, Manifest.permission.ACCESS_FINE_LOCATION,
+                            ) == PackageManager.PERMISSION_GRANTED
+                        ) {
+                            viewModel.usePhoneWifi()
+                        } else {
+                            wifiPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+                        }
+                    },
+                )
+            }
+            SettingsPage.About -> item {
+                AboutSection(status = status)
+            }
         }
+    }
+    // Native M3 snackbar: floats at the bottom, auto-expires, never inserts
+    // rows (the old inline "Saved" rows moved every control on the page and
+    // made taps land on the wrong row mid-save).
+    val snackbarHostState = remember { androidx.compose.material3.SnackbarHostState() }
+    val toastText = state.error ?: state.message
+    LaunchedEffect(toastText) {
+        if (toastText != null) {
+            snackbarHostState.showSnackbar(toastText, withDismissAction = false)
+            viewModel.clearMessage()
+        }
+    }
+    androidx.compose.material3.SnackbarHost(
+        hostState = snackbarHostState,
+        modifier = Modifier.align(Alignment.BottomCenter),
+    )
     }
 }
 
@@ -291,8 +340,9 @@ private fun SettingsMenu(onNavigate: (SettingsPage) -> Unit) {
                             SettingsPage.Range -> Icons.Default.SwapHoriz
                             SettingsPage.DemoMode -> Icons.Default.Palette
                             SettingsPage.ClockTimezone -> Icons.Default.Schedule
-                            SettingsPage.Tpms -> Icons.Default.TireRepair
                             SettingsPage.ObdScanner -> Icons.Default.Build
+                            SettingsPage.Wifi -> Icons.Default.Wifi
+                            SettingsPage.About -> Icons.Default.Info
                         },
                         contentDescription = null,
                         tint = BoostColors.navBlue,
@@ -329,6 +379,7 @@ private fun TransportSection(
     onScan: () -> Unit,
     onDisconnect: () -> Unit,
     onConnectSaved: () -> Unit,
+    onForgetSaved: () -> Unit,
 ) {
     GroupedSection {
         val peerKnown = selection.bleAddress.isNotBlank()
@@ -408,8 +459,13 @@ private fun TransportSection(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    TextButton(onClick = onConnectSaved) {
-                        Text("Connect")
+                    Row {
+                        TextButton(onClick = onConnectSaved) {
+                            Text("Connect")
+                        }
+                        TextButton(onClick = onForgetSaved) {
+                            Text("Forget", color = MaterialTheme.colorScheme.error)
+                        }
                     }
                 }
                 CaptionText("Saved gauge — reconnect to ${selection.bleName.ifBlank { "this gauge" }}")
@@ -529,22 +585,16 @@ private fun DisplaySection(
                 onFieldChange { it.copy(dimEnabled = enabled) }
             }
             if (fields.dimEnabled) {
-                StepperRow(
+                TimeFieldRow(
                     label = "Start",
                     value = fields.dimStart,
-                    display = { minutes -> "%02d:%02d".format(minutes / 60, minutes % 60) },
-                    min = 0,
-                    max = 24 * 60 - 1,
                     enabled = !saving,
                 ) { value ->
                     onFieldChange { it.copy(dimStart = value.toString()) }
                 }
-                StepperRow(
+                TimeFieldRow(
                     label = "End",
                     value = fields.dimEnd,
-                    display = { minutes -> "%02d:%02d".format(minutes / 60, minutes % 60) },
-                    min = 0,
-                    max = 24 * 60 - 1,
                     enabled = !saving,
                 ) { value ->
                     onFieldChange { it.copy(dimEnd = value.toString()) }
@@ -705,7 +755,7 @@ private fun DemoModeSection(
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
                         Text(
-                            text = if (fields.demoFastSweep) "Linear sweep (9.789 psi/s)" else "Organic swell",
+                            text = if (fields.demoFastSweep) "Linear sweep" else "Organic swell",
                             style = BoostSubheadline,
                             color = if (fields.demoMode && !saving) {
                                 MaterialTheme.colorScheme.primary
@@ -728,7 +778,7 @@ private fun DemoModeSection(
                         },
                     )
                     DropdownMenuItem(
-                        text = { Text("Linear sweep (9.789 psi/s)") },
+                        text = { Text("Linear sweep") },
                         onClick = {
                             waveformExpanded = false
                             onFieldChange { it.copy(demoFastSweep = true) }
@@ -861,23 +911,25 @@ private fun ClockTimezoneSection(
 }
 
 @Composable
-private fun TpmsSection(
+private fun ObdScannerSection(
+    obd: Obd?,
     fields: SettingsViewModel.FieldState,
     saving: Boolean,
     onFieldChange: ((SettingsViewModel.FieldState) -> SettingsViewModel.FieldState) -> Unit,
-    onSave: () -> Unit,
     onBleSave: () -> Unit,
+    onSave: () -> Unit,
+    onForget: () -> Unit,
 ) {
-    GroupedSection {
+    GroupedSection(title = "TPMS") {
+        ToggleRow("BLE link", fields.tpmsBle, enabled = !saving) { value ->
+            onFieldChange { it.copy(tpmsBle = value) }
+            onBleSave()
+        }
         NumberField("Low pressure (psi)", fields.lowPsi) { value ->
             onFieldChange { it.copy(lowPsi = value) }
         }
         NumberField("Stale after (ms)", fields.staleAfterMs) { value ->
             onFieldChange { it.copy(staleAfterMs = value) }
-        }
-        ToggleRow("TPMS BLE link", fields.tpmsBle, enabled = !saving) { value ->
-            onFieldChange { it.copy(tpmsBle = value) }
-            onBleSave()
         }
         Button(
             onClick = onSave,
@@ -886,16 +938,9 @@ private fun TpmsSection(
         ) {
             Text("Save")
         }
+        CaptionText("Connects the gauge to the ELM327 adapter in the car's OBD port for live tire pressures.")
     }
-}
-
-@Composable
-private fun ObdScannerSection(
-    obd: Obd?,
-    saving: Boolean,
-    onForget: () -> Unit,
-) {
-    GroupedSection {
+    GroupedSection(title = "OBD2 link") {
         val pillColor = when (obd?.state ?: 0) {
             3 -> BoostColors.success
             1, 2 -> BoostColors.navBlue
@@ -1016,6 +1061,107 @@ private fun ToggleRow(
     }
 }
 
+
+@Composable
+private fun WifiSection(
+    networkStatus: com.boostgauge.app.data.api.NetworkStatus?,
+    wifiNetworks: List<com.boostgauge.app.data.api.WifiNetwork>,
+    scanningWifi: Boolean,
+    wifiSsid: String,
+    wifiPassword: String,
+    saving: Boolean,
+    onSsidChange: (String) -> Unit,
+    onPasswordChange: (String) -> Unit,
+    onScan: () -> Unit,
+    onSave: () -> Unit,
+    onDelete: (String) -> Unit,
+    onReconnect: () -> Unit,
+    onRefresh: () -> Unit,
+    onJoinNetwork: (String) -> Unit,
+    onUsePhoneWifi: () -> Unit,
+) {
+    androidx.compose.foundation.layout.Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        GroupedSection(title = "Status") {
+            if (networkStatus == null) {
+                Text("Wi-Fi status unavailable", style = BoostFootnote, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else {
+                MetricRow(label = "Mode", value = networkStatus.mode)
+                MetricRow(label = "STA", value = if (networkStatus.staConnected) "Connected" else "Not connected")
+                if (networkStatus.staSsid.isNotBlank()) MetricRow(label = "SSID", value = networkStatus.staSsid)
+                if (networkStatus.staIp.isNotBlank()) MetricRow(label = "IP", value = networkStatus.staIp)
+                if (networkStatus.rssi != 0) MetricRow(label = "RSSI", value = "${networkStatus.rssi} dBm")
+                MetricRow(label = "AP", value = networkStatus.apSsid.ifBlank { "—" })
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = androidx.compose.ui.Modifier.fillMaxWidth()) {
+                Button(onClick = onRefresh, enabled = !saving, modifier = androidx.compose.ui.Modifier.weight(1f)) { Text("Refresh") }
+                Button(onClick = onReconnect, enabled = !saving && (networkStatus?.staEnabled == true), modifier = androidx.compose.ui.Modifier.weight(1f)) { Text("Reconnect") }
+            }
+        }
+        GroupedSection(title = "Saved networks") {
+            if (networkStatus?.saved.isNullOrEmpty()) {
+                Text("No saved networks", style = BoostFootnote, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else {
+                networkStatus?.saved?.forEach { item ->
+                    Row(
+                        modifier = androidx.compose.ui.Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(item.ssid, style = BoostMetric, color = MaterialTheme.colorScheme.onSurface)
+                        TextButton(onClick = { onDelete(item.ssid) }, enabled = !saving) { Text("Delete") }
+                    }
+                }
+            }
+        }
+        GroupedSection(title = "Networks") {
+            Button(onClick = onScan, enabled = !scanningWifi, modifier = androidx.compose.ui.Modifier.fillMaxWidth()) {
+                if (scanningWifi) CircularProgressIndicator(modifier = androidx.compose.ui.Modifier.padding(end = 8.dp), strokeWidth = 2.dp)
+                Text(if (scanningWifi) "Scanning…" else "Scan networks")
+            }
+            Button(onClick = onUsePhoneWifi, enabled = !saving, modifier = androidx.compose.ui.Modifier.fillMaxWidth()) {
+                Text("Use this phone's network")
+            }
+            CaptionText("Sends the Wi-Fi this phone is on to the gauge - it joins itself; no password needed.")
+            wifiNetworks.forEach { net ->
+                Row(
+                    modifier = androidx.compose.ui.Modifier
+                        .fillMaxWidth()
+                        .clickable { onJoinNetwork(net.ssid) }
+                        .padding(vertical = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    androidx.compose.foundation.layout.Column {
+                        Text(net.ssid, style = BoostMetric, color = MaterialTheme.colorScheme.onSurface)
+                        Text("${net.rssi} dBm", style = BoostCaption, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+        }
+        GroupedSection(title = "Manual") {
+            OutlinedTextField(
+                value = wifiSsid,
+                onValueChange = onSsidChange,
+                label = { Text("SSID") },
+                singleLine = true,
+                modifier = androidx.compose.ui.Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                value = wifiPassword,
+                onValueChange = onPasswordChange,
+                label = { Text("Password") },
+                singleLine = true,
+                modifier = androidx.compose.ui.Modifier.fillMaxWidth(),
+            )
+            Button(onClick = onSave, enabled = !saving && wifiSsid.trim().isNotBlank(), modifier = androidx.compose.ui.Modifier.fillMaxWidth()) {
+                Text("Save")
+            }
+            CaptionText("Saves to the gauge and joins immediately. SoftAP stays up as fallback.")
+        }
+    }
+}
+
+
 @Composable
 private fun AboutSection(status: com.boostgauge.app.data.api.Status?) {
     val context = LocalContext.current
@@ -1026,23 +1172,119 @@ private fun AboutSection(status: com.boostgauge.app.data.api.Status?) {
         "0.9.1"
     }
     val firmware = status?.firmwareVersion?.takeIf { it.isNotBlank() } ?: "Not connected"
-    GroupedSection(title = "About") {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text("App", style = BoostCaption, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(appVersion, style = BoostCaption, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        GroupedSection(title = "App") {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Version", style = BoostMetric, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(appVersion, style = BoostMetricValue, color = MaterialTheme.colorScheme.onSurface)
+            }
         }
-        HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text("Gauge firmware", style = BoostCaption, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(firmware, style = BoostCaption, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        GroupedSection(title = "Gauge") {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Firmware", style = BoostMetric, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(firmware, style = BoostMetricValue, color = MaterialTheme.colorScheme.onSurface)
+            }
         }
+    }
+}
+
+
+@Composable
+private fun JoinNetworkDialog(
+    ssid: String,
+    saving: Boolean,
+    onDismiss: () -> Unit,
+    onJoin: (String) -> Unit,
+) {
+    var password by remember { mutableStateOf("") }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Join \$ssid") },
+        text = {
+            OutlinedTextField(
+                value = password,
+                onValueChange = { password = it },
+                label = { Text("Password") },
+                singleLine = true,
+                modifier = androidx.compose.ui.Modifier.fillMaxWidth(),
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = { onJoin(password) }, enabled = !saving) { Text("Join") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
+}
+
+
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun TimeFieldRow(
+    label: String,
+    value: String,
+    enabled: Boolean,
+    onValueChange: (Int) -> Unit,
+) {
+    val minutes = value.toIntOrNull()?.coerceIn(0, 24 * 60 - 1) ?: 0
+    var showPicker by remember { mutableStateOf(false) }
+    if (showPicker) {
+        val state = androidx.compose.material3.rememberTimePickerState(
+            initialHour = minutes / 60,
+            initialMinute = minutes % 60,
+            is24Hour = true,
+        )
+        androidx.compose.ui.window.Dialog(onDismissRequest = { showPicker = false }) {
+            androidx.compose.material3.Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                tonalElevation = 4.dp,
+            ) {
+                androidx.compose.foundation.layout.Column(
+                    modifier = Modifier.padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    androidx.compose.material3.TimePicker(state = state)
+                    Row(
+                        modifier = Modifier.align(Alignment.End),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        androidx.compose.material3.TextButton(onClick = { showPicker = false }) {
+                            Text("Cancel")
+                        }
+                        androidx.compose.material3.Button(onClick = {
+                            onValueChange(state.hour * 60 + state.minute)
+                            showPicker = false
+                        }) {
+                            Text("OK")
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = enabled) { showPicker = true }
+            .padding(vertical = 10.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, style = BoostMetric, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            "%02d:%02d".format(minutes / 60, minutes % 60),
+            style = BoostMetricValue,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
     }
 }

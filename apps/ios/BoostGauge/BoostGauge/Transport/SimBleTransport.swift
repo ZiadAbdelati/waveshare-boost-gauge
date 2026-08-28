@@ -12,6 +12,23 @@ final class SimBleTransport: GaugeTransport {
     let transportKind = "BLE"
 
     private let startDate = Date()
+    private var networkPayload: [String: Any] = [
+        "mode": "apsta",
+        "staEnabled": true,
+        "staConnected": false,
+        "staSsid": "",
+        "staIp": "",
+        "rssi": -58,
+        "apSsid": "BoostGauge-TEST",
+        "saved": [String](),
+    ]
+
+    private static let scanPayload: [[String: Any]] = [
+        ["ssid": "HomeNet 5G", "rssi": -42, "auth": 3],
+        ["ssid": "CoffeeShop", "rssi": -71, "auth": 3],
+        ["ssid": "OpenGuest", "rssi": -80, "auth": 0],
+    ]
+
     private var themesPayload: [String: Any] = SimBleTransport.defaultThemesPayload
     private var activePage = 0
 
@@ -33,6 +50,10 @@ final class SimBleTransport: GaugeTransport {
             return Resp(status: 200, body: try JSONSerialization.data(withJSONObject: Self.calibrationPayload))
         case let path where path == "logs" || path.hasPrefix("logs?"):
             return Resp(status: 200, body: logsBody(limit: Self.limit(from: path)))
+        case "network":
+            return Resp(status: 200, body: try JSONSerialization.data(withJSONObject: networkPayload))
+        case "network/scan":
+            return Resp(status: 200, body: try JSONSerialization.data(withJSONObject: Self.scanPayload))
         default:
             throw TransportError.deviceNotFound
         }
@@ -59,6 +80,26 @@ final class SimBleTransport: GaugeTransport {
             return Resp(status: 200, body: try JSONSerialization.data(withJSONObject: ["ok": true]))
         case ("PUT", "tpms/config"):
             return Resp(status: 200, body: try JSONSerialization.data(withJSONObject: Self.tpmsConfigPayload))
+        case ("PUT", "network"):
+            if let ssid = body["ssid"] as? String, !ssid.isEmpty {
+                networkPayload["staSsid"] = ssid
+                if body["keepPassword"] as? Bool == true {
+                    // keepPassword mirror: reuse the stored PSK, no password needed
+                } else if let pass = body["password"] as? String, !pass.isEmpty {
+                    networkPayload["saved"] = [ssid]
+                }
+                var saved = (networkPayload["saved"] as? [String]) ?? []
+                if !saved.contains(ssid) { saved.append(ssid) }
+                networkPayload["saved"] = saved
+                networkPayload["staConnected"] = true
+                networkPayload["staIp"] = "192.168.1.234"
+            }
+            return Resp(status: 200, body: try JSONSerialization.data(withJSONObject: networkPayload))
+        case ("POST", "network/reconnect"):
+            networkPayload["staConnected"] = true
+            return Resp(status: 200, body: try JSONSerialization.data(withJSONObject: networkPayload))
+        case ("DELETE", "network"):
+            return Resp(status: 200, body: try JSONSerialization.data(withJSONObject: ["ok": true]))
         default:
             throw TransportError.deviceNotFound
         }

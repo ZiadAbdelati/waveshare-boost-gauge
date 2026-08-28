@@ -78,8 +78,10 @@ def main() -> int:
     result.check(bool(v_ratio), "vertical theme-swipe requires >=48 px and 4:5 ratio")
 
     # The two-finger QR overlay payload: WIFI:T:WPA;S:<ap_ssid>;P:boost1234;;
-    m = re.search(r'snprintf\(payload,\s*sizeof\(payload\),\s*"WIFI:T:WPA;S:%s;P:%s;;",\s*net\.ap_ssid,\s*BOOST_AP_PASSWORD\)', page)
-    result.check(bool(m), "QR payload format WIFI:T:WPA;S:<ssid>;P:<BOOST_AP_PASSWORD>;; uses net.ap_ssid + BOOST_AP_PASSWORD")
+    # (the SSID arrives via qr_ap_info() -> ap.ap_ssid since the swipeable
+    #  connections overlay unified the widget tree across host + device)
+    m = re.search(r'snprintf\(payload,\s*sizeof\(payload\),\s*"WIFI:T:WPA;S:%s;P:%s;;",\s*ap\.ap_ssid,\s*BOOST_AP_PASSWORD\)', page)
+    result.check(bool(m), "QR payload format WIFI:T:WPA;S:<ssid>;P:<BOOST_AP_PASSWORD>;; uses ap.ap_ssid (qr_ap_info) + BOOST_AP_PASSWORD")
 
     # TPMS capsule grow contract: +2 px, firmware and web mirror in lockstep.
     m = re.search(r"#define\s+TPMS_CAPSULE_GROW\s+2", tpms_ui)

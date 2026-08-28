@@ -318,6 +318,42 @@ final class SimAcceptanceUITests: XCTestCase {
         attach("sim-themes-preview-bigdigit-bezel", app.screenshot())
     }
 
+    /// Regression: the circular preview must follow the active theme when the
+    /// user selects a DIFFERENT theme. The checkmark/active state is driven by
+    /// `vm.activeThemeID`; the preview is `GaugeMirrorWebView`, whose
+    /// flash-guard hides until the newly requested theme actually paints. This
+    /// asserts the preview identity moves to the new theme within 10 s.
+    func testThemePreviewUpdatesWhenSelectingDifferentTheme() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["-e2eSimBle", "-e2eTab", "themes"]
+        app.launch()
+
+        XCTAssertTrue(app.navigationBars["Themes"].waitForExistence(timeout: 15))
+
+        // Fixture boots with Neon active — the preview must start on Neon.
+        let neonPreview = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label BEGINSWITH 'Exact dashboard preview of Neon'"))
+            .firstMatch
+        XCTAssertTrue(neonPreview.waitForExistence(timeout: 15), "initial preview shows the active (Neon) theme")
+
+        // Select a different theme; the preview label must move to it within
+        // 10 s (the flash-guard hide → re-render → reveal completes).
+        let vaultTec = app.staticTexts["Vault-Tec"].firstMatch
+        XCTAssertTrue(waitForElement(vaultTec, app: app), "Vault-Tec theme row")
+        bringIntoView(vaultTec, app: app)
+        vaultTec.tap()
+
+        let preview = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label BEGINSWITH 'Exact dashboard preview of Vault-Tec'"))
+            .firstMatch
+        XCTAssertTrue(preview.waitForExistence(timeout: 10),
+                      "preview updates to the newly selected Vault-Tec theme within 10s")
+        // Give the flash-guard reveal a beat so the capture shows the painted
+        // new face rather than the frozen overlay.
+        usleep(1_000_000)
+        attach("sim-themes-preview-switch-vault-tec", app.screenshot())
+    }
+
     func testSettingsSubPagesAndTimezonePicker() throws {
         let app = XCUIApplication()
         app.launchArguments = ["-e2eSimBle", "-e2eTab", "settings"]

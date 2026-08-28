@@ -494,7 +494,7 @@ final class ViewModelTests: XCTestCase {
         XCTAssertEqual(vm.dataRevision, 1)
         await vm.load(limit: 1500)
         XCTAssertTrue(vm.lastLoadUsedCache, "identical payload must reuse the previous decode")
-        XCTAssertEqual(vm.dataRevision, 2, "revision still bumps so the chart invalidates")
+        XCTAssertEqual(vm.dataRevision, 3, "revision bumps on the stale cache publish AND the fresh publish so the chart invalidates")
         XCTAssertEqual(vm.samples.count, 2)
     }
 
@@ -532,6 +532,38 @@ final class ViewModelTests: XCTestCase {
         vm.reset(transport: second)
         await vm.load(limit: 1500)
         XCTAssertFalse(vm.lastLoadUsedCache, "transport change must clear the decode cache")
+    }
+
+    func testLogsViewModelWindowSwitchPublishesCachedSamplesWhileRevalidating() async throws {
+        // Stale-while-revalidate: switching the window chip must put the
+        // cached decoded samples for the TARGET limit on screen immediately,
+        // while the fresh fetch is still in flight, then replace them in place.
+        let transport = SlowLogTransport()
+        transport.responses["logs?limit=1500"] = FakeTransport.resp(200, Fixtures.logsObject)
+        transport.responses["logs?limit=300"] = FakeTransport.resp(200, Fixtures.logs300Object)
+        transport.responses["state"] = FakeTransport.resp(200, Fixtures.stateObject)
+        let vm = LogsViewModel()
+        vm.reset(transport: transport)
+
+        await vm.load(limit: 1500)
+        XCTAssertEqual(vm.samples.count, 2)
+        await vm.load(limit: 300)
+        XCTAssertEqual(vm.samples.count, 1)
+
+        transport.logDelay = 0.5
+        let loadTask = Task { await vm.load(limit: 1500) }
+        try await Task.sleep(nanoseconds: 150_000_000)
+
+        XCTAssertTrue(vm.isLoading, "revalidation is still in flight")
+        XCTAssertEqual(vm.window.limit, 1500, "chip switch targets the new window immediately")
+        XCTAssertEqual(vm.samples.count, 2, "cached 5m samples are on screen before the fetch completes")
+        XCTAssertEqual(vm.scopeLabel, "Last 5 minutes · 2 samples")
+        XCTAssertTrue(vm.lastLoadUsedCache, "the on-screen publish is served from the decode cache")
+
+        await loadTask.value
+        XCTAssertFalse(vm.isLoading)
+        XCTAssertEqual(vm.window.limit, 1500)
+        XCTAssertEqual(vm.samples.count, 2)
     }
 
     func testLogPressureChartColumnCacheRebuildsOnlyOnKeyChange() {
@@ -604,6 +636,19 @@ private final class BleLogFallbackTransport: FakeTransport {
         (0..<8).map { index in
             LogSample(tMs: Int64(index) * 200, epochTs: nil, psi: 2.0, peakPsi: 3.0, zone: "BOOST", demo: true)
         }
+    }
+}
+
+/// Delays only the /logs fetch so tests can observe the stale-while-revalidate
+/// publish while a refresh is still in flight.
+private final class SlowLogTransport: FakeTransport {
+    var logDelay: TimeInterval = 0
+
+    override func get(_ path: String) async throws -> Resp {
+        if path.hasPrefix("logs"), logDelay > 0 {
+            try? await Task.sleep(nanoseconds: UInt64(logDelay * 1_000_000_000))
+        }
+        return try await super.get(path)
     }
 }
 
@@ -790,6 +835,12 @@ enum Fixtures {
         "samples": [
             ["tMs": 1000, "psi": 1.5, "peakPsi": 2.0, "zone": "BOOST", "demo": false],
             ["tMs": 2000, "psi": -0.5, "peakPsi": 2.0, "zone": "VAC", "demo": false],
+        ],
+    ]
+
+    static let logs300Object: [String: Any] = [
+        "samples": [
+            ["tMs": 500, "psi": 2.5, "peakPsi": 3.0, "zone": "BOOST", "demo": false],
         ],
     ]
 }

@@ -69,6 +69,10 @@ private weak var transport: GaugeTransport?
             self.isLoading = true
             self.errorMessage = nil
         }
+        // Stale-while-revalidate: a window chip switch publishes the already
+        // decoded payload for the target limit immediately so the chart
+        // redraws from cache while fresh data is in flight.
+        publishCachedSamples(for: window)
         // Move transport read + JSON decode off the main actor so a 4500-sample
         // decode never blocks the scene-update watchdog (0x8BADF00D). Hop to
         // @MainActor exactly once to publish results; no other thread touches @Published.
@@ -86,7 +90,19 @@ private weak var transport: GaugeTransport?
                     // (the full ring is HTTP-only) and otherwise the BLE Control
                     // /logs route (the simulator serves the bounded window there).
                     let httpTransport = historyTransport ?? (transport.transportKind == "HTTP" ? transport : nil)
-                    let response = try await (httpTransport ?? transport).get("logs?limit=\(limit)")
+                    let fetchTransport = httpTransport ?? transport
+                    // The firmware serves the bounded /logs window as an async
+                    // APP_EV_LOGS event over BLE: allow one generous 20 s
+                    // attempt and do not re-send after a timeout (a late
+                    // fragment arriving after the old attempt's timeout used to
+                    // feed a dead request and duplicate traffic). HTTP/SimBLE
+                    // keep their normal single-shot fast paths.
+                    let response: Resp
+                    if let ble = fetchTransport as? BleTransport {
+                        response = try await ble.send("GET", path: "logs?limit=\(limit)", body: [:], timeout: 20, maxRetries: 1)
+                    } else {
+                        response = try await fetchTransport.get("logs?limit=\(limit)")
+                    }
                     guard response.status == 200 else {
                         throw NSError(domain: "Logs", code: response.status,
                                        userInfo: [NSLocalizedDescriptionKey: APIErrorText.from(response)])
@@ -133,6 +149,23 @@ private weak var transport: GaugeTransport?
             self.dataRevision += 1
             self.isLoading = false
         }
+    }
+
+    /// Publish the cached decoded samples for `window.limit` (if any) on the
+    /// main actor before the revalidating fetch completes. Bumps the revision
+    /// like any other published sample set so the chart's column cache keys on
+    /// the newly visible window, not the one that was on screen before the chip
+    /// switch. No-op until a previous load has decoded that limit.
+    private func publishCachedSamples(for window: LogWindow) {
+        cacheLock.lock()
+        let cached = decodeCache[window.limit]
+        cacheLock.unlock()
+        guard let cached else { return }
+        samples = cached.samples
+        scopeLabel = "\(window.scope) · \(cached.samples.count) samples"
+        self.window = window
+        lastLoadUsedCache = true
+        dataRevision += 1
     }
 
     nonisolated private func cachedSamples(for limit: Int, body: Data) -> [LogSample]? {

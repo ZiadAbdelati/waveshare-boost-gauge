@@ -1,4 +1,7 @@
 import Foundation
+import CoreLocation
+import NetworkExtension
+import SystemConfiguration.CaptiveNetwork
 
 /// `@MainActor`: every `@Published` mutation is main-actor-isolated. SwiftUI
 /// `.task` and Button-`Task` closures resume on background executors in this
@@ -10,8 +13,20 @@ final class SettingsViewModel: ObservableObject {
     @Published var themeFlags: ThemeList?
     @Published var tpmsConfig: TPMSConfig?
     @Published var isLoading = false
-    @Published var errorMessage: String?
-    @Published var savedMessage: String?
+    @Published var errorMessage: String? {
+        didSet {
+            if let errorMessage {
+                WindowToast.show(errorMessage, color: .systemOrange)
+            }
+        }
+    }
+    @Published var savedMessage: String? {
+        didSet {
+            if let savedMessage {
+                WindowToast.show(savedMessage, color: .systemGreen)
+            }
+        }
+    }
 
     @Published var brightnessHigh = 100
     @Published var brightnessLow = 12
@@ -39,6 +54,14 @@ final class SettingsViewModel: ObservableObject {
 
     @Published var tpmsLowPsi = 32.0
     @Published var tpmsStaleAfterMs = 15_000
+
+    // Wi-Fi pairing (via BLE Control, no SoftAP join needed)
+    @Published var networkStatus: NetworkStatus?
+    @Published var wifiNetworks: [WifiNetwork] = []
+    @Published var wifiSSID = ""
+    @Published var wifiPassword = ""
+    @Published var isScanningWifi = false
+    @Published var isSavingWifi = false
 
     @Published var obdState: OBDSummary?
     @Published var obdPeerName: String?
@@ -81,6 +104,7 @@ final class SettingsViewModel: ObservableObject {
         await loadConfig(transport)
         await loadThemeFlags(transport)
         await loadTPMSConfig(transport)
+        await loadNetworkStatus(transport)
         await MainActor.run { self.isLoading = false }
     }
 
@@ -123,6 +147,227 @@ final class SettingsViewModel: ObservableObject {
             await MainActor.run { self.applyTPMS(decoded) }
         } catch {
             await MainActor.run { self.errorMessage = "TPMS: \(error.localizedDescription)" }
+        }
+    }
+
+    private func loadNetworkStatus(_ transport: GaugeTransport) async {
+        do {
+            let response = try await transport.get("network")
+            guard response.status == 200 else {
+                await MainActor.run { errorMessage = APIErrorText.from(response) }
+                return
+            }
+            let decoded = try JSONDecoder().decode(NetworkStatus.self, from: response.body)
+            await MainActor.run { self.networkStatus = decoded }
+        } catch {
+            // Silent failure here is why "Refresh status" looked dead: the
+            // request failed and the UI showed nothing. Surface it.
+            await MainActor.run { errorMessage = error.localizedDescription }
+        }
+    }
+
+    func refreshWifiStatus() async {
+        guard let transport else {
+            await MainActor.run { errorMessage = "No gauge connection — reconnect, then refresh." }
+            return
+        }
+        await loadNetworkStatus(transport)
+    }
+
+    func scanWifi() async {
+        guard let transport else {
+            await MainActor.run { errorMessage = "No gauge connection — reconnect, then scan." }
+            return
+        }
+        await MainActor.run { isScanningWifi = true; errorMessage = nil }
+        do {
+            // The gauge's scan can legitimately return an empty list when the
+            // radio was still settling (first call after connect). One retry
+            // keeps the first tap useful.
+            for attempt in 0..<2 {
+                let response = try await transport.get("network/scan")
+                guard response.status == 200 else {
+                    await MainActor.run { isScanningWifi = false; errorMessage = APIErrorText.from(response) }
+                    return
+                }
+                let decoded = try JSONDecoder().decode(WifiScanResult.self, from: response.body)
+                let networks = decoded.networks ?? []
+                await MainActor.run { wifiNetworks = networks }
+                if !networks.isEmpty || attempt == 1 { break }
+                try? await Task.sleep(nanoseconds: 700_000_000)
+            }
+            await MainActor.run { isScanningWifi = false }
+        } catch {
+            await MainActor.run { isScanningWifi = false; errorMessage = error.localizedDescription }
+        }
+    }
+
+    func saveWifi() async {
+        guard let transport else { return }
+        let ssid = wifiSSID.trimmingCharacters(in: .whitespaces)
+        guard !ssid.isEmpty else { errorMessage = "SSID required"; return }
+        await MainActor.run { isSavingWifi = true; errorMessage = nil; savedMessage = nil }
+        var body: [String: Any] = ["ssid": ssid, "mode": "apsta"]
+        if !wifiPassword.isEmpty { body["password"] = wifiPassword }
+        do {
+            let response = try await transport.send("PUT", path: "network", body: body)
+            guard response.status == 200 else {
+                await MainActor.run { isSavingWifi = false; errorMessage = APIErrorText.from(response) }
+                return
+            }
+            let decoded = try JSONDecoder().decode(NetworkStatus.self, from: response.body)
+            await MainActor.run { networkStatus = decoded; isSavingWifi = false; savedMessage = "Wi-Fi saved"; wifiPassword = "" }
+        } catch {
+            await MainActor.run { isSavingWifi = false; errorMessage = error.localizedDescription }
+        }
+    }
+
+    /// Sends the Wi-Fi network the PHONE is currently on to the gauge: fetches
+    /// the current SSID (NEHotspotNetwork when the Hotspot entitlement is
+    /// present, else the iOS-14+ SystemConfiguration cached hint), then a
+    /// password-less PUT (keepPassword=true retains the stored PSK if the
+    /// gauge already knows this SSID). The gauge joins it itself.
+    func usePhoneWifi() async {
+        guard let transport else {
+            await MainActor.run { errorMessage = "No gauge connection — connect first, then retry." }
+            return
+        }
+        // iOS needs Location permission before it will reveal the SSID. Ask
+        // right here — the system dialog pops from this tap — instead of
+        // sending the user to Settings.
+        let granted = await Self.requestLocationPermission()
+        var full = granted
+        if granted {
+            // Pop the one-time "precise location" dialog right here if the
+            // user (or iOS default) has reduced accuracy — no Settings trip.
+            full = await Self.requestFullAccuracyIfNeeded()
+        }
+        let result: (ssid: String?, diag: String) = full ? await Self.currentPhoneWifiSSIDWithDiag() : (nil, "perm:denied")
+        guard let ssid = result.ssid, !ssid.isEmpty else {
+            await MainActor.run {
+                if !granted {
+                    errorMessage = "Location access was denied. Enable it in Settings → Privacy → Location Services → Boost Gauge, then retry."
+                } else {
+                    errorMessage = "iOS hides this iPhone\'s Wi-Fi SSID from apps without a paid developer entitlement. Pick your network from the scan list below instead — same result, one password."
+                }
+            }
+            return
+        }
+        await MainActor.run { isSavingWifi = true; errorMessage = nil; savedMessage = nil }
+        var body: [String: Any] = ["ssid": ssid, "mode": "apsta", "keepPassword": true]
+        if !wifiPassword.isEmpty { body["password"] = wifiPassword; body["keepPassword"] = false }
+        do {
+            let response = try await transport.send("PUT", path: "network", body: body)
+            guard response.status == 200 else {
+                await MainActor.run { isSavingWifi = false; errorMessage = APIErrorText.from(response) }
+                return
+            }
+            let decoded = try JSONDecoder().decode(NetworkStatus.self, from: response.body)
+            await MainActor.run {
+                networkStatus = decoded
+                isSavingWifi = false
+                savedMessage = "Gauge joining \(ssid)…"
+            }
+        } catch {
+            await MainActor.run { isSavingWifi = false; errorMessage = error.localizedDescription }
+        }
+    }
+
+    /// Triggers the system Location dialog from the button tap and waits for
+    /// the user's answer. Returns true when permission is granted.
+    @MainActor
+    private static func requestLocationPermission() async -> Bool {
+        let manager = CLLocationManager()
+        switch manager.authorizationStatus {
+        case .authorizedWhenInUse, .authorizedAlways:
+            return true
+        case .notDetermined:
+            return await withCheckedContinuation { cont in
+                let delegate = LocationAuthDelegate { status in
+                    cont.resume(returning: status == .authorizedWhenInUse || status == .authorizedAlways)
+                }
+                manager.delegate = delegate
+                delegate.retainCycleBreaker = delegate  // keep alive until callback
+                manager.requestWhenInUseAuthorization()
+            }
+        case .denied, .restricted:
+            return false
+        @unknown default:
+            return false
+        }
+    }
+
+    /// Reads the SSID the phone is on. NEHotspotNetwork.fetchCurrent (Access
+    /// WiFi Information entitlement) is the modern path; CNCopyCurrentNetworkInfo
+    /// is the legacy fallback. Both need the Location grant on iOS 14+ — the
+    /// button requests it in-line before calling this.
+    /// If the grant is reduced-accuracy, pops the system one-time "precise
+    /// location" dialog. Returns true when full accuracy is available after.
+    @MainActor
+    private static func requestFullAccuracyIfNeeded() async -> Bool {
+        let manager = CLLocationManager()
+        guard manager.accuracyAuthorization == .reducedAccuracy else { return true }
+        return await withCheckedContinuation { cont in
+            manager.requestTemporaryFullAccuracyAuthorization(withPurposeKey: "WifiSSID") { _ in
+                cont.resume(returning: manager.accuracyAuthorization == .fullAccuracy)
+            }
+        }
+    }
+
+    static func currentPhoneWifiSSID() async -> String? {
+        await currentPhoneWifiSSIDWithDiag().ssid
+    }
+
+    /// Same read, but reports exactly which source failed so the failure is
+    /// diagnosable from the error banner instead of guessed at.
+    static func currentPhoneWifiSSIDWithDiag() async -> (ssid: String?, diag: String) {
+        var diag: [String] = []
+        if let hot = try? await NEHotspotNetwork.fetchCurrent(), !hot.ssid.isEmpty {
+            return (hot.ssid, "hs:ok")
+        } else {
+            diag.append("hs:nil")
+        }
+        guard let interfaces = CNCopySupportedInterfaces() as? [String], !interfaces.isEmpty else {
+            return (nil, diag.joined(separator: ",") + ",cnc:no-if")
+        }
+        diag.append("cnc:\(interfaces.joined(separator: "/"))")
+        for ifname in interfaces {
+            if let cfDict = CNCopyCurrentNetworkInfo(ifname as CFString) as? [String: Any],
+               let ssid = cfDict["SSID"] as? String, !ssid.isEmpty {
+                return (ssid, "ok")
+            }
+            diag.append("\(ifname):nil")
+        }
+        return (nil, diag.joined(separator: ","))
+    }
+
+    func deleteSavedWifi(ssid: String) async {
+        guard let transport else { return }
+        do {
+            let response = try await transport.send("DELETE", path: "network", body: ["ssid": ssid])
+            guard response.status == 200 else {
+                await MainActor.run { errorMessage = APIErrorText.from(response) }
+                return
+            }
+            let decoded = try JSONDecoder().decode(NetworkStatus.self, from: response.body)
+            await MainActor.run { networkStatus = decoded; savedMessage = "Removed \(ssid)" }
+        } catch {
+            await MainActor.run { errorMessage = error.localizedDescription }
+        }
+    }
+
+    func reconnectWifi() async {
+        guard let transport else { return }
+        do {
+            let response = try await transport.send("POST", path: "network/reconnect", body: [:])
+            guard response.status == 200 else {
+                await MainActor.run { errorMessage = APIErrorText.from(response) }
+                return
+            }
+            let decoded = try JSONDecoder().decode(NetworkStatus.self, from: response.body)
+            await MainActor.run { networkStatus = decoded; savedMessage = "Reconnecting…" }
+        } catch {
+            await MainActor.run { errorMessage = error.localizedDescription }
         }
     }
 
@@ -209,6 +454,18 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
+    func saveTpmsBle() async {
+        guard let transport else {
+            await MainActor.run { errorMessage = "No gauge connection — reconnect, then retry." }
+            return
+        }
+        let body: [String: Any] = ["tpmsBle": tpmsBle]
+        await save(transport, method: "PUT", path: "themes/config", body: body) { [weak self] data in
+            let decoded = try JSONDecoder().decode(ThemeList.self, from: data)
+            self?.applyThemeFlags(decoded)
+        }
+    }
+
     func saveThemeFlags() async {
         await saveDemoMode()
     }
@@ -288,18 +545,29 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func syncTimezone() async {
-        guard let transport else { return }
+        guard let transport else {
+            errorMessage = "No gauge connection — reconnect, then retry."
+            return
+        }
         savedMessage = nil
-        let offset = Format.currentTimezoneOffsetMinutes()
+        // Send the SELECTED timezone (curated option or custom fields), not a
+        // phone-offset-derived string: a synthetic "UTC4" overwrote the gauge's
+        // real POSIX TZ ("EST5EDT,..."), and loadConfig then matched no curated
+        // option → the picker flapped back to "Custom" on next load.
+        // The firmware /time route requires epochMs (the phone is the time
+        // authority, same as the web UI); tz-only bodies 400 with invalid_time.
         let body: [String: Any] = [
-            "timezoneOffsetMinutes": offset,
-            "timezoneTz": Format.posixTimezoneString(for: offset),
+            "epochMs": Int64(Date().timeIntervalSince1970 * 1000),
+            "timezoneOffsetMinutes": timezoneOffset,
+            "timezoneTz": timezoneTZ,
         ]
         await postTimezone(transport, body: body, success: "Device timezone synced")
     }
 
-    /// Apply a curated (or custom) timezone: set the fields, push the
-    /// timezone-only POST, then persist through the normal config save.
+    /// Apply a curated (or custom) timezone: set the local fields only.
+    /// The gauge is updated only when the user taps "Sync timezone to gauge".
+    /// Previously this pushed immediately and then saved, producing two toasts
+    /// ("Timezone applied" + "Saved") on every picker tap.
     func applyTimezoneOption(_ id: String) async {
         if id != SettingsViewModel.customTimezoneID,
            let option = SettingsViewModel.timezoneOptions.first(where: { $0.id == id }) {
@@ -307,22 +575,28 @@ final class SettingsViewModel: ObservableObject {
             timezoneTZ = option.tz
         }
         timezoneSelection = id
-        guard let transport else { return }
-        let body: [String: Any] = [
-            "timezoneOffsetMinutes": timezoneOffset,
-            "timezoneTz": timezoneTZ,
-        ]
-        await postTimezone(transport, body: body, success: "Timezone applied")
-        await saveConfig()
     }
 
     func saveTimezoneCustom() async {
         guard let transport else { return }
-        let body: [String: Any] = [
+        // Push the custom timezone + current time, then persist the config,
+        // but show only ONE toast — the intermediate "Timezone saved" + "Saved"
+        // double-fire was the second half of the double notification.
+        let timeBody: [String: Any] = [
+            "epochMs": Int64(Date().timeIntervalSince1970 * 1000),
             "timezoneOffsetMinutes": timezoneOffset,
             "timezoneTz": timezoneTZ,
         ]
-        await postTimezone(transport, body: body, success: "Timezone saved")
+        do {
+            let timeResp = try await transport.send("POST", path: "time", body: timeBody)
+            guard timeResp.status == 200 else {
+                await MainActor.run { self.errorMessage = APIErrorText.from(timeResp) }
+                return
+            }
+        } catch {
+            await MainActor.run { self.errorMessage = error.localizedDescription }
+            return
+        }
         await saveConfig()
     }
 
@@ -441,4 +715,24 @@ extension SettingsViewModel {
         TimezoneOption(id: "japan", label: "Japan", tz: "JST-9", offsetMinutes: 540),
         TimezoneOption(id: "australia-east", label: "Australia East", tz: "AEST-10AEDT,M10.1.0/2,M4.1.0/3", offsetMinutes: 600),
     ]
+}
+
+
+/// One-shot CLLocationManagerDelegate that resumes the permission wait once.
+/// Held alive by its own property until the callback fires.
+final class LocationAuthDelegate: NSObject, CLLocationManagerDelegate {
+    private var continuation: CheckedContinuation<Bool, Never>?
+    var retainCycleBreaker: LocationAuthDelegate?
+
+    private let onStatus: (CLAuthorizationStatus) -> Void
+
+    init(onStatus: @escaping (CLAuthorizationStatus) -> Void) {
+        self.onStatus = onStatus
+    }
+
+    func locationManager(_ manager: CLLocationManager, didChangeAuthorization status: CLAuthorizationStatus) {
+        guard status != .notDetermined else { return }
+        onStatus(status)
+        retainCycleBreaker = nil
+    }
 }

@@ -377,20 +377,40 @@ final class BleTransport: NSObject, BLELinkTransport, CBCentralManagerDelegate, 
     }
 
     func send(_ method: String, path: String, body: [String: Any]) async throws -> Resp {
+        try await send(method, path: path, body: body, timeout: 10, maxRetries: 4)
+    }
+
+    /// Per-call transport timing override. Every existing call site keeps the
+    /// 10 s operation timeout and up to 4 retries; callers that know the
+    /// firmware answers asynchronously (e.g. the bounded /logs APP_EV_LOGS
+    /// response) can widen the single-attempt timeout and/or disable the retry
+    /// cascade that re-sends a request after its late response was dropped.
+    func send(_ method: String, path: String, body: [String: Any], timeout: TimeInterval = 10, maxRetries: Int = 4) async throws -> Resp {
         do {
-            return try await sendOnce(method, path: path, body: body)
+            return try await sendOnce(method, path: path, body: body, timeout: timeout)
         } catch let error as TransportError {
             guard error == .writeFailed || error == .operationTimeout || error == .busy else { throw error }
+            // A board reboot resets the firmware's CCCD state while iOS keeps
+            // its subscription "active" — CoreBluetooth never re-issues
+            // setNotifyValue on auto-reconnect, so responses silently vanish
+            // (hardware-verified: request reached the board, the response was
+            // fragmented on the radio, iOS still timed out). Re-subscribe on
+            // EVERY write/timeout failure, even when this call has retries
+            // disabled: it's idempotent and the only recovery path.
+            if error == .writeFailed || error == .operationTimeout {
+                resubscribeNotifications()
+            }
+            guard maxRetries > 0 else { throw error }
             let retryBackoffNs: [UInt64] = [200_000_000, 800_000_000, 1_500_000_000, 2_500_000_000]
             var lastError: Error = error
-            for delayNs in retryBackoffNs {
-                NSLog("[BLE] send %@ %@ failed %@, retry in %.1fs (busy/writeFail share queue)", method, path, String(describing: lastError), Double(delayNs)/1e9)
+            for delayNs in retryBackoffNs.prefix(maxRetries) {
+                NSLog("[BLE] send %@ %@ failed %@ (timeout %.1fs), retry in %.1fs (busy/writeFail share queue)", method, path, String(describing: lastError), timeout, Double(delayNs)/1e9)
                 if lastError as? TransportError == .writeFailed || lastError as? TransportError == .operationTimeout {
                     resubscribeNotifications()
                 }
                 try? await Task.sleep(nanoseconds: delayNs)
                 do {
-                    return try await sendOnce(method, path: path, body: body)
+                    return try await sendOnce(method, path: path, body: body, timeout: timeout)
                 } catch let retryError as TransportError {
                     guard retryError == .writeFailed || retryError == .operationTimeout || retryError == .busy else { throw retryError }
                     lastError = retryError
@@ -413,33 +433,33 @@ final class BleTransport: NSObject, BLELinkTransport, CBCentralManagerDelegate, 
         }
     }
 
-    private func sendOnce(_ method: String, path: String, body: [String: Any]) async throws -> Resp {
+    private func sendOnce(_ method: String, path: String, body: [String: Any], timeout: TimeInterval) async throws -> Resp {
         guard let _ = peripheral, let _ = controlChar, isConnected else {
             throw TransportError.notConnected
         }
         let wirePath = path.hasPrefix("/") ? path : "/" + path
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Resp, Error>) in
             queue.async {
-                self.enqueueSend(method: method, path: wirePath, body: body, continuation: continuation)
+                self.enqueueSend(method: method, path: wirePath, body: body, timeout: timeout, continuation: continuation)
             }
         }
     }
 
-    private func enqueueSend(method: String, path: String, body: [String: Any], continuation: CheckedContinuation<Resp, Error>) {
+    private func enqueueSend(method: String, path: String, body: [String: Any], timeout: TimeInterval, continuation: CheckedContinuation<Resp, Error>) {
         if requestPending != nil {
             sendWaiters.append { [weak self] in
                 guard let self else {
                     continuation.resume(throwing: TransportError.notConnected)
                     return
                 }
-                self.performSendOnce(method: method, path: path, body: body, continuation: continuation)
+                self.performSendOnce(method: method, path: path, body: body, timeout: timeout, continuation: continuation)
             }
             return
         }
-        performSendOnce(method: method, path: path, body: body, continuation: continuation)
+        performSendOnce(method: method, path: path, body: body, timeout: timeout, continuation: continuation)
     }
 
-    private func performSendOnce(method: String, path: String, body: [String: Any], continuation: CheckedContinuation<Resp, Error>) {
+    private func performSendOnce(method: String, path: String, body: [String: Any], timeout: TimeInterval, continuation: CheckedContinuation<Resp, Error>) {
         guard let peripheral, let controlChar else {
             continuation.resume(throwing: TransportError.notConnected)
             return
@@ -462,10 +482,10 @@ final class BleTransport: NSObject, BLELinkTransport, CBCentralManagerDelegate, 
         framer.clearBuffer()
         requestPending = RequestPending(id: request.id, continuation: continuation)
         peripheral.writeValue(request.data, for: controlChar, type: .withResponse)
-        let timeout = DispatchWorkItem { [weak self] in
+        let timeoutItem = DispatchWorkItem { [weak self] in
             self?.failRequestIfPending(TransportError.operationTimeout)
         }
-        queue.asyncAfter(deadline: .now() + 10, execute: timeout)
+        queue.asyncAfter(deadline: .now() + timeout, execute: timeoutItem)
     }
 
     func liveStatusStream() -> AsyncStream<Result<Data, Error>> {

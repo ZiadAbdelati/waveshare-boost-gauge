@@ -1,4 +1,5 @@
 #include "boost_obd_ble.h"
+#include "boost_app_ble.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -519,6 +520,20 @@ static void driver_task(void *arg)
             if (ev.type == OBD_EV_CONNECT_FAIL) {
                 s_last_err = ev.a;
                 ESP_LOGW(TAG, "connect failed: status=0x%04x", (unsigned)ev.a);
+            }
+            /* Radio coexistence: while a companion app holds the peripheral
+             * link, postpone new scan bursts — active scanning during 3 s
+             * bursts starves the peripheral's notification path and the
+             * phone's /logs responses get lost mid-fragment (hardware-verified:
+             * intermittent "device did not respond" only with OBD link on).
+             * Adapter discovery is a background concern; it resumes on the
+             * next loop pass once the phone disconnects. */
+            if (boost_app_ble_connected()) {
+                vTaskDelay(pdMS_TO_TICKS(3000));
+                if (boost_app_ble_connected()) {
+                    xQueueSend(s_evq, &ev, 0);   /* re-queue; check again in 3 s */
+                    break;
+                }
             }
             vTaskDelay(pdMS_TO_TICKS(first_pass ? 0 : s_backoff_ms));
             first_pass = false;

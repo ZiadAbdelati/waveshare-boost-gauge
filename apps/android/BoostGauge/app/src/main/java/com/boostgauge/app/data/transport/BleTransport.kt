@@ -152,6 +152,114 @@ internal class BleControlFramer {
     }
 }
 
+/**
+ * Seam for the BluetoothDevice bond operations used by [BleTransport].
+ *
+ * The production implementation talks to the real Bluetooth stack; tests inject
+ * a fake so stale-bond recovery can be driven without a radio. The seam exists
+ * because the stale-bond deadlock needs two actions Android does not expose
+ * through normal APIs:
+ *  - `removeBond()` (hidden API, reached through Java reflection on Android 12)
+ *    to flush the stack/kernel key cache that survives the Settings "no bonded
+ *    device" state, and
+ *  - bounded waits that observe the BOND_NONE / BOND_BONDED transitions.
+ */
+interface BondOperations {
+    fun bondState(device: BluetoothDevice): Int
+
+    fun createBond(device: BluetoothDevice): Boolean
+
+    /** Best-effort removal of a stale bond (reflection-backed in production). */
+    fun removeBond(device: BluetoothDevice): Boolean
+
+    /**
+     * Whether the connected GATT link is encrypted. Android has no public
+     * GATT-encryption getter; a completed bond is the closest proxy because
+     * Android 12 auto-encrypts bonded LE links. Overridable so tests (or a
+     * future stronger signal) can model the stale-cache case where
+     * bondState says BONDED while the link is not actually encrypted.
+     */
+    fun isLinkEncrypted(device: BluetoothDevice): Boolean =
+        bondState(device) == BluetoothDevice.BOND_BONDED
+
+    /** Suspends until `device` reaches `target` bond state; throws [TransportException] on timeout. */
+    suspend fun awaitBondState(device: BluetoothDevice, target: Int, timeoutMs: Long)
+
+    /**
+     * Suspends until a best-effort bonding attempt settles at BOND_BONDED or
+     * BOND_NONE; throws [TransportException] on timeout.
+     */
+    suspend fun awaitBondSettled(device: BluetoothDevice, timeoutMs: Long)
+}
+
+/** Production [BondOperations] backed by the real Android Bluetooth stack. */
+class AndroidBondOperations(private val context: Context) : BondOperations {
+    override fun bondState(device: BluetoothDevice): Int = device.bondState
+
+    override fun createBond(device: BluetoothDevice): Boolean =
+        runCatching { device.createBond() }.getOrDefault(false)
+
+    /**
+     * BluetoothDevice.removeBond() exists on Android 12 (hidden API, present
+     * through reflection) and is the standard workaround for a stale-bond key
+     * cache: Settings shows no bond while the stack still encrypts with the
+     * old LTK from a previous firmware flash. Guarded and best-effort — a
+     * refusal just means recovery fails and connect() reports it.
+     */
+    override fun removeBond(device: BluetoothDevice): Boolean = runCatching {
+        val removeBond = BluetoothDevice::class.java.getMethod("removeBond")
+        removeBond.invoke(device) as Boolean
+    }.getOrDefault(false)
+
+    override suspend fun awaitBondState(device: BluetoothDevice, target: Int, timeoutMs: Long) {
+        awaitBondUntil(device, timeoutMs) { it == target }
+    }
+
+    override suspend fun awaitBondSettled(device: BluetoothDevice, timeoutMs: Long) {
+        awaitBondUntil(device, timeoutMs) {
+            it == BluetoothDevice.BOND_BONDED || it == BluetoothDevice.BOND_NONE
+        }
+    }
+
+    private suspend fun awaitBondUntil(device: BluetoothDevice, timeoutMs: Long, done: (Int) -> Boolean) {
+        try {
+            withTimeout(timeoutMs) {
+                suspendCancellableCoroutine<Unit> { cont ->
+                    if (done(device.bondState)) {
+                        cont.resumeWith(Result.success(Unit))
+                        return@suspendCancellableCoroutine
+                    }
+                    val receiver = object : BroadcastReceiver() {
+                        override fun onReceive(context: Context, intent: Intent) {
+                            if (intent.action != BluetoothDevice.ACTION_BOND_STATE_CHANGED) return
+                            val extra = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+                            } else {
+                                @Suppress("DEPRECATION")
+                                intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE)
+                            }
+                            if (extra?.address != device.address) return
+                            val state = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, device.bondState)
+                            if (done(state)) {
+                                runCatching { context.unregisterReceiver(this) }
+                                cont.resumeWith(Result.success(Unit))
+                            }
+                        }
+                    }
+                    context.registerReceiver(receiver, IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED))
+                    cont.invokeOnCancellation {
+                        runCatching { context.unregisterReceiver(receiver) }
+                    }
+                }
+            }
+        } catch (e: TimeoutCancellationException) {
+            // Never let a bond timeout masquerade as coroutine cancellation:
+            // the repository reconnect loop dies forever on CancellationException.
+            throw TransportException("bond state did not settle within ${timeoutMs} ms", e)
+        }
+    }
+}
+
 private sealed interface GattEvent {
     data class ConnectionState(val gatt: BluetoothGatt, val status: Int, val newState: Int) : GattEvent
     data class ServicesDiscovered(val gatt: BluetoothGatt, val status: Int) : GattEvent
@@ -190,6 +298,11 @@ private sealed interface GattEvent {
 class BleTransport(
     private val context: Context,
     private val deviceAddress: String,
+    /** Test seam for bond operations (state, create/removeBond, encrypted-link
+     *  check and bounded state waits). Production uses the real Bluetooth
+     *  stack; tests inject a fake to exercise stale-bond recovery without a
+     *  radio. */
+    private val bondOps: BondOperations = AndroidBondOperations(context),
     /** Test seam: how a BluetoothGatt is created for a device. Production uses
      *  connectGatt; tests inject a controllable fake to prove the gatt object
      *  is closed on every disconnect/teardown path. */
@@ -430,7 +543,7 @@ class BleTransport(
             // /state mirror (~1 KB) fragments into ~5 ATT notifications per sample,
             // and the flood dropped the BLE link during the Android E2E matrix.
             // Full state is served by the Control /state route via statusPollJob.
-            enableNotify(control)
+            enableNotifyWithStaleBondRecovery(device, control)
             linkReady = true
             _linkUp.value = true
             startStatusPoll()
@@ -470,47 +583,75 @@ class BleTransport(
         statusPollJob = null
     }
 
-    private suspend fun attemptBond(device: BluetoothDevice) {
-        if (device.bondState == BluetoothDevice.BOND_BONDED) return
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) !=
+    private fun hasBondPermission(): Boolean =
+        ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) ==
             PackageManager.PERMISSION_GRANTED
-        ) {
-            return
-        }
-        val created = try {
-            device.createBond()
-        } catch (t: Throwable) {
-            false
-        }
+
+    private suspend fun attemptBond(device: BluetoothDevice) {
+        if (bondOps.bondState(device) == BluetoothDevice.BOND_BONDED) return
+        if (!hasBondPermission()) return
+        val created = bondOps.createBond(device)
         if (created) {
             try {
-                awaitBond(device)
+                bondOps.awaitBondSettled(device, BOND_TIMEOUT_MS)
             } catch (t: Throwable) {
                 // Best-effort bonding; an encrypted service may still reject reads/writes.
+                // The encrypted-link check after discovery owns the real gate.
             }
         }
     }
 
-    private suspend fun awaitBond(device: BluetoothDevice) {
-        withTimeout(BOND_TIMEOUT_MS) {
-            suspendCancellableCoroutine { cont ->
-                val receiver = object : BroadcastReceiver() {
-                    override fun onReceive(context: Context, intent: Intent) {
-                        if (intent.action != BluetoothDevice.ACTION_BOND_STATE_CHANGED) return
-                        val extra = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE)
-                        if (extra?.address != device.address) return
-                        if (device.bondState == BluetoothDevice.BOND_BONDED ||
-                            intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, -1) == BluetoothDevice.BOND_NONE
-                        ) {
-                            context.unregisterReceiver(this)
-                            cont.resumeWith(Result.success(Unit))
-                        }
-                    }
-                }
-                context.registerReceiver(receiver, IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED))
-                cont.invokeOnCancellation { runCatching { context.unregisterReceiver(receiver) } }
-            }
+    /**
+     * Subscribe to Control notifications, treating an insufficient encrypted
+     * link or a failed CCCD write as a stale-bond condition. On detection the
+     * bond is removed and recreated fresh, then the CCCD write is retried
+     * exactly once. Recovery never runs more than once per connect() call:
+     * if a recovered subscribe still fails, connect() reports the error and
+     * the repository backoff loop retries from a clean bond state.
+     */
+    private suspend fun enableNotifyWithStaleBondRecovery(
+        device: BluetoothDevice,
+        characteristic: BluetoothGattCharacteristic,
+    ) {
+        var recovered = false
+        if (!bondOps.isLinkEncrypted(device)) {
+            recoverStaleBond(device)
+            recovered = true
         }
+        try {
+            enableNotify(characteristic)
+        } catch (error: TransportException) {
+            if (recovered) throw error
+            recoverStaleBond(device)
+            recovered = true
+            enableNotify(characteristic)
+        }
+    }
+
+    /**
+     * Stale-bond recovery: remove the bond (best-effort reflection, guards
+     * against the stack cache that survives Settings "no bond"), wait for
+     * BOND_NONE (bounded ~5 s), re-bond fresh and wait for BOND_BONDED
+     * (bounded 15 s). Must be invoked at most once per connect() by the
+     * caller.
+     */
+    private suspend fun recoverStaleBond(device: BluetoothDevice) {
+        if (!hasBondPermission()) {
+            throw TransportException("Bluetooth connect permission missing for stale-bond recovery")
+        }
+        // Best-effort remove; the stack may already report BOND_NONE while its
+        // key cache still holds the old LTK, so the NONE wait below is also the
+        // flush window.
+        bondOps.removeBond(device)
+        try {
+            bondOps.awaitBondState(device, BluetoothDevice.BOND_NONE, BOND_NONE_TIMEOUT_MS)
+        } catch (error: TransportException) {
+            throw TransportException("stale bond did not clear within $BOND_NONE_TIMEOUT_MS ms", error)
+        }
+        if (!bondOps.createBond(device)) {
+            throw TransportException("re-bond after stale bond did not start")
+        }
+        bondOps.awaitBondState(device, BluetoothDevice.BOND_BONDED, BOND_TIMEOUT_MS)
     }
 
     private suspend fun enableNotify(characteristic: BluetoothGattCharacteristic) {
@@ -754,6 +895,7 @@ class BleTransport(
         private const val LOG_READ_TIMEOUT_MS = 20_000L
         private const val REQUEST_TIMEOUT_MS = 20_000L
         private const val BOND_TIMEOUT_MS = 15_000L
+        private const val BOND_NONE_TIMEOUT_MS = 5_000L
         private const val STATUS_POLL_MS = 1_000L
         private val RETRY_DELAYS_MS = longArrayOf(0L, 200L, 800L, 1_500L, 2_500L)
     }

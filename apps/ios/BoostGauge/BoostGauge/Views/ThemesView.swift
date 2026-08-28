@@ -139,7 +139,7 @@ struct ThemesView: View {
         // rim, reading as a recessed pod on both light and dark page
         // backgrounds. Corners stay transparent; no offset shadow (it reads
         // harsh against a light page).
-        GaugeMirrorWebView(payload: vm.previewPayload(for: theme))
+        GaugeMirrorWebView(payload: vm.previewPayload(for: theme), themeID: theme.id)
             .aspectRatio(1, contentMode: .fit)
             .clipShape(Circle())
             .overlay {

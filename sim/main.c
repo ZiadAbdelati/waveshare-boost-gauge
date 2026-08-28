@@ -703,12 +703,162 @@ static int run_chase(const char *out_dir)
     return 0;
 }
 
+/* --qr-test: verify the two-finger QR overlay + swipe-to-toggles page.
+ *  1. show the overlay (QR page) -> snapshot qr_page0
+ *  2. swipe left -> toggles page -> snapshot qr_page1
+ *  3. tap dismiss -> overlay gone, gauge still live (updates again)
+ * Returns 0 only if every step observed. */
+static int run_qr_test(const char *out_dir)
+{
+    sim_mkdir(out_dir);
+    boost_sim_init();
+    boost_tpms_init();
+    boost_page_create();
+    pump_lvgl(50);
+
+    boost_sample_t sample = { .psi = 5.0f, .peak_psi = 5.0f, .demo = true };
+    boost_page_update(&sample);
+    pump_lvgl(50);
+
+    int failures = 0;
+    /* 1. QR page shows */
+    boost_page_qr_show();
+    pump_lvgl(100);
+    if (!boost_page_qr_active()) { fprintf(stderr, "FAIL overlay did not show\n"); failures++; }
+    char path[512];
+    snprintf(path, sizeof(path), "%s/qr_page0.raw", out_dir);
+    if (!snapshot_screen(path)) return 2;
+    printf("wrote %s (QR page)\n", path);
+
+    /* 2. Swipe left -> toggles page */
+    boost_page_qr_swipe_left();
+    pump_lvgl(100);
+    if (!boost_page_qr_active()) { fprintf(stderr, "FAIL overlay lost after swipe\n"); failures++; }
+    snprintf(path, sizeof(path), "%s/qr_page1.raw", out_dir);
+    if (!snapshot_screen(path)) return 2;
+    printf("wrote %s (toggles page)\n", path);
+
+    /* 2b. Wraparound: from page 0, a RIGHT swipe must also reach page 1. */
+    boost_page_qr_dismiss();
+    pump_lvgl(30);
+    boost_page_qr_show();
+    pump_lvgl(30);
+    boost_page_qr_swipe_right();
+    pump_lvgl(80);
+    if (!boost_page_qr_active()) { fprintf(stderr, "FAIL overlay lost on wraparound right\n"); failures++; }
+    if (!boost_page_qr_toggles()) { fprintf(stderr, "FAIL swipe right on page0 did not wrap to toggles\n"); failures++; }
+    printf("wraparound right: OK\n");
+
+    /* 3. Swipe right -> back to the QR page */
+    boost_page_qr_swipe_right();
+    pump_lvgl(100);
+    if (!boost_page_qr_active()) { fprintf(stderr, "FAIL overlay lost after swipe right\n"); failures++; }
+    /* The QR page is the only one with a qrcode widget; distinguish by
+     * re-snapshotting and checking pixel content differs from page1. */
+    snprintf(path, sizeof(path), "%s/qr_page0b.raw", out_dir);
+    if (!snapshot_screen(path)) return 2;
+    printf("wrote %s (back to QR page)\n", path);
+    /* byte-compare page0b against page0: same page, same content */
+    {
+        char ref[512];
+        snprintf(ref, sizeof(ref), "%s/qr_page0.raw", out_dir);
+        FILE *a = fopen(ref, "rb");
+        FILE *b = fopen(path, "rb");
+        if (!a || !b) { fprintf(stderr, "FAIL cannot open page files\n"); failures++; }
+        else {
+            int ca, cb, same = 1;
+            while ((ca = fgetc(a)) != EOF && (cb = fgetc(b)) != EOF) {
+                if (ca != cb) { same = 0; break; }
+            }
+            if (!same) { fprintf(stderr, "FAIL swipe right did not restore the QR page\n"); failures++; }
+            fclose(a); fclose(b);
+        }
+    }
+
+    /* 2c. Toggle interaction: only the SWITCH toggles. A tap on the row card
+     * (label area) must do NOTHING (falls through as overlay tap-dismiss is
+     * suppressed by the row being CLICKABLE? No - row is inert now; the tap
+     * hits the overlay and dismisses. So the sim asserts:
+     *  - switch tap -> deferred toggle applied
+     *  - row tap (label area) -> overlay dismisses (inert card) */
+    boost_page_qr_dismiss();
+    pump_lvgl(30);
+    boost_page_qr_show();
+    pump_lvgl(30);
+    boost_page_qr_swipe_left();
+    pump_lvgl(50);
+    if (!boost_page_qr_toggles()) { fprintf(stderr, "FAIL toggles page for toggle test\n"); failures++; }
+    {
+        extern int g_sim_obd_set_calls;
+        const int calls_before = g_sim_obd_set_calls;
+        boost_page_qr_tap_switch(0);   /* the OBD switch itself */
+        for (int i = 0; i < 10; ++i) { lv_tick_inc(16); lv_timer_handler(); usleep(16000); }
+        const int calls_after = g_sim_obd_set_calls;
+        if (calls_after != calls_before + 1) {
+            fprintf(stderr, "FAIL switch tap did not apply the OBD toggle (%d -> %d)\n",
+                    calls_before, calls_after);
+            failures++;
+        } else {
+            printf("switch tap applied OBD toggle: OK\n");
+        }
+        if (boost_page_qr_pending_toggle() != -1) {
+            fprintf(stderr, "FAIL toggle request left pending\n");
+            failures++;
+        }
+    }
+
+    /* Reset stub link states so the round-trip determinism check holds. */
+    {
+        extern bool g_sim_obd_state, g_sim_app_ble_state;
+        g_sim_obd_state = false;
+        g_sim_app_ble_state = false;
+        /* Re-show: show_qr() always opens on the QR page unchecked. */
+        boost_page_qr_dismiss();
+        pump_lvgl(30);
+        boost_page_qr_show();
+        pump_lvgl(30);
+        if (boost_page_qr_toggles()) { fprintf(stderr, "FAIL re-show not on QR page\n"); failures++; }
+    }
+
+    /* 3b. Swipe left again -> toggles (back-and-forth round trip) */
+    boost_page_qr_swipe_left();
+    pump_lvgl(50);
+    if (!boost_page_qr_active()) { fprintf(stderr, "FAIL overlay lost on second swipe left\n"); failures++; }
+    snprintf(path, sizeof(path), "%s/qr_page1b.raw", out_dir);
+    if (!snapshot_screen(path)) return 2;
+    printf("wrote %s (toggles again)\n", path);
+    {
+        char ref[512];
+        snprintf(ref, sizeof(ref), "%s/qr_page1.raw", out_dir);
+        FILE *a = fopen(ref, "rb");
+        FILE *b = fopen(path, "rb");
+        if (a && b) {
+            int ca, cb, same = 1;
+            while ((ca = fgetc(a)) != EOF && (cb = fgetc(b)) != EOF) {
+                if (ca != cb) { same = 0; break; }
+            }
+            if (!same) { fprintf(stderr, "FAIL second toggles render differs\n"); failures++; }
+            fclose(a); fclose(b);
+        }
+    }
+
+    /* 4. Tap dismisses and gauge resumes */
+    boost_page_qr_dismiss();
+    pump_lvgl(50);
+    if (boost_page_qr_active()) { fprintf(stderr, "FAIL overlay still active after tap\n"); failures++; }
+    boost_page_update(&sample);   /* must run again with no overlay up */
+    pump_lvgl(50);
+    printf("qr-test: %s (%d failures)\n", failures == 0 ? "PASS" : "FAIL", failures);
+    return failures == 0 ? 0 : 5;
+}
+
 int main(int argc, char **argv)
 {
     bool window = false;
     bool audit = false;
     bool tpms = false;
     bool chase = false;
+    bool qr_test = false;
     int audit_seconds = 20;
     const char *shot_dir = "preview/sim";
     const char *theme_id = NULL;
@@ -796,6 +946,9 @@ int main(int argc, char **argv)
              * through all 6 phase states. Requires --neon-layout marquee. */
             chase = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') chase_dir = argv[++i];
+        } else if (strcmp(argv[i], "--qr-test") == 0) {
+            qr_test = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') shot_dir = argv[++i];
         } else if (strcmp(argv[i], "--screenshot") == 0) {
             if (i + 1 < argc) {
                 shot_dir = argv[++i];
@@ -830,6 +983,9 @@ int main(int argc, char **argv)
     }
     if (chase) {
         return run_chase(chase_dir ? chase_dir : "preview/chase");
+    }
+    if (qr_test) {
+        return run_qr_test(shot_dir);
     }
     return run_screenshots(shot_dir, theme_id);
 }

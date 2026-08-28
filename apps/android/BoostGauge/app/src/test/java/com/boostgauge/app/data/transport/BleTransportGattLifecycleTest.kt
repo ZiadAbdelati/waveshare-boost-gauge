@@ -17,6 +17,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowBluetoothGatt
+import org.robolectric.Shadows.shadowOf
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.runBlocking
@@ -69,6 +70,9 @@ class BleTransportGattLifecycleTest {
     /** Transport whose gattFactory drives the full GATT sequence to CONNECTED. */
     private fun newTransport(): BleTransport =
         BleTransport(context, address) { device, callback ->
+            // Model a bonded peer whose LE link is encrypted: these lifecycle
+            // tests exercise gatt teardown, not bond recovery.
+            shadowOf(device).setBondState(android.bluetooth.BluetoothDevice.BOND_BONDED)
             val gatt = ShadowBluetoothGatt.newInstance(device)
             FakeBluetoothGattShadow.callback = callback
             FakeBluetoothGattShadow.lastGatt = gatt

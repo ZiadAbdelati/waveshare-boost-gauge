@@ -219,6 +219,30 @@ data class TpmsConfig(
     val staleAfterMs: Long = 15_000L,
 )
 
+/** /api/v1/network payload (boost_web.c network_status_json()). */
+@Serializable
+data class NetworkStatus(
+    val mode: String = "ap",
+    val staEnabled: Boolean = false,
+    val staConnected: Boolean = false,
+    val staSsid: String = "",
+    val staIp: String = "",
+    val apSsid: String = "",
+    val apIp: String = "192.168.4.1",
+    val rssi: Int = 0,
+    val hasPassword: Boolean = false,
+    val saved: List<SavedNetwork> = emptyList(),
+)
+
+@Serializable
+data class SavedNetwork(val ssid: String = "")
+
+@Serializable
+data class WifiScanPayload(val networks: List<WifiNetwork> = emptyList())
+
+@Serializable
+data class WifiNetwork(val ssid: String = "", val rssi: Int = 0, val auth: Int = 0)
+
 /** Error body shape returned by send_err(). */
 @Serializable
 data class ErrorBody(val error: String = "")

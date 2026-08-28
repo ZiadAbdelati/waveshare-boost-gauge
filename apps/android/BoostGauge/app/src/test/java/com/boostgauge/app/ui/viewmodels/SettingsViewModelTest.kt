@@ -147,16 +147,22 @@ class SettingsViewModelTest {
         val viewModel = newViewModel(transport)
         viewModel.state.first { !it.loading }
 
+        // applyTimezone is now local-only — no network until explicit sync
         viewModel.applyTimezone(-480, "PST8PDT,M3.2.0/2,M11.1.0/2")
+        runCurrent()
+
+        assertEquals(-480, viewModel.state.value.fields.timezoneOffsetMinutes)
+        assertEquals("PST8PDT,M3.2.0/2,M11.1.0/2", viewModel.state.value.fields.timezoneTz)
+        assertTrue(transport.requests.none { it.path == "time" })
+
+        // Explicit sync sends the selected timezone + epoch
+        viewModel.syncTime()
         runCurrent()
 
         val post = transport.requests.first { it.method == "POST" && it.path == "time" }
         assertTrue(post.bodyJson!!.contains("\"timezoneOffsetMinutes\":-480"))
         assertTrue(post.bodyJson.contains("\"timezoneTz\":\"PST8PDT,M3.2.0/2,M11.1.0/2\""))
-        // The gauge RTC is the time authority; the app never sends the phone epoch.
-        assertTrue(!post.bodyJson.contains("epochMs"))
-        assertEquals("Timezone applied", viewModel.state.value.message)
-        assertEquals(-480, viewModel.state.value.fields.timezoneOffsetMinutes)
+        assertTrue(Regex("\"epochMs\":\\d+").containsMatchIn(post.bodyJson))
     }
 
     @Test
