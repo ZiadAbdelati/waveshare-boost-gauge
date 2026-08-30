@@ -9,6 +9,9 @@ import kotlin.math.abs
  * applies via setenv("TZ")+tzset(). The IANA ids let the app pick the entry
  * that matches the phone's default zone; unknown zones fall back to a
  * fixed-offset POSIX string.
+ *
+ * Generated from the canonical zone list in web/tz.json (the phone-relevant
+ * entries that carry IANA ids); the JSON posix strings are copied verbatim.
  */
 data class TimezoneEntry(
     val label: String,
@@ -20,58 +23,17 @@ data class TimezoneEntry(
 object Timezones {
 
     val curated: List<TimezoneEntry> = listOf(
-        TimezoneEntry("UTC", setOf("UTC", "Etc/UTC", "Etc/GMT", "GMT"), 0, "UTC0"),
-        TimezoneEntry(
-            "US Eastern",
-            setOf("America/New_York", "US/Eastern"),
-            -300,
-            "EST5EDT,M3.2.0/2,M11.1.0/2",
-        ),
-        TimezoneEntry(
-            "US Central",
-            setOf("America/Chicago", "US/Central"),
-            -360,
-            "CST6CDT,M3.2.0/2,M11.1.0/2",
-        ),
-        TimezoneEntry(
-            "US Mountain",
-            setOf("America/Denver", "US/Mountain"),
-            -420,
-            "MST7MDT,M3.2.0/2,M11.1.0/2",
-        ),
-        TimezoneEntry(
-            "US Pacific",
-            setOf("America/Los_Angeles", "US/Pacific"),
-            -480,
-            "PST8PDT,M3.2.0/2,M11.1.0/2",
-        ),
-        TimezoneEntry(
-            "US Alaska",
-            setOf("America/Anchorage", "US/Alaska"),
-            -540,
-            "AKST9AKDT,M3.2.0/2,M11.1.0/2",
-        ),
-        TimezoneEntry("US Hawaii", setOf("Pacific/Honolulu", "US/Hawaii"), -600, "HST10"),
-        TimezoneEntry(
-            "UK",
-            setOf("Europe/London", "GMT0BST", "Europe/Dublin"),
-            0,
-            "GMT0BST,M3.5.0/1,M10.5.0/2",
-        ),
-        TimezoneEntry(
-            "Central Europe",
-            setOf("Europe/Berlin", "Europe/Paris", "Europe/Madrid", "Europe/Rome", "Europe/Amsterdam"),
-            60,
-            "CET-1CEST,M3.5.0/2,M10.5.0/3",
-        ),
-        TimezoneEntry("India", setOf("Asia/Kolkata", "Asia/Calcutta"), 330, "IST-5:30"),
-        TimezoneEntry("Japan", setOf("Asia/Tokyo"), 540, "JST-9"),
-        TimezoneEntry(
-            "Australia East",
-            setOf("Australia/Sydney", "Australia/Melbourne"),
-            600,
-            "AEST-10AEDT,M10.1.0/2,M4.1.0/3",
-        ),
+        TimezoneEntry("UTC-10:00 · Hawaii", setOf("Pacific/Honolulu", "US/Hawaii"), -600, "HST10"),
+        TimezoneEntry("UTC-09:00 · Alaska", setOf("America/Anchorage", "US/Alaska"), -540, "AKST9AKDT,M3.2.0/2,M11.1.0/2"),
+        TimezoneEntry("UTC-08:00 · Pacific Time", setOf("America/Los_Angeles", "US/Pacific"), -480, "PST8PDT,M3.2.0/2,M11.1.0/2"),
+        TimezoneEntry("UTC-07:00 · Mountain Time", setOf("America/Denver", "US/Mountain"), -420, "MST7MDT,M3.2.0/2,M11.1.0/2"),
+        TimezoneEntry("UTC-06:00 · Central Time", setOf("America/Chicago", "US/Central"), -360, "CST6CDT,M3.2.0/2,M11.1.0/2"),
+        TimezoneEntry("UTC-05:00 · Eastern Time", setOf("America/New_York", "US/Eastern"), -300, "EST5EDT,M3.2.0/2,M11.1.0/2"),
+        TimezoneEntry("UTC+00:00 · London / UTC", setOf("UTC", "Etc/UTC", "Etc/GMT", "GMT", "Europe/London", "Europe/Dublin"), 0, "GMT0BST,M3.5.0/1,M10.5.0/2"),
+        TimezoneEntry("UTC+01:00 · Central Europe / West Africa", setOf("Europe/Berlin", "Europe/Paris", "Europe/Madrid", "Europe/Rome", "Europe/Amsterdam"), 60, "CET-1CEST,M3.5.0/2,M10.5.0/3"),
+        TimezoneEntry("UTC+05:30 · Mumbai / Colombo", setOf("Asia/Kolkata", "Asia/Calcutta"), 330, "IST-5:30"),
+        TimezoneEntry("UTC+09:00 · Tokyo / Seoul / Yakutsk", setOf("Asia/Tokyo"), 540, "JST-9"),
+        TimezoneEntry("UTC+10:00 · Sydney / Brisbane / Vladivostok", setOf("Australia/Sydney", "Australia/Melbourne"), 600, "AEST-10AEDT,M10.1.0/2,M4.1.0/3"),
     )
 
     /**

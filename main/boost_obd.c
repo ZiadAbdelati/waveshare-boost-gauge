@@ -221,10 +221,17 @@ static void publish_state(void)
     default: st.state = 0; break;
     }
 
+    /* Liveness is the link, not the last reply: s_last_reply_ms survives
+     * disable, so an age computed against it froze valid=true/ageMs=0 (and
+     * the app kept a green "link" after the panel toggle tore the link down).
+     * The poll loop republishes every 400 ms while not READY, so this gate
+     * self-heals the disabled transition too. */
+    const bool link_ready = s_enabled && bst == BOOST_OBD_BLE_READY;
     const uint32_t elm_last = boost_obd_elm_last_reply_ms();
-    const uint32_t age = (elm_last != 0 && now_ms >= elm_last) ? now_ms - elm_last : 0;
+    const uint32_t age = (link_ready && elm_last != 0 && now_ms >= elm_last)
+                             ? now_ms - elm_last : 0;
     st.age_ms = age;
-    st.valid = elm_last != 0 && age <= OBD_STALE_MS;
+    st.valid = link_ready && elm_last != 0 && age <= OBD_STALE_MS;
     st.rpm = s_last_rpm;
     st.speed_kph = s_last_speed;
     st.coolant_c = s_last_coolant;
@@ -266,6 +273,11 @@ static void poll_task(void *arg)
 
     for (;;) {
         if (!s_enabled) {
+            /* Keep publishing while parked: the disable-time publish in
+             * boost_obd_set_enabled() can still see the BLE link READY (the
+             * STOP event is async), and without this the frozen valid=true
+             * frame would be served forever. */
+            publish_state();
             vTaskDelay(pdMS_TO_TICKS(200));
             continue;
         }

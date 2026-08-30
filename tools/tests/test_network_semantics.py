@@ -30,6 +30,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 NET_C = REPO_ROOT / "main" / "boost_network.c"
 NET_H = REPO_ROOT / "main" / "boost_network.h"
 WEB_C = REPO_ROOT / "main" / "boost_web.c"
+JSON_C = REPO_ROOT / "main" / "boost_json.c"
 PAGE_C = REPO_ROOT / "main" / "boost_page.c"
 
 
@@ -52,6 +53,7 @@ def main() -> int:
     net_c = NET_C.read_text(encoding="utf-8")
     net_h = NET_H.read_text(encoding="utf-8")
     web_c = WEB_C.read_text(encoding="utf-8")
+    json_c = JSON_C.read_text(encoding="utf-8")
     page_c = PAGE_C.read_text(encoding="utf-8")
 
     # --- Saved-network list cap: 5 ------------------------------------------
@@ -97,9 +99,9 @@ def main() -> int:
     result.check(m is not None, "QR encodes WIFI:T:WPA;S:<ap_ssid>;P:<BOOST_AP_PASSWORD>;;")
 
     # --- HTTP API saved list semantics -----------------------------------------
-    result.check('\\"saved\\":[' in web_c or '"saved":[' in web_c.replace('\\"', '"'),
+    result.check('\\"saved\\":[' in json_c or '"saved":[' in json_c.replace('\\"', '"'),
                  "network response serializes a saved array")
-    result.check('\\"ssid\\":\\"%s\\"' in web_c,
+    result.check('\\"ssid\\":\\"%s\\"' in json_c,
                  "saved items are {ssid} objects")
     # MRU move-to-front in update, delete-by-ssid, JSON body on DELETE.
     result.check("saved[0] = entry" in net_c and "found_idx" in net_c,

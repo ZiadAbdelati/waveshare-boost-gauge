@@ -22,22 +22,6 @@ enum BoostZone: String {
     }
 }
 
-struct DisplayStats: Decodable {
-    let renderFps: UInt32?
-    let gaugeDemandPerSecond: UInt32?
-    let flushesPerSecond: UInt32?
-    let pixelsPerSecond: UInt32?
-    let worstRenderUs: UInt32?
-    let renderGapP50Us: UInt32?
-    let renderGapMaxUs: UInt32?
-    let framesOverBudget: UInt32?
-    let tePeriodUs: UInt32?
-    let teWaits: UInt32?
-    let teTimeouts: UInt32?
-    let teSkips: UInt32?
-    let teScanlineWaits: UInt32?
-}
-
 struct SensorSummary: Decodable {
     let adsPresent: Bool?
     let bmpPresent: Bool?
@@ -66,22 +50,13 @@ struct OBDSummary: Decodable {
     let uptimeMs: UInt32?
     let ageMs: UInt32?
     let valid: Bool?
-    let lastReply: String?
-    let protocolName: String?
     let rpm: Double?
-    let speedKph: Double?
     let coolantC: Double?
-    let mapKpa: Double?
-    let iatC: Double?
-    let throttlePct: Double?
-    let mafGps: Double?
-    let fuelPct: Double?
     let batteryV: Double?
 
     enum CodingKeys: String, CodingKey {
-        case state, lastError, peer, peerAddr, uptimeMs, ageMs, valid, lastReply
-        case protocolName = "protocol"
-        case rpm, speedKph, coolantC, mapKpa, iatC, throttlePct, mafGps, fuelPct, batteryV
+        case state, lastError, peer, peerAddr, uptimeMs, ageMs, valid
+        case rpm, coolantC, batteryV
     }
 }
 
@@ -114,22 +89,20 @@ struct GaugeState: Decodable {
     let peakPsi: Double
     let zone: BoostZone
     let demo: Bool
-    let brightness: Int?
     let firmwareVersion: String?
     let uptimeMs: UInt64?
     let epochMs: Int64?
     let timezoneOffsetMinutes: Int?
     let activeThemeId: String?
     let activePage: Int?
-    let display: DisplayStats?
     let sensors: SensorSummary?
     let tpms: TpmsSummary?
     let obd: OBDSummary?
 
     enum CodingKeys: String, CodingKey {
-        case psi, peakPsi, zone, demo, brightness, firmwareVersion, uptimeMs, epochMs
+        case psi, peakPsi, zone, demo, firmwareVersion, uptimeMs, epochMs
         case timezoneOffsetMinutes, activeThemeId, activePage
-        case display, sensors, tpms, obd
+        case sensors, tpms, obd
     }
 
     init(from decoder: Decoder) throws {
@@ -138,14 +111,12 @@ struct GaugeState: Decodable {
         peakPsi = try container.decode(Double.self, forKey: .peakPsi)
         zone = BoostZone.make(try container.decode(String.self, forKey: .zone))
         demo = try container.decode(Bool.self, forKey: .demo)
-        brightness = try container.decodeIfPresent(Int.self, forKey: .brightness)
         firmwareVersion = try container.decodeIfPresent(String.self, forKey: .firmwareVersion)
         uptimeMs = try container.decodeIfPresent(UInt64.self, forKey: .uptimeMs)
         epochMs = try container.decodeIfPresent(Int64.self, forKey: .epochMs)
         timezoneOffsetMinutes = try container.decodeIfPresent(Int.self, forKey: .timezoneOffsetMinutes)
         activeThemeId = try container.decodeIfPresent(String.self, forKey: .activeThemeId)
         activePage = try container.decodeIfPresent(Int.self, forKey: .activePage)
-        display = try container.decodeIfPresent(DisplayStats.self, forKey: .display)
         sensors = try container.decodeIfPresent(SensorSummary.self, forKey: .sensors)
         tpms = try container.decodeIfPresent(TpmsSummary.self, forKey: .tpms)
         obd = try container.decodeIfPresent(OBDSummary.self, forKey: .obd)

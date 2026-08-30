@@ -21,15 +21,9 @@ static int s_percent = BOOST_BRIGHTNESS_MAX;
 static int s_level_high = BOOST_BRIGHTNESS_MAX;
 static int s_level_low = BOOST_BRIGHTNESS_MIN;
 
-static int clamp_percent(int percent)
+int boost_brightness_clamp_percent(int percent)
 {
-    if (percent < 0) {
-        return 0;
-    }
-    if (percent > 100) {
-        return 100;
-    }
-    return percent;
+    return percent < 0 ? 0 : (percent > 100 ? 100 : percent);
 }
 
 void boost_brightness_init(int initial_percent)
@@ -39,7 +33,7 @@ void boost_brightness_init(int initial_percent)
 
 static bool apply_percent(int target, bool lock_held)
 {
-    target = clamp_percent(target);
+    target = boost_brightness_clamp_percent(target);
 #ifdef ESP_PLATFORM
     static uint32_t request_id;
     const uint32_t id = ++request_id;
@@ -96,8 +90,8 @@ int boost_brightness_get(void)
 
 void boost_brightness_set_levels(int high, int low)
 {
-    high = clamp_percent(high);
-    low = clamp_percent(low);
+    high = boost_brightness_clamp_percent(high);
+    low = boost_brightness_clamp_percent(low);
     /* A collapsed pair would make the toggle a no-op and strand the panel at
      * whichever level it landed on, so keep at least a one-point separation. */
     if (low >= high) {
@@ -109,16 +103,11 @@ void boost_brightness_set_levels(int high, int low)
     ESP_LOGI(TAG, "toggle levels %d%% / %d%%", s_level_high, s_level_low);
 }
 
-bool boost_brightness_is_max(void)
+static bool boost_brightness_is_max(void)
 {
     /* Classify by the nearest configured endpoint. Comparing doubled distances
      * avoids midpoint truncation trapping high=1/low=0 at the low endpoint. */
     return abs(s_percent - s_level_high) <= abs(s_percent - s_level_low);
-}
-
-void boost_brightness_toggle_max_min(void)
-{
-    boost_brightness_set(boost_brightness_is_max() ? s_level_low : s_level_high);
 }
 
 void boost_brightness_toggle_max_min_locked(void)

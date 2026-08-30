@@ -9,34 +9,15 @@ data class Status(
     val peakPsi: Double = 0.0,
     val zone: String = "",
     val demo: Boolean = false,
-    val brightness: Int = 0,
     val firmwareVersion: String = "",
     val uptimeMs: Long = 0L,
     val epochMs: Long = 0L,
     val timezoneOffsetMinutes: Int = 0,
     val activeThemeId: String = "",
     val activePage: Int = 0,
-    val display: Display = Display(),
     val sensors: Sensors = Sensors(),
     val tpms: Tpms = Tpms(),
     val obd: Obd = Obd(),
-)
-
-@Serializable
-data class Display(
-    val renderFps: Long = 0L,
-    val gaugeDemandPerSecond: Long = 0L,
-    val flushesPerSecond: Long = 0L,
-    val pixelsPerSecond: Long = 0L,
-    val worstRenderUs: Long = 0L,
-    val renderGapP50Us: Long = 0L,
-    val renderGapMaxUs: Long = 0L,
-    val framesOverBudget: Long = 0L,
-    val tePeriodUs: Long = 0L,
-    val teWaits: Long = 0L,
-    val teTimeouts: Long = 0L,
-    val teSkips: Long = 0L,
-    val teScanlineWaits: Long = 0L,
 )
 
 @Serializable
@@ -71,16 +52,9 @@ data class Obd(
     val uptimeMs: Long = 0L,
     val ageMs: Long = 0L,
     val valid: Boolean = false,
-    val lastReply: String = "",
-    val protocol: String = "",
     val rpm: Double = 0.0,
     val speedKph: Double = 0.0,
     val coolantC: Double = 0.0,
-    val mapKpa: Double = 0.0,
-    val iatC: Double = 0.0,
-    val throttlePct: Double = 0.0,
-    val mafGps: Double = 0.0,
-    val fuelPct: Double = 0.0,
     val batteryV: Double = 0.0,
 )
 
@@ -228,9 +202,7 @@ data class NetworkStatus(
     val staSsid: String = "",
     val staIp: String = "",
     val apSsid: String = "",
-    val apIp: String = "192.168.4.1",
     val rssi: Int = 0,
-    val hasPassword: Boolean = false,
     val saved: List<SavedNetwork> = emptyList(),
 )
 
@@ -241,7 +213,7 @@ data class SavedNetwork(val ssid: String = "")
 data class WifiScanPayload(val networks: List<WifiNetwork> = emptyList())
 
 @Serializable
-data class WifiNetwork(val ssid: String = "", val rssi: Int = 0, val auth: Int = 0)
+data class WifiNetwork(val ssid: String = "", val rssi: Int = 0)
 
 /** Error body shape returned by send_err(). */
 @Serializable

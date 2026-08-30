@@ -1497,15 +1497,6 @@ void boost_display_set_te(bool enabled)
 #endif
 }
 
-bool boost_display_te(void)
-{
-#if BOOST_LCD_USE_TE
-    return s_te_enabled && s_te_active;
-#else
-    return false;
-#endif
-}
-
 /* Enable/disable the CO5300 set_tear_scanline (0x44) writeback described on
  * te_wait_for_region_spans(): when a region-dbuf burst cannot prove the scan
  * is safely before/after its dirty rows, program the panel's TE edge to just
@@ -1550,11 +1541,6 @@ void boost_display_set_region_dbuf(bool enabled)
     }
     boost_display_unlock();
     ESP_LOGI(TAG, "region double-buffer %s (runtime)", s_region_dbuf_enabled ? "enabled" : "disabled");
-}
-
-bool boost_display_region_dbuf(void)
-{
-    return s_region_dbuf_enabled && s_region_canvas != NULL;
 }
 
 esp_err_t boost_display_set_brightness(int percent)

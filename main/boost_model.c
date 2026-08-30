@@ -85,17 +85,6 @@ static int s_pending_brightness = -1;
  * dim schedule must NOT trust it - a board synced last night would otherwise
  * boot dim the next afternoon. */
 static bool s_clock_trusted = false;
-static int clamp_percent(int v)
-{
-    if (v < 0) {
-        return 0;
-    }
-    if (v > 100) {
-        return 100;
-    }
-    return v;
-}
-
 static int normalize_minutes(int minutes)
 {
     const int day = 24 * 60;
@@ -382,8 +371,8 @@ static void load_config(void)
                 (void)save_config_locked();
             }
         }
-        s_config.brightness_high = clamp_percent(s_config.brightness_high);
-        s_config.brightness_low = clamp_percent(s_config.brightness_low);
+        s_config.brightness_high = boost_brightness_clamp_percent(s_config.brightness_high);
+        s_config.brightness_low = boost_brightness_clamp_percent(s_config.brightness_low);
         s_config.dim_schedule.start_minutes = normalize_minutes(s_config.dim_schedule.start_minutes);
         s_config.dim_schedule.end_minutes = normalize_minutes(s_config.dim_schedule.end_minutes);
         s_config.timezone_offset_minutes = clamp_tz_offset(s_config.timezone_offset_minutes);
@@ -623,10 +612,10 @@ esp_err_t boost_model_update_config(const boost_config_t *patch, uint32_t fields
     }
     xSemaphoreTake(s_lock, portMAX_DELAY);
     if (fields & BOOST_CONFIG_BRIGHTNESS_HIGH) {
-        s_config.brightness_high = clamp_percent(patch->brightness_high);
+        s_config.brightness_high = boost_brightness_clamp_percent(patch->brightness_high);
     }
     if (fields & BOOST_CONFIG_BRIGHTNESS_LOW) {
-        s_config.brightness_low = clamp_percent(patch->brightness_low);
+        s_config.brightness_low = boost_brightness_clamp_percent(patch->brightness_low);
     }
     if (fields & BOOST_CONFIG_DIM_ENABLED) {
         s_config.dim_schedule.enabled = patch->dim_schedule.enabled;
@@ -876,7 +865,7 @@ esp_err_t boost_model_seed_clock_from_rtc(void)
     return err;
 }
 
-bool boost_model_schedule_wants_low(void)
+static bool boost_model_schedule_wants_low(void)
 {
     boost_config_t cfg;
     boost_model_get_config(&cfg);

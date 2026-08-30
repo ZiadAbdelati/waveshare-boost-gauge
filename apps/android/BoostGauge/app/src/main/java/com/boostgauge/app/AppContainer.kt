@@ -16,9 +16,11 @@ class AppContainer(appContext: Context) {
     /**
      * Restores the persisted transport selection before the live loop starts.
      * [simBle] (Intent extra `transport=simBle`) swaps in the in-process BLE
-     * simulator for emulator iteration; it never persists.
+     * simulator for emulator iteration; it never persists. The simulator only
+     * exists in debug builds (DebugHooks), so release degrades to restore().
      */
     suspend fun initialize(simBle: Boolean = false) {
-        if (simBle) transportController.useSimBle() else transportController.restore()
+        val factory = if (simBle) DebugHooks.load()?.simTransportFactory else null
+        if (factory != null) transportController.useSimBle(factory) else transportController.restore()
     }
 }

@@ -56,8 +56,6 @@ void boost_tpms_start(void);
 void boost_tpms_get_snapshot(boost_tpms_snapshot_t *out);
 void boost_tpms_get_config(boost_tpms_config_t *out);
 bool boost_tpms_set_config(const boost_tpms_config_t *config);
-void boost_tpms_poll(void);
-
 /* Transport/provider hooks. publish_raw records a fresh four-wheel sample
  * (FL, FR, RL, RR order) through the conversion path; age recomputes per-wheel
  * validity against the staleness window without touching the raw values. */

@@ -701,19 +701,22 @@ struct TimezoneOption: Identifiable, Hashable {
 extension SettingsViewModel {
     static let customTimezoneID = "custom"
 
+    /// Phone-relevant zone presets, generated from the canonical web/tz.json
+    /// (only the entries carrying IANA `ids`). POSIX strings are verbatim from
+    /// the JSON — offset sign is west-positive, so east zones carry a minus
+    /// (e.g. Sydney `AEST-10AEDT,...`), matching the web's synthTz fallback.
     static let timezoneOptions: [TimezoneOption] = [
-        TimezoneOption(id: "utc", label: "UTC", tz: "UTC0", offsetMinutes: 0),
-        TimezoneOption(id: "eastern", label: "US Eastern", tz: "EST5EDT,M3.2.0/2,M11.1.0/2", offsetMinutes: -300),
-        TimezoneOption(id: "central", label: "US Central", tz: "CST6CDT,M3.2.0/2,M11.1.0/2", offsetMinutes: -360),
-        TimezoneOption(id: "mountain", label: "US Mountain", tz: "MST7MDT,M3.2.0/2,M11.1.0/2", offsetMinutes: -420),
-        TimezoneOption(id: "pacific", label: "US Pacific", tz: "PST8PDT,M3.2.0/2,M11.1.0/2", offsetMinutes: -480),
-        TimezoneOption(id: "alaska", label: "US Alaska", tz: "AKST9AKDT,M3.2.0/2,M11.1.0/2", offsetMinutes: -540),
-        TimezoneOption(id: "hawaii", label: "US Hawaii", tz: "HST10", offsetMinutes: -600),
-        TimezoneOption(id: "uk", label: "UK", tz: "GMT0BST,M3.5.0/1,M10.5.0/2", offsetMinutes: 0),
-        TimezoneOption(id: "cet", label: "Central Europe", tz: "CET-1CEST,M3.5.0/2,M10.5.0/3", offsetMinutes: 60),
-        TimezoneOption(id: "india", label: "India", tz: "IST-5:30", offsetMinutes: 330),
-        TimezoneOption(id: "japan", label: "Japan", tz: "JST-9", offsetMinutes: 540),
-        TimezoneOption(id: "australia-east", label: "Australia East", tz: "AEST-10AEDT,M10.1.0/2,M4.1.0/3", offsetMinutes: 600),
+        TimezoneOption(id: "hawaii", label: "UTC-10:00 · Hawaii", tz: "HST10", offsetMinutes: -600),
+        TimezoneOption(id: "alaska", label: "UTC-09:00 · Alaska", tz: "AKST9AKDT,M3.2.0/2,M11.1.0/2", offsetMinutes: -540),
+        TimezoneOption(id: "pacific", label: "UTC-08:00 · Pacific Time", tz: "PST8PDT,M3.2.0/2,M11.1.0/2", offsetMinutes: -480),
+        TimezoneOption(id: "mountain", label: "UTC-07:00 · Mountain Time", tz: "MST7MDT,M3.2.0/2,M11.1.0/2", offsetMinutes: -420),
+        TimezoneOption(id: "central", label: "UTC-06:00 · Central Time", tz: "CST6CDT,M3.2.0/2,M11.1.0/2", offsetMinutes: -360),
+        TimezoneOption(id: "eastern", label: "UTC-05:00 · Eastern Time", tz: "EST5EDT,M3.2.0/2,M11.1.0/2", offsetMinutes: -300),
+        TimezoneOption(id: "uk", label: "UTC+00:00 · London / UTC", tz: "GMT0BST,M3.5.0/1,M10.5.0/2", offsetMinutes: 0),
+        TimezoneOption(id: "cet", label: "UTC+01:00 · Central Europe / West Africa", tz: "CET-1CEST,M3.5.0/2,M10.5.0/3", offsetMinutes: 60),
+        TimezoneOption(id: "india", label: "UTC+05:30 · Mumbai / Colombo", tz: "IST-5:30", offsetMinutes: 330),
+        TimezoneOption(id: "japan", label: "UTC+09:00 · Tokyo / Seoul / Yakutsk", tz: "JST-9", offsetMinutes: 540),
+        TimezoneOption(id: "australia-east", label: "UTC+10:00 · Sydney / Brisbane / Vladivostok", tz: "AEST-10AEDT,M10.1.0/2,M4.1.0/3", offsetMinutes: 600),
     ]
 }
 

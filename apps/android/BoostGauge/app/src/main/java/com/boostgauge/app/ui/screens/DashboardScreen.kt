@@ -373,6 +373,7 @@ private fun TpmsCard(status: Status?) {
                             wheel = wheels[index],
                             label = labels[index],
                             lowPsi = tpms.lowPsi,
+                            status = tpms.status,
                             modifier = Modifier.weight(1f),
                         )
                     }
@@ -389,9 +390,10 @@ private fun TpmsCard(status: Status?) {
 
 /** Native tire capsule mirroring the iOS 2x2 TPMS card. */
 @Composable
-private fun TireCapsule(wheel: Wheel, label: String, lowPsi: Double, modifier: Modifier = Modifier) {
+private fun TireCapsule(wheel: Wheel, label: String, lowPsi: Double, status: Int, modifier: Modifier = Modifier) {
     val low = wheel.valid && lowPsi > 0.0 && wheel.psi <= lowPsi
     val tint = when {
+        status == 1 -> BoostColors.amber
         !wheel.valid -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
         low -> BoostColors.warning
         else -> BoostColors.success
@@ -410,7 +412,7 @@ private fun TireCapsule(wheel: Wheel, label: String, lowPsi: Double, modifier: M
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Text(
-            text = if (wheel.valid) Format.fmt(wheel.psi, 1) else "--.-",
+            text = if (status == 1 || wheel.valid) Format.fmt(wheel.psi, 1) else "--.-",
             style = BoostTileValue,
             color = tint,
         )

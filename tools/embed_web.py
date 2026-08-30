@@ -18,6 +18,7 @@ MIME = {
     ".svg": "image/svg+xml",
     ".png": "image/png",
     ".ico": "image/x-icon",
+    ".json": "application/json",
     ".ttf": "font/ttf",
     ".txt": "text/plain; charset=utf-8",
 }

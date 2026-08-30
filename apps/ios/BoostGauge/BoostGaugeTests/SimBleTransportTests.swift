@@ -9,7 +9,6 @@ final class SimBleTransportTests: XCTestCase {
         let state = try JSONDecoder().decode(GaugeState.self, from: response.body)
         XCTAssertEqual(state.tpms?.wheels.count, 4)
         XCTAssertNotNil(state.sensors)
-        XCTAssertNotNil(state.display)
         XCTAssertNotNil(state.obd)
         XCTAssertTrue(state.demo)
         XCTAssertTrue(state.zone == .vacuum || state.zone == .boost)

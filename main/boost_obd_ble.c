@@ -43,6 +43,15 @@
  * failed cycle, capped, so an absent peer stops hammering the radio while a
  * present one is still found within one scan period. Reset on any connect. */
 #define OBD_RECONNECT_MAX_MS 120000
+/* The ELM boots on the same ignition as the gauge, so the first directed
+ * connect usually misses its advertising window and the exponential backoff
+ * then turns cold-start pairing into 1-3 minutes (burst at 8/18/41/84 s...).
+ * For a bounded window after enable, retry the stored peer with a directed
+ * connect (targeted, passive — no scan-request spam) at a fast floor instead
+ * of growing the backoff. Cleared on any connect; never applies to
+ * promiscuous scans, so the 2026-08-15 absent-peer cadence is intact. */
+#define OBD_STARTUP_FAST_MS     60000
+#define OBD_STARTUP_FAST_RETRY_MS 2000
 #define OBD_CCCD_UUID      0x2902
 /* The BT controller allocates its buffer pool from DMA-capable internal RAM,
  * and a failed allocation inside esp_bt_controller_enable() panics the board
@@ -110,6 +119,7 @@ static char s_peer_addr[32];
 static uint32_t s_ready_start_ms;
 static volatile uint16_t s_last_err;    /* last connect/discovery failure status */
 static uint32_t s_backoff_ms = OBD_RECONNECT_MS; /* grows while peer is unreachable */
+static uint32_t s_fast_until_ms;  /* startup fast-retry window deadline (0 = off) */
 
 static uint8_t s_rx_tmp[OBD_MAX_RX];
 
@@ -465,6 +475,8 @@ static void driver_task(void *arg)
         case OBD_EV_START: {
             first_pass = true;
             s_backoff_ms = OBD_RECONNECT_MS;
+            s_fast_until_ms = (uint32_t)(esp_timer_get_time() / 1000ULL)
+                              + OBD_STARTUP_FAST_MS;
             if (s_enabled) {
                 load_stored_peer();
                 if (s_peer_addr[0] != '\0') {
@@ -521,6 +533,19 @@ static void driver_task(void *arg)
                 s_last_err = ev.a;
                 ESP_LOGW(TAG, "connect failed: status=0x%04x", (unsigned)ev.a);
             }
+            /* Startup fast-retry: a known peer gets a directed connect
+             * (targeted, no scan-request spam) at a fast floor while the
+             * adapter is still booting. Stored-peer connects are explicitly
+             * outside the 2026-08-28 app-connection gate. */
+            if (s_fast_until_ms != 0 && s_peer_addr[0] != '\0') {
+                const uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
+                if (now_ms < s_fast_until_ms) {
+                    vTaskDelay(pdMS_TO_TICKS(OBD_STARTUP_FAST_RETRY_MS));
+                    if (s_enabled && s_peer_addr[0] != '\0') try_connect(&s_peer);
+                    break;
+                }
+                s_fast_until_ms = 0;
+            }
             /* Radio coexistence: while a companion app holds the peripheral
              * link, postpone new scan bursts — active scanning during 3 s
              * bursts starves the peripheral's notification path and the
@@ -548,6 +573,7 @@ static void driver_task(void *arg)
             s_conn_handle = ev.conn_handle;
             s_last_err = 0;   /* new link: reset the failure marker */
             s_backoff_ms = OBD_RECONNECT_MS;   /* peer found: restore the fast retry cadence */
+            s_fast_until_ms = 0;               /* startup window consumed */
             publish_state(BOOST_OBD_BLE_DISCOVERING);
             start_svc_discovery(ev.conn_handle);
             break;

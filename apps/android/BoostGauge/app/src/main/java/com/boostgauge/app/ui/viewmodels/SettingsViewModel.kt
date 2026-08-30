@@ -180,11 +180,36 @@ class SettingsViewModel(
         _state.update { it.copy(fields = transform(it.fields)) }
     }
 
+    /**
+     * Shared save skeleton (mirrors the iOS SettingsViewModel
+     * save(_:method:path:body:onSuccess:)): mark saving, run the request, then
+     * fold the WHOLE response into state atomically inside one update so the
+     * render never races the save, and publish the message or error. The fold
+     * returns a state transform so it can re-seed the form fields from the
+     * server response.
+     */
+    private fun <T> save(
+        body: suspend () -> T,
+        message: String,
+        errorMessage: String = "save failed",
+        fold: (T) -> (UiState) -> UiState,
+    ) {
+        viewModelScope.launch {
+            _state.update { it.copy(saving = true, error = null, message = null) }
+            runCatching { body() }
+                .onSuccess { result ->
+                    _state.update { state -> fold(result)(state).copy(saving = false, message = message) }
+                }
+                .onFailure { e ->
+                    _state.update { it.copy(saving = false, error = e.message ?: errorMessage) }
+                }
+        }
+    }
+
     fun saveDisplay() {
         val fields = _state.value.fields
-        viewModelScope.launch {
-            _state.update { it.copy(saving = true, error = null) }
-            runCatching {
+        save(
+            body = {
                 val configPatch = buildJsonObject {
                     fields.brightnessHigh.toIntOrNull()?.let { put("brightnessHigh", it) }
                     fields.brightnessLow.toIntOrNull()?.let { put("brightnessLow", it) }
@@ -208,19 +233,10 @@ class SettingsViewModel(
                 }
                 val themes = api.updateThemesConfig(themePatch)
                 Pair(config, themes)
-            }.onSuccess { (config, themes) ->
-                _state.update {
-                    it.copy(
-                        saving = false,
-                        config = config,
-                        themes = themes,
-                        fields = it.fields.withConfig(config).withThemes(themes),
-                        message = "Display saved",
-                    )
-                }
-            }.onFailure { e ->
-                _state.update { it.copy(saving = false, error = e.message ?: "save failed") }
-            }
+            },
+            message = "Display saved",
+        ) { (config, themes) ->
+            { s -> s.copy(config = config, themes = themes, fields = s.fields.withConfig(config).withThemes(themes)) }
         }
     }
 
@@ -230,22 +246,11 @@ class SettingsViewModel(
             put("demoMode", fields.demoMode)
             put("demoFastSweep", fields.demoFastSweep)
         }
-        viewModelScope.launch {
-            _state.update { it.copy(saving = true, error = null) }
-            runCatching { api.updateThemesConfig(patch) }
-                .onSuccess { themes ->
-                    _state.update {
-                        it.copy(
-                            saving = false,
-                            themes = themes,
-                            fields = it.fields.withThemes(themes),
-                            message = "Demo settings saved",
-                        )
-                    }
-                }
-                .onFailure { e ->
-                    _state.update { it.copy(saving = false, error = e.message ?: "save failed") }
-                }
+        save(
+            body = { api.updateThemesConfig(patch) },
+            message = "Demo settings saved",
+        ) { themes ->
+            { s -> s.copy(themes = themes, fields = s.fields.withThemes(themes)) }
         }
     }
 
@@ -259,22 +264,11 @@ class SettingsViewModel(
             fields.psiOverboost.toDoubleOrNull()?.let { put("psiOverboost", it) }
             fields.zeroAngle.toDoubleOrNull()?.let { put("zeroAngle", it) }
         }
-        viewModelScope.launch {
-            _state.update { it.copy(saving = true, error = null) }
-            runCatching { api.updateConfig(patch) }
-                .onSuccess { config ->
-                    _state.update {
-                        it.copy(
-                            saving = false,
-                            config = config,
-                            fields = it.fields.withConfig(config),
-                            message = "Range saved",
-                        )
-                    }
-                }
-                .onFailure { e ->
-                    _state.update { it.copy(saving = false, error = e.message ?: "save failed") }
-                }
+        save(
+            body = { api.updateConfig(patch) },
+            message = "Range saved",
+        ) { config ->
+            { s -> s.copy(config = config, fields = s.fields.withConfig(config)) }
         }
     }
 
@@ -284,22 +278,11 @@ class SettingsViewModel(
         val fields = _state.value.fields
         val lowPsi = fields.lowPsi.toDoubleOrNull() ?: return
         val staleAfterMs = fields.staleAfterMs.toLongOrNull() ?: return
-        viewModelScope.launch {
-            _state.update { it.copy(saving = true, error = null) }
-            runCatching { api.updateTpmsConfig(lowPsi, staleAfterMs) }
-                .onSuccess { tpms ->
-                    _state.update {
-                        it.copy(
-                            saving = false,
-                            tpms = tpms,
-                            fields = it.fields.withTpms(tpms),
-                            message = "TPMS config saved",
-                        )
-                    }
-                }
-                .onFailure { e ->
-                    _state.update { it.copy(saving = false, error = e.message ?: "save failed") }
-                }
+        save(
+            body = { api.updateTpmsConfig(lowPsi, staleAfterMs) },
+            message = "TPMS config saved",
+        ) { tpms ->
+            { s -> s.copy(tpms = tpms, fields = s.fields.withTpms(tpms)) }
         }
     }
 
@@ -307,26 +290,14 @@ class SettingsViewModel(
      * a phone-derived string overwrote the gauge's real POSIX TZ and the picker
      * then flapped back to "Custom" on reload). */
     fun syncTime() {
-        viewModelScope.launch {
-            _state.update { it.copy(saving = true, error = null, message = null) }
-            val tz = _state.value.fields.timezoneTz.ifBlank { Timezones.forDefault().posix }
-            val offset = _state.value.fields.timezoneOffsetMinutes
-            runCatching { api.syncTime(offset, tz) }
-                .onSuccess { status ->
-                    _state.update {
-                        it.copy(
-                            saving = false,
-                            fields = it.fields.copy(
-                                timezoneOffsetMinutes = status.timezoneOffsetMinutes,
-                                timezoneTz = tz,
-                            ),
-                            message = "Timezone sent to gauge",
-                        )
-                    }
-                }
-                .onFailure { e ->
-                    _state.update { it.copy(saving = false, error = e.message ?: "timezone sync failed") }
-                }
+        val tz = _state.value.fields.timezoneTz.ifBlank { Timezones.forDefault().posix }
+        val offset = _state.value.fields.timezoneOffsetMinutes
+        save(
+            body = { api.syncTime(offset, tz) },
+            message = "Timezone sent to gauge",
+            errorMessage = "timezone sync failed",
+        ) { status ->
+            { s -> s.copy(fields = s.fields.copy(timezoneOffsetMinutes = status.timezoneOffsetMinutes, timezoneTz = tz)) }
         }
     }
 
@@ -354,22 +325,11 @@ class SettingsViewModel(
     /** Persist the TPMS BLE link toggle on its own (themes/config accepts partial patches). */
     fun saveTpmsBle() {
         val enabled = _state.value.fields.tpmsBle
-        viewModelScope.launch {
-            _state.update { it.copy(saving = true, error = null, message = null) }
-            runCatching {
-                api.updateThemesConfig(buildJsonObject { put("tpmsBle", enabled) })
-            }.onSuccess { themes ->
-                _state.update {
-                    it.copy(
-                        saving = false,
-                        themes = themes,
-                        fields = it.fields.withThemes(themes),
-                        message = if (enabled) "TPMS BLE link enabled" else "TPMS BLE link disabled",
-                    )
-                }
-            }.onFailure { e ->
-                _state.update { it.copy(saving = false, error = e.message ?: "save failed") }
-            }
+        save(
+            body = { api.updateThemesConfig(buildJsonObject { put("tpmsBle", enabled) }) },
+            message = if (enabled) "TPMS BLE link enabled" else "TPMS BLE link disabled",
+        ) { themes ->
+            { s -> s.copy(themes = themes, fields = s.fields.withThemes(themes)) }
         }
     }
 
@@ -515,13 +475,11 @@ class SettingsViewModel(
         val ssid = _state.value.wifiSsid.trim()
         if (ssid.isBlank()) { _state.update { it.copy(error = "SSID required") }; return }
         val password = _state.value.wifiPassword.takeIf { it.isNotBlank() }
-        viewModelScope.launch {
-            _state.update { it.copy(saving = true, error = null, message = null) }
-            runCatching { api.updateNetwork(ssid, password) }.onSuccess { net ->
-                _state.update { it.copy(saving = false, networkStatus = net, wifiPassword = "", message = "Wi-Fi saved") }
-            }.onFailure { e ->
-                _state.update { it.copy(saving = false, error = e.message ?: "save failed") }
-            }
+        save(
+            body = { api.updateNetwork(ssid, password) },
+            message = "Wi-Fi saved",
+        ) { net ->
+            { s -> s.copy(networkStatus = net, wifiPassword = "") }
         }
     }
 

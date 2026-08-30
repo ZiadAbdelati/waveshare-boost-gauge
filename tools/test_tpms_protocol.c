@@ -5,7 +5,6 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 
 static int approx(float actual, float expected, float tolerance)
 {
@@ -60,16 +59,6 @@ int main(void)
     assert(!boost_tpms_protocol_parse_uds_response(wrong_sid, sizeof(wrong_sid), NULL, NULL));
     assert(!boost_tpms_protocol_parse_uds_response(wrong_len, sizeof(wrong_len), NULL, NULL));
     assert(!boost_tpms_protocol_parse_uds_response(wrong_did, sizeof(wrong_did), NULL, NULL));
-
-    boost_tpms_isotp_parser_t parser;
-    boost_tpms_isotp_init(&parser);
-    const uint8_t frame[8] = {0x05u, 0x62u, 0x2Au, 0x05u, 0x00u, 0xA5u, 0x00u, 0x00u};
-    const uint8_t *payload = NULL;
-    size_t payload_length = 0u;
-    assert(boost_tpms_isotp_feed(&parser, frame, sizeof(frame), &payload, &payload_length) ==
-           BOOST_TPMS_ISOTP_COMPLETE);
-    assert(payload != NULL && payload_length == 5u);
-    assert(memcmp(payload, &frame[1], 5u) == 0);
 
     puts("tpms protocol tests: PASS");
     return 0;

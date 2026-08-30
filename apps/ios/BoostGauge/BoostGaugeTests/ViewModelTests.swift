@@ -346,9 +346,8 @@ final class ViewModelTests: XCTestCase {
     func testOBDPhaseMapping() {
         func summary(_ state: Int?, peer: String? = nil) -> OBDSummary {
             OBDSummary(state: state, lastError: 0, peer: peer, peerAddr: "aa:bb:cc:dd:ee:ff",
-                       uptimeMs: nil, ageMs: nil, valid: nil, lastReply: nil, protocolName: nil,
-                       rpm: nil, speedKph: nil, coolantC: nil, mapKpa: nil, iatC: nil,
-                       throttlePct: nil, mafGps: nil, fuelPct: nil, batteryV: nil)
+                       uptimeMs: nil, ageMs: nil, valid: nil,
+                       rpm: nil, coolantC: nil, batteryV: nil)
         }
         XCTAssertEqual(summary(nil).phase, .idle)
         XCTAssertEqual(summary(0).phase, .idle)

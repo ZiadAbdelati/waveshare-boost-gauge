@@ -3,7 +3,6 @@ package com.boostgauge.app.data.api
 import com.boostgauge.app.data.transport.BleGaugeTransport
 import com.boostgauge.app.data.transport.FakeBleTransport
 import com.boostgauge.app.data.transport.Resp
-import com.boostgauge.app.data.transport.SimBleTransport
 import com.boostgauge.app.data.transport.TransportException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
@@ -152,18 +151,6 @@ class GaugeApiTest {
         assertTrue(calibration.calibration.valid)
         assertEquals(3, calibration.calibration.version)
         assertEquals(1.1821, calibration.live.mapVolts, 0.0001)
-    }
-
-    @Test
-    fun logsOverBleSimServesFullFiveMinuteWindow() = runBlocking {
-        val transport = SimBleTransport()
-        try {
-            val api = GaugeApi { transport }
-            val logs = api.getLogs(1500)
-            assertEquals(1500, logs.samples.size)
-        } finally {
-            transport.close()
-        }
     }
 
     @Test

@@ -18,7 +18,6 @@ typedef struct {
     /* Real-sensor diagnostics (see boost_sensors.c). */
     float map_volts;       /**< Raw ADS1115 A0 voltage from the MAP sensor */
     float map_abs_kpa;     /**< Corrected absolute manifold pressure */
-    float map_nominal_kpa; /**< Absolute MAP before the calibration offset */
     float ambient_kpa;     /**< BMP280 ambient/atmospheric baseline */
     bool ads_present;      /**< ADS1115 answered on the bus at boot */
     bool bmp_present;      /**< BMP280 answered on the bus at boot */

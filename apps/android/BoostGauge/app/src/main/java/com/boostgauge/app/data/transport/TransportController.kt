@@ -155,12 +155,13 @@ class TransportController(
     /**
      * Debug/emulator hook: swap in the in-process BLE simulator without
      * touching the persisted selection. Triggered by the launch Intent extra
-     * `transport=simBle` (the emulator cannot do real BLE).
+     * `transport=simBle` (the emulator cannot do real BLE); the factory comes
+     * from DebugHooks (src/debug), so release builds never construct it.
      */
-    suspend fun useSimBle() {
+    suspend fun useSimBle(factory: () -> GaugeTransport) {
         val old = _transport.value
         runCatching { old?.close() }
-        _transport.value = SimBleTransport()
+        _transport.value = factory()
         _selection.value = TransportSelection(
             type = TransportType.BLE,
             httpAddress = _selection.value.httpAddress,

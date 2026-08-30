@@ -1,0 +1,228 @@
+{
+ "zones": [
+  {
+   "offsetMin": -720,
+   "label": "UTC-12:00 · Int. Date Line West"
+  },
+  {
+   "offsetMin": -660,
+   "label": "UTC-11:00 · Pago Pago"
+  },
+  {
+   "offsetMin": -600,
+   "label": "UTC-10:00 · Hawaii",
+   "posix": "HST10",
+   "ids": [
+    "Pacific/Honolulu",
+    "US/Hawaii"
+   ]
+  },
+  {
+   "offsetMin": -570,
+   "label": "UTC-09:30 · Marquesas"
+  },
+  {
+   "offsetMin": -540,
+   "label": "UTC-09:00 · Alaska",
+   "posix": "AKST9AKDT,M3.2.0/2,M11.1.0/2",
+   "ids": [
+    "America/Anchorage",
+    "US/Alaska"
+   ]
+  },
+  {
+   "offsetMin": -480,
+   "label": "UTC-08:00 · Pacific Time",
+   "posix": "PST8PDT,M3.2.0/2,M11.1.0/2",
+   "ids": [
+    "America/Los_Angeles",
+    "US/Pacific"
+   ]
+  },
+  {
+   "offsetMin": -420,
+   "label": "UTC-07:00 · Mountain Time",
+   "posix": "MST7MDT,M3.2.0/2,M11.1.0/2",
+   "ids": [
+    "America/Denver",
+    "US/Mountain"
+   ]
+  },
+  {
+   "offsetMin": -360,
+   "label": "UTC-06:00 · Central Time",
+   "posix": "CST6CDT,M3.2.0/2,M11.1.0/2",
+   "ids": [
+    "America/Chicago",
+    "US/Central"
+   ]
+  },
+  {
+   "offsetMin": -300,
+   "label": "UTC-05:00 · Eastern Time",
+   "posix": "EST5EDT,M3.2.0/2,M11.1.0/2",
+   "ids": [
+    "America/New_York",
+    "US/Eastern"
+   ]
+  },
+  {
+   "offsetMin": -240,
+   "label": "UTC-04:00 · Atlantic Time",
+   "posix": "AST4ADT,M3.2.0/2,M11.1.0/2"
+  },
+  {
+   "offsetMin": -210,
+   "label": "UTC-03:30 · Newfoundland",
+   "posix": "NST3:30NDT,M3.2.0/2,M11.1.0/2"
+  },
+  {
+   "offsetMin": -180,
+   "label": "UTC-03:00 · Buenos Aires"
+  },
+  {
+   "offsetMin": -120,
+   "label": "UTC-02:00 · South Georgia"
+  },
+  {
+   "offsetMin": -60,
+   "label": "UTC-01:00 · Azores"
+  },
+  {
+   "offsetMin": 0,
+   "label": "UTC+00:00 · London / UTC",
+   "posix": "GMT0BST,M3.5.0/1,M10.5.0/2",
+   "ids": [
+    "UTC",
+    "Etc/UTC",
+    "Etc/GMT",
+    "GMT",
+    "Europe/London",
+    "Europe/Dublin"
+   ]
+  },
+  {
+   "offsetMin": 60,
+   "label": "UTC+01:00 · Central Europe / West Africa",
+   "posix": "CET-1CEST,M3.5.0/2,M10.5.0/3",
+   "ids": [
+    "Europe/Berlin",
+    "Europe/Paris",
+    "Europe/Madrid",
+    "Europe/Rome",
+    "Europe/Amsterdam"
+   ]
+  },
+  {
+   "offsetMin": 120,
+   "label": "UTC+02:00 · Eastern Europe / Cairo",
+   "posix": "EET-2EEST,M3.5.0/3,M10.5.0/4"
+  },
+  {
+   "offsetMin": 180,
+   "label": "UTC+03:00 · Moscow / Nairobi"
+  },
+  {
+   "offsetMin": 210,
+   "label": "UTC+03:30 · Tehran"
+  },
+  {
+   "offsetMin": 240,
+   "label": "UTC+04:00 · Dubai / Baku"
+  },
+  {
+   "offsetMin": 270,
+   "label": "UTC+04:30 · Kabul"
+  },
+  {
+   "offsetMin": 300,
+   "label": "UTC+05:00 · Karachi / Tashkent"
+  },
+  {
+   "offsetMin": 330,
+   "label": "UTC+05:30 · Mumbai / Colombo",
+   "posix": "IST-5:30",
+   "ids": [
+    "Asia/Kolkata",
+    "Asia/Calcutta"
+   ]
+  },
+  {
+   "offsetMin": 345,
+   "label": "UTC+05:45 · Kathmandu"
+  },
+  {
+   "offsetMin": 360,
+   "label": "UTC+06:00 · Dhaka / Almaty"
+  },
+  {
+   "offsetMin": 390,
+   "label": "UTC+06:30 · Yangon"
+  },
+  {
+   "offsetMin": 420,
+   "label": "UTC+07:00 · Bangkok / Jakarta"
+  },
+  {
+   "offsetMin": 480,
+   "label": "UTC+08:00 · Beijing / Perth / Singapore"
+  },
+  {
+   "offsetMin": 525,
+   "label": "UTC+08:45 · Eucla"
+  },
+  {
+   "offsetMin": 540,
+   "label": "UTC+09:00 · Tokyo / Seoul / Yakutsk",
+   "posix": "JST-9",
+   "ids": [
+    "Asia/Tokyo"
+   ]
+  },
+  {
+   "offsetMin": 570,
+   "label": "UTC+09:30 · Adelaide / Darwin",
+   "posix": "ACST-9:30ACDT,M10.1.0/2,M4.1.0/3"
+  },
+  {
+   "offsetMin": 600,
+   "label": "UTC+10:00 · Sydney / Brisbane / Vladivostok",
+   "posix": "AEST-10AEDT,M10.1.0/2,M4.1.0/3",
+   "ids": [
+    "Australia/Sydney",
+    "Australia/Melbourne"
+   ]
+  },
+  {
+   "offsetMin": 630,
+   "label": "UTC+10:30 · Lord Howe",
+   "posix": "LHST-10:30LHDT,M10.1.0/2,M4.1.0/2"
+  },
+  {
+   "offsetMin": 660,
+   "label": "UTC+11:00 · Solomon Is. / Sakhalin"
+  },
+  {
+   "offsetMin": 690,
+   "label": "UTC+11:30 · Norfolk Is."
+  },
+  {
+   "offsetMin": 720,
+   "label": "UTC+12:00 · Auckland / Fiji",
+   "posix": "NZST-12NZDT,M9.5.0/2,M4.1.0/3"
+  },
+  {
+   "offsetMin": 765,
+   "label": "UTC+12:45 · Chatham",
+   "posix": "CHAST-12:45CHADT,M9.5.0/2,M4.1.0/3"
+  },
+  {
+   "offsetMin": 780,
+   "label": "UTC+13:00 · Tonga / Apia"
+  },
+  {
+   "offsetMin": 840,
+   "label": "UTC+14:00 · Kiritimati"
+  }
+ ]
+}

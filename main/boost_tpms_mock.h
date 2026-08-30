@@ -13,7 +13,6 @@ typedef enum {
 } boost_tpms_mock_scenario_t;
 
 void boost_tpms_mock_set_scenario(boost_tpms_mock_scenario_t scenario);
-boost_tpms_mock_scenario_t boost_tpms_mock_get_scenario(void);
 /* Drive the mock provider with the current tick (ms). NORMAL republishes a
  * wobbling sample every tick; STALE publishes once and lets it age out;
  * DISCONNECTED never publishes. */

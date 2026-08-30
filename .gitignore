@@ -50,3 +50,5 @@ after/
 *.o
 .claude/
 deepseek-neon-review.*
+.build/
+.tmp/

@@ -14,8 +14,10 @@ extern "C" {
 
 void boost_brightness_init(int initial_percent);
 void boost_brightness_set(int percent);
+
+/** Clamp a raw user/NVS value to the legal 0..100 brightness percent. */
+int boost_brightness_clamp_percent(int percent);
 int boost_brightness_get(void);
-bool boost_brightness_is_max(void);
 
 /**
  * Supply the configured high/low pair that long-press toggles between. Called
@@ -25,8 +27,6 @@ bool boost_brightness_is_max(void);
  */
 void boost_brightness_set_levels(int high, int low);
 
-/** Toggle between the configured high and low brightness levels. */
-void boost_brightness_toggle_max_min(void);
 
 /**
  * Toggle while the caller already owns the LVGL/display lock. Gesture callbacks

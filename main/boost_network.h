@@ -63,13 +63,9 @@ typedef struct {
     int authmode;
 } boost_wifi_scan_record_t;
 
-/** Init NVS-backed config. Secrets header seeds STA only when NVS empty. */
-esp_err_t boost_network_init(void);
-
 /** Bring up SoftAP and optional STA. Blocks up to timeout_ms for first DHCP. */
 esp_err_t boost_network_start(uint32_t timeout_ms);
 
-void boost_network_get_config(boost_net_config_t *out);
 void boost_network_get_status(boost_net_status_t *out);
 
 /**

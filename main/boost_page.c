@@ -313,6 +313,11 @@ static void qr_toggle_apply_cb(lv_timer_t *timer)
     if (req <= 1) {
         boost_app_ble_set_enabled(req == 1);
     } else {
+        /* Persist through the theme store first (NVS "tpms_ble"), then drive
+         * the live central - the exact order the web and BLE config routes
+         * use. Calling boost_obd_set_enabled() alone flipped RAM only, so an
+         * OBD2 link enabled from the panel vanished at the next reboot. */
+        boost_theme_set_tpms_ble(req == 3);
         boost_obd_set_enabled(req == 3);
     }
 }
@@ -551,7 +556,7 @@ static void boost_page_indev_event(lv_event_t *event)
     }
 }
 
-void boost_page_handle_event(lv_event_t *event)
+static void boost_page_handle_event(lv_event_t *event)
 {
     if (event == NULL) return;
     const lv_event_code_t code = lv_event_get_code(event);

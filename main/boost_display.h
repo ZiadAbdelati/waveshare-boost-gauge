@@ -88,11 +88,8 @@ esp_err_t boost_display_set_brightness(int percent);
 
 /* Enable/disable tearing-effect synchronisation at runtime. The GPIO/ISR are
  * always set up at boot (cheap); this only gates whether render cycles wait for
- * the panel's vertical-blank edge. boost_display_te() reports whether it is
- * both enabled and actually receiving edges. */
+ * the panel's vertical-blank edge. */
 void boost_display_set_te(bool enabled);
-bool boost_display_te(void);
-
 /* TE-scanline writeback: re-program the panel's set_tear_scanline (CO5300
  * 0x44) to just past the dirty region's bottom before a region-dbuf burst, so
  * the TE edge (and hence the write) arrives as soon as the scan clears the
@@ -118,8 +115,6 @@ void boost_display_set_te_scanline(bool enabled);
  * the cached face backgrounds.
  */
 void boost_display_set_region_dbuf(bool enabled);
-bool boost_display_region_dbuf(void);
-
 /*
  * Direct RGB565 strip push for exclusive media (GIF) playback.
  *

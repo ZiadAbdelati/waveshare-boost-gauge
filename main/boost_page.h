@@ -31,9 +31,6 @@ boost_page_id_t boost_page_active(void);
 /** Force a page without a gesture (test/remote integration hook). */
 void boost_page_show(boost_page_id_t page);
 
-/** Process page gestures; call from LVGL input event context. */
-void boost_page_handle_event(lv_event_t *event);
-
 /* --- Host-sim / test hooks (compiled everywhere, tiny, side-effect free) ---
  * The headless sim has no multi-touch input device, so the two-finger hold
  * cannot be synthesised there. These hooks drive the exact same overlay code

@@ -185,7 +185,8 @@ def main() -> int:
     result.check(LOG_HEADER in sim, "sim carries log line format")
 
     # --- Zone token set ---------------------------------------------------------
-    result.check('\\"zone\\"' in fw and "st.zone" in fw,
+    json_c = read(REPO_ROOT / "main" / "boost_json.c")
+    result.check('\\"zone\\"' in json_c and "st.zone" in json_c,
                  "firmware Status zone comes from boost_model (doc token set)")
     for zone in sorted(ZONES):
         result.check(zone in sim, f"sim emits zone token {zone}")

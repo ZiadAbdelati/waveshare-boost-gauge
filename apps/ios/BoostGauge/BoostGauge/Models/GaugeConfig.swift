@@ -37,9 +37,7 @@ struct NetworkStatus: Decodable {
     let staSsid: String?
     let staIp: String?
     let apSsid: String?
-    let apIp: String?
     let rssi: Int?
-    let hasPassword: Bool?
     let saved: [SavedNetwork]?
 }
 

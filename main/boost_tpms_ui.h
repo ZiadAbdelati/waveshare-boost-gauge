@@ -22,9 +22,6 @@ void boost_tpms_ui_create(lv_obj_t *parent);
 /** Replace the fixed-slot values; NULL renders all four positions unavailable. */
 void boost_tpms_ui_update(const boost_tpms_snapshot_t *snapshot);
 
-/** Delete the scene's objects below its parent. */
-void boost_tpms_ui_delete(void);
-
 #ifdef __cplusplus
 }
 #endif

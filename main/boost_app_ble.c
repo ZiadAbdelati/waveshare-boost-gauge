@@ -29,6 +29,7 @@
 #include "boost_sim.h"
 #include "boost_theme.h"
 #include "boost_tpms.h"
+#include "boost_json.h"
 #include "boost_tpms_protocol.h"
 
 /*
@@ -99,8 +100,6 @@ static const char *TAG = "boost_app_ble";
 #define APP_BLE_ADV_ITVL_MAX  400u
 #define APP_BLE_ADV_RETRY_MS  250u
 #define APP_BLE_ADV_RETRY_MAX 10u
-/* Status characteristic notify cadence while connected (and subscribed). */
-#define APP_BLE_STATUS_MS     1000u
 /* One status sample must fit a single notification after the 480-byte rule;
  * the /state-shaped mirror is deliberately compact. */
 #define APP_BLE_STATUS_BUF    1280u
@@ -173,7 +172,6 @@ static bool s_enabled;              /* persisted toggle (default off) */
 static bool s_want_adv;             /* live "should advertise" state */
 static volatile uint16_t s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 static volatile bool s_ctl_subscribed;
-static volatile bool s_status_subscribed;
 /* Negotiated ATT MTU for the connected phone (default = spec minimum). */
 static uint16_t s_att_mtu = 23;
 
@@ -376,264 +374,7 @@ static bool app_parse_hex_color(const cJSON *item, uint32_t *out)
     return true;
 }
 
-static void app_json_escape(const char *in, char *out, size_t out_len)
-{
-    size_t o = 0;
-    if (!in) {
-        if (out_len) out[0] = '\0';
-        return;
-    }
-    for (size_t i = 0; in[i] && o + 2 < out_len; ++i) {
-        char c = in[i];
-        if (c == '"' || c == '\\') {
-            if (o + 3 >= out_len) break;
-            out[o++] = '\\';
-            out[o++] = c;
-        } else if ((unsigned char)c < 0x20) {
-            continue;
-        } else {
-            out[o++] = c;
-        }
-    }
-    out[o] = '\0';
-}
 
-static int app_status_json(char *json, size_t len)
-{
-    boost_state_t st;
-    boost_model_get_state(&st);
-    boost_tpms_config_t tpms_cfg;
-    boost_tpms_get_config(&tpms_cfg);
-    /* Mirror the HTTP /state shape (boost_web.c state_json) byte-for-byte so
-     * the companion decoders behave identically over BLE and HTTP. */
-    return snprintf(json, len,
-                    "{\"psi\":%.2f,\"peakPsi\":%.2f,\"zone\":\"%s\",\"demo\":%s,"
-                    "\"brightness\":%d,\"firmwareVersion\":\"%s\",\"uptimeMs\":%llu,"
-                    "\"epochMs\":%lld,\"timezoneOffsetMinutes\":%d,\"activeThemeId\":\"%s\",\"activePage\":%d,"
-                    "\"display\":{\"renderFps\":%lu,\"gaugeDemandPerSecond\":%lu,\"flushesPerSecond\":%lu,\"pixelsPerSecond\":%lu,"
-                    "\"worstRenderUs\":%lu,\"renderGapP50Us\":%lu,"
-                    "\"renderGapMaxUs\":%lu,\"framesOverBudget\":%lu,"
-                    "\"tePeriodUs\":%lu,\"teWaits\":%lu,\"teTimeouts\":%lu,\"teSkips\":%lu,"
-                    "\"teScanlineWaits\":%lu},"
-                    "\"sensors\":{\"adsPresent\":%s,\"bmpPresent\":%s,\"fault\":%s,"
-                    "\"mapVolts\":%.4f,\"mapAbsKpa\":%.2f,\"ambientKpa\":%.2f},"
-                    "\"tpms\":{\"status\":%d,\"lowPsi\":%.1f,\"wheels\":[{\"psi\":%.1f,\"valid\":%s},{\"psi\":%.1f,\"valid\":%s},{\"psi\":%.1f,\"valid\":%s},{\"psi\":%.1f,\"valid\":%s}]},"
-                    "\"obd\":{\"state\":%d,\"lastError\":%u,\"peer\":\"%s\",\"peerAddr\":\"%s\",\"uptimeMs\":%lu,\"ageMs\":%lu,\"valid\":%s,"
-                    "\"lastReply\":\"%s\",\"protocol\":\"%s\","
-                    "\"rpm\":%.1f,\"speedKph\":%.1f,\"coolantC\":%.1f,\"mapKpa\":%.1f,\"iatC\":%.1f,"
-                    "\"throttlePct\":%.1f,\"mafGps\":%.1f,\"fuelPct\":%.1f,\"batteryV\":%.1f}}",
-                    (double)st.psi, (double)st.peak_psi, st.zone, st.demo ? "true" : "false",
-                    st.brightness, st.firmware_version, (unsigned long long)st.uptime_ms,
-                    (long long)st.epoch_ms, st.timezone_offset_minutes, st.active_theme_id, st.active_page,
-                    (unsigned long)st.display.render_fps,
-                    (unsigned long)st.display.gauge_demand_per_second,
-                    (unsigned long)st.display.flushes_per_second,
-                    (unsigned long)st.display.pixels_per_second,
-                    (unsigned long)st.display.worst_render_us,
-                    (unsigned long)st.display.render_gap_p50_us,
-                    (unsigned long)st.display.render_gap_max_us,
-                    (unsigned long)st.display.frames_over_budget,
-                    (unsigned long)st.display.te_period_us,
-                    (unsigned long)st.display.te_waits,
-                    (unsigned long)st.display.te_timeouts,
-                    (unsigned long)st.display.te_skips,
-                    (unsigned long)st.display.te_scanline_waits,
-                    st.ads_present ? "true" : "false",
-                    st.bmp_present ? "true" : "false",
-                    st.sensor_fault ? "true" : "false",
-                    (double)st.map_volts, (double)st.map_abs_kpa, (double)st.ambient_kpa,
-                    st.tpms_status, (double)boost_tpms_protocol_kpa_to_psi(tpms_cfg.low_kpa),
-                    (double)st.tpms_psi[0], st.tpms_valid[0] ? "true" : "false",
-                    (double)st.tpms_psi[1], st.tpms_valid[1] ? "true" : "false",
-                    (double)st.tpms_psi[2], st.tpms_valid[2] ? "true" : "false",
-                    (double)st.tpms_psi[3], st.tpms_valid[3] ? "true" : "false",
-                    st.obd_state, (unsigned)st.obd_last_error, st.obd_peer, st.obd_peer_addr,
-                    (unsigned long)st.obd_uptime_ms, (unsigned long)st.obd_age_ms,
-                    st.obd_valid ? "true" : "false",
-                    st.obd_last_reply, st.obd_protocol,
-                    (double)st.obd_rpm, (double)st.obd_speed_kph, (double)st.obd_coolant_c,
-                    (double)st.obd_map_kpa, (double)st.obd_iat_c,
-                    (double)st.obd_throttle_pct, (double)st.obd_maf_gps,
-                    (double)st.obd_fuel_pct, (double)st.obd_battery_v);
-}
-
-static int app_config_json(char *json, size_t len)
-{
-    boost_config_t cfg;
-    boost_model_get_config(&cfg);
-    return snprintf(json, len,
-                    "{\"brightnessHigh\":%d,\"brightnessLow\":%d,"
-                    "\"dimSchedule\":{\"enabled\":%s,\"startMinutes\":%d,\"endMinutes\":%d},"
-                    "\"timezoneOffsetMinutes\":%d,\"timezoneTz\":\"%s\",\"activeThemeId\":\"%s\","
-                    "\"psiMin\":%.2f,\"psiMax\":%.2f,\"psiOverboost\":%.2f,\"zeroAngle\":%.2f,"
-                    "\"appBle\":%s}",
-                    cfg.brightness_high, cfg.brightness_low,
-                    cfg.dim_schedule.enabled ? "true" : "false",
-                    cfg.dim_schedule.start_minutes, cfg.dim_schedule.end_minutes,
-                    cfg.timezone_offset_minutes, cfg.timezone_tz, cfg.active_theme_id,
-                    (double)cfg.psi_min, (double)cfg.psi_max, (double)cfg.psi_overboost,
-                    (double)cfg.zero_angle, boost_app_ble_enabled() ? "true" : "false");
-}
-
-static int app_tpms_config_json(char *json, size_t len)
-{
-    boost_tpms_config_t cfg;
-    boost_tpms_get_config(&cfg);
-    return snprintf(json, len,
-                    "{\"lowKpa\":%.1f,\"lowPsi\":%.1f,\"staleAfterMs\":%lu}",
-                    (double)cfg.low_kpa,
-                    (double)boost_tpms_protocol_kpa_to_psi(cfg.low_kpa),
-                    (unsigned long)cfg.stale_after_ms);
-}
-
-static int app_calibration_json(char *json, size_t len)
-{
-    const boost_sample_t s = boost_sensors_get_sample();
-    const boost_map_cal_t cal = boost_sensors_get_calibration();
-    const bool cal_valid = cal.version != 0;
-    return snprintf(json, len,
-                    "{\"supplyVolts\":%.4f,"
-                    "\"live\":{\"adsPresent\":%s,\"bmpPresent\":%s,\"fault\":%s,"
-                    "\"mapVolts\":%.4f,\"mapAgeMs\":%lld,\"nominalKpa\":%.2f,"
-                    "\"correctedKpa\":%.2f,\"bmpKpa\":%.2f,\"bmpAgeMs\":%lld,"
-                    "\"bmpUpdates\":%lu,\"ambientIsFallback\":%s},"
-                    "\"calibration\":{\"valid\":%s,\"version\":%u,"
-                    "\"offsetKpa\":%.2f,\"offsetPsi\":%.3f,\"supplyVolts\":%.4f,"
-                    "\"refMapVolts\":%.4f,\"refNominalKpa\":%.2f,"
-                    "\"refBmpKpa\":%.2f,\"samples\":%u,\"epochMs\":%lld}}",
-                    (double)boost_sensors_get_supply_volts(),
-                    s.ads_present ? "true" : "false",
-                    s.bmp_present ? "true" : "false",
-                    s.sensor_fault ? "true" : "false",
-                    (double)s.map_volts,
-                    s.ads_age_ms == UINT32_MAX ? -1LL : (long long)s.ads_age_ms,
-                    (double)boost_sensors_nominal_kpa(s.map_volts),
-                    (double)s.map_abs_kpa, (double)s.ambient_kpa,
-                    s.bmp_age_ms == UINT32_MAX ? -1LL : (long long)s.bmp_age_ms,
-                    (unsigned long)s.bmp_updates,
-                    s.ambient_is_fallback ? "true" : "false",
-                    cal_valid ? "true" : "false", (unsigned)cal.version,
-                    cal_valid ? (double)cal.offset_kpa : 0.0,
-                    cal_valid ? (double)(cal.offset_kpa * 0.145037738f) : 0.0,
-                    cal_valid ? (double)cal.supply_volts : 0.0,
-                    cal_valid ? (double)cal.ref_map_volts : 0.0,
-                    cal_valid ? (double)cal.ref_nominal_kpa : 0.0,
-                    cal_valid ? (double)cal.ref_bmp_kpa : 0.0,
-                    cal_valid ? (unsigned)cal.samples : 0u,
-                    cal_valid ? (long long)cal.epoch_ms : 0LL);
-}
-
-/* Mirror boost_web.c network_status_json() byte-for-byte so BLE-only clients
- * decode the same /network shape they get over HTTP. */
-static int app_network_status_json(char *json, size_t len)
-{
-    boost_net_status_t st;
-    boost_network_get_status(&st);
-    char ssid_e[96];
-    char ap_e[64];
-    app_json_escape(st.sta_ssid, ssid_e, sizeof(ssid_e));
-    app_json_escape(st.ap_ssid, ap_e, sizeof(ap_e));
-    size_t off = 0;
-    int n = snprintf(json + off, len - off,
-                     "{\"mode\":\"%s\",\"staEnabled\":%s,\"staConnected\":%s,"
-                     "\"staSsid\":\"%s\",\"staIp\":\"%s\",\"apSsid\":\"%s\",\"apIp\":\"%s\","
-                     "\"rssi\":%d,\"hasPassword\":%s,\"saved\":[",
-                     st.mode == BOOST_NET_MODE_APSTA ? "apsta" : "ap",
-                     st.sta_enabled ? "true" : "false",
-                     st.sta_connected ? "true" : "false",
-                     ssid_e, st.sta_ip, ap_e, st.ap_ip, st.rssi,
-                     st.has_sta_pass ? "true" : "false");
-    if (n < 0) {
-        return n;
-    }
-    off += (size_t)n;
-    for (uint8_t i = 0; i < st.saved_count && off < len; ++i) {
-        char s_esc[96];
-        app_json_escape(st.saved[i].ssid, s_esc, sizeof(s_esc));
-        n = snprintf(json + off, len - off, "%s{\"ssid\":\"%s\"}",
-                     i == 0 ? "" : ",", s_esc);
-        if (n < 0) {
-            return n;
-        }
-        off += (size_t)n;
-    }
-    if (off + 2U < len) {
-        (void)snprintf(json + off, len - off, "]}");
-    }
-    return (int)strlen(json);
-}
-
-/* Full theme listing mirroring the HTTP /themes payload (boost_web.c
- * themes_get/append_theme_json). Larger than one 480-byte request but the
- * response is fragmented to the ATT MTU and reassembled by the client. */
-static int app_themes_json(char *json, size_t len)
-{
-    boost_config_t cfg;
-    boost_model_get_config(&cfg);
-    size_t off = 0;
-    int n = snprintf(json + off, len - off,
-                    "{\"activeThemeId\":\"%s\",\"bigDigitStaticBg\":%s,"
-                    "\"bigDigitColorText\":%s,\"bigDigitStaticColor\":\"#%06lx\","
-                    "\"bigDigitTextColor\":\"#%06lx\","
-                    "\"arcGradient\":%s,\"hudGradient\":%s,\"hudTrueBlack\":%s,\"neonMarqueeSpin\":%s,"
-                    "\"teSync\":%s,\"regionDBuf\":%s,\"teScanline\":%s,"
-                    "\"rotation\":%u,"
-                    "\"vaultFace\":\"#%06lx\",\"vaultVignette\":%u,\"vaultNeedleRed\":%s,"
-                    "\"vaultNeedleTail\":%s,\"neonLayout\":%u,\"neonFont\":%u,\"neonPreset\":%u,\"demoMode\":%s,\"demoFastSweep\":%s,"
-                    "\"tpmsBle\":%s,"
-                    "\"pixelShift\":%s,\"pixelShiftSec\":%u,\"themes\":[",
-                    cfg.active_theme_id,
-                    boost_theme_bigdigit_static_bg() ? "true" : "false",
-                    boost_theme_bigdigit_color_text() ? "true" : "false",
-                    (unsigned long)boost_theme_bigdigit_static_color(),
-                    (unsigned long)boost_theme_bigdigit_text_color(),
-                    boost_theme_arc_gradient() ? "true" : "false",
-                    boost_theme_hud_gradient() ? "true" : "false",
-                    boost_theme_hud_true_black() ? "true" : "false",
-                    boost_theme_neon_marquee_spin() ? "true" : "false",
-                    boost_theme_te_sync() ? "true" : "false",
-                    boost_theme_region_dbuf() ? "true" : "false",
-                    boost_theme_te_scanline() ? "true" : "false",
-                    (unsigned)boost_theme_rotation(),
-                    (unsigned long)boost_theme_vault_face(),
-                    (unsigned)boost_theme_vault_vignette_pct(),
-                    boost_theme_vault_needle_red() ? "true" : "false",
-                    boost_theme_vault_needle_tail() ? "true" : "false",
-                    (unsigned)boost_theme_neon_layout(),
-                    (unsigned)boost_theme_neon_font(),
-                    (unsigned)boost_theme_neon_preset(),
-                    boost_theme_demo_mode() ? "true" : "false",
-                    boost_sim_fast_sweep() ? "true" : "false",
-                    boost_theme_tpms_ble() ? "true" : "false",
-                    boost_theme_pixel_shift() ? "true" : "false",
-                    (unsigned)boost_theme_pixel_shift_sec());
-    if (n < 0) {
-        return n;
-    }
-    off += (size_t)n;
-    for (size_t i = 0; i < boost_theme_count() && off < len; ++i) {
-        const boost_theme_t *t = boost_theme_at(i);
-        n = snprintf(json + off, len - off,
-                     "%s{\"id\":\"%s\",\"name\":\"%s\",\"style\":\"%s\",\"colors\":{\"face\":\"#%06lx\","
-                     "\"track\":\"#%06lx\",\"text\":\"#%06lx\",\"muted\":\"#%06lx\","
-                     "\"vacuum\":\"#%06lx\",\"boost\":\"#%06lx\",\"overboost\":\"#%06lx\","
-                     "\"zero\":\"#%06lx\"},\"customized\":%s}",
-                     i ? "," : "", t->id, t->name, boost_style_name(t->style),
-                     (unsigned long)t->face, (unsigned long)t->track,
-                     (unsigned long)t->text, (unsigned long)t->muted,
-                     (unsigned long)t->vacuum, (unsigned long)t->boost,
-                     (unsigned long)t->overboost, (unsigned long)t->zero,
-                     boost_theme_is_customized(t->id) ? "true" : "false");
-        if (n < 0) {
-            return n;
-        }
-        off += (size_t)n;
-    }
-    if (off + 2U < len) {
-        (void)snprintf(json + off, len - off, "]}");
-    }
-    return (int)strlen(json);
-}
 
 /* --- route handlers (mirror boost_web.c semantics) ----------------------- */
 
@@ -643,14 +384,14 @@ static int route_state(const cJSON *body, char *out, size_t cap)
     /* Full /state mirror (tpms/sensors/display/obd): responses are no longer
      * capped at 480 bytes — they fragment to the ATT MTU and the client
      * reassembles, so the Control route matches the Status characteristic. */
-    const int n = app_status_json(out, cap);
+    const int n = boost_json_state(out, cap);
     return n > 0 && n < (int)cap ? 200 : 500;
 }
 
 static int route_config_get(const cJSON *body, char *out, size_t cap)
 {
     (void)body;
-    const int n = app_config_json(out, cap);
+    const int n = boost_json_config(out, cap);
     return n > 0 && n < (int)cap ? 200 : 500;
 }
 
@@ -741,14 +482,14 @@ static int route_config_put(const cJSON *body, char *out, size_t cap)
             boost_display_unlock();
         }
     }
-    const int n = app_config_json(out, cap);
+    const int n = boost_json_config(out, cap);
     return n > 0 && n < (int)cap ? 200 : 500;
 }
 
 static int route_themes_get(const cJSON *body, char *out, size_t cap)
 {
     (void)body;
-    const int n = app_themes_json(out, cap);
+    const int n = boost_json_themes(out, cap);
     return n > 0 && n < (int)cap ? 200 : 500;
 }
 
@@ -768,7 +509,7 @@ static int route_theme_active_put(const cJSON *body, char *out, size_t cap)
         boost_gauge_apply_theme(boost_model_active_theme());
         boost_display_unlock();
     }
-    const int n = app_themes_json(out, cap);
+    const int n = boost_json_themes(out, cap);
     return n > 0 && n < (int)cap ? 200 : 500;
 }
 
@@ -944,14 +685,14 @@ static int route_themes_config_put(const cJSON *body, char *out, size_t cap)
     }
     /* Echo the full /themes payload so the client can fold the response back
      * into local state (mirroring the HTTP PUT), not just {"ok":true}. */
-    const int n = app_themes_json(out, cap);
+    const int n = boost_json_themes(out, cap);
     return n > 0 && n < (int)cap ? 200 : 500;
 }
 
 static int route_tpms_get(const cJSON *body, char *out, size_t cap)
 {
     (void)body;
-    const int n = app_tpms_config_json(out, cap);
+    const int n = boost_json_tpms_config(out, cap);
     return n > 0 && n < (int)cap ? 200 : 500;
 }
 
@@ -982,14 +723,14 @@ static int route_tpms_put(const cJSON *body, char *out, size_t cap)
         snprintf(out, cap, "{\"error\":\"invalid_tpms_config\"}");
         return 400;
     }
-    const int n = app_tpms_config_json(out, cap);
+    const int n = boost_json_tpms_config(out, cap);
     return n > 0 && n < (int)cap ? 200 : 500;
 }
 
 static int route_cal_get(const cJSON *body, char *out, size_t cap)
 {
     (void)body;
-    const int n = app_calibration_json(out, cap);
+    const int n = boost_json_calibration(out, cap);
     return n > 0 && n < (int)cap ? 200 : 500;
 }
 
@@ -1018,7 +759,7 @@ static int route_time_post(const cJSON *body, char *out, size_t cap)
         return 400;
     }
     boost_model_refresh_status();
-    const int n = app_status_json(out, cap);
+    const int n = boost_json_state(out, cap);
     return n > 0 && n < (int)cap ? 200 : 500;
 }
 
@@ -1102,7 +843,7 @@ static int route_logs_get(const cJSON *body, char *out, size_t cap)
 static int route_network_get(const cJSON *body, char *out, size_t cap)
 {
     (void)body;
-    const int n = app_network_status_json(out, cap);
+    const int n = boost_json_network_status(out, cap);
     return n > 0 && n < (int)cap ? 200 : 500;
 }
 
@@ -1155,7 +896,7 @@ static int route_network_put(const cJSON *body, char *out, size_t cap)
         snprintf(out, cap, "{\"error\":\"network_update_failed\"}");
         return 400;
     }
-    const int n = app_network_status_json(out, cap);
+    const int n = boost_json_network_status(out, cap);
     return n > 0 && n < (int)cap ? 200 : 500;
 }
 
@@ -1180,7 +921,7 @@ static int route_network_delete(const cJSON *body, char *out, size_t cap)
         snprintf(out, cap, "{\"error\":\"delete_failed\"}");
         return 400;
     }
-    const int n = app_network_status_json(out, cap);
+    const int n = boost_json_network_status(out, cap);
     return n > 0 && n < (int)cap ? 200 : 500;
 }
 
@@ -1192,7 +933,7 @@ static int route_network_reconnect_post(const cJSON *body, char *out, size_t cap
         snprintf(out, cap, "{\"error\":\"reconnect_failed\"}");
         return 400;
     }
-    const int n = app_network_status_json(out, cap);
+    const int n = boost_json_network_status(out, cap);
     return n > 0 && n < (int)cap ? 200 : 500;
 }
 
@@ -1229,7 +970,7 @@ static int route_network_scan_get(const cJSON *body, char *out, size_t cap)
     for (uint16_t i = 0; i < count && off < cap; ++i) {
         char ssid_e[96];
         char item[160];
-        app_json_escape(records[i].ssid, ssid_e, sizeof(ssid_e));
+        boost_json_escape(records[i].ssid, ssid_e, sizeof(ssid_e));
         snprintf(item, sizeof(item), "%s{\"ssid\":\"%s\",\"rssi\":%d,\"auth\":%d}",
                  i == 0 ? "" : ",", ssid_e, records[i].rssi, records[i].authmode);
         n = snprintf(out + off, cap - off, "%s", item);
@@ -1450,7 +1191,7 @@ static int app_status_access(uint16_t conn_handle, uint16_t attr_handle,
         return BLE_ATT_ERR_UNLIKELY;
     }
     char json[APP_BLE_STATUS_BUF];
-    const int n = app_status_json(json, sizeof(json));
+    const int n = boost_json_state(json, sizeof(json));
     if (n <= 0 || n >= (int)sizeof(json)) {
         return BLE_ATT_ERR_UNLIKELY;
     }
@@ -1617,11 +1358,12 @@ static const struct ble_gatt_svc_def s_svc_defs[] = {
                          BLE_GATT_CHR_F_WRITE_ENC,
             },
             {
-                /* Status: read + notify ~1 Hz while connected. */
+                /* Status: read-only. Companion clients poll Control /state for
+                 * live state; the 1 Hz notify broadcast had no subscribers. */
                 .uuid = &s_uuid_status.u,
                 .access_cb = app_svc_access,
                 .val_handle = &s_status_val_handle,
-                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
+                .flags = BLE_GATT_CHR_F_READ,
             },
             {
                 /* Log: read-only ENCRYPTED, offset long-reads. */
@@ -1817,19 +1559,7 @@ static void app_driver_task(void *arg)
     uint32_t adv_retries = 0;
     app_ble_ev_t ev;
     for (;;) {
-        const BaseType_t got = xQueueReceive(s_evq, &ev, pdMS_TO_TICKS(APP_BLE_STATUS_MS));
-        if (got != pdTRUE) {
-            /* 1 Hz status cadence (timeout tick) while connected+subscribed. */
-            if (s_conn_handle != BLE_HS_CONN_HANDLE_NONE && s_status_subscribed) {
-                char json[APP_BLE_STATUS_BUF];
-                const int n = app_status_json(json, sizeof(json));
-                if (n > 0 && n < (int)sizeof(json) && s_status_val_handle != 0) {
-                    app_notify_fragmented(s_conn_handle, s_status_val_handle,
-                                          json, (size_t)n);
-                }
-            }
-            continue;
-        }
+        xQueueReceive(s_evq, &ev, portMAX_DELAY);
 
         switch (ev.type) {
         case APP_EV_START:
@@ -1846,7 +1576,6 @@ static void app_driver_task(void *arg)
                 (void)ble_gap_terminate(s_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
                 s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
                 s_ctl_subscribed = false;
-                s_status_subscribed = false;
                 app_log_cache_free();
             }
             break;
@@ -1859,7 +1588,6 @@ static void app_driver_task(void *arg)
         case APP_EV_DISCONNECTED:
             s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
             s_ctl_subscribed = false;
-            s_status_subscribed = false;
             app_log_cache_free();
             if (s_want_adv) {
                 adv_retries = 0;
@@ -1872,8 +1600,6 @@ static void app_driver_task(void *arg)
             }
             if (ev.attr_handle == s_ctl_val_handle) {
                 s_ctl_subscribed = ev.cur_notify != 0;
-            } else if (ev.attr_handle == s_status_val_handle) {
-                s_status_subscribed = ev.cur_notify != 0;
             }
             break;
         case APP_EV_ADV_RETRY:
@@ -1907,7 +1633,7 @@ static void app_driver_task(void *arg)
             char body[APP_BLE_CTRL_MAX + 64];
             int status = 200;
             if (result == BOOST_CAL_OK) {
-                if (app_calibration_json(body, sizeof(body)) <= 0) {
+                if (boost_json_calibration(body, sizeof(body)) <= 0) {
                     snprintf(body, sizeof(body), "{\"error\":\"calibration_failed\"}");
                     status = 500;
                 }

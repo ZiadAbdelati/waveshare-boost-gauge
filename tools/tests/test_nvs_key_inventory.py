@@ -109,9 +109,12 @@ def main() -> int:
                  "TPMS set_config rejects lowKpa outside 100..400")
 
     # --- Brightness clamps 0..100 ---------------------------------------------
-    clamp = re.search(r"static int clamp_percent\(int v\)\s*\{\s*if \(v < 0\)\s*\{\s*return 0;\s*\}\s*if \(v > 100\)\s*\{\s*return 100;\s*\}\s*return v;\s*\}", model)
-    result.check(clamp is not None, "boost_model.c clamp_percent returns 0..100")
-    result.check("clamp_percent(" in model, "config path clamps brightness through clamp_percent")
+    clamp = re.search(r"int boost_brightness_clamp_percent\(int percent\)\s*\{\s*return percent < 0 \? 0 : \(percent > 100 \? 100 : percent\);\s*\}", src["boost_brightness.c"])
+    result.check(clamp is not None, "boost_brightness.c clamp returns 0..100 (single owner)")
+    result.check("boost_brightness_clamp_percent(" in model,
+                 "config path clamps brightness through the shared clamp")
+    result.check("static int clamp_percent" not in model,
+                 "no second clamp_percent copy in boost_model.c")
 
     # --- pixelShiftSec bounds -------------------------------------------------
     result.check("#define BOOST_PXSHIFT_SEC_MIN     30u" in theme_h and "#define BOOST_PXSHIFT_SEC_MAX     3600u" in theme_h,

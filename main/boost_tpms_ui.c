@@ -1,5 +1,7 @@
 #include "boost_tpms_ui.h"
 
+static void boost_tpms_ui_delete(void);
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -228,7 +230,7 @@ void boost_tpms_ui_update(const boost_tpms_snapshot_t *snapshot)
     }
 }
 
-void boost_tpms_ui_delete(void)
+static void boost_tpms_ui_delete(void)
 {
     /* Canvas pixels live outside the object. Drain queued software draw units
      * before deleting the canvas and releasing that PSRAM allocation. */

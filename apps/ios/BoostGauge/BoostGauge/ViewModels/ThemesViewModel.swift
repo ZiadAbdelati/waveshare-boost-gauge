@@ -142,25 +142,10 @@ final class ThemesViewModel: ObservableObject {
     }
 
     func select(_ id: String) async {
-        guard let transport else { return }
-        do {
-            let response = try await transport.send("PUT", path: "themes/active", body: ["id": id])
-            guard response.status == 200 else {
-                await MainActor.run { self.errorMessage = APIErrorText.from(response) }
-                return
-            }
-            let list = try JSONDecoder().decode(ThemeList.self, from: response.body)
-            await MainActor.run {
-                self.apply(list)
-                self.errorMessage = nil
-            }
-        } catch {
-            await MainActor.run { self.errorMessage = error.localizedDescription }
-        }
+        await put("themes/active", body: ["id": id])
     }
 
     func saveOptions(for themeID: String) async {
-        guard let transport else { return }
         var body: [String: Any]
         switch themeID {
         case "dyno-cell":
@@ -198,8 +183,21 @@ final class ThemesViewModel: ObservableObject {
             "boost": editable["boost"] ?? "#000000",
             "overboost": editable["overboost"] ?? "#000000",
         ]
+        await put("themes/config", body: body)
+    }
+
+    func resetColors(for themeID: String) async {
+        await put("themes/config", body: ["id": themeID, "reset": true])
+    }
+
+    /// Shared PUT skeleton for the theme mutations: PUT, require 200, decode
+    /// the echoed ThemeList, and `apply` it on the main actor. Any failure —
+    /// missing transport, non-200 status, or decode/transport error — surfaces
+    /// via `errorMessage`.
+    private func put(_ path: String, body: [String: Any]) async {
+        guard let transport else { return }
         do {
-            let response = try await transport.send("PUT", path: "themes/config", body: body)
+            let response = try await transport.send("PUT", path: path, body: body)
             guard response.status == 200 else {
                 await MainActor.run { self.errorMessage = APIErrorText.from(response) }
                 return
@@ -209,21 +207,6 @@ final class ThemesViewModel: ObservableObject {
                 self.apply(list)
                 self.errorMessage = nil
             }
-        } catch {
-            await MainActor.run { self.errorMessage = error.localizedDescription }
-        }
-    }
-
-    func resetColors(for themeID: String) async {
-        guard let transport else { return }
-        do {
-            let response = try await transport.send("PUT", path: "themes/config", body: ["id": themeID, "reset": true])
-            guard response.status == 200 else {
-                await MainActor.run { self.errorMessage = APIErrorText.from(response) }
-                return
-            }
-            let list = try JSONDecoder().decode(ThemeList.self, from: response.body)
-            await MainActor.run { self.apply(list) }
         } catch {
             await MainActor.run { self.errorMessage = error.localizedDescription }
         }

@@ -22,6 +22,7 @@ object BoostColors {
     val vacuum = Color(0xFF00B5E2) // iOS-ish system cyan (zone badge)
     val success = Color(0xFF34C759) // iOS system green (health/link)
     val warning = Color(0xFFFF9500) // iOS system orange (inline errors)
+    val amber = Color(0xFFFFB020) // TPMS stale (matches the physical gauge/web)
     val danger = Color(0xFFFF3B30) // iOS system red (critical/fault)
     val navBlue = Color(0xFF007AFF) // iOS system blue (selected navigation)
 }

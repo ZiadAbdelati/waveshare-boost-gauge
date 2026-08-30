@@ -11,11 +11,6 @@ void boost_tpms_mock_set_scenario(boost_tpms_mock_scenario_t scenario)
     s_published = false;
 }
 
-boost_tpms_mock_scenario_t boost_tpms_mock_get_scenario(void)
-{
-    return s_scenario;
-}
-
 void boost_tpms_mock_tick(uint32_t now_ms)
 {
     switch (s_scenario) {

@@ -362,7 +362,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
     }
 }
 
-esp_err_t boost_network_init(void)
+static esp_err_t boost_network_init(void)
 {
     if (s_lock) {
         return ESP_OK;
@@ -430,7 +430,7 @@ esp_err_t boost_network_start(uint32_t timeout_ms)
     return ESP_OK;
 }
 
-void boost_network_get_config(boost_net_config_t *out)
+static void boost_network_get_config(boost_net_config_t *out)
 {
     if (!out || !s_lock) {
         return;
@@ -730,7 +730,7 @@ esp_err_t boost_network_reconnect(void)
     if (!s_started) {
         return ESP_ERR_INVALID_STATE;
     }
-    boost_net_config_t cfg;
+    boost_net_config_t cfg = {0};
     boost_network_get_config(&cfg);
     if (cfg.mode != BOOST_NET_MODE_APSTA || cfg.sta_ssid[0] == '\0') {
         return ESP_ERR_INVALID_STATE;

@@ -17,7 +17,7 @@ class TimezonesTest {
     @Test
     fun forDefaultMatchesCuratedEntryByIanaId() {
         val entry = Timezones.forDefault(TimeZone.getTimeZone("America/New_York"))
-        assertEquals("US Eastern", entry.label)
+        assertEquals("UTC-05:00 · Eastern Time", entry.label)
         assertEquals(-300, entry.offsetMinutes)
         assertEquals("EST5EDT,M3.2.0/2,M11.1.0/2", entry.posix)
     }

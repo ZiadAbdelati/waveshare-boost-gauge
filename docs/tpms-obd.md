@@ -4,7 +4,7 @@
 
 `main/boost_tpms_ui.c/.h` renders the processed 466×466 powertrain art on black, with four tire-shaped status capsules (`FL`, `FR`, `RL`, `RR`) aligned to the 80%-scale chassis. The physical readouts use the compiled Saira SemiCondensed Bold face and show number-only PSI values: green is normal, red is low, amber is stale, and gray is offline. `STALE` retains its last number; a wheel that has never reported shows `--.-`. The browser uses the same native-466 geometry and redraws when the image finishes loading.
 
-The framework is split into `main/boost_tpms.c/.h` (service/model), the deterministic `main/boost_tpms_mock.c/.h` provider (`NORMAL`, `STALE`, and `DISCONNECTED` scenarios), and the pure `main/boost_tpms_protocol.c/.h` protocol/conversion/ISO-TP layer.
+The framework is split into `main/boost_tpms.c/.h` (service/model), the deterministic `main/boost_tpms_mock.c/.h` provider (`NORMAL`, `STALE`, and `DISCONNECTED` scenarios), and the pure `main/boost_tpms_protocol.c/.h` protocol/conversion layer.
 
 ## BLE OBD-II transport
 

@@ -4,7 +4,7 @@ import kotlinx.coroutines.flow.StateFlow
 
 /**
  * The live, push-based transport surface the repository and API consume from
- * BLE. The real [BleTransport] and the in-process emulator [SimBleTransport]
+ * BLE. The real [BleTransport] and the in-process emulator (debug builds only)
  * both expose it, so the repository's statusLine loop and the BGL1 log read
  * behave identically for both.
  */

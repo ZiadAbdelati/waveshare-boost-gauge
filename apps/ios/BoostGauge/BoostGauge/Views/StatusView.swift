@@ -234,7 +234,7 @@ struct StatusView: View {
                         spacing: 10
                     ) {
                         ForEach(Array(tpms.wheels.prefix(4).enumerated()), id: \.offset) { index, wheel in
-                            tireCapsule(wheel, label: wheelLabels[index], lowPsi: tpms.lowPsi)
+                            tireCapsule(wheel, label: wheelLabels[index], lowPsi: tpms.lowPsi, status: tpms.status)
                         }
                     }
                     if let status = tpms.status {
@@ -248,18 +248,21 @@ struct StatusView: View {
         }
     }
 
-    private func tireCapsule(_ wheel: TpmsWheel, label: String, lowPsi: Double?) -> some View {
-        let low = wheel.valid && (lowPsi.map { wheel.psi <= $0 } ?? false)
-        let tint: Color = !wheel.valid ? .gray : (low ? .orange : .green)
+    private func tireCapsule(_ wheel: TpmsWheel, label: String, lowPsi: Double?, status: Int?) -> some View {
+        // Stale (status==1) retains the last psi in amber; only missing data shows --.-
+        let stale = status == 1
+        let low = !stale && wheel.valid && (lowPsi.map { wheel.psi <= $0 } ?? false)
+        let tint: Color = stale ? Color(hex: "#FFB020") : (!wheel.valid ? .gray : (low ? .orange : .green))
+        let value = stale || wheel.valid ? Format.psi(wheel.psi) : "--.-"
         return VStack(spacing: 5) {
             Text(label)
                 .font(.caption.weight(.semibold))
                 .foregroundColor(.secondary)
-            Text(wheel.valid ? Format.psi(wheel.psi) : "--.-")
+            Text(value)
                 .font(.title3.weight(.semibold).monospacedDigit())
                 .foregroundColor(tint)
             Circle()
-                .fill(wheel.valid ? tint : Color.clear)
+                .fill(stale || wheel.valid ? tint : Color.clear)
                 .overlay(Circle().stroke(tint.opacity(0.8), lineWidth: 1))
                 .frame(width: 8, height: 8)
         }
@@ -272,7 +275,7 @@ struct StatusView: View {
             RoundedRectangle(cornerRadius: 12).stroke(tint.opacity(0.35), lineWidth: 1)
         )
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(label) \(wheel.valid ? "\(Format.psi(wheel.psi)) psi" : "no data")\(low ? ", low pressure" : "")")
+        .accessibilityLabel("\(label) \(stale || wheel.valid ? "\(Format.psi(wheel.psi)) psi" : "no data")\(low ? ", low pressure" : "")")
     }
 
     private func obdCard(_ state: GaugeState) -> some View {

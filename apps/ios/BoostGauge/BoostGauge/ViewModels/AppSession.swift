@@ -116,6 +116,7 @@ final class AppSession: ObservableObject {
             defaults.set(arguments[index + 1], forKey: Keys.blePeerName)
             defaults.set(UUID().uuidString, forKey: Keys.blePeerID)
         }
+        #if DEBUG
         if simBleRequested {
             // Simulator-only BLE simulation: no CoreBluetooth, no persisted
             // transport state — drives the exact BLE-mode UI (status stream,
@@ -128,6 +129,7 @@ final class AppSession: ObservableObject {
             connectionState = .connected
             return
         }
+#endif
         let savedKind = Kind(rawValue: defaults.string(forKey: Keys.kind) ?? "") ?? .http
         var savedHost = defaults.string(forKey: Keys.httpHost)?.trimmingCharacters(in: .whitespacesAndNewlines)
         if savedHost?.isEmpty == true { savedHost = nil }

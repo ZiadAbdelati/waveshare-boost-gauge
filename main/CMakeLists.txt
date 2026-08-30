@@ -21,6 +21,7 @@ idf_component_register(
         "boost_tpms_mock.c"
         "boost_tpms_protocol.c"
         "boost_model.c"
+        "boost_json.c"
         "boost_sim.c"
         "boost_sensors.c"
         "boost_brightness.c"

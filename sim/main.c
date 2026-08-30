@@ -805,6 +805,35 @@ static int run_qr_test(const char *out_dir)
             fprintf(stderr, "FAIL toggle request left pending\n");
             failures++;
         }
+        /* The panel toggle must persist through the theme store, not just
+         * flip RAM (reboot-lost regression, 2026-08-28). A synthetic
+         * VALUE_CHANGED does not flip the switch state, so the unchecked tap
+         * above requests OFF; assert that OFF reached BOTH the store and the
+         * link, then seed the link ON, rebuild the overlay (the switch
+         * renders CHECKED from boost_obd_enabled()), and tap for ON. */
+        if (boost_theme_tpms_ble()) {
+            fprintf(stderr, "FAIL unchecked tap persisted tpmsBle ON\n");
+            failures++;
+        }
+        {
+            extern bool g_sim_obd_state;
+            g_sim_obd_state = true;
+            boost_page_qr_dismiss();
+            pump_lvgl(30);
+            boost_page_qr_show();
+            boost_page_qr_swipe_left();
+            pump_lvgl(50);
+            boost_page_qr_tap_switch(0);
+            for (int i = 0; i < 10; ++i) { lv_tick_inc(16); lv_timer_handler(); usleep(16000); }
+            if (!boost_theme_tpms_ble()) {
+                fprintf(stderr, "FAIL OBD toggle did not persist via theme store\n");
+                failures++;
+            }
+            if (!g_sim_obd_state) {
+                fprintf(stderr, "FAIL persisted ON did not reach the live link\n");
+                failures++;
+            }
+        }
     }
 
     /* Reset stub link states so the round-trip determinism check holds. */

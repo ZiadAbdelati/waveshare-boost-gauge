@@ -20,7 +20,6 @@ extern "C" {
 #define BOOST_TPMS_DID_RL 0x2A07u
 #define BOOST_TPMS_DID_RR 0x2A05u
 
-#define BOOST_TPMS_ISOTP_MAX_PAYLOAD 64u
 #define BOOST_TPMS_RAW_TO_KPA 1.373f
 #define BOOST_TPMS_KPA_TO_PSI 0.145037738f
 
@@ -49,25 +48,6 @@ bool boost_tpms_protocol_make_read_did(uint16_t did, uint8_t out_request[3]);
 bool boost_tpms_protocol_parse_uds_response(const uint8_t *payload, size_t length,
                                             uint16_t *out_did, uint16_t *out_raw);
 
-typedef enum {
-    BOOST_TPMS_ISOTP_INCOMPLETE = 0,
-    BOOST_TPMS_ISOTP_COMPLETE,
-    BOOST_TPMS_ISOTP_ERROR,
-} boost_tpms_isotp_result_t;
-
-typedef struct {
-    uint8_t payload[BOOST_TPMS_ISOTP_MAX_PAYLOAD];
-    size_t expected_length;
-    size_t received_length;
-    uint8_t next_sequence;
-    bool active;
-} boost_tpms_isotp_parser_t;
-
-void boost_tpms_isotp_init(boost_tpms_isotp_parser_t *parser);
-boost_tpms_isotp_result_t boost_tpms_isotp_feed(boost_tpms_isotp_parser_t *parser,
-                                                 const uint8_t *frame, size_t length,
-                                                 const uint8_t **out_payload,
-                                                 size_t *out_length);
 
 #ifdef __cplusplus
 }

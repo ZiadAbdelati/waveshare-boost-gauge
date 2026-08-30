@@ -90,8 +90,7 @@ void boost_tpms_init(void)
 
 void boost_tpms_start(void)
 {
-    /* Default is intentionally UI-independent and transport-neutral. A BLE
-     * central or vehicle transport may call boost_tpms_poll() later. */
+    /* Default is intentionally UI-independent and transport-neutral. */
 }
 
 void boost_tpms_get_snapshot(boost_tpms_snapshot_t *out)
@@ -121,11 +120,6 @@ bool boost_tpms_set_config(const boost_tpms_config_t *config)
     }
 #endif
     return true;
-}
-
-void boost_tpms_poll(void)
-{
-    /* No hardware dependency in the default service. */
 }
 
 void boost_tpms_mock_publish(uint32_t now_ms)

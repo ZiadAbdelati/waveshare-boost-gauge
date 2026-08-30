@@ -319,7 +319,6 @@ class BleTransport(
     private val mutex = Mutex()
     private val connectMutex = Mutex()
     private val controlFramer = BleControlFramer()
-    private val statusFramer = BleControlFramer()
     private var statusPollJob: Job? = null
     private val pendingResponses = mutableMapOf<Int, CancellableContinuation<GattResponse>>()
     private val pendingWaits = mutableMapOf<String, CancellableContinuation<GattEvent>>()
@@ -388,7 +387,6 @@ class BleTransport(
             is GattEvent.CharacteristicChanged -> {
                 when (event.characteristic.uuid) {
                     GaugeGatt.control -> handleControlNotify(event.value)
-                    GaugeGatt.status -> handleStatusNotify(event.value)
                     else -> Unit
                 }
             }
@@ -439,12 +437,6 @@ class BleTransport(
         }
     }
 
-    private fun handleStatusNotify(bytes: ByteArray) {
-        for (text in statusFramer.append(bytes)) {
-            _statusLine.value = text
-        }
-    }
-
     private fun completeWait(key: String, event: GattEvent) {
         pendingWaits.remove(key)?.resumeWith(Result.success(event))
     }
@@ -457,7 +449,6 @@ class BleTransport(
         pendingResponses.clear()
         activeRequestId = null
         controlFramer.clear()
-        statusFramer.clear()
         stopStatusPoll()
     }
 

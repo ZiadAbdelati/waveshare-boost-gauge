@@ -731,7 +731,6 @@ static void sensors_task(void *arg)
             .demo = false,
             .map_volts = last_volts,
             .map_abs_kpa = map_kpa,
-            .map_nominal_kpa = nominal_kpa,
             .ambient_kpa = ambient_kpa,
             .ads_present = s_ads_present,
             .bmp_present = s_bmp_present,

@@ -5,7 +5,7 @@ import Foundation
 ///
 /// Service b6a00000-0000-4000-8000-00000000b6a0 with:
 ///   - Control   b6a00001-...-b6a0: write + notify (JSON request/response)
-///   - Status    b6a00002-...-b6a0: read + notify (~1 Hz while subscribed)
+///   - Status    b6a00002-...-b6a0: read-only (full /state)
 ///   - Log       b6a00003-...-b6a0: read with offset (suffix reads)
 ///   - DeviceInfo b6a00004-...-b6a0: read
 final class GATTPeripheral: NSObject, CBPeripheralManagerDelegate {
@@ -30,8 +30,6 @@ final class GATTPeripheral: NSObject, CBPeripheralManagerDelegate {
     private var statusCharacteristic: CBMutableCharacteristic?
 
     private var isAdvertising = false
-    private var statusSubscribed = false
-    private var statusTimer: Timer?
 
     /// One queued outbound control/status message, split into ≤180-byte
     /// notification packets (fits ATT MTU 185 → 182-byte payload). Clients
@@ -115,11 +113,6 @@ final class GATTPeripheral: NSObject, CBPeripheralManagerDelegate {
         didSubscribeTo characteristic: CBCharacteristic
     ) {
         log("[gatt] central connected (subscribed): \(shortUUID(characteristic.uuid))")
-        if characteristic.uuid == Self.statusUUID {
-            statusSubscribed = true
-            startStatusTimer()
-            queueNotification(sim.statusData(), for: statusCharacteristic, reason: "subscribe")
-        }
     }
 
     func peripheralManager(
@@ -128,11 +121,6 @@ final class GATTPeripheral: NSObject, CBPeripheralManagerDelegate {
         didUnsubscribeFrom characteristic: CBCharacteristic
     ) {
         log("[gatt] central disconnected (unsubscribed): \(shortUUID(characteristic.uuid))")
-        if characteristic.uuid == Self.statusUUID {
-            statusSubscribed = false
-            statusTimer?.invalidate()
-            statusTimer = nil
-        }
         pendingMessages.removeAll { $0.characteristic.uuid == characteristic.uuid }
     }
 
@@ -212,7 +200,7 @@ final class GATTPeripheral: NSObject, CBPeripheralManagerDelegate {
         )
         let status = CBMutableCharacteristic(
             type: Self.statusUUID,
-            properties: [.read, .notify],
+            properties: [.read],
             value: nil,
             permissions: [.readable]
         )
@@ -247,25 +235,7 @@ final class GATTPeripheral: NSObject, CBPeripheralManagerDelegate {
     private func teardown() {
         manager.stopAdvertising()
         isAdvertising = false
-        statusSubscribed = false
-        statusTimer?.invalidate()
-        statusTimer = nil
         pendingMessages.removeAll()
-    }
-
-    // MARK: - Status notifications
-
-    private func startStatusTimer() {
-        guard statusTimer == nil else { return }
-        let timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            self?.statusTick()
-        }
-        statusTimer = timer
-    }
-
-    private func statusTick() {
-        guard manager.state == .poweredOn, statusSubscribed else { return }
-        queueNotification(sim.statusData(), for: statusCharacteristic, reason: "status")
     }
 
     private func queueNotification(

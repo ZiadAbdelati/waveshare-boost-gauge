@@ -129,7 +129,6 @@ int boost_model_utc_offset_minutes_at(time_t t);
  *  otherwise; the caller logs and continues. */
 esp_err_t boost_model_seed_clock_from_rtc(void);
 void boost_model_apply_schedule(void);
-bool boost_model_schedule_wants_low(void);
 /** Brightness the panel should boot at (dim-schedule night level if the
  * schedule is enabled and the wall clock is valid, else the daytime level).
  * No SPI/display access - safe to call before boost_display_start(). */

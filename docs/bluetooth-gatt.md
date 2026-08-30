@@ -24,7 +24,7 @@ All characteristic UUIDs share the base `-0000-4000-8000-00000000b6a0`.
 | Characteristic | UUID | Properties | Security |
 |---|---|---|---|
 | Control | `b6a00001-0000-4000-8000-00000000b6a0` | Write (with response), Notify | **Encrypted** (LE Secure Connections) |
-| Status | `b6a00002-0000-4000-8000-00000000b6a0` | Read, Notify | Plaintext |
+| Status | `b6a00002-0000-4000-8000-00000000b6a0` | Read | Plaintext |
 | Log | `b6a00003-0000-4000-8000-00000000b6a0` | Read (offset long-reads) | **Encrypted** (LE Secure Connections) |
 | Device info | `b6a00004-0000-4000-8000-00000000b6a0` | Read | Plaintext |
 
@@ -66,8 +66,8 @@ payload:
   {"id": <u32>, "status": 413, "body": {"error": "too_large"}}
   ```
 
-  Clients should use the Status / Log characteristics or the LAN HTTP path
-  instead of requesting oversized data over Control.
+  Clients should use the Log characteristic or the LAN HTTP path instead of
+  requesting oversized data over Control.
 - `GET /state` is the compact Control snapshot (`psi`, `peakPsi`, `zone`,
   `demo`, `brightness`, `uptimeMs`, `activeThemeId`, `activePage`, and
   `transport`) so it remains within the envelope. Read Status for the complete
@@ -75,14 +75,14 @@ payload:
 
 ### Status
 
-Readable on demand and notified at ~1 Hz while subscribed. Payload is a bounded
-live snapshot with gauge values, brightness, uptime/theme/page identity,
-the top-level `sensorFault`, `tpmsStatus`, and `obdValid` summaries, plus
-`"transport": "ble"`. Detailed state remains available over LAN HTTP.
-
-~1 Hz is the nominal companion cadence. This is deliberately **not** the
-62.5 Hz WebSocket telemetry (WebSocket remains browser-only), and nothing here
-is a demand or throttle change to the 16 ms gauge path.
+Readable on demand; the payload is the full `/state` shape (identical to HTTP,
+built by `boost_json.c`). Companion apps poll Control `GET /state` for live
+state instead: the Status characteristic's 1 Hz notify broadcast was removed
+2026-08-28 because no client subscribed to it (the full-state push is ~5 ATT
+fragments/second and hardware-verified to starve raw reads on the shared
+link). This is deliberately **not** the 62.5 Hz WebSocket telemetry
+(WebSocket remains browser-only), and nothing here is a demand or throttle
+change to the 16 ms gauge path.
 
 ### Log
 
@@ -213,7 +213,7 @@ contains `"appBle":true`, selects an available paired physical iPhone from
 `BoostGaugeUITests/HardwareBleE2ETests` three consecutive times. Each run must
 complete the full matrix: `GET /state`, `GET /config`, `GET /themes`, page
 `0 -> 1 -> 0`, active-theme change and restore, and direct reads of Device
-info, Status, and the `BGL1` Log value. Logs, screenshots, accessibility
+info and the `BGL1` Log value (plus the full `GET /state` shape). Logs, screenshots, accessibility
 hierarchies, and one `.xcresult` per run are kept in the printed artifact
 directory. `BLE_IOS_E2E_RUNS` changes the repeat count; `IOS_DEVICE_ID` selects
 a specific available physical device.
@@ -245,10 +245,7 @@ contract:
 - Control responses are sent only after notification subscription is ready;
   reconnect code must not trust a stale cached readiness state.
 - Control `GET /state` stays in the compact <=480-byte envelope documented
-  above. Status is independently bounded to the readable characteristic size.
-- The iOS transport temporarily disables its Status subscription around a
-  forced direct read so a periodic notification cannot satisfy the pending
-  read callback with only one notification fragment.
+  above. The Status read is independently bounded to the characteristic size.
 - BLE Log is the recent eight-sample `BGL1` diagnostic window. The full
   one-hour ring remains an HTTP export and must not be forced through ATT.
 - Native Logs views graph whichever history the active transport actually

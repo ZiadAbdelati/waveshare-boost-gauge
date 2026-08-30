@@ -1,3 +1,4 @@
+#if DEBUG
 import Foundation
 
 /// In-process stand-in for `BleTransport` so the BLE-mode UI can be iterated
@@ -416,3 +417,4 @@ final class SimBleTransport: GaugeTransport {
         ],
     ]
 }
+#endif

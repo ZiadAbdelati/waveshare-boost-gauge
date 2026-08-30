@@ -54,7 +54,7 @@ request/response.
 | Characteristic | UUID suffix | Properties | Payload |
 |---|---|---|---|
 | Control | `b6a00001-...-b6a0` | write + notify | JSON RPC, requests ≤ 480 B |
-| Status | `b6a00002-...-b6a0` | read + notify | `/state`-shaped JSON, notify ~1 Hz while subscribed |
+| Status | `b6a00002-...-b6a0` | read | `/state`-shaped JSON (read-only since the firmware removed the no-subscriber 1 Hz notify 2026-08-28) |
 | Log | `b6a00003-...-b6a0` | read | `BGL1\n` + 600 samples (2 min @ 5 Hz); offset reads return the suffix |
 | DeviceInfo | `b6a00004-...-b6a0` | read | `{"name":"BoostGauge","fw":"0.9.0-sim","api":1}` |
 
@@ -134,8 +134,8 @@ short read (which ends the transfer, per `docs/bluetooth-gatt.md`).
   start-encryption expectations; no characteristics are protected).
 - Config is **in-memory only** — restarting the simulator resets
   `appBle`/`brightness`/`theme` and TPMS thresholds.
-- State is single-threaded on the main run loop (CoreBluetooth callbacks and
-  the 1 Hz status timer); no locks, no background queues.
+- State is single-threaded on the main run loop (CoreBluetooth callbacks);
+  no locks, no background queues.
 - Notifications are serialized per characteristic and fragmented into
   ≤180-byte packets (fits the iOS ATT MTU 185 → 182-byte payload). Clients
   must append packets in arrival order until the buffer parses as one complete
