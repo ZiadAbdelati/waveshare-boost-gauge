@@ -2,7 +2,7 @@
 
 This repository is an ESP-IDF 5.5.1 firmware/dashboard for an ESP32-S3 AMOLED boost gauge. These rules are load-bearing. A fresh agent must be able to resume from this file alone; do not rely on chat history.
 
-Current verified release is **`v0.8.1`** (ESP-IDF 5.5.1, app image ~2.5 MB in `release/`). Preserve that identity in hardware and release notes for current measurements. The full historical regression ledger lives in [`docs/regression-ledger.md`](docs/regression-ledger.md); the condensed guard rails below are the currently-actionable invariants, grouped by area. When a change touches one of these areas, re-read the relevant ledger rows for the measurement detail behind the rule.
+Current verified release is **`v0.9.3`** (ESP-IDF 5.5.1, app image ~2.5 MB in `release/`). Preserve that identity in hardware and release notes for current measurements. The full historical regression ledger lives in [`docs/regression-ledger.md`](docs/regression-ledger.md); the condensed guard rails below are the currently-actionable invariants, grouped by area. When a change touches one of these areas, re-read the relevant ledger rows for the measurement detail behind the rule.
 
 Regression tooling: run `python3 tools/test_suite.py` (host suite, before every commit) and `python3 tools/check_hardware_gates.py` (hardware release gates, before every release/flash-to-car); see `tools/tests/README.md`.
 
@@ -269,3 +269,10 @@ Keep commits narrow and reviewable: source, generated web output, documentation/
 apps must match it exactly; any UI change lands on both platforms in the same
 change-set. Subagents MUST read it before view work and end reports with a
 PARITY conformance line.
+
+iOS Forms with Buttons: keyboard dismissal is `@FocusState` (Save drops focus
+before sending), the keyboard-toolbar Done button, `.scrollDismissesKeyboard
+(.interactively)`, and the window-level cancel-free tap recognizer only —
+never SwiftUI tap gestures or `.immediately` scroll dismissal (they eat
+button taps; serial-proven 2026-08-31). Android's equivalents (IME Done +
+outside-tap `clearFocus`) are the same contract.
