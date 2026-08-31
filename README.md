@@ -12,7 +12,7 @@ It swaps straight onto the Waveshare board, replacing the stock factory launcher
 |---|---|---|
 | ![Boost gauge](preview/sim/gauge_boost.png) | ![Overboost](preview/sim/gauge_over.png) | `tools/sim` generates more |
 
-More rendered previews live in [`preview/sim/`](preview/sim/).
+More rendered previews live in [`preview/`](preview/).
 
 ## Features
 
