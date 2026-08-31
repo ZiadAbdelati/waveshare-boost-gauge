@@ -3,6 +3,7 @@ import SwiftUI
 struct CalibrationView: View {
     @EnvironmentObject var session: AppSession
     @StateObject private var vm = CalibrationViewModel()
+    @State private var supplyVoltsField = 5.0
 
     var body: some View {
         NavigationStack {
@@ -68,9 +69,6 @@ struct CalibrationView: View {
                             if let version = cal.version {
                                 row("Version", Format.integer(Int(version)))
                             }
-                            if let supply = cal.supplyVolts {
-                                row("Supply", "\(Format.volts(supply)) V")
-                            }
                             if let ref = cal.refMapVolts {
                                 row("Ref MAP volts", Format.volts(ref))
                             }
@@ -84,6 +82,23 @@ struct CalibrationView: View {
                             Text("Not calibrated")
                                 .foregroundColor(.secondary)
                         }
+                    }
+                }
+                if vm.calibration?.calibration?.supplyVolts != nil {
+                    Section("MAP supply voltage") {
+                        HStack {
+                            Text("Supply")
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            TextField("5.0", value: $supplyVoltsField, format: .number)
+                                .keyboardType(.decimalPad)
+                                .multilineTextAlignment(.trailing)
+                                .frame(width: 90)
+                        }
+                        Button("Save supply voltage") {
+                            Task { await vm.setSupplyVolts(supplyVoltsField) }
+                        }
+                        .disabled(vm.isSavingSupply)
                     }
                 }
                 Section {
@@ -116,6 +131,9 @@ struct CalibrationView: View {
             .onChange(of: session.transportID) { _, _ in
                 vm.reset(transport: session.transport)
                 Task { await vm.load() }
+            }
+            .onChange(of: vm.calibration?.calibration?.supplyVolts) { _, newValue in
+                if let newValue { supplyVoltsField = newValue }
             }
             .task { await vm.load() }
         }

@@ -197,12 +197,17 @@ private fun BoostHeroCard(status: Status?, loading: Boolean, themeName: String) 
                     )
                 }
             } else {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                Box(
+                    modifier = Modifier.fillMaxWidth(),
+                    contentAlignment = Alignment.Center,
                 ) {
                     ZoneChip(status.zone)
-                    ModeChip(status.demo)
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.CenterEnd,
+                    ) {
+                        ModeChip(status.demo, Modifier.padding(end = 4.dp))
+                    }
                 }
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -297,14 +302,15 @@ private fun ZoneChip(zone: String) {
 }
 
 @Composable
-private fun ModeChip(demo: Boolean) {
+private fun ModeChip(demo: Boolean, modifier: Modifier = Modifier) {
     Pill(
         text = if (demo) "DEMO" else "LIVE",
         containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
         textColor = MaterialTheme.colorScheme.onSurfaceVariant,
-        style = BoostCaptionSemibold,
-        horizontalPadding = 10.dp,
+        style = BoostSectionTitle.copy(fontWeight = FontWeight.Bold),
+        horizontalPadding = 12.dp,
         verticalPadding = 4.dp,
+        modifier = modifier,
     )
 }
 

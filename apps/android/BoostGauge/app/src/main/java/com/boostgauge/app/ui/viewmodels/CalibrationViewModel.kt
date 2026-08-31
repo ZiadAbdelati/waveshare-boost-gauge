@@ -23,6 +23,7 @@ class CalibrationViewModel(
         val loading: Boolean = true,
         val calibration: Calibration? = null,
         val calibrating: Boolean = false,
+        val savingSupply: Boolean = false,
         val error: String? = null,
         val message: String? = null,
     ) {
@@ -58,6 +59,7 @@ class CalibrationViewModel(
                             loading = false,
                             calibration = null,
                             calibrating = false,
+                            savingSupply = false,
                             error = null,
                             message = null,
                         )
@@ -95,5 +97,34 @@ class CalibrationViewModel(
                     }
                 }
         }
+    }
+
+    fun setSupplyVolts(volts: Double) {
+        if (volts < SUPPLY_MIN || volts > SUPPLY_MAX) {
+            _state.update {
+                it.copy(error = "Supply must be between $SUPPLY_MIN and $SUPPLY_MAX V")
+            }
+            return
+        }
+        viewModelScope.launch {
+            _state.update { it.copy(savingSupply = true, error = null, message = null) }
+            runCatching { api.setSupplyVolts(volts) }
+                .onSuccess { calibration ->
+                    _state.update {
+                        it.copy(savingSupply = false, calibration = calibration, message = "Supply voltage saved")
+                    }
+                }
+                .onFailure { e ->
+                    _state.update {
+                        it.copy(savingSupply = false, error = e.message ?: "failed to save supply")
+                    }
+                }
+        }
+    }
+
+    companion object {
+        /** Firmware bounds for PUT /sensors/supply (BOOST_MAP_SUPPLY_MIN/MAX). */
+        const val SUPPLY_MIN = 4.5
+        const val SUPPLY_MAX = 5.5
     }
 }

@@ -16,6 +16,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -93,6 +94,50 @@ class CalibrationViewModelTest {
         assertEquals("Calibration stored", viewModel.state.value.message)
         assertEquals(4, viewModel.state.value.calibration!!.calibration.version)
         assertEquals(CalibrationViewModel.UiMode.CONTENT, viewModel.state.value.mode())
+    }
+
+    @Test
+    fun setSupplyVoltsSendsPutAndFoldsResponseIntoState() = runTest(dispatcher) {
+        val transport = FakeBleTransport { method, path, _ ->
+            when {
+                path == "sensors/calibration" && method == "GET" -> Resp(200, ApiFixtures.CALIBRATION)
+                path == "sensors/supply" && method == "PUT" ->
+                    Resp(200, ApiFixtures.CALIBRATION.replace("\"supplyVolts\": 4.9860", "\"supplyVolts\": 5.1000"))
+                else -> Resp(404, "{}")
+            }
+        }
+        val viewModel = CalibrationViewModel(GaugeApi { transport })
+        viewModel.state.first { !it.loading }
+
+        viewModel.setSupplyVolts(5.1)
+        runCurrent()
+
+        assertEquals("Supply voltage saved", viewModel.state.value.message)
+        assertEquals(5.1, viewModel.state.value.calibration!!.calibration.supplyVolts, 0.0001)
+        assertFalse(viewModel.state.value.savingSupply)
+        assertEquals(CalibrationViewModel.UiMode.CONTENT, viewModel.state.value.mode())
+    }
+
+    @Test
+    fun setSupplyVoltsRejectsOutOfRangeWithoutSending() = runTest(dispatcher) {
+        var requests = 0
+        val transport = FakeBleTransport { method, path, _ ->
+            requests++
+            if (path == "sensors/calibration" && method == "GET") {
+                Resp(200, ApiFixtures.CALIBRATION)
+            } else {
+                Resp(404, "{}")
+            }
+        }
+        val viewModel = CalibrationViewModel(GaugeApi { transport })
+        viewModel.state.first { !it.loading }
+        assertEquals(1, requests)
+
+        viewModel.setSupplyVolts(6.0)
+        runCurrent()
+
+        assertEquals("Supply must be between 4.5 and 5.5 V", viewModel.state.value.error)
+        assertEquals(1, requests)
     }
 
     @Test

@@ -91,6 +91,10 @@ class GaugeApi(private val transportProvider: () -> GaugeTransport) {
     suspend fun calibrateAtmosphere(): Calibration =
         parse(send("POST", "sensors/calibration", "{}"))
 
+    /** PUT /sensors/supply; firmware range-checks against BOOST_MAP_SUPPLY_MIN/MAX. */
+    suspend fun setSupplyVolts(volts: Double): Calibration =
+        parse(send("PUT", "sensors/supply", buildJsonObject { put("supplyVolts", volts) }.toString()))
+
     /**
      * POST /time with ONLY the timezone. The gauge's DS3231 RTC is the sole
      * time authority, so the phone epoch is never sent; the gauge rejects a

@@ -146,3 +146,14 @@ retrying on foreground (scenePhase .active → `refreshBLELinkState`).
 The OBD2 Scanner page's Forget button calls `POST /api/v1/obd/forget`
 (firmware clears NVS `obd_peer`, drops any live link, central returns to
 idle). No other endpoint or config field touches the OBD peer.
+
+## Calibration supply voltage edit (2026-08-30)
+
+The Calibration page edits the MAP supply voltage on BOTH platforms: an
+editable numeric field pre-filled with the current supply and a
+**Save supply voltage** button that PUTs `/sensors/supply`
+`{"supplyVolts":N}` and refreshes the calibration from the response. Values
+outside 4.5–5.5 V (firmware `BOOST_MAP_SUPPLY_MIN`/`BOOST_MAP_SUPPLY_MAX`)
+are rejected client-side before the send; a firmware 400 is surfaced in the
+page's existing error slot. Same section title (**MAP supply voltage**) and
+field label (**Supply (V)**) on both platforms.

@@ -450,6 +450,38 @@ final class ViewModelTests: XCTestCase {
         XCTAssertNotNil(vm.successMessage)
     }
 
+    func testCalibrationViewModelSavesSupplyVolts() async throws {
+        let transport = FakeTransport()
+        transport.responses["sensors/calibration"] = FakeTransport.resp(200, Fixtures.calibrationObject)
+        let vm = CalibrationViewModel()
+        vm.reset(transport: transport)
+        await vm.load()
+        XCTAssertEqual(vm.calibration?.calibration?.supplyVolts, 5.2)
+
+        transport.responses["sensors/supply"] = FakeTransport.resp(200, Fixtures.calibrationObjectSupplySaved)
+        await vm.setSupplyVolts(5.1)
+        XCTAssertEqual(transport.recordedMethods.last, "PUT")
+        XCTAssertEqual(transport.recordedPaths.last, "sensors/supply")
+        XCTAssertEqual(transport.recordedBodies.last?["supplyVolts"] as? Double, 5.1)
+        XCTAssertEqual(vm.calibration?.calibration?.supplyVolts, 5.1)
+        XCTAssertNotNil(vm.successMessage)
+        XCTAssertFalse(vm.isSavingSupply)
+    }
+
+    func testCalibrationViewModelRejectsOutOfRangeSupply() async throws {
+        let transport = FakeTransport()
+        transport.responses["sensors/calibration"] = FakeTransport.resp(200, Fixtures.calibrationObject)
+        let vm = CalibrationViewModel()
+        vm.reset(transport: transport)
+        await vm.load()
+
+        await vm.setSupplyVolts(6.0)
+        XCTAssertFalse(transport.recordedPaths.contains("sensors/supply"))
+        XCTAssertNotNil(vm.errorMessage)
+        XCTAssertNil(vm.successMessage)
+        XCTAssertFalse(vm.isSavingSupply)
+    }
+
     func testLogsViewModelLoadsAndBuildsCSV() async throws {
         let transport = FakeTransport()
         transport.responses["logs?limit=1500"] = FakeTransport.resp(200, Fixtures.logsObject)
@@ -826,6 +858,15 @@ enum Fixtures {
         var object = calibrationObject
         var cal = object["calibration"] as! [String: Any]
         cal["version"] = 2
+        object["calibration"] = cal
+        return object
+    }()
+
+    static let calibrationObjectSupplySaved: [String: Any] = {
+        var object = calibrationObject
+        object["supplyVolts"] = 5.1
+        var cal = object["calibration"] as! [String: Any]
+        cal["supplyVolts"] = 5.1
         object["calibration"] = cal
         return object
     }()

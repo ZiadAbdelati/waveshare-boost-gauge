@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
@@ -17,12 +18,17 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
@@ -105,7 +111,13 @@ fun CalibrationScreen(container: AppContainer) {
                     }
                 }
                 item { LiveSensorsSection(calibration.live) }
-                item { SavedCalibrationSection(calibration.calibration) }
+                item {
+                    SavedCalibrationSection(
+                        cal = calibration.calibration,
+                        savingSupply = state.savingSupply,
+                        onSaveSupply = viewModel::setSupplyVolts,
+                    )
+                }
                 item {
                     GroupedSection {
                         Button(
@@ -208,7 +220,11 @@ private fun LiveSensorsSection(live: CalibrationLive) {
 }
 
 @Composable
-private fun SavedCalibrationSection(cal: com.boostgauge.app.data.api.CalibrationValues) {
+private fun SavedCalibrationSection(
+    cal: com.boostgauge.app.data.api.CalibrationValues,
+    savingSupply: Boolean,
+    onSaveSupply: (Double) -> Unit,
+) {
     GroupedSection(title = "Saved calibration") {
         if (!cal.valid) {
             Text(
@@ -227,10 +243,6 @@ private fun SavedCalibrationSection(cal: com.boostgauge.app.data.api.Calibration
                 HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
                 MetricRow("Version", cal.version.toString())
             }
-            if (cal.supplyVolts != null) {
-                HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
-                MetricRow("Supply", "${Format.fmt(cal.supplyVolts, 2)} V")
-            }
             if (cal.refMapVolts != null) {
                 HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
                 MetricRow("Ref MAP volts", Format.fmt(cal.refMapVolts, 4))
@@ -243,6 +255,24 @@ private fun SavedCalibrationSection(cal: com.boostgauge.app.data.api.Calibration
                 HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
                 MetricRow("Calibrated", CALIBRATED_FORMAT.format(Instant.ofEpochMilli(cal.epochMs).atZone(ZoneId.systemDefault())))
             }
+        }
+    }
+    GroupedSection(title = "MAP supply voltage") {
+        var supplyText by remember(cal.supplyVolts) { mutableStateOf(Format.fmt(cal.supplyVolts, 4)) }
+        OutlinedTextField(
+            value = supplyText,
+            onValueChange = { supplyText = it },
+            label = { Text("Supply (V)") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Button(
+            onClick = { supplyText.toDoubleOrNull()?.let { onSaveSupply(it) } },
+            enabled = !savingSupply,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(if (savingSupply) "Saving…" else "Save supply voltage")
         }
     }
 }

@@ -154,6 +154,22 @@ class GaugeApiTest {
     }
 
     @Test
+    fun supplyVoltsPutSendsBodyAndParsesCalibration() = runBlocking {
+        val transport = FakeBleTransport { method, path, body ->
+            assertEquals("PUT", method)
+            assertEquals("sensors/supply", path)
+            assertTrue(body!!.contains("\"supplyVolts\":5.1"))
+            Resp(200, ApiFixtures.CALIBRATION)
+        }
+        val api = GaugeApi { transport }
+
+        val calibration = api.setSupplyVolts(5.1)
+
+        assertTrue(calibration.calibration.valid)
+        assertEquals(4.986, calibration.supplyVolts, 0.0001)
+    }
+
+    @Test
     fun logsOverBleWithoutLanThrowsInsteadOfEightSampleWindow() = runBlocking {
         val transport = object : BleGaugeTransport {
             override val transportKind: String = "BLE"

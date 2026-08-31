@@ -734,6 +734,36 @@ static int route_cal_get(const cJSON *body, char *out, size_t cap)
     return n > 0 && n < (int)cap ? 200 : 500;
 }
 
+/* Mirror of the HTTP PUT /sensors/supply handler (boost_web.c): NVS-persisted
+ * MAP sensor supply voltage, range-checked in the setter. Sync route — no
+ * flash erase or radio blocking, same class as the /config PUTs. */
+static int route_supply_put(const cJSON *body, char *out, size_t cap)
+{
+    const cJSON *volts = cJSON_GetObjectItemCaseSensitive(body, "supplyVolts");
+    if (!cJSON_IsNumber(volts)) {
+        snprintf(out, cap, "{\"error\":\"invalid_supply\"}");
+        return 400;
+    }
+    const double v = volts->valuedouble;
+    /* Range-check as a double before narrowing (same reason as the HTTP path):
+     * NaN/overflow narrowing is undefined, so never hand the raw float down. */
+    if (!(v >= (double)BOOST_MAP_SUPPLY_MIN && v <= (double)BOOST_MAP_SUPPLY_MAX)) {
+        snprintf(out, cap, "{\"error\":\"invalid_supply\"}");
+        return 400;
+    }
+    const esp_err_t err = boost_sensors_set_supply_volts((float)v);
+    if (err == ESP_ERR_INVALID_ARG) {
+        snprintf(out, cap, "{\"error\":\"invalid_supply\"}");
+        return 400;
+    }
+    if (err != ESP_OK) {
+        snprintf(out, cap, "{\"error\":\"persist_failed\"}");
+        return 500;
+    }
+    const int n = boost_json_calibration(out, cap);
+    return n > 0 && n < (int)cap ? 200 : 500;
+}
+
 static int route_time_post(const cJSON *body, char *out, size_t cap)
 {
     const cJSON *epoch = body != NULL
@@ -1014,6 +1044,7 @@ static const app_ble_route_t s_routes[] = {
     { "/tpms/config", "GET", route_tpms_get },
     { "/tpms/config", "PUT", route_tpms_put },
     { "/sensors/calibration", "GET", route_cal_get },
+    { "/sensors/supply", "PUT", route_supply_put },
     { "/time", "POST", route_time_post },
     { "/restart", "POST", route_restart_post },
     { "/logs", "GET", route_logs_get },
