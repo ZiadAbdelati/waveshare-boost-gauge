@@ -118,9 +118,10 @@ private weak var transport: GaugeTransport?
                 } catch {
                     // Last resort: the capped BLE Log characteristic only carries
                     // the 8-sample BGL1 diagnostic window — report it as degraded.
-                    loaded = try await transport.readLogSamples(limit: 8)
+                    // try? so a fallback failure can NEVER mask the primary error.
+                    loaded = (try? await transport.readLogSamples(limit: 8)) ?? []
                     label = "BLE diagnostic window · \(loaded.count) samples"
-                    degraded = "5-minute history unavailable: \(error.localizedDescription)"
+                    degraded = "History unavailable: \(error.localizedDescription)"
                 }
                 NSLog("[Logs] limit=%d fetch+decode=%.1fms samples=%d cache=%@",
                       limit, Date().timeIntervalSince(started) * 1000, loaded.count, cached ? "hit" : "miss")

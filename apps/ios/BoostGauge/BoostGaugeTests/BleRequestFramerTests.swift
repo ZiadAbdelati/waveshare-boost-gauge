@@ -110,4 +110,9 @@ final class BleLogParsingTests: XCTestCase {
             }
         }
     }
+
+    func testEmptyPayloadIsZeroSamples() throws {
+        let samples = try BleTransport.parseLogData(Data())
+        XCTAssertTrue(samples.isEmpty)
+    }
 }

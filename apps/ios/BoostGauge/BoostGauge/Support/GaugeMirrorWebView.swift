@@ -66,6 +66,7 @@ struct GaugeMirrorWebView: UIViewRepresentable {
         ])
 
         context.coordinator.loadCanonicalMirror()
+        context.coordinator.armLayoutObserver()
         return container
     }
 
@@ -91,6 +92,13 @@ struct GaugeMirrorWebView: UIViewRepresentable {
         /// Bumped on every payload-key change; stale reveal polls abort when it
         /// moves, so a poll from the previous theme can never reveal the new one.
         private var renderToken = 0
+        /// Re-render-once-layout-settled machinery (Symptom A): a render that
+        /// ran while the fresh List-row web view was still sub-200pt drew a 0x0
+        /// (1x1 black-pixel) canvas, whose ~70 B snapshot is now rejected by
+        /// the gate. `boundsObserver` fires when SwiftUI lays the row out for
+        /// real and triggers one re-render at real size, then retires.
+        private var boundsObserver: NSKeyValueObservation?
+        private var renderedWhileTiny = false
 
         /// Flash guard gate 1: the mirror may only become visible once a render
         /// that matches the requested payload's theme id has actually painted. A
@@ -101,13 +109,30 @@ struct GaugeMirrorWebView: UIViewRepresentable {
             return renderedThemeID == payloadThemeID
         }
 
+        /// Minimum dataURL length (bytes) for a canvas snapshot to count as a
+        /// real composited frame. A 1x1 canvas PNG is ~70 B — the pre-layout
+        /// 0x0 canvas — while a 466x466 gauge face is tens of KB.
+        static let minSnapshotBytes = 500
+
         /// Flash guard gate 2: revealing also requires a frame that a
         /// post-font-ready requestAnimationFrame actually composited (and whose
         /// canvas snapshot was captured) — `state.activeThemeId` matching alone
         /// is not enough, or the web view reveals a frame still holding the
-        /// previous/default face.
-        static func shouldRevealFrame(rafDone: Bool, hasSnapshot: Bool) -> Bool {
-            rafDone && hasSnapshot
+        /// previous/default face. The snapshot must also exceed the tiny-canvas
+        /// floor (`minSnapshotBytes`), or a stretched 1x1 black pixel reveals.
+        static func shouldRevealFrame(rafDone: Bool, snapshot: String) -> Bool {
+            rafDone && snapshot.count > Self.minSnapshotBytes
+        }
+
+        /// Poll attempts (~2 s at 50 ms) before a render pass is considered
+        /// stuck; the backstop then arms one final rescue render instead of
+        /// dying silently with the old theme frozen in the overlay.
+        static let pollCeiling = 40
+
+        /// The rest of this file is deliberately silent; only the failure paths
+        /// a persistent gate-2 miss would otherwise swallow get a line.
+        static func log(_ message: String) {
+            print(message)
         }
 
         private var payloadThemeID: String? {
@@ -220,6 +245,12 @@ struct GaugeMirrorWebView: UIViewRepresentable {
                 armRescueRenders()
             }
             let token = renderToken
+            // A render at sub-200pt draws a 0x0 canvas whose snapshot is below
+            // the floor; flag it so the layout observer re-renders once at the
+            // real size instead of leaving the mirror stuck hidden.
+            if webView.bounds.width < 200 || webView.bounds.height < 200 {
+                renderedWhileTiny = true
+            }
             let script = """
             (() => {
               const payload = \(json);
@@ -262,7 +293,12 @@ struct GaugeMirrorWebView: UIViewRepresentable {
             })();
             """
             webView.evaluateJavaScript(script) { [weak self] result, error in
-                guard let self, error == nil else { return }
+                guard let self, error == nil else {
+                    if let error {
+                        Self.log("GaugeMirror: evaluateJavaScript failed: \(error.localizedDescription)")
+                    }
+                    return
+                }
                 var renderedThemeID: String?
                 if let object = result as? [String: Any] {
                     renderedThemeID = object["renderedThemeID"] as? String
@@ -288,19 +324,30 @@ struct GaugeMirrorWebView: UIViewRepresentable {
                 guard let self, error == nil else { return }
                 if let object = result as? [String: Any] {
                     let rafDone = object["done"] as? Bool == true
-                    let hasSnapshot = (object["snap"] as? String).map { !$0.isEmpty } ?? false
-                    if Self.shouldRevealFrame(rafDone: rafDone, hasSnapshot: hasSnapshot) {
+                    let snapshot = object["snap"] as? String ?? ""
+                    if Self.shouldRevealFrame(rafDone: rafDone, snapshot: snapshot) {
                         self.revealedKey = self.payloadKey
-                        self.applySnapshot(object["snap"] as? String ?? "")
+                        self.applySnapshot(snapshot)
                         webView.alpha = 1
                         self.overlayView?.alpha = 0
+                        self.retireLayoutObserver()
                         return
                     }
                 }
                 // Ceiling ~2 s per render pass; the +400/+1200 re-renders reset
                 // the flags and start a fresh poll, so a slow first paint is
                 // still caught.
-                guard attempts < 40 else { return }
+                guard attempts < Self.pollCeiling else {
+                    // Persistent gate-2 failure (stalled font chain, swallowed
+                    // evaluateJavaScript error): do not die silently and leave
+                    // the previous theme frozen in the overlay — arm one final
+                    // rescue render. Its fresh poll (attempts reset to 0) is the
+                    // last chance to reveal before the next payload change.
+                    Self.log("GaugeMirror: reveal poll exhausted after \(Self.pollCeiling) attempts; final rescue render in 1.5 s")
+                    let render = { [weak self] in _ = self?.renderIfReady() }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: render)
+                    return
+                }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                     self.pollForRevealSnapshot(webView: webView, token: token, attempts: attempts + 1)
                 }
@@ -328,6 +375,32 @@ struct GaugeMirrorWebView: UIViewRepresentable {
                   let data = Data(base64Encoded: String(dataURL.dropFirst("data:image/png;base64,".count))),
                   let image = UIImage(data: data) else { return }
             overlayView.image = image
+        }
+
+        /// Re-render once layout settles: a render requested while the fresh
+        /// List-row web view was still 0x0 (or sub-200pt) draws a 1x1 canvas,
+        /// whose tiny snapshot the gate now rejects — without this the mirror
+        /// could stay stuck hidden after SwiftUI gives the row its real frame.
+        /// KVO on `bounds` catches that settle; the flag is consumed exactly
+        /// once and the observation retired, so repeated layout churn cannot
+        /// spam re-renders.
+        func armLayoutObserver() {
+            guard let webView, boundsObserver == nil else { return }
+            boundsObserver = webView.observe(\.bounds, options: [.new]) { [weak self] _, change in
+                guard let self else { return }
+                let size = change.newValue?.size ?? .zero
+                guard size.width >= 200, size.height >= 200 else { return }
+                if self.renderedWhileTiny, self.revealedKey == nil {
+                    self.renderedWhileTiny = false
+                    self.retireLayoutObserver()
+                    self.renderIfReady()
+                }
+            }
+        }
+
+        private func retireLayoutObserver() {
+            boundsObserver?.invalidate()
+            boundsObserver = nil
         }
     }
 }

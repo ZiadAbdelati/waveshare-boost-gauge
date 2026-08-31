@@ -92,6 +92,15 @@ static inline void boost_display_gauge_update_end(void) {}
  * Raised to 5.0 so the cap sits fully behind the marker again on both sides. */
 #define ZERO_GAP_VAC_DEG   5.00f
 #define ZERO_GAP_BOOST_DEG 5.00f
+/* The smallest renderable arc sweep. LVGL rasterises arcs in whole degrees
+ * (lv_value_precise_t is int32_t with LV_USE_FLOAT off), so any sub-degree
+ * sweep truncates to zero length and lv_draw_arc() draws nothing - which left
+ * the value arc invisible across the whole 5-degree zero-side gap and then
+ * POPPED in as a round-capped ~1-degree stub instead of growing continuously
+ * from the notch. Holding a 1-degree minimum for any nonzero psi keeps the
+ * arc visible (and pixel-identical to the old first step) for every positive
+ * value, growing monotonically; psi == 0 still means no sweep. */
+#define ARC_MIN_SWEEP_DEG 1.0f
 #define TICK_FONT     (&lv_font_montserrat_24)
 #define TICK_RADIUS   160.0f
 #define VALUE_SLOT_HEIGHT  58
@@ -4822,12 +4831,17 @@ static lv_color_t gradient_color_for_psi(const boost_theme_t *theme, float psi)
     return gradient_lut_color(theme, big_step_for(psi));
 }
 
+/* The dyno-cell value-arc colour. The moving arc is the pressure indicator,
+ * so it follows the SIDE of zero (vacuum cyan / boost green / overboost red) -
+ * the same rule the HUD fill and neon zone use. The white ATMO band that used
+ * to paint the arc white for |psi| < 0.35 showed as a white flash on the boost
+ * side before the arc "settled" to green at 0.35; the ATMO white remains only
+ * in zone_color_for_psi() for the zone label and the readout text. */
 static lv_color_t color_for_psi(const boost_theme_t *theme, float psi)
 {
     if (boost_theme_arc_gradient()) return gradient_color_for_psi(theme, psi);
     if (psi >= s_psi_overboost) return c(theme->overboost);
-    if (psi >= 0.35f) return c(theme->boost);
-    if (psi > -0.35f) return c(theme->text);
+    if (psi >= 0.0f) return c(theme->boost);
     return c(theme->vacuum);
 }
 
@@ -5127,10 +5141,20 @@ static void value_arc_angles(float psi, float *start, float *end)
     const float zero_a = psi_to_angle(0.0f);
     if (psi >= 0.0f) {
         *start = zero_a + ZERO_GAP_BOOST_DEG;
-        *end = fmaxf(psi_to_angle(psi), *start);
+        const float min_sweep = (psi > 0.0f) ? ARC_MIN_SWEEP_DEG : 0.0f;
+        /* Sweep grows from the gap edge toward the value's own angle. For
+         * psi within the zero-side gap the raw sweep is negative; instead of
+         * clamping to exactly zero length (invisible, then a pop) hold the
+         * one-degree minimum so the arc is present and continuous. Above the
+         * gap this reduces to the original end = psi_to_angle(psi). */
+        *end = *start + fmaxf(psi_to_angle(psi) - *start, min_sweep);
     } else {
-        *start = fminf(psi_to_angle(psi), zero_a - ZERO_GAP_VAC_DEG);
         *end = zero_a - ZERO_GAP_VAC_DEG;
+        const float min_sweep = (psi < 0.0f) ? ARC_MIN_SWEEP_DEG : 0.0f;
+        /* Mirror of the boost side: the vacuum arc stays a one-degree minimum
+         * inside the gap and grows counter-clockwise past it, byte-identical
+         * to the original start = psi_to_angle(psi) below the gap. */
+        *start = *end - fmaxf(*end - psi_to_angle(psi), min_sweep);
     }
 }
 

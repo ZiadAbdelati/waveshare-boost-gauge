@@ -323,6 +323,12 @@ static void poll_task(void *arg)
                 continue;
             }
             elm_ready = true;
+            /* ATZ already produced a >-reply, so liveness per the guard-rail
+             * semantics is TRUE now - publishing here lets /state (and the
+             * apps' OBD card) flip at init completion instead of freezing the
+             * pre-READY snapshot through the up-to-10 s 0100 protocol prime.
+             * rpm/coolant/battery read 0 until the first rotation fills them. */
+            publish_state();
             {
                 char reply[96];
                 if (boost_obd_elm_request("ATDP", reply, sizeof(reply), 500)) {

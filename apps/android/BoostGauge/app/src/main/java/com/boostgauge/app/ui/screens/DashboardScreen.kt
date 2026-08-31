@@ -379,11 +379,6 @@ private fun TpmsCard(status: Status?) {
                     }
                 }
             }
-            Text(
-                text = "TPMS status ${tpms.status}",
-                style = BoostFootnote,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
     }
 }

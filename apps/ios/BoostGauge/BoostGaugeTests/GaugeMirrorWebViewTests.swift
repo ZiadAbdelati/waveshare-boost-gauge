@@ -25,13 +25,28 @@ final class GaugeMirrorWebViewTests: XCTestCase {
         // frame a post-font-ready requestAnimationFrame actually composited
         // with its snapshot — otherwise the webview reveals while still holding
         // the previous/default face (the residual flash).
-        XCTAssertFalse(GaugeMirrorWebView.Coordinator.shouldRevealFrame(rafDone: false, hasSnapshot: true),
+        let realSnapshot = "data:image/png;base64," + String(repeating: "A", count: 40_000)
+        XCTAssertFalse(GaugeMirrorWebView.Coordinator.shouldRevealFrame(rafDone: false, snapshot: realSnapshot),
                        "theme matched but no composited frame → must stay hidden")
-        XCTAssertFalse(GaugeMirrorWebView.Coordinator.shouldRevealFrame(rafDone: true, hasSnapshot: false),
+        XCTAssertFalse(GaugeMirrorWebView.Coordinator.shouldRevealFrame(rafDone: true, snapshot: ""),
                        "RAF fired but no canvas snapshot → must stay hidden")
-        XCTAssertFalse(GaugeMirrorWebView.Coordinator.shouldRevealFrame(rafDone: false, hasSnapshot: false))
-        XCTAssertTrue(GaugeMirrorWebView.Coordinator.shouldRevealFrame(rafDone: true, hasSnapshot: true),
+        XCTAssertFalse(GaugeMirrorWebView.Coordinator.shouldRevealFrame(rafDone: false, snapshot: ""))
+        XCTAssertTrue(GaugeMirrorWebView.Coordinator.shouldRevealFrame(rafDone: true, snapshot: realSnapshot),
                       "post-font-ready frame composited + snapshot captured → reveal")
+    }
+
+    @MainActor
+    func testRevealRejectsTinyPreLayoutSnapshot() {
+        // Symptom A: a pre-layout 0x0 canvas snapshots as a ~70-byte 1x1 PNG
+        // (the stretched black pixel). The gate must reject any snapshot below
+        // the floor even though the RAF fired, and accept a real face.
+        let oneByOne = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+        XCTAssertLessThan(oneByOne.count, GaugeMirrorWebView.Coordinator.minSnapshotBytes,
+                          "the 1x1 PNG fixture must be tiny for this test to assert the floor")
+        XCTAssertFalse(GaugeMirrorWebView.Coordinator.shouldRevealFrame(rafDone: true, snapshot: oneByOne),
+                       "RAF fired on a 1x1 canvas → must stay hidden, not reveal a black pixel")
+        let justAboveFloor = String(repeating: "B", count: GaugeMirrorWebView.Coordinator.minSnapshotBytes + 1)
+        XCTAssertTrue(GaugeMirrorWebView.Coordinator.shouldRevealFrame(rafDone: true, snapshot: justAboveFloor))
     }
 
     @MainActor

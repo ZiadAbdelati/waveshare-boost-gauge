@@ -341,6 +341,7 @@ final class BleTransport: NSObject, BLELinkTransport, CBCentralManagerDelegate, 
     }
 
     static func parseLogData(_ data: Data) throws -> [LogSample] {
+        if data.isEmpty { return [] }
         guard let header = "BGL1\n".data(using: .utf8), data.starts(with: header) else {
             throw TransportError.badLogFormat
         }

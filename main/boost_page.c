@@ -104,9 +104,10 @@ static void qr_ap_info(qr_ap_info_t *out)
     memset(out, 0, sizeof(*out));
     strlcpy(out->ap_ssid, "BoostGauge-SIM", sizeof(out->ap_ssid));
     /* Connected + IP so sim screenshots exercise the two-line SSID/IP label
-     * (the branch a joined STA shows). Set false to check SSID-only. */
-    out->sta_connected = true;
-    strlcpy(out->sta_ip, "192.168.4.2", sizeof(out->sta_ip));
+     * (the branch a joined STA shows). QR_NO_IP=1 drops the IP so the sim can
+     * also verify the AP-only layout. Host-only; never compiled into firmware. */
+    out->sta_connected = getenv("QR_NO_IP") == NULL;
+    if (out->sta_connected) strlcpy(out->sta_ip, "192.168.4.2", sizeof(out->sta_ip));
 #endif
 }
 
@@ -219,19 +220,23 @@ static void show_qr(void)
         /* Shifted up 24 px so the swipe hint has room underneath. */
         lv_obj_align(qr, LV_ALIGN_CENTER, 0, -24);
 
+        /* AP name below the QR in its own slot; the IP line (when the gauge is
+         * on the network) is a SEPARATE label stacked under it. The old single
+         * two-line label was bottom-anchored, so the IP line grew the box
+         * UPWARD into the QR (label y 356..409 vs the QR box ending at 368).
+         * Splitting keeps the name at the same place with and without the IP. */
         lv_obj_t *label = lv_label_create(s_qr_overlay);
-        if (ap.sta_connected) {
-            char txt[64];
-            snprintf(txt, sizeof(txt), "%s\n%s", ap.ap_ssid, ap.sta_ip);
-            lv_label_set_text(label, txt);
-            lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
-            lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, -56);
-        } else {
-            lv_label_set_text(label, ap.ap_ssid);
-            lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, -68);
-        }
+        lv_label_set_text(label, ap.ap_ssid);
         lv_obj_set_style_text_color(label, lv_color_white(), 0);
         lv_obj_set_style_text_font(label, &lv_font_montserrat_24, 0);
+        lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, -68);
+        if (ap.sta_connected) {
+            lv_obj_t *ip = lv_label_create(s_qr_overlay);
+            lv_label_set_text(ip, ap.sta_ip);
+            lv_obj_set_style_text_color(ip, lv_color_white(), 0);
+            lv_obj_set_style_text_font(ip, &lv_font_montserrat_24, 0);
+            lv_obj_align(ip, LV_ALIGN_BOTTOM_MID, 0, -41);
+        }
 
     }
 

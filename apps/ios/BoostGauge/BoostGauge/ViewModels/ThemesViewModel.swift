@@ -28,6 +28,12 @@ final class ThemesViewModel: ObservableObject {
     @Published private(set) var themeColorEdits: [String: [String: String]] = [:]
 
     private weak var transport: GaugeTransport?
+    /// Monotonic activation sequence: bumped on every `select` request so a
+    /// slow, older PUT echo can never clobber `activeThemeID` with a theme the
+    /// user has already tapped away from (rapid taps over a serialized BLE
+    /// link return out of order).
+    private var activationSeq = 0
+    private var newestRequestSeq = 0
 
     func reset(transport: GaugeTransport?) {
         assertMainThread()
@@ -142,7 +148,9 @@ final class ThemesViewModel: ObservableObject {
     }
 
     func select(_ id: String) async {
-        await put("themes/active", body: ["id": id])
+        activationSeq += 1
+        newestRequestSeq = activationSeq
+        await put("themes/active", body: ["id": id], activationSeq: activationSeq)
     }
 
     func saveOptions(for themeID: String) async {
@@ -194,7 +202,7 @@ final class ThemesViewModel: ObservableObject {
     /// the echoed ThemeList, and `apply` it on the main actor. Any failure —
     /// missing transport, non-200 status, or decode/transport error — surfaces
     /// via `errorMessage`.
-    private func put(_ path: String, body: [String: Any]) async {
+    private func put(_ path: String, body: [String: Any], activationSeq seq: Int? = nil) async {
         guard let transport else { return }
         do {
             let response = try await transport.send("PUT", path: path, body: body)
@@ -204,7 +212,7 @@ final class ThemesViewModel: ObservableObject {
             }
             let list = try JSONDecoder().decode(ThemeList.self, from: response.body)
             await MainActor.run {
-                self.apply(list)
+                self.apply(list, activationSeq: seq)
                 self.errorMessage = nil
             }
         } catch {
@@ -236,11 +244,20 @@ final class ThemesViewModel: ObservableObject {
     static let paletteKeys = ["face", "track", "text", "muted", "vacuum", "boost", "overboost", "zero"]
     static let zoneKeys = ["vacuum", "boost", "overboost"]
 
-    private func apply(_ list: ThemeList) {
+    private func apply(_ list: ThemeList, activationSeq seq: Int? = nil) {
         assertMainThread()
         configuration = list
         themes = list.themes ?? themes
-        activeThemeID = list.activeThemeId ?? activeThemeID
+        if let seq {
+            // Only the newest activation request may set `activeThemeID`: a
+            // slow older PUT echo (stale `seq`) must not re-apply a theme the
+            // user already tapped away from.
+            if seq >= newestRequestSeq {
+                activeThemeID = list.activeThemeId ?? activeThemeID
+            }
+        } else {
+            activeThemeID = list.activeThemeId ?? activeThemeID
+        }
         if let value = list.arcGradient { arcGradient = value }
         if let value = list.hudGradient { hudGradient = value }
         if let value = list.hudTrueBlack { hudTrueBlack = value }

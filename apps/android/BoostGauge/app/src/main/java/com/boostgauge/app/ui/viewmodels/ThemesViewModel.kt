@@ -32,6 +32,7 @@ class ThemesViewModel(
         val themes: List<ThemeInfo> = emptyList(),
         val activeThemeId: String = "",
         val activatingId: String? = null,
+        val activatingSeq: Int = 0,
         val error: String? = null,
         val payload: ThemesPayload? = null,
         val config: Config? = null,
@@ -184,28 +185,33 @@ class ThemesViewModel(
         }
     }
 
+    private var activationSeq = 0
+
     /**
      * Theme activation is bounded: a half-dead BLE link (e.g. a request racing
      * the reconnect loop) could otherwise hold the request for the transport's
      * full retry ladder (~20 s × 5) and pin the row spinner for 30 s+.
      */
     fun activate(id: String) {
+        val seq = ++activationSeq
         viewModelScope.launch {
-            _state.update { it.copy(activatingId = id, error = null) }
+            _state.update { it.copy(activatingId = id, activatingSeq = seq, error = null) }
             val result = withTimeoutOrNull(THEME_OP_TIMEOUT_MS) {
                 runCatching { api.activateTheme(id) }
             }
+            // Rapid-fire activations complete out of order. A response is applied
+            // only while this activation is still the newest requested one: a late
+            // response for a superseded (or already-cleared) activation must never
+            // overwrite a newer selection — including the activatingId == null
+            // window, which the old guard wrongly treated as "accept anything".
+            val isCurrent = state.value.activatingSeq == seq && state.value.activatingId == id
             when {
-                result == null -> _state.update {
+                result == null -> if (isCurrent) _state.update {
                     it.copy(activatingId = null, error = "theme request timed out")
                 }
                 result.isSuccess -> {
                     val payload = result.getOrThrow()
-                    // Rapid-fire activations can complete out of order; a stale
-                    // response must never overwrite a newer activation's state.
-                    // Accept the payload only if this activation is still the
-                    // newest one the user requested.
-                    if (state.value.activatingId == id || state.value.activatingId == null) {
+                    if (isCurrent) {
                         _state.update {
                             it.copy(
                                 activatingId = null,
@@ -217,7 +223,7 @@ class ThemesViewModel(
                         }
                     }
                 }
-                else -> _state.update {
+                else -> if (isCurrent) _state.update {
                     it.copy(
                         activatingId = null,
                         error = result.exceptionOrNull()?.message ?: "failed to activate theme",

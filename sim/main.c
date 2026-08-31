@@ -703,6 +703,54 @@ static int run_chase(const char *out_dir)
     return 0;
 }
 
+/* Report the QR overlay's widget geometry and return true if any label box
+ * overlaps the qrcode widget's bounding box. The qrcode identifies the
+ * overlay (it only exists on the QR page, never the toggles page); labels
+ * under it are the AP-name/IP text and the swipe hint. This catches the
+ * "IP line pushes the AP-name row up under the QR" regression that a pixel
+ * scan cannot (the glyphs sit on the QR's white quiet zone). */
+static bool qr_layout_overlap(void)
+{
+    lv_obj_t *scr = lv_screen_active();
+    lv_obj_t *overlay = NULL;
+    lv_area_t qr = { 0, 0, -1, -1 };
+    const uint32_t n = lv_obj_get_child_count(scr);
+    for (uint32_t i = 0; i < n && overlay == NULL; i++) {
+        lv_obj_t *c = lv_obj_get_child(scr, i);
+        const uint32_t m = lv_obj_get_child_count(c);
+        for (uint32_t j = 0; j < m; j++) {
+            lv_obj_t *g = lv_obj_get_child(c, j);
+            if (lv_obj_get_class(g) == &lv_qrcode_class) {
+                overlay = c;
+                qr.x1 = lv_obj_get_x(g);
+                qr.y1 = lv_obj_get_y(g);
+                qr.x2 = qr.x1 + lv_obj_get_width(g) - 1;
+                qr.y2 = qr.y1 + lv_obj_get_height(g) - 1;
+                break;
+            }
+        }
+    }
+    if (overlay == NULL) return false;
+    printf("  QR overlay geometry:\n");
+    printf("    qrcode box: x %d..%d y %d..%d\n", qr.x1, qr.x2, qr.y1, qr.y2);
+    bool overlap = false;
+    const uint32_t m = lv_obj_get_child_count(overlay);
+    for (uint32_t i = 0; i < m; i++) {
+        lv_obj_t *lbl = lv_obj_get_child(overlay, i);
+        if (lv_obj_get_class(lbl) != &lv_label_class) continue;
+        const int32_t lx1 = lv_obj_get_x(lbl);
+        const int32_t ly1 = lv_obj_get_y(lbl);
+        const int32_t lx2 = lx1 + lv_obj_get_width(lbl) - 1;
+        const int32_t ly2 = ly1 + lv_obj_get_height(lbl) - 1;
+        printf("    label \"%s\": x %d..%d y %d..%d\n",
+               lv_label_get_text(lbl) ? lv_label_get_text(lbl) : "", lx1, lx2, ly1, ly2);
+        if (ly1 <= qr.y2 && ly2 >= qr.y1 && lx1 <= qr.x2 && lx2 >= qr.x1) {
+            overlap = true;
+        }
+    }
+    return overlap;
+}
+
 /* --qr-test: verify the two-finger QR overlay + swipe-to-toggles page.
  *  1. show the overlay (QR page) -> snapshot qr_page0
  *  2. swipe left -> toggles page -> snapshot qr_page1
@@ -729,6 +777,10 @@ static int run_qr_test(const char *out_dir)
     snprintf(path, sizeof(path), "%s/qr_page0.raw", out_dir);
     if (!snapshot_screen(path)) return 2;
     printf("wrote %s (QR page)\n", path);
+    if (qr_layout_overlap()) {
+        fprintf(stderr, "FAIL a label overlaps the QR code bounding box\n");
+        failures++;
+    }
 
     /* 2. Swipe left -> toggles page */
     boost_page_qr_swipe_left();

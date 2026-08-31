@@ -9,6 +9,10 @@ const ARC_RANGE = 270;
 const DEFAULT_ZERO_ANGLE = 236.25;
 const ZERO_GAP_VAC = 5.0;
 const ZERO_GAP_BOOST = 5.0;
+/* Smallest renderable arc sweep (firmware ARC_MIN_SWEEP_DEG): keeps the value
+ * arc present and growing continuously from the notch for any nonzero psi
+ * instead of popping in at the end of the zero-side gap. psi == 0 = no sweep. */
+const ARC_MIN_SWEEP_DEG = 1.0;
 const sampleHistory = [];
 const HISTORY_WINDOW_MS = 60_000;
 const GAUGE_GAP_RESET_MS = 1000;
@@ -391,7 +395,13 @@ function colorFor(psi) {
 }
 
 function arcColorFor(psi) {
-  return state.arcGradient ? gradientColorFor(psi) : colorFor(psi);
+  if (state.arcGradient) return gradientColorFor(psi);
+  /* The value arc follows the side of zero (mirrors firmware color_for_psi);
+   * the white ATMO band is reserved for the zone label / readout. */
+  const { psiOverboost } = psiRange();
+  if (psi >= psiOverboost) return state.palette.overboost;
+  if (psi >= 0) return state.palette.boost;
+  return state.palette.vacuum;
 }
 
 function hudColorFor(psi) {
@@ -462,16 +472,12 @@ function valueArcAngles(psi) {
   let end;
   if (psi >= 0) {
     start = zero + ZERO_GAP_BOOST;
-    end = val;
-    if (end < start) end = start;
+    const minSweep = psi > 0 ? ARC_MIN_SWEEP_DEG : 0;
+    end = start + Math.max(val - start, minSweep);
   } else {
-    start = val;
     end = zero - ZERO_GAP_VAC;
-    if (end < start) end = start;
-  }
-  if (Math.abs(end - start) < 0.4) {
-    start = zero;
-    end = zero;
+    const minSweep = psi < 0 ? ARC_MIN_SWEEP_DEG : 0;
+    start = end - Math.max(end - val, minSweep);
   }
   return { start, end };
 }

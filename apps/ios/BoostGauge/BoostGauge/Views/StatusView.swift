@@ -237,11 +237,6 @@ struct StatusView: View {
                             tireCapsule(wheel, label: wheelLabels[index], lowPsi: tpms.lowPsi, status: tpms.status)
                         }
                     }
-                    if let status = tpms.status {
-                        Text("TPMS status \(status)")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
                 }
                 .card()
             }

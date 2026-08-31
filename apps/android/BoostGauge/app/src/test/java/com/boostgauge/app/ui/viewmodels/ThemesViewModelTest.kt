@@ -106,6 +106,41 @@ class ThemesViewModelTest {
     }
 
     @Test
+    fun staleActivationResponseCannotOverwriteNewerSelection() = runTest(dispatcher) {
+        // Tap big-digit then neon; the newer neon request answers first and its
+        // selection is applied. The stale big-digit response lands late, after
+        // activatingId has cleared — it must be dropped, never accepted through
+        // the `activatingId == null` branch.
+        val stale = ApiFixtures.THEMES.replace("\"activeThemeId\": \"dyno-cell\"", "\"activeThemeId\": \"big-digit\"")
+        val newest = ApiFixtures.THEMES.replace("\"activeThemeId\": \"dyno-cell\"", "\"activeThemeId\": \"neon\"")
+        val outOfOrder = object : GaugeTransport {
+            override suspend fun get(path: String): Resp = when (path) {
+                "themes" -> Resp(200, ApiFixtures.THEMES)
+                else -> Resp(404, "{}")
+            }
+
+            override suspend fun send(method: String, path: String, bodyJson: String?): Resp = when {
+                path == "themes/active" && bodyJson?.contains("\"id\":\"big-digit\"") == true -> {
+                    delay(1_000L)
+                    Resp(200, stale)
+                }
+                path == "themes/active" && bodyJson?.contains("\"id\":\"neon\"") == true -> {
+                    delay(100L)
+                    Resp(200, newest)
+                }
+                else -> get(path)
+            }
+        }
+        val viewModel = ThemesViewModel(GaugeApi { outOfOrder })
+        viewModel.activate("big-digit")
+        viewModel.activate("neon")
+        testScheduler.advanceUntilIdle()
+
+        assertEquals("neon", viewModel.state.value.activeThemeId)
+        assertNull(viewModel.state.value.activatingId)
+    }
+
+    @Test
     fun loadsThemeListFromFirmwareShape() = runTest(dispatcher) {
         val transport = FakeBleTransport { _, path, _ ->
             assertEquals("themes", path)
