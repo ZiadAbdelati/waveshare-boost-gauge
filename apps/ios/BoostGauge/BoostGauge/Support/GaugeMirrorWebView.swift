@@ -2,6 +2,20 @@ import SwiftUI
 import UIKit
 import WebKit
 
+/// Bumped by the owning view on scenePhase .active so a mirror whose
+/// WebContent process was suspended while backgrounded (H3) gets its rescue
+/// window re-armed on foreground. Monotonic-increment environment value.
+struct MirrorRearmKey: EnvironmentKey {
+    static let defaultValue = 0
+}
+
+extension EnvironmentValues {
+    var mirrorRearm: Int {
+        get { self[MirrorRearmKey.self] }
+        set { self[MirrorRearmKey.self] = newValue }
+    }
+}
+
 /// Hosts the canonical dashboard canvas renderer from `web/app.js` entirely offline.
 ///
 /// Flash guard: the mirror is kept invisible until a render that matches the
@@ -73,6 +87,10 @@ struct GaugeMirrorWebView: UIViewRepresentable {
     func updateUIView(_ container: UIView, context: Context) {
         context.coordinator.payload = payload
         context.coordinator.themeID = themeID
+        if context.environment.mirrorRearm != context.coordinator.lastRearm {
+            context.coordinator.lastRearm = context.environment.mirrorRearm
+            context.coordinator.rearmForForeground()
+        }
         context.coordinator.renderIfReady()
     }
 
@@ -92,6 +110,8 @@ struct GaugeMirrorWebView: UIViewRepresentable {
         /// Bumped on every payload-key change; stale reveal polls abort when it
         /// moves, so a poll from the previous theme can never reveal the new one.
         private var renderToken = 0
+        /// Last foreground-rearm environment value seen (H3 revival).
+        var lastRearm = 0
         /// Re-render-once-layout-settled machinery (Symptom A): a render that
         /// ran while the fresh List-row web view was still sub-200pt drew a 0x0
         /// (1x1 black-pixel) canvas, whose ~70 B snapshot is now rejected by
@@ -219,6 +239,22 @@ struct GaugeMirrorWebView: UIViewRepresentable {
                   index + 1 < arguments.count else { return nil }
             return Int(arguments[index + 1])
         }()
+
+        /// Foreground revival (H3): iOS may suspend the WebContent process
+        /// while the app is backgrounded; every render attempt during
+        /// suspension fails inside evaluateJavaScript, the rescue renders fire
+        /// once and exhaust, and the `requestedKey` gate never re-arms for the
+        /// same theme — the overlay froze the old face until the process
+        /// happened to resume minutes later. On `scenePhase .active`, re-arm
+        /// the rescue window and re-render: a resumed process gets a fresh
+        /// poll; if eval still fails (process not yet warm), the rescue
+        /// renders keep trying without user interaction.
+        func rearmForForeground() {
+            guard payloadThemeID != nil, revealedKey != requestedKey else { return }
+            renderToken += 1
+            armRescueRenders()
+            renderIfReady()
+        }
 
         func renderIfReady() {
             // No payload yet (SwiftUI hasn't pushed the theme) — wait rather

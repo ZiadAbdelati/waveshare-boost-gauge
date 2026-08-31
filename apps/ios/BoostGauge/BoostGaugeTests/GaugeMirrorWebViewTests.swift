@@ -192,4 +192,98 @@ final class GaugeMirrorWebViewTests: XCTestCase {
         XCTAssertEqual(tpms["page"] as? Int, 1)
         XCTAssertGreaterThan(tpms["artWidth"] as? Int ?? 0, 0, "Canonical TPMS artwork should load offline")
     }
+
+    // MARK: - H3 mirror overlay freeze across WebContent stall/suspension
+
+    /// Real-device probe: when the WebContent process is suspended (app
+    /// backgrounded on a real device), `evaluateJavaScript` errors out. The
+    /// reveal poll never even starts, and the +400/+1200 ms rescue renders
+    /// armed on the key change are the LAST retries this key ever gets:
+    /// `requestedKey == key` on later same-theme `updateUIView` passes means
+    /// `renderIfReady` skips `armRescueRenders()`, so the frozen overlay
+    /// persists until a DIFFERENT key arrives or the view is recreated.
+    @MainActor
+    func testH3_MIRROR_OVERLAY_FREEZE_NO_RECOVERY_AFTER_EVAL_FAILURE_SAME_KEY() async throws {
+        let coordinator = GaugeMirrorWebView.Coordinator()
+        let webView = StubMirrorWebView(frame: CGRect(x: 0, y: 0, width: 466, height: 466))
+        webView.failEvaluations = true
+        let overlay = UIImageView()
+        coordinator.overlayView = overlay
+        coordinator.webView = webView
+        coordinator.payload = Self.neonPayload
+        coordinator.themeID = "neon"
+        // Drives `ready = true` and schedules the boot render, exactly as a
+        // finished navigation would on the device.
+        coordinator.webView(webView, didFinish: nil)
+
+        // Boot render + the two armed rescue renders (+400/+1200 ms). Every one
+        // hits an evaluateJavaScript error and returns without arming anything.
+        try await Task.sleep(nanoseconds: 1_800_000_000)
+        XCTAssertEqual(webView.renderCallCount, 3,
+                       "boot render + 2 armed rescue renders, then nothing further is scheduled")
+        XCTAssertEqual(webView.pollCallCount, 0,
+                       "an eval failure never even starts the reveal poll")
+        XCTAssertEqual(webView.alpha, 0, accuracy: 0.001)
+        XCTAssertEqual(overlay.alpha, 1, accuracy: 0.001, "old theme frozen in the overlay")
+
+        // Repeated same-theme updateUIView passes (the user taps the same row,
+        // or a load() re-echoes the same activeThemeId): one render per pass,
+        // but armRescueRenders() is skipped — the key never changed.
+        coordinator.renderIfReady()
+        coordinator.renderIfReady()
+        try await Task.sleep(nanoseconds: 1_200_000_000)
+        XCTAssertEqual(webView.renderCallCount, 5, "each manual pass fires exactly one render")
+        XCTAssertEqual(webView.pollCallCount, 0)
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        XCTAssertEqual(webView.renderCallCount, 5,
+                       "KNOWN-BUG DEMO: same-key updateUIView never re-arms the rescue renders; the frozen overlay persists until a different key or a fresh webview")
+        XCTAssertEqual(overlay.alpha, 1, accuracy: 0.001)
+    }
+
+    /// Control case for the failure above: when the WebContent is alive but
+    /// stalled (RAF never fires, gate 2 stays closed), the poll-exhaust rescue
+    /// DOES re-arm itself forever (render → poll-exhaust → rescue → render),
+    /// so a merely slow WebContent recovers on its own. Only a crashed/
+    /// suspended WebContent (evaluateJavaScript error) freezes permanently.
+    @MainActor
+    func testH3_RESCUE_RETRY_LOOP_RECOVERS_WHEN_WEBVIEW_ALIVE() async throws {
+        let coordinator = GaugeMirrorWebView.Coordinator()
+        let webView = StubMirrorWebView(frame: CGRect(x: 0, y: 0, width: 466, height: 466))
+        coordinator.overlayView = UIImageView()
+        coordinator.webView = webView
+        coordinator.payload = Self.neonPayload
+        coordinator.themeID = "neon"
+        coordinator.webView(webView, didFinish: nil)
+
+        // Poll ceiling 40 × 50 ms ≈ 2 s, then a rescue render at +1.5 s → the
+        // cycle repeats indefinitely while the key is unchanged.
+        try await Task.sleep(nanoseconds: 5_500_000_000)
+        XCTAssertGreaterThanOrEqual(webView.renderCallCount, 2,
+                                    "the poll-exhaust rescue re-renders even though the requestedKey never changes")
+        XCTAssertGreaterThan(webView.pollCallCount, 40,
+                             "the reveal poll re-runs after every rescue render")
+        XCTAssertEqual(webView.alpha, 0, accuracy: 0.001, "still hidden — no composited frame yet")
+    }
+}
+
+/// Deterministic stand-in for a WKWebView whose WebContent process is stalled
+/// or suspended: `evaluateJavaScript` never executes JS in a live WebContent —
+/// it returns controlled results (or an error) and records how the coordinator
+/// drives it. The render script is distinguishable from the poll script by its
+/// `drawGauge(sample)` call.
+private final class StubMirrorWebView: WKWebView {
+    var failEvaluations = false
+    private(set) var renderCallCount = 0
+    private(set) var pollCallCount = 0
+
+    override func evaluateJavaScript(_ javaScriptString: String, completionHandler: ((Any?, Error?) -> Void)? = nil) {
+        let isRender = javaScriptString.contains("drawGauge(sample)")
+        if isRender { renderCallCount += 1 } else { pollCallCount += 1 }
+        if failEvaluations {
+            completionHandler?(nil, NSError(domain: "WebKitErrorDomain", code: 4, userInfo: nil))
+            return
+        }
+        // Gate 1 passes (the rendered theme matches), gate 2 never opens.
+        completionHandler?(isRender ? ["renderedThemeID": "neon"] : ["done": false, "snap": ""], nil)
+    }
 }

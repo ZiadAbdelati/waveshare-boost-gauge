@@ -6,6 +6,8 @@ import com.boostgauge.app.data.api.GaugeApi
 import com.boostgauge.app.data.transport.FakeBleTransport
 import com.boostgauge.app.data.transport.GaugeTransport
 import com.boostgauge.app.data.transport.Resp
+import com.boostgauge.app.data.transport.TransportException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
@@ -138,6 +140,104 @@ class ThemesViewModelTest {
 
         assertEquals("neon", viewModel.state.value.activeThemeId)
         assertNull(viewModel.state.value.activatingId)
+    }
+
+    @Test
+    fun staleLoadCannotClobberNewerSelection() = runTest(dispatcher) {
+        // Real-device probe: the initial load's GET /themes is held in flight
+        // (a slow BLE read queued ahead of the user's tap). The tap activates
+        // neon and its echo applies; when the stale GET finally lands it still
+        // carries the PRE-switch activeThemeId (dyno-cell). load()'s apply must
+        // not overwrite the newer selection.
+        val gate = CompletableDeferred<Unit>()
+        val newest = ApiFixtures.THEMES.replace("\"activeThemeId\": \"dyno-cell\"", "\"activeThemeId\": \"neon\"")
+        val gated = object : GaugeTransport {
+            override suspend fun get(path: String): Resp = when (path) {
+                "themes" -> {
+                    gate.await()
+                    Resp(200, ApiFixtures.THEMES)
+                }
+                "config" -> Resp(200, ApiFixtures.CONFIG)
+                "state" -> Resp(200, ApiFixtures.STATE)
+                else -> Resp(404, "{}")
+            }
+
+            override suspend fun send(method: String, path: String, bodyJson: String?): Resp = when (path) {
+                "themes/active" -> Resp(200, newest)
+                else -> Resp(404, "{}")
+            }
+        }
+        val viewModel = ThemesViewModel(GaugeApi { gated })
+        runCurrent()
+        // load() is suspended on the gate; nothing has applied yet.
+        viewModel.activate("neon")
+        runCurrent()
+        assertEquals("neon", viewModel.state.value.activeThemeId)
+
+        // The stale GET (captured before the PUT) returns dyno-cell. The
+        // seq-guarded load apply must drop it, keeping the newer selection.
+        gate.complete(Unit)
+        runCurrent()
+
+        assertEquals("neon", viewModel.state.value.activeThemeId)
+    }
+
+    @Test
+    fun lostActivationEchoReconcilesBoardState() = runTest(dispatcher) {
+        // Real-device probe: the PUT always reaches the board, but the echoed
+        // ThemeList response is lost (BLE response-notification path down). The
+        // board applies neon; the app must reconcile with a fresh GET and adopt
+        // the board's real state instead of freezing on the old theme.
+        var putReachedBoard = false
+        val neonActive = ApiFixtures.THEMES.replace("\"activeThemeId\": \"dyno-cell\"", "\"activeThemeId\": \"neon\"")
+        val transport = object : GaugeTransport {
+            override suspend fun get(path: String): Resp = when (path) {
+                "themes" -> Resp(200, if (putReachedBoard) neonActive else ApiFixtures.THEMES)
+                else -> Resp(404, "{}")
+            }
+
+            override suspend fun send(method: String, path: String, bodyJson: String?): Resp {
+                if (path == "themes/active") {
+                    putReachedBoard = true
+                    throw TransportException("response lost")
+                }
+                return get(path)
+            }
+        }
+        val viewModel = ThemesViewModel(GaugeApi { transport })
+        viewModel.state.first { !it.loading }
+
+        viewModel.activate("neon")
+        testScheduler.advanceUntilIdle()
+
+        assertEquals("neon", viewModel.state.value.activeThemeId)
+        assertNull(viewModel.state.value.error)
+        assertNull(viewModel.state.value.activatingId)
+    }
+
+    @Test
+    fun failedActivationKeepsErrorWhenBoardDidNotSwitch() = runTest(dispatcher) {
+        // The PUT never reached the board (link dropped). The reconcile GET
+        // confirms the board is still on the old theme: the failure stands and
+        // the row reflects the board's real state.
+        val transport = object : GaugeTransport {
+            override suspend fun get(path: String): Resp = when (path) {
+                "themes" -> Resp(200, ApiFixtures.THEMES)
+                else -> Resp(404, "{}")
+            }
+
+            override suspend fun send(method: String, path: String, bodyJson: String?): Resp =
+                throw TransportException("not connected")
+        }
+        val viewModel = ThemesViewModel(GaugeApi { transport })
+        viewModel.state.first { !it.loading }
+
+        viewModel.activate("neon")
+        testScheduler.advanceUntilIdle()
+
+        assertEquals("dyno-cell", viewModel.state.value.activeThemeId)
+        assertNull(viewModel.state.value.activatingId)
+        assertTrue(viewModel.state.value.error != null)
     }
 
     @Test

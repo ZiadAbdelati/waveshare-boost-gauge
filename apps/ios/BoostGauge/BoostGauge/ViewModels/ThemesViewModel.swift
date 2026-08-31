@@ -62,7 +62,12 @@ final class ThemesViewModel: ObservableObject {
             let list = try JSONDecoder().decode(ThemeList.self, from: response.body)
             Self.cacheThemeList(list)
             await MainActor.run { self.apply(list) }
-        } catch { /* keep current state; next poll/refresh repairs */ }
+        } catch {
+            // A failed resync leaves the (possibly stale) cache applied —
+            // surface it; H1 proved the silent catch hid a frozen preview
+            // across restarts.
+            await MainActor.run { self.errorMessage = error.localizedDescription }
+        }
     }
 
     // Last confirmed theme list, so tab re-entry renders instantly instead of
@@ -201,13 +206,16 @@ final class ThemesViewModel: ObservableObject {
     /// Shared PUT skeleton for the theme mutations: PUT, require 200, decode
     /// the echoed ThemeList, and `apply` it on the main actor. Any failure —
     /// missing transport, non-200 status, or decode/transport error — surfaces
-    /// via `errorMessage`.
+    /// via `errorMessage`. For activations (seq != nil) a lost echo is
+    /// ambiguous: the board may have applied the switch even though the
+    /// response vanished (H2), so reconcile with a GET before giving up.
     private func put(_ path: String, body: [String: Any], activationSeq seq: Int? = nil) async {
         guard let transport else { return }
         do {
             let response = try await transport.send("PUT", path: path, body: body)
             guard response.status == 200 else {
                 await MainActor.run { self.errorMessage = APIErrorText.from(response) }
+                if seq != nil { await reconcileAfterLostEcho(requested: body["id"] as? String) }
                 return
             }
             let list = try JSONDecoder().decode(ThemeList.self, from: response.body)
@@ -217,7 +225,30 @@ final class ThemesViewModel: ObservableObject {
             }
         } catch {
             await MainActor.run { self.errorMessage = error.localizedDescription }
+            if seq != nil { await reconcileAfterLostEcho(requested: body["id"] as? String) }
         }
+    }
+
+    /// Lost-echo recovery: the board may have applied the switch even though
+    /// the response was lost. GET the board's real state and adopt it; clear
+    /// the error only if the board actually took the requested theme
+    /// (switch succeeded despite the lost echo) — otherwise the failure
+    /// message stands while the UI still shows the board's authoritative
+    /// state, matching the Android reconcile contract.
+    private func reconcileAfterLostEcho(requested: String?) async {
+        guard let transport else { return }
+        do {
+            let response = try await transport.get("themes")
+            guard response.status == 200 else { return }
+            let list = try JSONDecoder().decode(ThemeList.self, from: response.body)
+            Self.cacheThemeList(list)
+            await MainActor.run {
+                self.apply(list, activationSeq: newestRequestSeq)
+                if let requested, list.activeThemeId == requested {
+                    self.errorMessage = nil
+                }
+            }
+        } catch { /* reconcile best-effort; the error message stands */ }
     }
 
     func colorHex(for theme: Theme, key: String) -> String? {
@@ -255,7 +286,10 @@ final class ThemesViewModel: ObservableObject {
             if seq >= newestRequestSeq {
                 activeThemeID = list.activeThemeId ?? activeThemeID
             }
-        } else {
+        } else if activationSeq == newestRequestSeq {
+            // No-seq applies (load/resync) follow the same rule: once the user
+            // has tapped a selection, a slow in-flight list response must not
+            // clobber it (H4).
             activeThemeID = list.activeThemeId ?? activeThemeID
         }
         if let value = list.arcGradient { arcGradient = value }

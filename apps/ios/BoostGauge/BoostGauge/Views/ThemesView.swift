@@ -3,8 +3,10 @@ import SwiftUI
 struct ThemesView: View {
     @EnvironmentObject var session: AppSession
     @Environment(\.verticalSizeClass) private var verticalSizeClass
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var vm = ThemesViewModel()
     @State private var expandedThemes: Set<String> = []
+    @State private var previewRearm = 0
 
     var body: some View {
         NavigationStack {
@@ -52,6 +54,12 @@ struct ThemesView: View {
             .onAppear {
                 vm.reset(transport: session.transport)
                 Task { await vm.resyncActiveTheme() }
+            }
+            // Foreground revival: a suspended WebContent process froze the
+            // preview overlay (H3); re-arm the mirror's rescue window when the
+            // app becomes active again.
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active { previewRearm += 1 }
             }
             .onChange(of: session.transportID) { _, _ in
                 vm.reset(transport: session.transport)
@@ -140,6 +148,7 @@ struct ThemesView: View {
         // backgrounds. Corners stay transparent; no offset shadow (it reads
         // harsh against a light page).
         GaugeMirrorWebView(payload: vm.previewPayload(for: theme), themeID: theme.id)
+            .environment(\.mirrorRearm, previewRearm)
             .aspectRatio(1, contentMode: .fit)
             .clipShape(Circle())
             .overlay {

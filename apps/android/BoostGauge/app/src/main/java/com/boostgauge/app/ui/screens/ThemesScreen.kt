@@ -57,6 +57,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.Switch
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -98,6 +99,14 @@ fun ThemesScreen(container: AppContainer) {
         },
     )
     val state by viewModel.state.collectAsState()
+
+    // Tab re-entry: the board is authoritative and may have moved while the
+    // user was on another tab (other phone, web UI). The ViewModel survives
+    // tab switches (saveState/restoreState), so this must re-fire on every
+    // return or the preview stays frozen on the old theme. Mirrors iOS
+    // `.onAppear { resyncActiveTheme() }`. resyncActiveTheme() skips while the
+    // initial load is in flight and is seq-guarded against a concurrent tap.
+    LaunchedEffect(Unit) { viewModel.resyncActiveTheme() }
 
     if (LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE) {
         LandscapeThemes(viewModel, state)

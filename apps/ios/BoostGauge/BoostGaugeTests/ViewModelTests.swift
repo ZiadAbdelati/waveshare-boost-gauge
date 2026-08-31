@@ -642,6 +642,122 @@ final class ViewModelTests: XCTestCase {
         XCTAssertGreaterThan(Int64(columns[2]) ?? 0, 0)
     }
 
+    // MARK: - Theme switch failure paths (H1/H2/H4)
+
+    func testH1_CACHE_STALE_SILENT_NOTHING_TELLS_USER() async throws {
+        // Real-device probe: on-disk cache seeded with theme A (dyno-cell),
+        // then the link degrades so GET /themes fails/times out. The board may
+        // have moved (a lost PUT echo earlier switched it) but the app cannot
+        // see it. resyncActiveTheme() re-applies the cache on EVERY launch
+        // BEFORE the fetch, and its `catch { /* keep current state */ }` is
+        // silent — nothing anywhere tells the user the preview is stale.
+        defer { UserDefaults.standard.removeObject(forKey: "themes.cachedPayload") }
+        UserDefaults.standard.removeObject(forKey: "themes.cachedPayload")
+
+        // Seed the on-disk cache via a healthy resync.
+        let good = FakeTransport()
+        good.responses["themes"] = FakeTransport.resp(200, Fixtures.themesObject)
+        let vm = ThemesViewModel()
+        vm.reset(transport: good)
+        await vm.resyncActiveTheme()
+        XCTAssertEqual(vm.activeThemeID, "dyno-cell")
+        XCTAssertNotNil(UserDefaults.standard.data(forKey: "themes.cachedPayload"),
+                        "resync success persists the ThemeList to disk")
+
+        // Link degrades: GET /themes times out, exactly the real-device
+        // "response silently vanishes" window.
+        let failing = FailingThemesTransport()
+        vm.reset(transport: failing)
+        await vm.resyncActiveTheme()
+
+        // FIXED (H1): the stale cache still applies (it is all we have), but
+        // the fetch failure is now surfaced — the user is told the preview
+        // may be stale instead of nothing.
+        XCTAssertEqual(vm.activeThemeID, "dyno-cell",
+                       "the cached state still applies when the fetch fails — it is the last known state")
+        XCTAssertNotNil(vm.errorMessage,
+                        "FIXED: resyncActiveTheme surfaces the fetch failure instead of swallowing it")
+
+        // The failed fetch does NOT invalidate the cache, so the same stale
+        // payload re-applies on every subsequent launch: survives restart.
+        let data = try XCTUnwrap(UserDefaults.standard.data(forKey: "themes.cachedPayload"))
+        let cached = try JSONDecoder().decode(ThemeList.self, from: data)
+        XCTAssertEqual(cached.activeThemeId, "dyno-cell",
+                       "KNOWN-BUG DEMO: a failed fetch leaves the stale cache in place for the next launch")
+
+        // Second "launch" (fresh VM, same disk): the stale cache wins again,
+        // and the failure is surfaced on the fresh VM too.
+        // (The VM holds its transport weakly, so keep a strong local reference.)
+        let relaunch = ThemesViewModel()
+        let relaunchFailing = FailingThemesTransport()
+        relaunch.reset(transport: relaunchFailing)
+        await relaunch.resyncActiveTheme()
+        XCTAssertEqual(relaunch.activeThemeID, "dyno-cell")
+        XCTAssertNotNil(relaunch.errorMessage,
+                        "FIXED: the surfaced failure survives relaunch while the fetch keeps failing")
+    }
+
+    func testH2_LOST_PUT_ECHO_boardSwitchesPreviewFrozen() async throws {
+        // Real-device probe: tapping a theme row sends PUT /themes/active which
+        // ALWAYS reaches the board (firmware serial confirms every switch) but
+        // the echoed ThemeList response is lost — the BLE response-notification
+        // path is down (stale CCCD after a board reboot). The board applies
+        // neon; the app never learns.
+        let transport = FakeTransport()
+        transport.responses["themes"] = FakeTransport.resp(200, Fixtures.themesObject)
+        let vm = ThemesViewModel()
+        vm.reset(transport: transport)
+        await vm.load()
+        XCTAssertEqual(vm.activeThemeID, "dyno-cell")
+        XCTAssertNil(vm.errorMessage)
+
+        // No response registered for PUT themes/active → the echo never arrives.
+        // After the fix, the lost echo triggers a reconcile GET, which succeeds
+        // (registered) and reports the board's real state.
+        transport.responses["themes"] = FakeTransport.resp(200, Fixtures.themesObjectActiveNeon)
+        await vm.select("neon")
+        XCTAssertEqual(transport.recordedPaths.last, "themes",
+                       "FIXED: the lost echo triggers a reconcile GET after the PUT")
+        XCTAssertEqual(vm.activeThemeID, "neon",
+                       "FIXED: the app adopts the board's authoritative theme — preview unfreezes")
+        XCTAssertNil(vm.errorMessage,
+                     "FIXED: the switch actually succeeded, so the transient error is cleared")
+    }
+
+    func testH4_STALE_LOAD_CLOBBERS_NEWER_SELECT() async throws {
+        // Real-device probe: `.task { load() }` fires a GET /themes that is
+        // enqueued on the serialized BLE link ahead of the user's tap. The GET
+        // captures the PRE-switch activeThemeId; when it finally lands, load()'s
+        // apply() — which carries NO activationSeq — overwrites the newer
+        // select() result, and the preview silently snaps back to the old theme.
+        let transport = GateThemesTransport()
+        transport.responses["themes"] = FakeTransport.resp(200, Fixtures.themesObject)
+        transport.responses["themes/active"] = FakeTransport.resp(200, Fixtures.themesObjectActiveNeon)
+        let vm = ThemesViewModel()
+        vm.reset(transport: transport)
+
+        let loadTask = Task { await vm.load() }
+        defer { transport.release() }
+        let deadline = Date().addingTimeInterval(2)
+        while Date() < deadline && !transport.getInFlight {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(transport.getInFlight, "load()'s GET /themes must be in flight on the serialized link")
+
+        await vm.select("neon")
+        XCTAssertEqual(vm.activeThemeID, "neon", "select's echo applied — board and app briefly agree")
+        XCTAssertNil(vm.errorMessage)
+
+        // The stale GET (captured before the PUT) returns dyno-cell; load()'s
+        // no-seq apply clobbers the newer selection.
+        transport.release()
+        await loadTask.value
+        XCTAssertEqual(vm.activeThemeID, "dyno-cell",
+                       "KNOWN-BUG DEMO: activationSeq protects select-vs-echo but NOT select-vs-load — a stale load() apply clobbers the newer select")
+        XCTAssertNil(vm.errorMessage,
+                     "KNOWN-BUG DEMO: and the clobber is silent — no error anywhere, board is actually on neon")
+    }
+
     // MARK: - Helpers
 
     private func waitForState(_ vm: StatusViewModel) async throws -> GaugeState {
@@ -679,6 +795,47 @@ private final class SlowLogTransport: FakeTransport {
     override func get(_ path: String) async throws -> Resp {
         if path.hasPrefix("logs"), logDelay > 0 {
             try? await Task.sleep(nanoseconds: UInt64(logDelay * 1_000_000_000))
+        }
+        return try await super.get(path)
+    }
+}
+
+/// GET /themes always fails (the real-device "responses silently vanish"
+/// window). Everything else falls through to the fake.
+private final class FailingThemesTransport: FakeTransport {
+    override func get(_ path: String) async throws -> Resp {
+        if path == "themes" { throw URLError(.timedOut) }
+        return try await super.get(path)
+    }
+}
+
+/// Holds load()'s GET /themes in flight until the test releases it, modelling
+/// the serialized BLE link queuing a read ahead of the user's tap.
+private final class GateThemesTransport: FakeTransport {
+    private let lock = NSLock()
+    private var _getInFlight = false
+    private var _releaseGET = false
+
+    var getInFlight: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return _getInFlight
+    }
+
+    func release() {
+        lock.lock(); defer { lock.unlock() }
+        _releaseGET = true
+    }
+
+    override func get(_ path: String) async throws -> Resp {
+        if path == "themes" {
+            lock.lock(); _getInFlight = true; lock.unlock()
+            while true {
+                lock.lock()
+                let release = _releaseGET
+                lock.unlock()
+                if release { break }
+                try? await Task.sleep(nanoseconds: 5_000_000)
+            }
         }
         return try await super.get(path)
     }

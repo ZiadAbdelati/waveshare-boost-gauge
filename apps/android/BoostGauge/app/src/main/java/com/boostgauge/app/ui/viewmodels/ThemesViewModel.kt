@@ -88,12 +88,22 @@ class ThemesViewModel(
         }
     }
 
-    /** Board is authoritative: adopt its activeThemeId if it moved. */
-    private fun resyncActiveTheme() {
+    /**
+     * Board is authoritative: adopt its activeThemeId if it moved (reconnect,
+     * tab re-entry, or a foreground resync). Skipped while the initial load is
+     * in flight so a re-entry never races it; seq-guarded so a resync that
+     * started before a newer activation cannot clobber the newer selection.
+     */
+    internal fun resyncActiveTheme() {
+        if (_state.value.loading) return
+        val seq = ++requestSeq
         viewModelScope.launch {
             val result = withTimeoutOrNull(THEME_OP_TIMEOUT_MS) {
                 runCatching { api.getThemes() }.getOrNull()
             } ?: return@launch
+            // A newer load/activation superseded this resync while it was in
+            // flight: drop it so it cannot apply a stale activeThemeId.
+            if (seq != requestSeq) return@launch
             _state.update {
                 it.copy(
                     themes = result.themes,
@@ -117,6 +127,7 @@ class ThemesViewModel(
     /** Parallel load: themes/config/status fetched concurrently so a slow themes
      *  round trip never serializes the smaller config/state reads behind it. */
     fun load() {
+        val seq = ++requestSeq
         viewModelScope.launch {
             _state.update { it.copy(loading = true, error = null) }
             val result = withTimeoutOrNull(THEMES_LOAD_TIMEOUT_MS) {
@@ -128,6 +139,14 @@ class ThemesViewModel(
                         Loaded(themes.await(), config.await(), status.await())
                     }
                 }
+            }
+            if (seq != requestSeq) {
+                // A newer load/activation/resync superseded this one: the stale
+                // response (captured before the board processed the newer
+                // selection) must not clobber the newer state. Always clear the
+                // loading flag so a superseded refresh cannot wedge the editor.
+                _state.update { it.copy(loading = false) }
+                return@launch
             }
             when {
                 result == null -> _state.update { it.copy(loading = false, error = "themes load timed out") }
@@ -188,14 +207,24 @@ class ThemesViewModel(
     private var activationSeq = 0
 
     /**
+     * Monotonic guard shared by every list-apply path (load/resync/activate).
+     * The activation echoes carry their own seq, but a load()/resync() apply
+     * carries none — a slow response captured before the board processed a
+     * newer selection could otherwise clobber it. Each request captures the
+     * current value and applies only while it is still the newest.
+     */
+    private var requestSeq = 0
+
+    /**
      * Theme activation is bounded: a half-dead BLE link (e.g. a request racing
      * the reconnect loop) could otherwise hold the request for the transport's
      * full retry ladder (~20 s × 5) and pin the row spinner for 30 s+.
      */
     fun activate(id: String) {
-        val seq = ++activationSeq
+        val activationSeq = ++this.activationSeq
+        ++requestSeq
         viewModelScope.launch {
-            _state.update { it.copy(activatingId = id, activatingSeq = seq, error = null) }
+            _state.update { it.copy(activatingId = id, activatingSeq = activationSeq, error = null) }
             val result = withTimeoutOrNull(THEME_OP_TIMEOUT_MS) {
                 runCatching { api.activateTheme(id) }
             }
@@ -204,10 +233,14 @@ class ThemesViewModel(
             // response for a superseded (or already-cleared) activation must never
             // overwrite a newer selection — including the activatingId == null
             // window, which the old guard wrongly treated as "accept anything".
-            val isCurrent = state.value.activatingSeq == seq && state.value.activatingId == id
+            val isCurrent = state.value.activatingSeq == activationSeq && state.value.activatingId == id
             when {
-                result == null -> if (isCurrent) _state.update {
-                    it.copy(activatingId = null, error = "theme request timed out")
+                result == null -> if (isCurrent) {
+                    _state.update { it.copy(activatingId = null, error = "theme request timed out") }
+                    // The PUT may still have reached the board even though the
+                    // echo was lost: reconcile with a fresh GET instead of
+                    // leaving the UI frozen on the old theme.
+                    reconcileAfterLostEcho(id, activationSeq)
                 }
                 result.isSuccess -> {
                     val payload = result.getOrThrow()
@@ -223,12 +256,43 @@ class ThemesViewModel(
                         }
                     }
                 }
-                else -> if (isCurrent) _state.update {
-                    it.copy(
-                        activatingId = null,
-                        error = result.exceptionOrNull()?.message ?: "failed to activate theme",
-                    )
+                else -> if (isCurrent) {
+                    _state.update {
+                        it.copy(
+                            activatingId = null,
+                            error = result.exceptionOrNull()?.message ?: "failed to activate theme",
+                        )
+                    }
+                    reconcileAfterLostEcho(id, activationSeq)
                 }
+            }
+        }
+    }
+
+    /**
+     * A select PUT's echo can be lost on a half-dead BLE link even though the
+     * board applied the switch. Reconcile with a fresh GET: if the board now
+     * reports the requested theme, the operation actually succeeded — adopt it
+     * and clear the failure. If it is still on the old theme, keep the failure
+     * but adopt the board's real state so the row never lies.
+     */
+    private fun reconcileAfterLostEcho(requestedId: String, activationSeq: Int) {
+        viewModelScope.launch {
+            val board = withTimeoutOrNull(THEME_OP_TIMEOUT_MS) {
+                runCatching { api.getThemes() }.getOrNull()
+            } ?: return@launch
+            // Only reconcile while this activation is still the newest requested
+            // one; a newer tap wins regardless.
+            if (state.value.activatingSeq != activationSeq) return@launch
+            val applied = board.activeThemeId == requestedId
+            _state.update {
+                it.copy(
+                    activatingId = null,
+                    themes = board.themes,
+                    activeThemeId = board.activeThemeId,
+                    payload = board,
+                    error = if (applied) null else it.error,
+                )
             }
         }
     }
