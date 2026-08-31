@@ -1,11 +1,10 @@
 import SwiftUI
-import UIKit
 
 struct CalibrationView: View {
     @EnvironmentObject var session: AppSession
     @StateObject private var vm = CalibrationViewModel()
     @State private var supplyVoltsField = 5.0
-    @State private var keyboardVisible = false
+    @FocusState private var supplyFieldFocused: Bool
 
     var body: some View {
         NavigationStack {
@@ -80,10 +79,12 @@ struct CalibrationView: View {
                             Spacer()
                             TextField("5.0", value: $supplyVoltsField, format: .number)
                                 .keyboardType(.decimalPad)
+                                .focused($supplyFieldFocused)
                                 .multilineTextAlignment(.trailing)
                                 .frame(width: 90)
                         }
                         Button("Save supply voltage") {
+                            supplyFieldFocused = false
                             Task { await vm.setSupplyVolts(supplyVoltsField) }
                         }
                         .disabled(vm.isSavingSupply)
@@ -111,23 +112,17 @@ struct CalibrationView: View {
                         .foregroundColor(.secondary)
                 }
             }
-            .scrollDismissesKeyboard(.immediately)
-            .onTapGesture {
-                if keyboardVisible { dismissKeyboard() }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
-                keyboardVisible = true
-            }
-            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
-                keyboardVisible = false
-            }
-.gaugeScrollBottomMargin()
+            .gaugeScrollBottomMargin()
                         .navigationTitle("Calibration")
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button(action: { Task { await vm.load() } }) {
                         Image(systemName: "arrow.clockwise")
                     }
+                }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") { supplyFieldFocused = false }
                 }
             }
             .onAppear { vm.reset(transport: session.transport) }
@@ -164,9 +159,5 @@ struct CalibrationView: View {
 
     private func ageText(_ ageMs: Int64) -> String {
         ageMs < 0 ? "never read" : "\(Format.uptime(UInt64(ageMs)))"
-    }
-
-    private func dismissKeyboard() {
-        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
 }

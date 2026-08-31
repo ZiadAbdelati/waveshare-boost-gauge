@@ -90,7 +90,10 @@ final class CalibrationViewModel: ObservableObject {
     }
 
     func setSupplyVolts(_ v: Double) async {
-        guard let transport else { return }
+        guard let transport else {
+            await MainActor.run { self.errorMessage = "No active transport — connect in Settings." }
+            return
+        }
         guard v >= Self.supplyMin && v <= Self.supplyMax else {
             await MainActor.run {
                 self.supplyFieldError = "Supply must be between \(Self.supplyMin) and \(Self.supplyMax) V"

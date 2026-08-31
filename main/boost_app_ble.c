@@ -1080,6 +1080,8 @@ static void app_control_handle(uint16_t conn_handle, uint32_t id,
                            app_ble_make_response(id, 400, "{\"error\":\"invalid_request\"}"));
         return;
     }
+    ESP_LOGI(TAG, "control req id=%lu %s %s", (unsigned long)id,
+             method->valuestring, path->valuestring);
 
     /* Async routes that block (flash/NVS/I2C or copy+JSON) — run on the
      * driver task rather than stalling the NimBLE host event loop. */
@@ -1666,6 +1668,8 @@ static void app_driver_task(void *arg)
             break;
         case APP_EV_TX: {
             char *payload = ev.payload;
+            ESP_LOGI(TAG, "tx resp len=%u conn_ok=%d", payload ? (unsigned)strlen(payload) : 0u,
+                     ev.conn_handle == s_conn_handle ? 1 : 0);
             if (payload != NULL &&
                 ev.conn_handle == s_conn_handle &&
                 s_ctl_val_handle != 0) {
@@ -1687,6 +1691,8 @@ static void app_driver_task(void *arg)
             /* NVS commit blocks; run here (driver task) like calibrate. Heap
              * body only — a 4 KB stack buffer in this task previously caused
              * a boot-loop stack overflow panic. */
+            ESP_LOGI(TAG, "supply ev fired (payload=%u B)",
+                     ev.payload ? (unsigned)strlen(ev.payload) : 0u);
             const cJSON *volts = cJSON_Parse(ev.payload);
             free(ev.payload);
             char *body = malloc(APP_BLE_CTRL_RESP_MAX);
