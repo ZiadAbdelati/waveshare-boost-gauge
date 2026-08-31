@@ -12,6 +12,8 @@ __pycache__/
 .DS_Store
 preview/sim/*.raw
 preview/sim/frames/
+preview/sim/*/*.raw
+preview/sim/*/frames/
 android/.gradle/
 android/.kotlin/
 android/**/build/
