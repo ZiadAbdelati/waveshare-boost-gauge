@@ -50,7 +50,6 @@ static const shot_state_t k_states[] = {
     { -12.0f, 0.0f, "vac" },
     { 0.0f, 0.0f, "atmo" },
     { -12.0f, 0.0f, "vac" },
-    { -5.5f, 0.0f, "v55" },
     { 5.0f, 5.0f, "boost" },
     { 19.5f, 19.5f, "over" },
 };
