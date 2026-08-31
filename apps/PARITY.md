@@ -154,6 +154,18 @@ editable numeric field pre-filled with the current supply and a
 **Save supply voltage** button that PUTs `/sensors/supply`
 `{"supplyVolts":N}` and refreshes the calibration from the response. Values
 outside 4.5–5.5 V (firmware `BOOST_MAP_SUPPLY_MIN`/`BOOST_MAP_SUPPLY_MAX`)
-are rejected client-side before the send; a firmware 400 is surfaced in the
-page's existing error slot. Same section title (**MAP supply voltage**) and
-field label (**Supply (V)**) on both platforms.
+are rejected client-side before the send; a firmware 400 is surfaced the
+same way. Save success and save/load-refresh failures are **transient
+bottom toasts** (iOS `WindowToast`, Android M3 `SnackbarHost`), never inline
+list rows; the client-side out-of-range validation error is shown inline
+next to the field on iOS and via the toast on Android. Same section title
+(**MAP supply voltage**) and field label (**Supply (V)**) on both platforms.
+
+## Status badge layout (2026-08-30)
+
+The dashboard hero shows the zone word in a large headline capsule
+(`.headline` / `BoostSectionTitle` bold, 12/4 padding), horizontally
+centered in the card, with the LIVE/DEMO capsule in the ORIGINAL smaller
+caption size (`.caption.weight(.semibold)` / `BoostCaptionSemibold`, 10/4
+padding) centered directly beneath it — a vertical stack, not side-by-side.
+Same sizes, padding, colors, and vertical ordering on both platforms.

@@ -1,5 +1,6 @@
 package com.boostgauge.app.ui.screens
 
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
@@ -9,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
@@ -19,8 +21,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -28,6 +33,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -55,129 +63,131 @@ fun CalibrationScreen(container: AppContainer) {
         },
     )
     val state by viewModel.state.collectAsState()
+    val focusManager = LocalFocusManager.current
 
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "Calibration",
-                    style = BoostNavTitle,
-                    color = MaterialTheme.colorScheme.onBackground,
-                )
-                IconButton(onClick = { viewModel.load() }) {
-                    Icon(
-                        Icons.Filled.Refresh,
-                        contentDescription = "Refresh calibration",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
-        state.message?.let {
+    Box(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) { detectTapGestures { focusManager.clearFocus() } },
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
             item {
-                Text(
-                    text = it,
-                    style = BoostFootnote,
-                    color = BoostColors.success,
-                )
-            }
-        }
-        when (state.mode()) {
-            CalibrationViewModel.UiMode.LOADING -> item {
-                Box(
-                    modifier = Modifier.fillMaxWidth().padding(40.dp),
-                    contentAlignment = Alignment.Center,
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    CircularProgressIndicator()
+                    Text(
+                        text = "Calibration",
+                        style = BoostNavTitle,
+                        color = MaterialTheme.colorScheme.onBackground,
+                    )
+                    IconButton(onClick = { viewModel.load() }) {
+                        Icon(
+                            Icons.Filled.Refresh,
+                            contentDescription = "Refresh calibration",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
-            CalibrationViewModel.UiMode.CONTENT -> {
-                val calibration = checkNotNull(state.calibration)
-                state.error?.let {
+            when (state.mode()) {
+                CalibrationViewModel.UiMode.LOADING -> item {
+                    Box(
+                        modifier = Modifier.fillMaxWidth().padding(40.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        CircularProgressIndicator()
+                    }
+                }
+                CalibrationViewModel.UiMode.CONTENT -> {
+                    val calibration = checkNotNull(state.calibration)
+                    item { LiveSensorsSection(calibration.live) }
                     item {
+                        SavedCalibrationSection(
+                            cal = calibration.calibration,
+                            savingSupply = state.savingSupply,
+                            onSaveSupply = viewModel::setSupplyVolts,
+                        )
+                    }
+                    item {
+                        GroupedSection {
+                            Button(
+                                onClick = { viewModel.calibrate() },
+                                enabled = !state.calibrating,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                if (state.calibrating) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.padding(end = 8.dp).size(16.dp),
+                                        strokeWidth = 2.dp,
+                                    )
+                                }
+                                Text(if (state.calibrating) "Calibrating…" else "Calibrate to Atmosphere")
+                            }
+                            Text(
+                                text = "Takes about 2 seconds while the device observes the atmosphere.",
+                                style = BoostFootnote,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 4.dp, bottom = 4.dp),
+                            )
+                        }
+                    }
+                }
+                CalibrationViewModel.UiMode.ERROR -> item {
+                    GroupedSection {
                         Text(
-                            text = it,
+                            text = state.error ?: "Failed to load calibration",
                             style = BoostFootnote,
                             color = BoostColors.warning,
                         )
-                    }
-                }
-                item { LiveSensorsSection(calibration.live) }
-                item {
-                    SavedCalibrationSection(
-                        cal = calibration.calibration,
-                        savingSupply = state.savingSupply,
-                        onSaveSupply = viewModel::setSupplyVolts,
-                    )
-                }
-                item {
-                    GroupedSection {
-                        Button(
-                            onClick = { viewModel.calibrate() },
-                            enabled = !state.calibrating,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            if (state.calibrating) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.padding(end = 8.dp).size(16.dp),
-                                    strokeWidth = 2.dp,
-                                )
-                            }
-                            Text(if (state.calibrating) "Calibrating…" else "Calibrate to Atmosphere")
-                        }
                         Text(
-                            text = "Takes about 2 seconds while the device observes the atmosphere.",
+                            text = "Check the transport and try again.",
                             style = BoostFootnote,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 4.dp, bottom = 4.dp),
                         )
+                        Button(
+                            onClick = { viewModel.load() },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("Retry")
+                        }
                     }
                 }
-            }
-            CalibrationViewModel.UiMode.ERROR -> item {
-                GroupedSection {
-                    Text(
-                        text = state.error ?: "Failed to load calibration",
-                        style = BoostFootnote,
-                        color = BoostColors.warning,
-                    )
-                    Text(
-                        text = "Check the transport and try again.",
-                        style = BoostFootnote,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Button(
-                        onClick = { viewModel.load() },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text("Retry")
-                    }
-                }
-            }
-            CalibrationViewModel.UiMode.EMPTY -> item {
-                GroupedSection {
-                    Text(
-                        text = "No calibration data loaded.",
-                        style = BoostFootnote,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Button(
-                        onClick = { viewModel.load() },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text("Refresh")
+                CalibrationViewModel.UiMode.EMPTY -> item {
+                    GroupedSection {
+                        Text(
+                            text = "No calibration data loaded.",
+                            style = BoostFootnote,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Button(
+                            onClick = { viewModel.load() },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("Refresh")
+                        }
                     }
                 }
             }
         }
+
+        // Native M3 snackbar: floats at the bottom, auto-expires, never inserts
+        // rows (same pattern as SettingsScreen).
+        val snackbarHostState = remember { SnackbarHostState() }
+        val toastText = state.toast
+        LaunchedEffect(toastText) {
+            if (toastText != null) {
+                snackbarHostState.showSnackbar(toastText, withDismissAction = false)
+                viewModel.clearToast()
+            }
+        }
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier.align(Alignment.BottomCenter),
+        )
     }
 }
 
@@ -258,13 +268,18 @@ private fun SavedCalibrationSection(
         }
     }
     GroupedSection(title = "MAP supply voltage") {
+        val focusManager = LocalFocusManager.current
         var supplyText by remember(cal.supplyVolts) { mutableStateOf(Format.fmt(cal.supplyVolts, 4)) }
         OutlinedTextField(
             value = supplyText,
             onValueChange = { supplyText = it },
             label = { Text("Supply (V)") },
             singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Decimal,
+                imeAction = ImeAction.Done,
+            ),
+            keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() }),
             modifier = Modifier.fillMaxWidth(),
         )
         Button(

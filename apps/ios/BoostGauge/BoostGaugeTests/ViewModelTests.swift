@@ -477,7 +477,8 @@ final class ViewModelTests: XCTestCase {
 
         await vm.setSupplyVolts(6.0)
         XCTAssertFalse(transport.recordedPaths.contains("sensors/supply"))
-        XCTAssertNotNil(vm.errorMessage)
+        XCTAssertNotNil(vm.supplyFieldError)
+        XCTAssertNil(vm.errorMessage)
         XCTAssertNil(vm.successMessage)
         XCTAssertFalse(vm.isSavingSupply)
     }

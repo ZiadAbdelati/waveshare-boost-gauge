@@ -1,27 +1,15 @@
 import SwiftUI
+import UIKit
 
 struct CalibrationView: View {
     @EnvironmentObject var session: AppSession
     @StateObject private var vm = CalibrationViewModel()
     @State private var supplyVoltsField = 5.0
+    @State private var keyboardVisible = false
 
     var body: some View {
         NavigationStack {
             Form {
-                if let error = vm.errorMessage {
-                    Section {
-                        Text(error)
-                            .font(.footnote)
-                            .foregroundColor(.orange)
-                    }
-                }
-                if let message = vm.successMessage {
-                    Section {
-                        Text(message)
-                            .font(.footnote)
-                            .foregroundColor(.green)
-                    }
-                }
                 if let live = vm.calibration?.live {
                     Section("Live sensors") {
                         presenceRow("ADS1115", present: live.adsPresent)
@@ -99,6 +87,11 @@ struct CalibrationView: View {
                             Task { await vm.setSupplyVolts(supplyVoltsField) }
                         }
                         .disabled(vm.isSavingSupply)
+                        if let fieldError = vm.supplyFieldError {
+                            Text(fieldError)
+                                .font(.footnote)
+                                .foregroundColor(.red)
+                        }
                     }
                 }
                 Section {
@@ -117,6 +110,16 @@ struct CalibrationView: View {
                         .font(.footnote)
                         .foregroundColor(.secondary)
                 }
+            }
+            .scrollDismissesKeyboard(.immediately)
+            .onTapGesture {
+                if keyboardVisible { dismissKeyboard() }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+                keyboardVisible = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+                keyboardVisible = false
             }
 .gaugeScrollBottomMargin()
                         .navigationTitle("Calibration")
@@ -161,5 +164,9 @@ struct CalibrationView: View {
 
     private func ageText(_ ageMs: Int64) -> String {
         ageMs < 0 ? "never read" : "\(Format.uptime(UInt64(ageMs)))"
+    }
+
+    private func dismissKeyboard() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
 }

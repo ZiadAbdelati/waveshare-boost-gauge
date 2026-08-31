@@ -7,8 +7,20 @@ final class CalibrationViewModel: ObservableObject {
     @Published var isLoading = false
     @Published var isCalibrating = false
     @Published var isSavingSupply = false
-    @Published var errorMessage: String?
-    @Published var successMessage: String?
+    /// Transient error surfaced as a bottom toast (never an inline banner).
+    @Published var errorMessage: String? {
+        didSet {
+            if let errorMessage { WindowToast.show(errorMessage, color: .systemOrange) }
+        }
+    }
+    /// Transient success surfaced as a bottom toast (never an inline banner).
+    @Published var successMessage: String? {
+        didSet {
+            if let successMessage { WindowToast.show(successMessage, color: .systemGreen) }
+        }
+    }
+    /// Inline, field-level validation error for the supply editor.
+    @Published var supplyFieldError: String?
 
     /// Firmware bounds for `PUT /sensors/supply` (BOOST_MAP_SUPPLY_MIN/MAX).
     static let supplyMin = 4.5
@@ -23,6 +35,7 @@ final class CalibrationViewModel: ObservableObject {
         calibration = nil
         errorMessage = nil
         successMessage = nil
+        supplyFieldError = nil
     }
 
     func load() async {
@@ -46,6 +59,7 @@ final class CalibrationViewModel: ObservableObject {
             await MainActor.run {
                 self.calibration = decoded
                 self.errorMessage = nil
+                self.supplyFieldError = nil
             }
         } catch {
             await MainActor.run { self.errorMessage = error.localizedDescription }
@@ -79,11 +93,12 @@ final class CalibrationViewModel: ObservableObject {
         guard let transport else { return }
         guard v >= Self.supplyMin && v <= Self.supplyMax else {
             await MainActor.run {
-                self.errorMessage = "Supply must be between \(Self.supplyMin) and \(Self.supplyMax) V"
+                self.supplyFieldError = "Supply must be between \(Self.supplyMin) and \(Self.supplyMax) V"
             }
             return
         }
         isSavingSupply = true
+        supplyFieldError = nil
         errorMessage = nil
         successMessage = nil
         do {

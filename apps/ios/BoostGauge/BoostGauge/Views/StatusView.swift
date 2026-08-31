@@ -114,23 +114,19 @@ struct StatusView: View {
                     .font(.title3)
                     .foregroundColor(.secondary)
             }
-            ZStack {
+            VStack(spacing: 8) {
                 Text(state.zone.displayName)
                     .font(.headline)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 4)
                     .background(Capsule().fill(state.zone.color.opacity(0.18)))
                     .foregroundColor(state.zone.color)
-                HStack {
-                    Spacer()
-                    Text(state.demo ? "DEMO" : "LIVE")
-                        .font(.headline)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 4)
-                        .background(Capsule().fill(Color(.tertiarySystemFill)))
-                        .foregroundColor(.secondary)
-                        .padding(.trailing, 4)
-                }
+                Text(state.demo ? "DEMO" : "LIVE")
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(Color(.tertiarySystemFill)))
+                    .foregroundColor(.secondary)
             }
             HStack(spacing: 6) {
                 Image(systemName: "arrow.up.right")

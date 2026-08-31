@@ -134,9 +134,17 @@ private weak var transport: GaugeTransport?
                 return (loaded, label, degraded, newAnchor, cached)
             }.value
         } catch {
+            // Background refresh failed: keep whatever is on screen (cached or
+            // stale-while-revalidate) and surface the note — never wipe the
+            // graph the user is looking at.
             await MainActor.run {
-                self.errorMessage = error.localizedDescription
-                self.isLoading = false
+                if samples.isEmpty {
+                    cacheLock.lock()
+                    samples = decodeCache[window.limit]?.samples ?? []
+                    cacheLock.unlock()
+                }
+                errorMessage = error.localizedDescription
+                isLoading = false
             }
             return
         }

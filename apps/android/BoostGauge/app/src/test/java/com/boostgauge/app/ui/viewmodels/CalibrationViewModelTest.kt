@@ -91,7 +91,7 @@ class CalibrationViewModelTest {
         viewModel.calibrate()
         runCurrent()
 
-        assertEquals("Calibration stored", viewModel.state.value.message)
+        assertEquals("Calibration stored", viewModel.state.value.toast)
         assertEquals(4, viewModel.state.value.calibration!!.calibration.version)
         assertEquals(CalibrationViewModel.UiMode.CONTENT, viewModel.state.value.mode())
     }
@@ -112,7 +112,7 @@ class CalibrationViewModelTest {
         viewModel.setSupplyVolts(5.1)
         runCurrent()
 
-        assertEquals("Supply voltage saved", viewModel.state.value.message)
+        assertEquals("Supply voltage saved", viewModel.state.value.toast)
         assertEquals(5.1, viewModel.state.value.calibration!!.calibration.supplyVolts, 0.0001)
         assertFalse(viewModel.state.value.savingSupply)
         assertEquals(CalibrationViewModel.UiMode.CONTENT, viewModel.state.value.mode())
@@ -136,8 +136,9 @@ class CalibrationViewModelTest {
         viewModel.setSupplyVolts(6.0)
         runCurrent()
 
-        assertEquals("Supply must be between 4.5 and 5.5 V", viewModel.state.value.error)
+        assertEquals("Supply must be between 4.5 and 5.5 V", viewModel.state.value.toast)
         assertEquals(1, requests)
+        assertNull(viewModel.state.value.error)
     }
 
     @Test
