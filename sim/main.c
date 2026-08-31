@@ -143,6 +143,7 @@ static int run_screenshots(const char *out_dir, const char *theme_id)
             fprintf(stderr, "unknown theme: %s\n", theme_id);
             return 1;
         }
+        boost_theme_set_vault_needle_red(true);
         boost_gauge_apply_theme(t);
     }
     pump_lvgl(50);
