@@ -29,7 +29,23 @@ export const ADS1115IDGSR = (props: ChipProps<typeof pinLabels>) => {
   ]
 }}
       manufacturerPartNumber="ADS1115IDGSR"
-      footprint="dfn10_pillpads_p0.5mm_w5.84mm_pw0.28mm_pl1.62mm_pin1location(leftside,bottom)"
+      footprint={<footprint>
+        <smtpad portHints={["pin1"]} pcbX="-0.999998mm" pcbY="-2.109978mm" width="0.2800096mm" height="1.620012mm" radius="0.1400048mm" shape="pill" />
+        <smtpad portHints={["pin2"]} pcbX="-0.499872mm" pcbY="-2.109978mm" width="0.2800096mm" height="1.620012mm" radius="0.1400048mm" shape="pill" />
+        <smtpad portHints={["pin3"]} pcbX="0mm" pcbY="-2.109978mm" width="0.2800096mm" height="1.620012mm" radius="0.1400048mm" shape="pill" />
+        <smtpad portHints={["pin4"]} pcbX="0.500126mm" pcbY="-2.109978mm" width="0.2800096mm" height="1.620012mm" radius="0.1400048mm" shape="pill" />
+        <smtpad portHints={["pin5"]} pcbX="0.999998mm" pcbY="-2.109978mm" width="0.2800096mm" height="1.620012mm" radius="0.1400048mm" shape="pill" />
+        <smtpad portHints={["pin10"]} pcbX="-0.999998mm" pcbY="2.109978mm" width="0.2800096mm" height="1.620012mm" radius="0.1400048mm" shape="pill" />
+        <smtpad portHints={["pin9"]} pcbX="-0.499872mm" pcbY="2.109978mm" width="0.2800096mm" height="1.620012mm" radius="0.1400048mm" shape="pill" />
+        <smtpad portHints={["pin8"]} pcbX="0mm" pcbY="2.109978mm" width="0.2800096mm" height="1.620012mm" radius="0.1400048mm" shape="pill" />
+        <smtpad portHints={["pin7"]} pcbX="0.500126mm" pcbY="2.109978mm" width="0.2800096mm" height="1.620012mm" radius="0.1400048mm" shape="pill" />
+        <smtpad portHints={["pin6"]} pcbX="0.999998mm" pcbY="2.109978mm" width="0.2800096mm" height="1.620012mm" radius="0.1400048mm" shape="pill" />
+        <silkscreenpath route={[{x:-1.576197,y:-1.0713974},{x:-1.576197,y:1.0713974},{x:1.576197,y:1.0713974},{x:1.576197,y:-1.0713974},{x:-1.576197,y:-1.0713974}]} />
+        <silkscreencircle pcbX="-0.999998mm" pcbY="-0.319024mm" radius="0.150114mm" />
+        <silkscreencircle pcbX="-1.592326mm" pcbY="-2.109978mm" radius="0.150114mm" />
+        <silkscreentext text="{NAME}" pcbX="-0.0889mm" pcbY="3.7686mm" anchorAlignment="center" fontSize="1mm" />
+        <courtyardoutline outline={[{x:-2.0026,y:3.0186},{x:1.8248,y:3.0186},{x:1.8248,y:-3.1456},{x:-2.0026,y:-3.1456},{x:-2.0026,y:3.0186}]} />
+      </footprint>}
       cadModel={{
         objUrl: "https://modelcdn.tscircuit.com/easyeda_models/assets/C37593.obj?uuid=a8ab40c7a7c54773a59b712bf86c7131",
         stepUrl: "https://modelcdn.tscircuit.com/easyeda_models/assets/C37593.step?uuid=a8ab40c7a7c54773a59b712bf86c7131",

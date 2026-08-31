@@ -5,7 +5,7 @@ const pinLabels = {
   pin2: ["pin2"]
 } as const
 
-export const B2B_PH_K_S_LF__SN_ = (props: ChipProps<typeof pinLabels>) => {
+export const B2B_PH_K_S_LF__SN_ = (props: ChipProps) => {
   return (
     <chip
       pinLabels={pinLabels}

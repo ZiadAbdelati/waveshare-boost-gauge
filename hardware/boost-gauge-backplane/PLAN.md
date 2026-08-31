@@ -6,14 +6,14 @@ task). All Phase-1 research is DONE; decisions are LOCKED (user-approved).
 Do not re-open them. Do not touch firmware in this repo — this work is
 additive under `hardware/boost-gauge-backplane/` only.
 
-**2026-08-29 STATUS: implementation in progress.** Project bootstrapped, all
-IC parts imported, schematic complete (netlist 0 errors), geometry CORRECTED
-(§4 superseded — see §1 decision #9 and DESIGN_REVIEW.md). Intermission state
-recorded in §11.
+**2026-08-30 STATUS: source repair and automated PCB audit complete; physical
+pre-order gates remain.** Sections §11 and earlier part selections are retained
+as history where explicitly marked. The current implementation and audit are
+summarized in §12 and `DESIGN_REVIEW.md`.
 
 ## 0. Toolchain state (verified this session)
 
-- `bun` installed via `npm install -g bun` (tsci shebang needs it). `tsci` v0.0.2460 works.
+- `bun` installed via `npm install -g bun` (tsci shebang needs it). `tsci` v0.0.2461 works.
 - Skill: `/Users/chaotic/.agents/skills/tscircuit` (CLI.md, SYNTAX.md, FOOTPRINTS.md, templates/).
 - Project dir exists: `hardware/boost-gauge-backplane/` with `reference/` containing:
   - `waveshare-esp32-s3-touch-amoled-1.75-schematic.pdf` (official, 3 pages)
@@ -32,11 +32,11 @@ recorded in §11.
 | # | Decision | Choice |
 |---|---|---|
 | 1 | Stack topology | **Rigid stack off H2.** Waveshare H2 is a **female** 1×8 socket on the board's **bottom** face, axis parallel to the board (pins perpendicular to PCB, pointing away from screen). Backplane carries a **male** 1×8 pin header on its **top** face (the face toward the Waveshare) that plugs down into H2. |
-| 2 | Mounting | **Reuse the Waveshare's own 3× M2 pattern.** Backplane has 3 unplated clearance holes (Ø2.6–2.75, copper keepout ring ~1 mm — screws are metal) at the exact Waveshare hole XYs. M2 screws pass through the user's existing 3D-printed mount, through the backplane, and thread into the Waveshare's M2-H3.5 tapped holes. The backplane is clamped in the stack; the header is alignment, the screws carry vibration. **No standoffs needed. User's existing mount design is unchanged.** |
+| 2 | Mounting | **Reuse the Waveshare's own 3× M2 pattern.** Backplane has 3 unplated Ø2.2 mm holes with explicit copper keepouts at the exact Waveshare coordinates. Screw, standoff, solder-protrusion, and clamp-up dimensions remain physical validation gates; the mating spec does not define the required separation. |
 | 3 | USB/VBUS backfeed | **Single Schottky (SS54) from buck output to VBUS_SHARED.** User asked why: even if car+USB are never simultaneous, plugging USB with the car OFF back-feeds the buck's output node and the 12V rail through the buck's body diode/high-side FET, and the sensor harness. One $0.10 diode makes USB power the display (and via the sensor branch, the bench) with zero contention. ~0.3–0.45 V drop → VBUS_SHARED ≈ 4.6–4.7 V, inside the firmware's 4.50–5.50 V MAP-supply setting. No jumper, no ideal-diode controller. |
-| 4 | RTC backup | **CR1220 through-hole holder, no charging circuit**, on the backplane bottom (outward) face. Accept +85 °C cell limit; document hot-dashboard risk in DESIGN_REVIEW. Polarity silkscreened clearly. |
+| 4 | RTC backup | **BS-12-B2AA002 / C964721 horizontal SMT CR1220 holder, no charging circuit**, on the top/mating/inside face and `doNotPlace`. It is allowed there only after the assembled board gap proves loaded-cell clearance; otherwise relocate it to the outward face. Accept +85 °C cell limit and document hot-dashboard risk. |
 | 5 | Sensor/power connectors | **JST-PH 2.0 mm** (user chose PH over GH): 4× B3B-PH-K-S (A0–A3) + 1× B2B-PH-K-S (12V/GND), all through-hole vertical, on the bottom (outward) face, near the perimeter. |
-| 6 | Board | Ø46.00 mm round, 2-layer, JLCPCB fab/assemble. All tall/bulky parts on the bottom (outward) face; top (Waveshare-facing) side stays low-profile (see keepout §4). |
+| 6 | Board | Ø46.00 mm round, 2-layer, JLCPCB fab/assemble. **TOP = Waveshare-facing/mating/inside; BOTTOM = enclosure/mount-facing/outward/back.** Put electronics on TOP where feasible; J1–J5 remain BOTTOM for cable access. BT1 is TOP only conditionally per decision #4. |
 | 7 | BMP280 placement | **Top (Waveshare-facing) face**, near the perimeter edge — user override. Prevents cabin AC vent airflow from blowing directly onto the vent hole. All other ICs also prefer top face if space allows; connectors remain bottom-only. |
 | 8 | Assembly mode | **JLCPCB partial assembly.** JLC installs: ADC, pressure sensor, RTC, buck circuitry, MOSFETs, level shifter, resistors, capacitors, inductor, TVS, fuses, diodes. User hand-solders (doNotPlace): 8-pin display header, 4× sensor connectors (J2–J5), 12V power connector (J1), battery holder (BT1). |
 | 9 | Geometry source | **`reference/WAVESHARE_1_75_MECHANICAL_MATING_SPEC.md` supersedes PLAN §4.** Verified coordinates: mounts (0,+20.50)/(±13.75,−14.70); H2 row centerline Y=−18.68, X-center 0, pins −8.89…+8.89 @2.54 pitch. PLAN §4's old numbers (±18.30/+12.80, 0/−20.50, header centerline −12.70/row −13.75) are **WRONG — discard**. User physical observation (rear view: VBUS rightmost, GPIO18 leftmost, USB-C right side) confirms spec's rear-view frame. USB-C notch: keep +X perimeter open instead of cutting the outline. |
@@ -118,8 +118,10 @@ Origin = board center, +X right, +Y up, **viewed from the FRONT of the Waveshare
   perimeter open; PLAN's notch idea discarded). Instead: no tall parts near +X edge; the
   backplane is clamped behind by screws, USB plug routes around/below the disc edge.
 - 2×1.80 features: ignore per spec §13.
-- Inter-board height: header stack height + tallest rear component determines clearance.
-  Tall parts → outward (bottom) face. Top face: header + low-profile passives only.
+- Inter-board height is undefined by the mating spec. It must be established from
+  the tallest Waveshare rear part, the selected H2 stack, screws/standoffs, solder
+  protrusion, and daughterboard parts. Electronics are on TOP/inside where feasible;
+  J1–J5 remain BOTTOM/outward. BT1 on TOP is conditional on the measured gap.
 
 ## 5. Geometry verification procedure (do BEFORE ordering, user-assisted)
 
@@ -149,26 +151,26 @@ Rail names (spec §Phase 2): `CAR_12V_RAW`, `CAR_12V_PROTECTED`, `BUCK_5V_RAW`, 
 **A. Automotive input / protection**
 - J1 2P JST-PH: `12V_IN`, `GND` (bottom face, perimeter, away from BMP280).
 - F1 input fuse 2 A — **RESOLVED: `0466002.NRHF` C3105 (2 A/63 V SMD 1206, stock 94,916)**.
-- D1 TVS **SMBJ16A** (C353386, −65..150 °C) at CAR_12V_RAW→GND.
-- Q1 reverse-polarity high-side P-MOS **AO3401A** (C15127, 30 V/4 A, SOT-23): source=CAR_12V_RAW,
-  drain=CAR_12V_PROTECTED, gate→GND via R 100 k, gate clamp zener **BZX55/ BZX84-C12** (search
-  LCSC; 12–15 V) gate→source. Verify Vgs max ±20 V with 16 V input + 12 V zener → OK.
+- D1 TVS **SMBJ16CA** (C353385, bidirectional) at CAR_12V_RAW→GND; normal operation is for a
+  12 V automotive system, not continuous 24 V input.
+- Q1 reverse-polarity high-side P-MOS **DMP4065S-7** (C182476, 40 V): drain=CAR_12V_RAW,
+  source=CAR_12V_PROTECTED, gate→GND via 100 kΩ, 10 V zener gate-to-source.
 - Input bulk: 2× 22 µF/50 V X7R 1210 + 100 nF at buck VIN. (Ceramic only — no electrolyte in a car.)
 
 **B. Buck 12 V → 5 V**
 - U1 **LMR36520ADDAR** (C2879422, 4.2–65 V in, 2 A out, 400 kHz, SOP-8/PowerPAD). Alt:
   MP9943GQ-Z (C477821, 36 V/3 A QFN) — keep LMR36520 as primary (65 V headroom = real load-dump
   margin; MP9943's 36 V needs the TVS to do all the clamping).
-- L2 4.7 µH shielded (FXL0530-4R7-M C177246, 5.4×5.2×3 mm — bottom face).
-- FB divider → 5.00 V. Schottky SS34 + 100 nF catch/diode per datasheet boot-diode if the
-  adjustable variant needs it (follow datasheet layout: hot loop = CIN–VIN–SW–L–GND minimal).
+- L2 10 µH shielded (FXL0530-100-M C177248, 5.4×5.2×3 mm) on TOP.
+- FB divider → 5.016 V. The synchronous converter uses a 100 nF BOOT-to-SW capacitor;
+  no external catch or boot diode is fitted.
 - Output: 2× 22 µF 0805/1210 X5R + 100 nF.
 - **Layout: buck cluster in one sector; ≥8 mm from BMP280, ADS1115, RTC, sensor connectors.**
 
 **C. Power path / VBUS**
 - D2 **SS54** (C22452) anode=BUCK_5V_RAW → cathode=VBUS_SHARED → H2 pin 1.
-- SENSOR_5V branch: VBUS_SHARED → F2 (PTC 500 mA hold, 1206 — search LCSC; alt SS24+no fuse is
-  NOT acceptable per spec §5) → SENSOR_5V. Powers: ADS1115 VDD, TCA9406 VHB, 4× sensor connector
+- SENSOR_5V branch: VBUS_SHARED → F2 (nSMD050-24V C70076, 500 mA hold / 1 A trip) → SENSOR_5V.
+  Powers: ADS1115 VDD, TCA9406 VHB, 4× sensor connector
   pin 1. A shorted engine-bay harness then browns out only the sensor rail, not the display.
 - USB case: USB → Waveshare AXP2101 VBUS = H2 pin 1 = VBUS_SHARED; D2 blocks backfeed into the
   buck. Sensor rail is bench-powered from USB through D2's... NO — D2 is one-way INTO VBUS_SHARED,
@@ -198,8 +200,8 @@ Rail names (spec §Phase 2): `CAR_12V_RAW`, `CAR_12V_PROTECTED`, `BUCK_5V_RAW`, 
 **G. RTC**
 - U5 **DS3231MZ+** (C107410, SOIC-8, 2.3–5.5 V, 0x68). VCC=3V3_WAV, VBAT=coin cell + (direct,
   no charger, no series diode — MZ datasheet allows). BT/OSF handled by firmware.
-- BT1 CR1220 holder (BS-12-B2AA002 C964721) — **user hand-solders (decision #8)**, bottom face;
-  **+** pad silkscreened; 100 nF at VCC.
+- BT1 CR1220 holder (BS-12-B2AA002 C964721) — **user hand-solders (decision #8)**,
+  top/mating face only after measured clearance; **+** pad silkscreened; 100 nF at VCC.
 - Note in DESIGN_REVIEW: DS3231M vs old SN is register-compatible at 0x68 (firmware uses
   STATUS/OSF + time regs only — verified against `boost_sensors.c` DS3231 paths this session).
 
@@ -216,10 +218,11 @@ I2C_SCL_3V3, I2C_SDA_5V, I2C_SCL_5V, A0–A3 (post-filter), GPIO16, U0RX, U0TX.
 | U3 | ADS1115IDGSR | C37593 | ADC | ADS1115BQDGSRQ1 C2868291 (auto grade) |
 | U4 | BMP280 | C83291 | ambient | none (firmware chip-id lock) |
 | U5 | DS3231MZ+TRL | C107410 | RTC | DS3231SN C9866 (SO-16, bigger) |
-| Q1 | AO3401A | C15127 | reverse polarity | AO3401 C181091 |
-| D1 | SMBJ16A | C353386 | load dump TVS | SMBJ18A |
+| Q1 | DMP4065S-7 | C182476 | 40 V reverse polarity | — |
+| D1 | SMBJ16CA | C353385 | bidirectional input TVS | — |
 | D2 | SS54 | C22452 | VBUS ORing | SS34 C8678 |
-| L2 | FXL0530-4R7-M | C177246 | buck inductor | FTC252010S4R7MBCA C5832360 (smaller, 2.6 A) |
+| L2 | FXL0530-100-M | C177248 | 10 µH buck inductor | — |
+| F2 | nSMD050-24V | C70076 | 500 mA hold / 1 A trip sensor PTC | — |
 | J2–J5 | B3B-PH-K-S(LF)(SN) | C131339 | sensor connectors | — |
 | J1 | B2B-PH-K-S(LF)(SN) | C131337 | 12 V input | — |
 | BT1 | BS-12-B2AA002 | C964721 | CR1220 holder | C5239868 gold |
@@ -227,10 +230,11 @@ I2C_SCL_3V3, I2C_SDA_5V, I2C_SCL_5V, A0–A3 (post-filter), GPIO16, U0RX, U0TX.
 
 **Open sourcing items — RESOLVED 2026-08-29 (all LCSC-verified in stock):**
 1. **F1 input fuse**: `0466002.NRHF` **C3105** — 2 A / 63 V SMD fuse 1206, stock 94,916. No THT fallback needed.
-2. **F2 sensor-branch PTC**: `BSMD1206-200-12V` **C883135** — 1206 PTC 2 A hold / 3.5 A trip, 12 V, stock 78,598. (500 mA-hold PTCs have no credible stock; the 2 A part still limits a dead short and protects the rail.)
-3. **Gate zener**: `BZX84-C12,215` **C108437** — SOT-23, stock 206,182.
-4. **Analog clamp**: `BAV99` **C916421** — SOT-23 dual switching diode, stock 2,071,820. (Alt `BAT54S` C7420333 Schottky also imported; BAV99 preferred for lower leakage.)
-5. **H2 mating header**: 1×8 2.54 mm male pin header, THT — hand-solder (doNotPlace), per user decision #8.
+2. **F2 sensor-branch PTC**: `nSMD050-24V` **C70076** — 500 mA hold / 1 A trip.
+3. **Gate zener**: `LBZX84C10LT1G` **C12772** — 10 V SOT-23.
+4. **Analog clamp**: `BAT54S,235` **C503463** — Schottky series pair.
+5. **H2 mating header**: 1×8 2.54 mm THT — hand-solder (`doNotPlace`); gender and fitted
+   stack height must be confirmed on the physical Waveshare before ordering.
 6. **Test points**: `<testpoint />` pads (no BOM part).
 
 **Assembly mode (user decision #8): JLCPCB partial assembly.**
@@ -241,12 +245,9 @@ J1–J5 JST-PH connectors, BT1 CR1220 holder.
 ## 8. tscircuit implementation steps
 
 1. `tsci init -y` in `hardware/boost-gauge-backplane/`.
-2. Build the reusable form factor first: `WaveshareBackplane46.circuit.tsx` — circular board
-   outline via `<board />` outline or polygon approximation (Ø46, 60+ segments), 3× `<hole />`
-   at §4 coords, USB-C edge notch (use `<cutout />`/outline polygon subtraction — if tscircuit
-   can't notch a circle, model the outline as a polygon with the notch built in; VERIFY the
-   Gerber edge, not just the render), H2 header footprint at §4 top-view coords, top-face
-   height-keepout documented in README.
+2. Build the form factor: circular Ø46 outline, 3× Ø2.2 `<hole />` at the corrected
+   coordinates, H2 at the corrected top-view coordinates, and a left-edge USB keepout.
+   The authoritative outline has no USB notch; verify the Gerber and a real plug.
 3. Schematic: one file per section or `<schematicsection />` groups; import parts with
    `tsci import "C..."` (JLCPCB footprints come with LCSC mapping) — do NOT hand-invent
    footprints; registry has none for these (checked: `tsci search "waveshare"` → nothing usable).
@@ -255,7 +256,7 @@ J1–J5 JST-PH connectors, BT1 CR1220 holder.
    `tsci check routing-difficulty` → `tsci build` (autoroute) → `tsci check shorts` (must pass) →
    manual Gerber-outline/holes inspection (`tsci export` / `--help` for gerber flags).
 5. Power nets: `<net>`-based routing intent + wide traces (≥0.5 mm on 5 V, ≥0.8 mm on 12 V),
-   GND pour both layers, thermal vias under LMR36520 PowerPAD and AO3401 drain.
+   GND pour both layers and thermal vias under the LMR36520 PowerPAD.
 6. If the autorouter can't close, hand-route the buck hot loop with `<trace />` + `<via />`
    first, then re-run.
 
@@ -276,13 +277,17 @@ car / ~4.9 V USB-bench).**
 - [ ] §5 geometry verification performed on the physical board, numbers recorded.
 - [ ] `tsci check netlist`, `check placement`, `check schematic-placement`, `build`, `check shorts` all clean.
 - [ ] Gerber edge = Ø46.00; 3 holes match mount; header not mirrored (pin-1 square pad lands on VBUS face-to-face).
-- [ ] Top-face components ≤ 4 mm (Waveshare-facing); coin holder/JST/battery holder on bottom (outward).
+- [ ] Measure the complete stack. Verify every TOP/inside component and the loaded BT1 against
+      the real inter-board gap; keep J1–J5 BOTTOM/outward and verify cable access against the mount.
 - [ ] Every BOM line has a real LCSC number (or documented hand-solder exception).
 - [ ] BMP280 on the Waveshare-facing face at perimeter (user decision #7), ≥8 mm from buck, vent keepout + silkscreen warning.
 - [ ] GPIO17/18 pull-ups on 3V3 side only; ADS1115 5 V side only; translator = TCA9406.
 - [ ] README + DESIGN_REVIEW written; commit under `hardware/` only.
 
-## 11. Intermission state (2026-08-29) — resume from here
+## 11. Historical intermission state (2026-08-29) — superseded by §12
+
+This section records the state that was inherited by the final audit. Its part
+choices and “not yet done” list are not current instructions.
 
 **Done this session:**
 - `tsci init -y` complete (tscircuit 0.0.2461, bun present).
@@ -335,84 +340,58 @@ clean); `imports/` has all 15 parts; `reference/` has the mating spec + PDFs.
 - Daughterboard transform (decision #10): X_db = −X_assembly, Y unchanged.
   In tscircuit top-view coords: H2 pin 1 (VBUS) at (−8.89, −18.68) … pin 8
   (GPIO16) at (+8.89, −18.68); USB-C keepout on the LEFT edge (X≈−23, Y≈0).
-- BOM/CPL split for JLC partial assembly (decision #8): placed parts get
-  `supplierPartNumbers={{jlcpcb: ...}}`; hand-solder parts (J1, J2–J5, H2
-  header, BT1) get `doNotPlace` so JLC's BOM/CPL excludes them.
-- Open sourcing item left: F2 PTC — 500 mA-hold 1206/1812 PTCs have no credible
-  LCSC stock; either use the 2 A-hold BSMD1206-200-12V C883135 (limits a dead
-  short, doesn't brown out on MAP sensor load) or revisit with the user.
+- BOM/CPL split for JLC partial assembly (decision #8): source marks J1–J5,
+  H2, and BT1 `doNotPlace`, but tscircuit still emits them in raw BOM/CPL. The
+  release filter removes those seven refs plus all PCB-only `TP_*` pads.
+- F2 was subsequently resolved as nSMD050-24V C70076, 500 mA hold / 1 A trip.
 
-## 12. Session 2 completion state (2026-08-30)
+## 12. Repair and audit state (2026-08-30)
 
-**Schematic fixes landed (all datasheet-verified against the LMR36520 PDF):**
-1. **LMR36520 is synchronous** — block diagram shows an internal low-side FET;
-   the word "diode" appears zero times in the datasheet. The old SS54 "boot
-   diode" was a phantom part. D2 is now the **VBUS ORing diode** (A=BUCK_5V_RAW
-   → K=VBUS_SHARED) and BOOT gets a 100 nF cap (C18) to SW only.
-2. **VREF = 1.0 V** (block diagram "1.0 V Reference"). FB divider recomputed:
-   R3=100k/R4=24.9k → Vout = 5.016 V. (Old 52.3k/10k assumed 0.8 V ref and
-   would have made **6.23 V** on the sensor rail.)
-3. **D3 zener polarity fixed + C12→C10.** The BZX84 was forward-biased
-   (anode on 12 V rail) — P-FET gate would sit at +0.6 V and never turn on.
-   Now: K=source (12 V), A=gate, 10 V clamp (AO3401A Vgs abs max ±12 V).
-   Part: LBZX84C10LT1G C12772.
-4. **BAV99 clamp wiring fixed.** BAV99 pinout is pin1=D1-A, pin2=D2-K, pin3 =
-   series junction. Correct wiring: pin1→GND (low clamp), pin3→SENSOR_5V
-   (high clamp), pin2→signal junction. Old wiring clamped every channel down
-   to ~4.4 V.
-5. **C11–C14 are now the per-channel AINx filters** (R9–R12 → node with
-   100 nF + clamp → ADC input). Old wiring duplicated rail decoupling.
-6. **F2 = BSMD1206_200_12V** imported part (C883135), no anonymous `<fuse>`.
-7. **Q1 reverse protection corrected**: D→CAR_12V_RAW, S→CAR_12V_PROTECTED
-   (body diode points input→output), gate pulled to GND via R1, D3 clamps.
-8. **H2 header added** (was missing entirely): `<chip pinCount={8}
-   footprint="pinheader8">`, hand-solder, pinLabels VBUS/GND/V3V3/RX/TX/
-   SDA/SCL/IO16, RX/TX/IO16 marked no-connect.
+The final source uses the corrected input topology, bidirectional SMBJ16CA,
+40 V DMP4065S-7 P-MOS, 10 µH inductor, two 22 µF output capacitors, 500 mA-hold
+sensor PTC, exact supplier copper for U2/U3/U5, close RTC/BMP/ADC/buck bypassing,
+named-width power/I²C nets, dual GND pours, and explicit critical routes. H2 is
+a real `<pinheader>`. TOP is the inside/mating face; only J1–J5 are BOTTOM.
+BT1 is the horizontal SMT CR1220 holder on TOP and is conditional on measured
+stack clearance.
 
-**Form factor landed:** Ø46.00 board `outline` (72-segment circle), 3× Ø2.2
-NPTH `<hole>` at the spec's mount coordinates, H2 at (0, −18.68).
+Final verified `dist/index/circuit.json`:
 
-**Placement:** iterated to **"no placement issues"** — zero pad overlaps, zero
-courtyard collisions, zero connector-body/footprint intrusions, all components
-inside the Ø46 circle, ≥0.2 mm copper-to-edge clearance, mount holes keep
-≥3 mm pad clearance. Note the J1/J2/J3/J4 connectors sit vertically along the
-left arc; BT1 (16.6 mm coin holder, rotated 90°) occupies the right-center
-column between the ADC cluster and J5.
-
-**Routing:** autorouted (121 traces, 103 vias, 37 top-level connections).
-`C17` (U1 VCC decoupler) and all power-to-ground caps carry an explicit
-`maxDecouplingTraceLength` — tscircuit auto-assigns a **1 mm** limit to any
-capacitor in power→ground topology, which silently blocks autorouting.
-
-**Final gate status:**
+- 128 routed connections, 142 PCB traces, 106 vias, 0 router errors.
+- 0 circuit error records, 0 long-trace warnings, 0 unrouted records.
 - `tsci check netlist`: 0 errors / 0 warnings.
-- `tsci check placement`: no issues.
-- `tsci check shorts`: no shorts.
-- `tsci build`: Circuits 1 passed; autoroute complete, 0 unrouted connections.
+- `tsci check placement`: 0 errors; three horizontal-access advisories on
+  vertical/top-entry bottom JST-PH connectors remain a physical cable-access gate.
+- `tsci check source`: 0 errors / 0 warnings.
+- `tsci check shorts --mode pcb` is **toolchain-blocked**: tscircuit 0.0.2461
+  throws `layerCanvas.getContext is not a function`; it failed identically twice.
+- Schematic autolayout reports cosmetic overlaps/label routing. The electrical
+  netlist is clean, but the generated schematic is an audit aid rather than a
+  publication-quality drawing.
+- One U1 supplier-footprint IoU warning remains (0.7255). Fresh exact import
+  copper matches the local wrapper, but it still requires a manual TI/JLC land-
+  pattern check rather than suppressing the warning.
 
-**Exports (dist/):** gerbers zip → `gerbers_dir/` (F/B Cu, mask, paste, silk,
-Edge_Cuts, PTH + NPTH drills, bom.csv, pick_and_place.csv), pcb.svg,
-schematic.svg, assembly.svg, board.step.
+Staged manufacturing outputs are exported from the verified circuit JSON so no
+second autoroute is introduced. Raw BOM/CPL contain 73 designators; filtered JLC
+files contain 48 placed parts and exclude exactly the seven hand-solder refs plus
+17 `TP_*` PCB-only pads. All 48 filtered BOM rows have supplier IDs and the
+filtered BOM/CPL designator sets match.
 
-**Mechanical verification from Gerbers (machine-checked, matches spec):**
-- Edge_Cuts bbox = **46.00 mm × 46.00 mm** circle.
-- NPTH drills: Ø2.2 ×3 at (0,+20.50), (±13.75,−14.70); bottom-mount spacing
-  **27.50 mm**.
-- H2 plated row: 8 holes at y=−18.68, pitch **2.54 mm** ×7, x = ±1.27/±3.81/
-  ±6.35/±8.89.
-- H2 pin 1 (VBUS) lands at db x = **−8.89** per the decision-#10 mirror
-  transform (footprinter pinheader8 emits pin 1 leftmost).
+The STEP exporter emits a board model but its parser rejects several downloaded
+supplier models. DNP bodies—including BT1, H2, and J1–J5—also do not establish
+the assembled envelope. STEP therefore cannot prove stack or mount clearance.
 
-**BOM/CPL split:** gerber exports include `doNotPlace` parts in bom.csv/CPL —
-the generated `bom_jlc.csv`/`cpl_jlc.csv` (46 rows) exclude the 7 hand-solder
-parts (J1, J2–J5, BT1, H2) for JLC upload. Upload the filtered files.
+**Remaining physical/pre-order gates:**
 
-**Remaining pre-order checks (user/manual):**
-- [ ] Face-to-face overlay print (spec §15): outline, mounts, H2 pitch, pin-1
-      lands on VBUS.
-- [ ] Continuity test H2-8 → GPIO16 vs GPIO18 (resolves the "IO18 leftmost"
-      physical observation vs the official schematic).
-- [ ] Confirm whether the Waveshare H2 is male pins (→ daughterboard needs a
-      female socket) before ordering the header.
-- [ ] USB-C plug clearance check with a real cable (left-edge keepout is
-      component-free but the cable arc must be verified in the enclosure).
+- [ ] 1:1 face-to-face overlay: outline, mounts, H2 pitch, pin 1 → VBUS.
+- [ ] H2-8 continuity, fitted gender, selected header stack height, solder
+      protrusion, screws/standoffs, and actual inter-board separation.
+- [ ] Loaded BT1 clearance. Treat 4.10 mm as the likely installed-holder envelope
+      and 6.10 mm only as a conservative additive bound until a physical section
+      confirms how the 2.0 mm cell nests.
+- [ ] Bottom J1–J5 connector bodies and cable exits against the flush rear mount;
+      USB-C plug/cable access; BMP280 vent/no-coat clearance.
+- [ ] Manual U1 land-pattern comparison and independent PCB-short DRC.
+- [ ] Bench bring-up over the intended 12 V automotive operating range: polarity,
+      transients, rail sequencing, sensor short, output ripple/load, and thermal.
