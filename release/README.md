@@ -1,28 +1,31 @@
-# Prebuilt firmware v0.9.2 — companion BLE hardening
+# Prebuilt firmware v0.9.3 — supply save + keyboard UX fixes
 
-Firmware **`v0.9.2`**, built with **ESP-IDF 5.5.1** for **ESP32-S3**, 16 MB
-flash. Headlines: the **BLE Control surface is now a real HTTP mirror** —
-`/logs` returns a bounded compact window (128 points, decimated evenly across
-the requested window so the 9.789 psi/s demo sweep draws triangles, not
-staircases), and `/network` GET/PUT/DELETE + `/network/scan` +
-`/network/reconnect` are served over Bluetooth, so the companion apps' Settings
-and Wi-Fi pages work without joining the gauge's Wi-Fi. Blocking routes (logs
-build, Wi-Fi scan, calibration) run on the driver task with heap buffers — the
-NimBLE host loop is never stalled. The **OBD2 central defers its scan bursts
-while a phone holds the companion link**, so enabling TPMS/OBD2 no longer
-starves Logs. Companion apps gained **link self-healing** (iOS re-subscribes
-notifications after a board reboot; Android detects and re-bonds a stale bond
-left by reflashes), **instant log-window switching** (stale-while-revalidate),
-and a **theme preview that actually updates** on selection. Carries v0.9.1's
-Display/Demo reorg and v0.9.0's DMA-safe AMOLED path, DS3231/DST clock, and
-calibrated GM 12223861 MAP path. The same files are published on the
+Firmware **`v0.9.3`**, built with **ESP-IDF 5.5.1** for **ESP32-S3**, 16 MB
+flash. Headlines: the **BLE `/sensors/supply` PUT moved off the NimBLE host
+task** — the 2026-08-30 inline route-table entry ran its NVS commit on the
+host loop, stalling notification fragments so phone saves silently timed out
+and links wedged; it now dispatches to the driver task via `APP_EV_SUPPLY`
+with heap buffers (the first refactor's 4 KB stack body boot-looped the board
+and is documented in the ledger). Firmware BLE requests/responses are now
+instrumented on serial (`control req id/method/path`, `supply ev fired`,
+`tx resp len`) — the tool that localized the app-side save failure in one
+capture. The **iOS Calibration page got its Save button back** (this round's
+SwiftUI keyboard-dismissal machinery was eating the button's tap —
+serial-proven zero BLE traffic per tap; the plain-Form pattern was already
+proven on Settings, so Calibration now matches it exactly), plus a keyboard
+**Done** button, **tap-outside dismiss** (window-level recognizer with
+`cancelsTouchesInView = false` — cannot eat button taps), and toasts that are
+visible because Save drops the keyboard first. Carries v0.9.2's BLE HTTP
+mirror and link self-healing, and v0.9.1's Display/Demo reorg. The same files
+are published on the
 [latest GitHub release](https://github.com/ZiadAbdelati/waveshare-boost-gauge/releases/latest).
 
 The image reports its own version on `/api/v1/state` (`firmwareVersion`), taken
 from `git describe` at build time. This release was tagged first, then
 reconfigured/built/flash-verified from the tagged tree, so the board reports a
-clean `v0.9.2` (serial-verified: UI ready, brightness, HTTP API ready, BLE
-advertising, zero panics).
+clean `v0.9.3` (hardware-verified: `/state` returns `v0.9.3`, clean boot, HTTP
+200, BLE advertising, supply save round trip `PUT` → NVS 5.00 V → 449 B
+response).
 
 ## Files
 
@@ -34,13 +37,44 @@ advertising, zero panics).
 | `boost_gauge.bin` @ `0x20000` | App image — use for **web OTA** |
 | `boost_gauge_merged.bin` @ `0x0` | Full-flash image for a complete reset |
 | `flash.sh` + `flash_args` | Helper to flash the merged image |
-| `BoostGauge-android-debug.apk` | Android companion (debug-signed, versionCode 3) |
+| `BoostGauge-android-debug.apk` | Android companion (debug-signed, versionCode 4) |
 | `BoostGauge-ios-app.zip` | iOS companion `.app` bundle (install via Xcode/devicectl) |
 | `SHA256SUMS` | Checksums for everything above |
 
 ## What changed since v0.9.1
 
-### Firmware
+### Firmware (v0.9.3)
+- **BLE `/sensors/supply` PUT is driver-task dispatched** (`APP_EV_SUPPLY`,
+  heap request/response buffers). The inline route-table entry shipped
+  2026-08-30 blocked the NimBLE host loop on an NVS commit — phone saves
+  timed out and BLE links wedged. The first refactor put a 4 KB response body
+  on the driver-task stack and boot-looped the board (stack overflow,
+  serial-captured); heap buffers only, like every other blocking route.
+- **Serial instrumentation** for every Control request/response
+  (`control req id method path`, `supply ev fired`, `tx resp len`) — kept
+  permanently; it localized the app-side save failure in one capture.
+
+### iOS companion (v0.9.3)
+- **Calibration Save works again.** This round's keyboard-dismissal machinery
+  (SwiftUI tap gestures + `.immediately` scroll dismissal) ate the Save
+  button's tap — serial capture showed zero BLE traffic per tap. Deleted; the
+  view now matches the always-working plain-Form Settings pattern.
+- **Keyboard UX:** Done button on the keyboard accessory bar, drag-down
+  dismiss, and tap-outside dismiss via a window-level recognizer with
+  `cancelsTouchesInView = false` (fires alongside button taps, never cancels
+  them — simulator-harness verified: Save still fires, other rows dismiss).
+- **Toast visibility:** Save drops focus before sending, so the bottom toast
+  is no longer hidden behind the keyboard. The no-transport guard now toasts
+  instead of returning silently.
+- **Logs graph survives a failed refresh:** a background revalidation failure
+  keeps displayed samples and surfaces a note instead of wiping the graph.
+
+### Android companion (v0.9.3)
+- Save/status feedback moved to M3 snackbars (Settings' existing pattern);
+  supply field gains IME Done + outside-tap focus clear. Logs failure path
+  verified to already keep the displayed graph.
+
+### v0.9.2 (carried)
 - **BLE `/logs` route is real.** Compact `{"tMs","psi"}` samples, ~22 B each,
   128 points (cap/32) decimated evenly across the requested `?limit=` — the
   verbose 42-point window aliased the demo sweep into staircase pulses.
@@ -85,17 +119,28 @@ advertising, zero panics).
 
 ## Hardware verification (this release)
 
-- iOS (physical iPhone, pure BLE): Logs window cycle 5m → 1m → 15m → 5m, three
-  consecutive passes — `Last X · 128 samples` each, link connected throughout;
-  repeated with the OBD2 BLE link enabled after the coexistence fix. Firmware
-  serial: every `/logs` built in 3.5–5 ms.
+- **Supply save round trip over BLE (v0.9.3):** phone Save → `control req
+  id=16 PUT /sensors/supply` → `MAP supply set to 5.00 V` (NVS) → `tx resp
+  len=449` fragmented to the phone; board confirmed at 5.00 V via HTTP. The
+  zero-traffic failure mode (button tap eaten) was captured and fixed in the
+  same session.
+- Web UI supply save verified in a real browser: edit → debounced PUT →
+  "MAP supply 5.10 V saved" banner → board value confirmed → restored.
+- Firmware flashed from the tagged tree: `/state` reports `v0.9.3`; clean
+  boot (no panics), host synced, advertising, HTTP 200.
+- iOS (physical iPhone, pure BLE, v0.9.2-era matrix re-verified on the
+  release build): Logs window cycle 5m → 1m → 15m → 5m, three consecutive
+  passes — `Last X · 128 samples` each, link connected throughout; repeated
+  with the OBD2 BLE link enabled after the coexistence fix. Firmware serial:
+  every `/logs` built in 3.5–5 ms.
 - All five themes cycled over BLE from the app: preview updated each time, no
   reboot, no disconnect.
 - Wi-Fi scan over BLE returned live AP rows; Settings shows real STA state.
 - Android (physical Pixel): stale-bond recovery verified — `removeBond` →
   fresh pairing → `encryption changed status 0` + continuous 1 Hz state writes
   ≥60 s; 92/92 unit tests.
-- Host test suite 11/11.
+- Host test suite 11/11; iOS suite 96 tests (only the two pre-existing
+  SettingsViewModel timezone failures); Android unit tests green.
 
 ## Install
 
