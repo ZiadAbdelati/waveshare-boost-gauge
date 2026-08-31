@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct CalibrationView: View {
     @EnvironmentObject var session: AppSession
@@ -112,6 +113,8 @@ struct CalibrationView: View {
                         .foregroundColor(.secondary)
                 }
             }
+            .scrollDismissesKeyboard(.interactively)
+            .background(KeyboardDismissingTap { supplyFieldFocused = false })
             .gaugeScrollBottomMargin()
                         .navigationTitle("Calibration")
             .toolbar {
@@ -159,5 +162,113 @@ struct CalibrationView: View {
 
     private func ageText(_ ageMs: Int64) -> String {
         ageMs < 0 ? "never read" : "\(Format.uptime(UInt64(ageMs)))"
+    }
+}
+
+/// Tap-anywhere-to-dismiss-keyboard for the Form, backed by a UIKit
+/// `UITapGestureRecognizer` so it never competes with SwiftUI's gesture
+/// modifiers (`.onTapGesture`/`.simultaneousGesture` both intercepted the
+/// Save button's tap — serial-proven zero BLE traffic). `cancelsTouchesInView
+/// = false` is the critical property: even when this recognizer fires, the
+/// touch continues to the button underneath, so Save still triggers.
+///
+/// A `Form` is a `UICollectionView` that hit-tests every point in its bounds,
+/// so a recognizer on a `.background` view alone never receives a row tap.
+/// The recognizer is therefore attached to the key window — the ultimate
+/// ancestor of every row/button — so it sees row taps too. A hit-test guard
+/// lets a tap on the supply TextField keep focus instead of blurring it.
+private struct KeyboardDismissingTap: UIViewRepresentable {
+    let onTap: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onTap: onTap)
+    }
+
+    func makeUIView(context: Context) -> UIView {
+        let coordinator = context.coordinator
+        let view = DismissTouchView()
+        view.backgroundColor = .clear
+        view.onWindowChange = { [weak coordinator] window in
+            if let window {
+                coordinator?.attach(to: window)
+            } else {
+                coordinator?.detach()
+            }
+        }
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        context.coordinator.onTap = onTap
+        if let window = uiView.window {
+            context.coordinator.attach(to: window)
+        }
+    }
+
+    private final class DismissTouchView: UIView {
+        var onWindowChange: ((UIWindow?) -> Void)?
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            onWindowChange?(window)
+        }
+    }
+
+    final class Coordinator {
+        var onTap: () -> Void
+        private weak var attachedWindow: UIWindow?
+        private var recognizer: UITapGestureRecognizer?
+
+        init(onTap: @escaping () -> Void) {
+            self.onTap = onTap
+        }
+
+        func attach(to window: UIWindow) {
+            guard attachedWindow !== window else { return }
+            detach()
+            let recognizer = UITapGestureRecognizer(target: self, action: #selector(tapped(_:)))
+            // Never cancel a touch heading for a Button/TextField, and never
+            // delay its touch-up: Save keeps its tap, the field keeps focus.
+            recognizer.cancelsTouchesInView = false
+            recognizer.delaysTouchesBegan = false
+            recognizer.delaysTouchesEnded = false
+            window.addGestureRecognizer(recognizer)
+            self.recognizer = recognizer
+            attachedWindow = window
+        }
+
+        func detach() {
+            if let window = attachedWindow, let recognizer {
+                window.removeGestureRecognizer(recognizer)
+            }
+            recognizer = nil
+            attachedWindow = nil
+        }
+
+        @objc private func tapped(_ recognizer: UITapGestureRecognizer) {
+            guard let window = attachedWindow else { return }
+            let location = recognizer.location(in: window)
+            guard let hit = window.hitTest(location, with: nil), !isTextInput(hit) else {
+                // Tap landed on the supply TextField itself: let it keep/gain
+                // focus rather than blurring it.
+                return
+            }
+            // Gesture callbacks run on the main run loop, so the FocusState
+            // mutation happens on the main thread by construction.
+            onTap()
+        }
+
+        private func isTextInput(_ view: UIView) -> Bool {
+            var current: UIView? = view
+            while let v = current {
+                if v is UITextField { return true }
+                current = v.superview
+            }
+            return false
+        }
+
+        deinit {
+            detach()
+        }
     }
 }
