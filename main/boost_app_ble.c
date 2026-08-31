@@ -146,6 +146,7 @@ typedef enum {
     APP_EV_CALIBRATE,   /* async /sensors/calibration POST (blocks ~2 s) */
     APP_EV_LOGS,        /* async /logs GET (copy+JSON, must not block host) */
     APP_EV_SCAN,        /* async /network/scan GET (Wi-Fi scan blocks for seconds) */
+    APP_EV_SUPPLY,      /* async /sensors/supply PUT (NVS commit blocks) */
     APP_EV_ADV_RETRY,
 } app_ble_ev_type_t;
 
@@ -155,7 +156,7 @@ typedef struct {
     uint16_t attr_handle;
     uint8_t cur_notify;
     uint32_t id;
-    char *payload;       /* heap-owned for APP_EV_TX */
+    char *payload;       /* heap-owned for APP_EV_TX and APP_EV_SUPPLY */
     size_t logs_limit;   /* for APP_EV_LOGS */
 } app_ble_ev_t;
 
@@ -1044,7 +1045,10 @@ static const app_ble_route_t s_routes[] = {
     { "/tpms/config", "GET", route_tpms_get },
     { "/tpms/config", "PUT", route_tpms_put },
     { "/sensors/calibration", "GET", route_cal_get },
-    { "/sensors/supply", "PUT", route_supply_put },
+    /* "/sensors/supply" PUT is NOT here: it commits NVS, so it dispatches via
+     * APP_EV_SUPPLY on the driver task (early return before the route table).
+     * Never add it back inline — blocking the NimBLE host task stalls every
+     * notification fragment and wedges the phone link. */
     { "/time", "POST", route_time_post },
     { "/restart", "POST", route_restart_post },
     { "/logs", "GET", route_logs_get },
@@ -1079,6 +1083,28 @@ static void app_control_handle(uint16_t conn_handle, uint32_t id,
 
     /* Async routes that block (flash/NVS/I2C or copy+JSON) — run on the
      * driver task rather than stalling the NimBLE host event loop. */
+    if (strcmp(path->valuestring, "/sensors/supply") == 0 &&
+        strcmp(method->valuestring, "PUT") == 0) {
+        const cJSON *body = cJSON_GetObjectItemCaseSensitive(root, "body");
+        char *dump = cJSON_IsObject(body) ? cJSON_PrintUnformatted(body) : NULL;
+        cJSON_Delete(root);
+        if (dump == NULL) {
+            app_ble_enqueue_tx(conn_handle,
+                               app_ble_make_response(id, 400, "{\"error\":\"invalid_supply\"}"));
+            return;
+        }
+        app_ble_ev_t ev = { 0 };
+        ev.type = APP_EV_SUPPLY;
+        ev.conn_handle = conn_handle;
+        ev.id = id;
+        ev.payload = dump; /* heap-owned, freed by the driver task */
+        if (s_evq == NULL || xQueueSend(s_evq, &ev, 0) != pdTRUE) {
+            free(dump);
+            app_ble_enqueue_tx(conn_handle,
+                               app_ble_make_response(id, 503, "{\"error\":\"busy\"}"));
+        }
+        return;
+    }
     if (strcmp(path->valuestring, "/sensors/calibration") == 0 &&
         strcmp(method->valuestring, "POST") == 0) {
         app_ble_ev_t ev = { 0 };
@@ -1655,6 +1681,26 @@ static void app_driver_task(void *arg)
                          (unsigned)ev.conn_handle, s_ctl_subscribed ? 1 : 0);
             }
             free(payload);
+            break;
+        }
+        case APP_EV_SUPPLY: {
+            /* NVS commit blocks; run here (driver task) like calibrate. Heap
+             * body only — a 4 KB stack buffer in this task previously caused
+             * a boot-loop stack overflow panic. */
+            const cJSON *volts = cJSON_Parse(ev.payload);
+            free(ev.payload);
+            char *body = malloc(APP_BLE_CTRL_RESP_MAX);
+            if (body == NULL) {
+                cJSON_Delete(volts);
+                app_ble_enqueue_tx(ev.conn_handle,
+                                   app_ble_make_response(ev.id, 500, "{\"error\":\"no_mem\"}"));
+                break;
+            }
+            int status = route_supply_put(volts, body, APP_BLE_CTRL_RESP_MAX);
+            cJSON_Delete(volts);
+            app_ble_enqueue_tx(ev.conn_handle,
+                               app_ble_make_response(ev.id, status, body));
+            free(body);
             break;
         }
         case APP_EV_CALIBRATE: {
