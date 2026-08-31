@@ -124,6 +124,15 @@ struct SettingsView: View {
     private var aboutPage: some View {
         Form { aboutSection }
             .navigationTitle("About")
+            // One device-info retry per About visit: a connect-time read
+            // failure leaves bleInfo nil forever otherwise (the connect path
+            // swallows it), so the firmware row would never self-heal.
+            .task {
+                if session.connectionState == .connected, session.bleInfo?.firmware == nil {
+                    await session.refreshBleInfo()
+                }
+                await refreshLiveFirmware()
+            }
     }
 
     private var transportSection: some View {
@@ -657,7 +666,34 @@ struct SettingsView: View {
         if session.connectionState == .connected, let fw = session.bleInfo?.firmware, !fw.isEmpty {
             return fw
         }
+        // Live fallback: fetch /state directly (the same place the cockpit
+        // gets it). A connect-time device-info read that failed — or a link
+        // re-adopt that never repopulated bleInfo — must not show a connected
+        // gauge as "Not connected" on the About page.
+        if session.connectionState == .connected {
+            if let state = liveStateSnapshot, let fw = state.firmwareVersion, !fw.isEmpty {
+                return fw
+            }
+            if liveStateSnapshot == nil {
+                Task { await refreshLiveFirmware() }
+            }
+        }
         return "Not connected"
+    }
+
+    @State private var liveStateSnapshot: GaugeState?
+    @State private var refreshingFirmware = false
+
+    private func refreshLiveFirmware() async {
+        guard !refreshingFirmware, let transport = session.transport else { return }
+        refreshingFirmware = true
+        defer { refreshingFirmware = false }
+        guard let response = try? await transport.get("state"),
+              (200...299).contains(response.status),
+              let state = try? JSONDecoder().decode(GaugeState.self, from: response.body) else {
+            return
+        }
+        liveStateSnapshot = state
     }
 
     /// Saved-gauge row per the parity visibility matrix: visible whenever the

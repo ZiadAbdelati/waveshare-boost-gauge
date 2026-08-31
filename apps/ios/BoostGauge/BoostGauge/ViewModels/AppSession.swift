@@ -521,10 +521,24 @@ final class AppSession: ObservableObject {
         }
     }
 
+    /// Re-read the GATT device-info characteristic (About page retry): the
+    /// connect-time read may have failed silently, leaving bleInfo nil while
+    /// the link is otherwise healthy.
+    @MainActor
+    func refreshBleInfo() async {
+        guard kind == .ble, connectionState == .connected,
+              let ble = transport as? BleTransport else { return }
+        let info = try? await ble.readDeviceInfo()
+        guard transportID == ObjectIdentifier(ble) else { return }
+        if let info {
+            bleInfo = info
+            blePeerName = info.name
+        }
+    }
+
     /// Release a dead link and hand off to the indefinite reconnect loop.
     @MainActor
-    private func handleBleLinkLost() {
-        guard kind == .ble, transport != nil else { return }
+    private func handleBleLinkLost() {        guard kind == .ble, transport != nil else { return }
         stopBleLinkMonitoring()
         transport?.disconnect()
         transport = nil
