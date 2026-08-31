@@ -56,5 +56,4 @@ python3 sim/raw_to_png.py preview/sim/<id>
 ```
 
 Theme ids: `dyno-cell`, `vault-tec`, `night-city`, `big-digit`, `neon`
-(order defined in `main/boost_theme.c`). The loose `preview/sim/*.png` files
-are the pre-theme-era arc face, kept for the older regression notes.
+(order defined in `main/boost_theme.c`).

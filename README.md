@@ -10,7 +10,7 @@ It swaps straight onto the Waveshare board, replacing the stock factory launcher
 
 | Boost / vacuum | Overboost | Neon theme |
 |---|---|---|
-| ![Boost gauge](preview/sim/gauge_boost.png) | ![Overboost](preview/sim/gauge_over.png) | `tools/sim` generates more |
+| ![Boost gauge](preview/sim/dyno-cell/gauge_boost.png) | ![Overboost](preview/sim/dyno-cell/gauge_over.png) | `tools/sim` generates more |
 
 More rendered previews live in [`preview/`](preview/).
 
