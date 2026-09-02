@@ -222,3 +222,31 @@ iOS `.onAppear`. Tests: iOS H1–H4 flipped from bug-demo to contract
 (101 tests, 2 pre-existing timezone failures); Android ThemesViewModelTest
 +3 (99 total, green). Hardware: user confirmed preview recovers on 0.9.4
 build.
+
+## 2026-09-01 — dyno-cell zero dead zone (min-sweep stub removed)
+
+Symptom (user, on-glass): at ±0.02 psi the dyno-cell arc still drew its
+minimum-size stub (and the same on the negative side), while neon showed a
+small dead zone around 0 that counts as atmosphere. Worse, when the reading
+rapidly flipped between ±0.02 the arc flashed, including showing white —
+the zero notch's colour dominating the region as the stub popped in and out.
+
+Root cause: `value_arc_angles()` (main/boost_gauge.c) clamped any nonzero psi
+to `ARC_MIN_SWEEP_DEG` (1 deg). But the arc's rounded caps extend
+~(width/2)/center_r = 6.7 deg past each endpoint, so the "minimum" arc was
+never one degree on glass — it painted a ~14 deg capsule blob huddled against
+the zero notch. Combined with the side-flip colour change (vacuum cyan ↔
+boost green) this produced blob/nothing/blob flashing on flutter around zero.
+The original min-sweep existed because sub-degree sweeps truncate to zero
+length in LVGL; the blob itself was the stub plus cap geometry.
+
+Fix: replace the minimum with a true dead zone — until the value's own angle
+clears the gap edge the raw sweep is negative and the arc draws nothing
+(atmosphere), matching neon's half-segment lit threshold semantics. Above
+the gap edge the arc tip emerges from behind the notch and grows
+continuously; the mapping reduces to the original `end = psi_to_angle(psi)`.
+`ARC_MIN_SWEEP_DEG` removed. Web mirror `valueArcAngles()` (web/app.js)
+updated in lockstep and embedded assets regenerated
+(`tools/embed_web.py`). Sim verified: ±0.02 renders byte-match the 0.0
+atmo state (no stub); +0.5/-0.5 renders show continuous growth from the
+notch edge with no pop. Host suite 11/11.
