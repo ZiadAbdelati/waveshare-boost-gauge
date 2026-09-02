@@ -9,10 +9,16 @@ const ARC_RANGE = 270;
 const DEFAULT_ZERO_ANGLE = 236.25;
 const ZERO_GAP_VAC = 5.0;
 const ZERO_GAP_BOOST = 5.0;
-/* Smallest renderable arc sweep (firmware ARC_MIN_SWEEP_DEG): keeps the value
- * arc present and growing continuously from the notch for any nonzero psi
- * instead of popping in at the end of the zero-side gap. psi == 0 = no sweep. */
-const ARC_MIN_SWEEP_DEG = 1.0;
+/* Zero dead zone: until the value's own angle clears the gap edge, the raw
+ * sweep is negative and the arc draws NOTHING — the reading counts as
+ * atmosphere, exactly like the firmware's zero-gap handling. The old 1-degree
+ * minimum stub was a poor substitute: the rounded caps extend ~6.7 deg past
+ * each endpoint, so the "minimum" arc painted a ~14 deg capsule blob parked
+ * against the zero notch, and a reading fluttering around zero flashed
+ * blob/nothing/blob with the white notch dominating the region (user-reported
+ * 2026-09-01). Above the gap edge the arc tip emerges from behind the notch
+ * and grows continuously; this reduces to the original end = psiToAngle(psi)
+ * once the value clears the gap. */
 const sampleHistory = [];
 const HISTORY_WINDOW_MS = 60_000;
 const GAUGE_GAP_RESET_MS = 1000;
@@ -472,12 +478,12 @@ function valueArcAngles(psi) {
   let end;
   if (psi >= 0) {
     start = zero + ZERO_GAP_BOOST;
-    const minSweep = psi > 0 ? ARC_MIN_SWEEP_DEG : 0;
-    end = start + Math.max(val - start, minSweep);
+    /* Zero dead zone: below the gap edge the sweep is negative, so the arc
+     * draws nothing (atmosphere), matching firmware value_arc_angles(). */
+    end = start + Math.max(val - start, 0);
   } else {
     end = zero - ZERO_GAP_VAC;
-    const minSweep = psi < 0 ? ARC_MIN_SWEEP_DEG : 0;
-    start = end - Math.max(end - val, minSweep);
+    start = end - Math.max(end - val, 0);
   }
   return { start, end };
 }

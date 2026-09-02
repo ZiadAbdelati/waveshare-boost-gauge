@@ -1,4 +1,4 @@
-﻿#include "boost_gauge.h"
+#include "boost_gauge.h"
 
 #include <math.h>
 #include <stddef.h>
@@ -92,15 +92,6 @@ static inline void boost_display_gauge_update_end(void) {}
  * Raised to 5.0 so the cap sits fully behind the marker again on both sides. */
 #define ZERO_GAP_VAC_DEG   5.00f
 #define ZERO_GAP_BOOST_DEG 5.00f
-/* The smallest renderable arc sweep. LVGL rasterises arcs in whole degrees
- * (lv_value_precise_t is int32_t with LV_USE_FLOAT off), so any sub-degree
- * sweep truncates to zero length and lv_draw_arc() draws nothing - which left
- * the value arc invisible across the whole 5-degree zero-side gap and then
- * POPPED in as a round-capped ~1-degree stub instead of growing continuously
- * from the notch. Holding a 1-degree minimum for any nonzero psi keeps the
- * arc visible (and pixel-identical to the old first step) for every positive
- * value, growing monotonically; psi == 0 still means no sweep. */
-#define ARC_MIN_SWEEP_DEG 1.0f
 #define TICK_FONT     (&lv_font_montserrat_24)
 #define TICK_RADIUS   160.0f
 #define VALUE_SLOT_HEIGHT  58
@@ -5141,20 +5132,25 @@ static void value_arc_angles(float psi, float *start, float *end)
     const float zero_a = psi_to_angle(0.0f);
     if (psi >= 0.0f) {
         *start = zero_a + ZERO_GAP_BOOST_DEG;
-        const float min_sweep = (psi > 0.0f) ? ARC_MIN_SWEEP_DEG : 0.0f;
-        /* Sweep grows from the gap edge toward the value's own angle. For
-         * psi within the zero-side gap the raw sweep is negative; instead of
-         * clamping to exactly zero length (invisible, then a pop) hold the
-         * one-degree minimum so the arc is present and continuous. Above the
-         * gap this reduces to the original end = psi_to_angle(psi). */
-        *end = *start + fmaxf(psi_to_angle(psi) - *start, min_sweep);
+        /* Zero dead zone: until the value's own angle clears the gap edge the
+         * raw sweep is negative and the arc draws NOTHING - the reading counts
+         * as atmosphere, exactly like neon's half-segment lit threshold. The
+         * old 1-degree minimum stub was a poor substitute: the rounded caps
+         * extend ~(width/2)/center_r = 6.7 deg past each endpoint, so the
+         * "minimum" arc painted a ~14 deg capsule blob parked against the zero
+         * notch, and a reading fluttering around zero flashed blob/nothing/blob
+         * with the white notch dominating the region (user-reported 2026-09-01).
+         * Above the gap edge the arc tip emerges from behind the notch and
+         * grows continuously; this reduces to the original end =
+         * psi_to_angle(psi) once the value clears the gap. */
+        *end = *start + fmaxf(psi_to_angle(psi) - *start, 0.0f);
     } else {
         *end = zero_a - ZERO_GAP_VAC_DEG;
-        const float min_sweep = (psi < 0.0f) ? ARC_MIN_SWEEP_DEG : 0.0f;
-        /* Mirror of the boost side: the vacuum arc stays a one-degree minimum
-         * inside the gap and grows counter-clockwise past it, byte-identical
-         * to the original start = psi_to_angle(psi) below the gap. */
-        *start = *end - fmaxf(*end - psi_to_angle(psi), min_sweep);
+        /* Mirror of the boost side: the vacuum arc draws nothing inside the
+         * dead zone and grows counter-clockwise from the gap edge once the
+         * value clears it, byte-identical to the original start =
+         * psi_to_angle(psi) below the gap. */
+        *start = *end - fmaxf(*end - psi_to_angle(psi), 0.0f);
     }
 }
 
