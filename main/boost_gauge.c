@@ -85,13 +85,20 @@ static inline void boost_display_gauge_update_end(void) {}
 #define DISP_SIZE     466
 #define ARC_DIAMETER  462
 #define ARC_WIDTH     54
-#define ZERO_LINE_W   20
-/* The arc's rounded caps extend ~(width/2)/center_r = 7.5 deg past the nominal
- * span. The 0 marker only covers +-~2.5 deg, so the 45 px-era gaps (4.0/3.6)
- * let the wider 54 px arc's cap poke ~0.4 deg past the marker's far edge.
- * Raised to 5.0 so the cap sits fully behind the marker again on both sides. */
-#define ZERO_GAP_VAC_DEG   5.00f
-#define ZERO_GAP_BOOST_DEG 5.00f
+#define ZERO_LINE_W   26
+/* The arc's rounded caps extend ~(width/2)/center_r = 6.7 deg past the nominal
+ * span. The 0 marker only covers +-~3.2 deg (26 px at 231 px centre radius),
+ * so the gap must exceed cap_reach - marker_half = ~3.5 deg on BOTH sides at
+ * ANY user-configured zero angle. The nominal gap carries a small pad on top
+ * (3.6 total); value_arc_angles() rounds each gap edge OUTWARD to the next
+ * whole degree (LVGL stores arc angles truncated to integers) so the
+ * effective gap is always >= nominal no matter where the zero sits - the old
+ * fixed 5.0 gap only worked because its 4.75 effective value cleared the 4.2
+ * need, and a fractional zero angle (e.g. 236.25) truncating a 3.75 nominal
+ * gap left the cap's AA fringe peeking past the boost-side marker edge
+ * (2026-09-01). */
+#define ZERO_GAP_VAC_DEG   3.60f
+#define ZERO_GAP_BOOST_DEG 3.60f
 #define TICK_FONT     (&lv_font_montserrat_24)
 #define TICK_RADIUS   160.0f
 #define VALUE_SLOT_HEIGHT  58
@@ -5131,7 +5138,16 @@ static void value_arc_angles(float psi, float *start, float *end)
 {
     const float zero_a = psi_to_angle(0.0f);
     if (psi >= 0.0f) {
-        *start = zero_a + ZERO_GAP_BOOST_DEG;
+        /* LVGL stores arc angles as whole degrees and TRUNCATES the fraction.
+         * A fractional zero angle puts a fraction on the gap edge too, and
+         * truncation always rounds DOWN in absolute angle - shrinking the
+         * boost gap while growing the vacuum one. Round each edge OUTWARD
+         * (ceil boost start, floor vac end) so the effective gap is always
+         * >= nominal at any user-configured zero angle; the visible dead
+         * zone is then the nominal gap plus whatever the integer grid adds.
+         * Draw and invalidation both route through here, so they share the
+         * quantised geometry. */
+        *start = ceilf(zero_a + ZERO_GAP_BOOST_DEG);
         /* Zero dead zone: until the value's own angle clears the gap edge the
          * raw sweep is negative and the arc draws NOTHING - the reading counts
          * as atmosphere, exactly like neon's half-segment lit threshold. The
@@ -5145,7 +5161,7 @@ static void value_arc_angles(float psi, float *start, float *end)
          * psi_to_angle(psi) once the value clears the gap. */
         *end = *start + fmaxf(psi_to_angle(psi) - *start, 0.0f);
     } else {
-        *end = zero_a - ZERO_GAP_VAC_DEG;
+        *end = floorf(zero_a - ZERO_GAP_VAC_DEG);
         /* Mirror of the boost side: the vacuum arc draws nothing inside the
          * dead zone and grows counter-clockwise from the gap edge once the
          * value clears it, byte-identical to the original start =

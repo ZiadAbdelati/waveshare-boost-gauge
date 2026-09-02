@@ -7,8 +7,8 @@ const DEFAULT_PSI_OVERBOOST = 8;
 const ARC_START = 135;
 const ARC_RANGE = 270;
 const DEFAULT_ZERO_ANGLE = 236.25;
-const ZERO_GAP_VAC = 5.0;
-const ZERO_GAP_BOOST = 5.0;
+const ZERO_GAP_VAC = 3.6;
+const ZERO_GAP_BOOST = 3.6;
 /* Zero dead zone: until the value's own angle clears the gap edge, the raw
  * sweep is negative and the arc draws NOTHING — the reading counts as
  * atmosphere, exactly like the firmware's zero-gap handling. The old 1-degree
@@ -17,8 +17,13 @@ const ZERO_GAP_BOOST = 5.0;
  * against the zero notch, and a reading fluttering around zero flashed
  * blob/nothing/blob with the white notch dominating the region (user-reported
  * 2026-09-01). Above the gap edge the arc tip emerges from behind the notch
- * and grows continuously; this reduces to the original end = psiToAngle(psi)
- * once the value clears the gap. */
+ * and grows continuously.
+ *
+ * The firmware quantises arc angles to whole degrees (LVGL truncates), so it
+ * rounds each gap edge OUTWARD — ceil the boost start, floor the vacuum end —
+ * guaranteeing the effective gap >= nominal at ANY user-configured zero
+ * angle. The canvas arcs do not truncate, but the mirror applies the same
+ * rounding so both renderers commit the identical gap-edge angles. */
 const sampleHistory = [];
 const HISTORY_WINDOW_MS = 60_000;
 const GAUGE_GAP_RESET_MS = 1000;
@@ -477,12 +482,13 @@ function valueArcAngles(psi) {
   let start;
   let end;
   if (psi >= 0) {
-    start = zero + ZERO_GAP_BOOST;
+    start = Math.ceil(zero + ZERO_GAP_BOOST);
     /* Zero dead zone: below the gap edge the sweep is negative, so the arc
-     * draws nothing (atmosphere), matching firmware value_arc_angles(). */
+     * draws nothing (atmosphere). Edges rounded outward (ceil boost / floor
+     * vac) to match the firmware's quantised angles at any zero position. */
     end = start + Math.max(val - start, 0);
   } else {
-    end = zero - ZERO_GAP_VAC;
+    end = Math.floor(zero - ZERO_GAP_VAC);
     start = end - Math.max(end - val, 0);
   }
   return { start, end };
@@ -568,7 +574,7 @@ function drawArcGauge(sample, psi, g) {
   const rOuter = outerR - 1 * scale;
   const rInner = rOuter - stroke + 1 * scale;
   ctx.strokeStyle = state.palette.zero;
-  ctx.lineWidth = 20 * scale;
+  ctx.lineWidth = 26 * scale;
   ctx.lineCap = "round";
   ctx.beginPath();
   ctx.moveTo(cx + rInner * Math.cos(zero), cy + rInner * Math.sin(zero));
