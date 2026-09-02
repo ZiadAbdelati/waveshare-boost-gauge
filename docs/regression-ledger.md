@@ -250,3 +250,30 @@ updated in lockstep and embedded assets regenerated
 (`tools/embed_web.py`). Sim verified: ±0.02 renders byte-match the 0.0
 atmo state (no stub); +0.5/-0.5 renders show continuous growth from the
 notch edge with no pop. Host suite 11/11.
+
+## 2026-09-01 — dyno-cell zero gap: outward-rounded edges, adaptive to any zeroAngle
+
+Follow-up to the dead-zone fix. The original 5-degree gap silently depended on
+the default zero angle: LVGL truncates arc angles to whole degrees, and a
+fractional zeroAngle puts a fraction on the gap edge too. Truncation rounds
+both edges DOWN in absolute angle, shrinking the boost gap while growing the
+vacuum one - a 3.75 nominal gap at zero=236.25 drew its boost start at 240
+(effective 3.75, cap AA fringe peeking past the marker) while vacuum drew
+4.25 (safe but wasted). The user caught the asymmetry in sim renders: peek on
+boost, clean on vacuum.
+
+Fix - derive, don't tune:
+
+- value_arc_angles() rounds each gap edge OUTWARD (ceil boost start, floor
+  vacuum end). Effective gap >= nominal at EVERY user-configured zeroAngle;
+  the integer grid can only add dead zone, never remove it.
+- Nominal gap 5.0 -> 3.6 deg (floor: cap reach 6.7 - marker half-width 3.2
+  plus pad), zero marker ZERO_LINE_W 20 -> 26 px (+-3.2 deg at the 231 px
+  centre radius). Web mirror identical, embedded assets regenerated.
+
+Measured effective gaps / dead zones (defaults -15..10 psi): zero=236.25 ->
+4.75/5.25 deg = 0.28/0.78 psi; zero=220 (user's on-car setting) -> 4.0/4.0
+deg = 0.22/0.71 psi. Sim verified at both zero angles: +-0.02 psi renders
+byte-match the atmo state; +0.3/-0.7 psi emergence tucks the cap fully behind
+the fatter marker. Host suite 11/11. Hardware cadence + screenshot diff still
+owed before the next release (arc-geometry guard).
