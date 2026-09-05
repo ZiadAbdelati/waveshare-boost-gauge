@@ -59,6 +59,10 @@ an OTA, the boot log must read `Loaded app from partition at offset 0x420000`
 - Zero marker 20 → 26 px (±3.2° at the 231 px centre radius) keeping the
   rounded cap fully hidden at emergence; web mirror in lockstep, embedded
   assets regenerated.
+- **Firmware version readout on the connections-toggles page** — a muted
+  label above the swipe hint (the QR page's SSID/IP slot), sourced from the
+  app description (`git describe` at build time) so the glass always shows
+  what is actually running.
 
 ### iOS (0.9.5, build 5)
 - About page Firmware row self-heals: retries the GATT device-info read when
