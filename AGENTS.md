@@ -2,7 +2,7 @@
 
 This repository is an ESP-IDF 5.5.1 firmware/dashboard for an ESP32-S3 AMOLED boost gauge. These rules are load-bearing. A fresh agent must be able to resume from this file alone; do not rely on chat history.
 
-Current verified release is **`v0.9.4`** (ESP-IDF 5.5.1, app image ~2.5 MB in `release/`). Preserve that identity in hardware and release notes for current measurements. The full historical regression ledger lives in [`docs/regression-ledger.md`](docs/regression-ledger.md); the condensed guard rails below are the currently-actionable invariants, grouped by area. When a change touches one of these areas, re-read the relevant ledger rows for the measurement detail behind the rule.
+Current verified release is **`v0.9.5`** (ESP-IDF 5.5.1, app image ~2.5 MB in `release/`). Preserve that identity in hardware and release notes for current measurements. The full historical regression ledger lives in [`docs/regression-ledger.md`](docs/regression-ledger.md); the condensed guard rails below are the currently-actionable invariants, grouped by area. When a change touches one of these areas, re-read the relevant ledger rows for the measurement detail behind the rule.
 
 Regression tooling: run `python3 tools/test_suite.py` (host suite, before every commit) and `python3 tools/check_hardware_gates.py` (hardware release gates, before every release/flash-to-car); see `tools/tests/README.md`.
 
@@ -119,6 +119,8 @@ These are the currently-actionable invariants distilled from the regression ledg
 | Guard | Since |
 |---|---|
 | Arc face geometry and wedge invalidation are the path the 60 FPS guard was established against; keep byte-for-byte | 2026-07-28 |
+| Zero dead zone: below the gap edge the value arc draws NOTHING (atmosphere, like neon's half-segment threshold); never reintroduce a min-sweep stub (rounded caps made it a ~14 deg blob that flashed at zero crossings) | 2026-09-01 |
+| Gap edges are rounded OUTWARD (ceil boost start / floor vac end) in `value_arc_angles()` because LVGL truncates arc angles to whole degrees; nominal gap 3.6 deg + 26 px zero marker stay a pair — any change to either re-derives the cap-reach/marker-half constraint at EVERY user zeroAngle, and needs sim renders at a fractional (236.25) and integer (220) zeroAngle | 2026-09-01 |
 | Zero notch is a live overlay above the moving value arc, never baked into the cached background | 2026-08-12 |
 | Readout invalidation is per-glyph ink box (`arc_readout_ink_box()`/pen math) shared with the draw; re-run BOTH the host audit and a screenshot diff vs the prior build | 2026-08-13 |
 | Readout font is 65 px Archivo Black; any size change re-derives pitch/slot from the generated glyph advance | 2026-08-13 |
