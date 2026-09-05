@@ -14,6 +14,7 @@
 #include "boost_model.h"
 #include "boost_network.h"
 #include "boost_obd.h"
+#include "esp_app_desc.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #else
@@ -29,7 +30,15 @@ static bool boost_obd_enabled(void) { return g_sim_obd_state; }
 static bool boost_app_ble_enabled(void) { return g_sim_app_ble_state; }
 static void boost_obd_set_enabled(bool e) { g_sim_obd_set_calls++; g_sim_obd_state = e; }
 static void boost_app_ble_set_enabled(bool e) { g_sim_app_ble_set_calls++; g_sim_app_ble_state = e; }
-#define BOOST_AP_PASSWORD "boost1234" 
+#define BOOST_AP_PASSWORD "boost1234"
+/* Host sim firmware version: the sim does not build boost_model.c, so the
+ * toggles page's version readout gets a fixed stand-in (overridable via
+ * SIM_FW_VERSION for screenshot tests). */
+static const char *sim_fw_version(void)
+{
+    const char *v = getenv("SIM_FW_VERSION");
+    return (v != NULL && v[0] != '\0') ? v : "v0.9.5-sim";
+}
 #endif
 
 #define PAGE_SIZE 466
@@ -209,6 +218,23 @@ static void show_qr(void)
         lv_obj_add_event_cb(app_sw, qr_swipe_press_cb, LV_EVENT_PRESSED, NULL);
         lv_obj_add_event_cb(app_sw, qr_swipe_release_cb, LV_EVENT_RELEASED, NULL);
         lv_obj_add_event_cb(app_sw, qr_toggle_app_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+        /* Firmware version readout, bottom-anchored above the swipe hint -
+         * the same slot pattern the QR page uses for the SSID/IP lines. The
+         * version comes from the app description (git describe at build
+         * time), so what is on glass is what is actually running. Muted so
+         * it reads as metadata, not as a third toggle. */
+        lv_obj_t *fw = lv_label_create(s_qr_overlay);
+#ifdef ESP_PLATFORM
+        const esp_app_desc_t *app_desc = esp_app_get_description();
+        lv_label_set_text(fw, (app_desc != NULL) ? app_desc->version : "unknown");
+#else
+        lv_label_set_text(fw, sim_fw_version());
+#endif
+        lv_obj_set_style_text_color(fw, lv_color_hex(0x9a9a9a), 0);
+        lv_obj_set_style_text_font(fw, &lv_font_montserrat_24, 0);
+        lv_obj_align(fw, LV_ALIGN_BOTTOM_MID, 0, -48);
+        (void)app_sw;
     } else {
         lv_obj_t *qr = lv_qrcode_create(s_qr_overlay);
         lv_qrcode_set_size(qr, 320);
