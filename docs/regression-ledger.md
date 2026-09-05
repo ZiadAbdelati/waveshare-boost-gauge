@@ -277,3 +277,52 @@ deg = 0.22/0.71 psi. Sim verified at both zero angles: +-0.02 psi renders
 byte-match the atmo state; +0.3/-0.7 psi emergence tucks the cap fully behind
 the fatter marker. Host suite 11/11. Hardware cadence + screenshot diff still
 owed before the next release (arc-geometry guard).
+
+## 2026-09-01 — v0.9.5 field rollback (panel-toggle BLE race) + confirm-window fix
+
+Field report: v0.9.5 OTA'd successfully, the user opened the connections page
+and toggled App link / OBD2 on; the gauge rebooted and came back as v0.9.4
+(version label gone, app reporting the old firmware). The bootloader's
+PENDING_VERIFY rollback fired: the crash hit the image before main.c's
+confirm gate had run.
+
+Root cause (two compounding defects):
+
+1. Panel-toggle BLE race. qr_toggle_apply_cb ran boost_app_ble_set_enabled()
+   on the LVGL task, which calls boost_obd_ble_init() -> nimble_port_init().
+   During the boot-time DHCP window app_main had not yet reached its own
+   boost_obd_ble_init(), and the unlocked check-then-act on s_init_done let
+   two concurrent callers enter nimble_port_init() — the crash. The web
+   route never exposed this because it runs after boot bring-up completes.
+2. 25-second unconfirmed window. web_start waited up to 25 s for the STA
+   DHCP lease BEFORE starting the HTTP server, so the OTA-confirm gate in
+   main.c ran ~25 s after boot. Any crash in that window — including one
+   caused by an unrelated bug — rolled back a healthy image.
+
+Fixes:
+
+- boost_obd_ble_init()/boost_obd_ble_host_start() serialize the whole
+  mount/host-start sequence behind a mutex (s_init_lock); concurrent
+  callers block and then no-op. Failed mounts leave s_init_done clear so a
+  later caller retries.
+- web_start starts the HTTP server BEFORE the DHCP wait
+  (network_start(0) -> httpd_start -> return), and main.c calls
+  boost_network_wait_sta(25000) AFTER the confirm gate. The SoftAP
+  interface exists from boot, so the server listens within ~2 s and the
+  confirm fires then. Hardware boot measured: HTTP API ready at t=2.0 s
+  (was 27.0 s), NimBLE mounted at 2.0 s, DHCP wait runs last and the join
+  lands at 7.8 s.
+
+Operational note discovered during the session: idf.py app-flash writes the
+app to ota_0 (0x20000, per flash_args), but after a web OTA the board boots
+ota_1 (0x420000) — flashing "Done" into a slot the bootloader ignores. To
+replace a web-OTA'd image over serial, flash explicitly at 0x420000. Three
+consecutive "successful" flashes with unchanged behaviour cost an hour
+before this was identified; the boot log's "Loaded app from partition at
+offset" line is the tell.
+
+Hardware verification (board on serial, v0.9.5-2-g26d8e3e): demo mode on
+dyno-cell fast-sweep, 30 s cadence gate median 60 FPS (min 57), serial
+clean (no ESP_ERR_NO_MEM / send color data failed / panics), both BLE
+toggles enabled via the web route with the board surviving, manual restart
+persists v0.9.5. Host suite 11/11.
