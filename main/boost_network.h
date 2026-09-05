@@ -63,8 +63,16 @@ typedef struct {
     int authmode;
 } boost_wifi_scan_record_t;
 
-/** Bring up SoftAP and optional STA. Blocks up to timeout_ms for first DHCP. */
+/** Bring up SoftAP and optional STA. Does NOT wait for a DHCP lease -
+ * follow with boost_network_wait_sta() once the HTTP server is listening. */
 esp_err_t boost_network_start(uint32_t timeout_ms);
+
+/** Block up to timeout_ms waiting for the STA to join and land a DHCP
+ * lease. No-op when the STA was never configured. Split from
+ * boost_network_start() so the OTA rollback confirm gate (fired right
+ * after the web server starts listening) is not blocked behind a 25 s
+ * DHCP window. */
+void boost_network_wait_sta(uint32_t timeout_ms);
 
 void boost_network_get_status(boost_net_status_t *out);
 

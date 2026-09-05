@@ -1590,7 +1590,20 @@ esp_err_t boost_web_start(void)
     if (boost_media_store_status(&media) == ESP_OK && media.present) {
         (void)boost_gauge_media_load();
     }
-    ESP_RETURN_ON_ERROR(boost_network_start(25000), TAG, "wifi");
+    /* Bring Wi-Fi up WITHOUT waiting for the STA join, start the HTTP server
+     * (it binds the SoftAP interface, which exists from boot), and only THEN
+     * wait out the 25 s STA/DHCP window. Order is load-bearing for OTA
+     * rollback: main.c confirms a freshly OTA'd image as soon as this
+     * function returns, so every second spent before httpd_start() is a
+     * second in which a crash - even one caused by an unrelated bug - rolls
+     * the boot back to the previous slot. The 2026-09-01 field rollback
+     * (v0.9.5 reverted to v0.9.4) happened exactly there: the user reached
+     * the connections page and toggled BLE while the old code was still
+     * waiting out the DHCP window, the toggle raced boot-time BLE bring-up,
+     * and the crash hit an unconfirmed image. Waiting AFTER httpd_start
+     * shrinks the unconfirmed window from ~25 s to under 2 s while keeping
+     * the identical "LAN dashboard: http://..." log once the join lands. */
+    ESP_RETURN_ON_ERROR(boost_network_start(0), TAG, "wifi");
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.stack_size = 10240;
     cfg.task_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
@@ -1658,5 +1671,10 @@ esp_err_t boost_web_start(void)
                                 (TaskHandle_t *)&s_state_ws_task, 1) != pdPASS) {
         ESP_LOGW(TAG, "live WebSocket task not started");
     }
+    /* LAST: the STA/DHCP wait. The server is already listening (SoftAP from
+     * boot + STA the moment DHCP lands), so main.c's OTA-confirm gate has
+     * already run by the time this blocks. See the reorder rationale at the
+     * top of this function. */
+    boost_network_wait_sta(25000);
     return ESP_OK;
 }

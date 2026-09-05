@@ -103,6 +103,14 @@ typedef struct {
 static QueueHandle_t s_evq;
 static TaskHandle_t s_task;
 static bool s_init_done;
+/* Mount serialization. boost_obd_ble_init() is callable from BOTH the main
+ * task (boot bring-up) and the LVGL task (panel toggle -> boost_app_ble_start
+ * during the boot window). The old check-then-act on s_init_done had no
+ * lock, so two concurrent callers could both pass the check and double-run
+ * nimble_port_init() - the 2026-09-01 field crash that rolled a fresh OTA
+ * back to the previous slot (the crash hit the image while it was still
+ * PENDING_VERIFY). */
+static SemaphoreHandle_t s_init_lock;
 static volatile bool s_enabled;
 
 static volatile boost_obd_ble_state_t s_state = BOOST_OBD_BLE_DOWN;
@@ -699,7 +707,27 @@ static void host_task(void *param)
     nimble_port_freertos_deinit();
 }
 
+static void obd_ble_init_locked(void);
+
 void boost_obd_ble_init(void)
+{
+    /* Serialize the whole check-then-mount sequence. First caller mounts;
+     * a concurrent caller blocks on the mutex, then sees s_init_done and
+     * returns without re-entering nimble_port_init(). Created on first use
+     * (heap is plentiful before the BLE controller allocs). */
+    if (s_init_lock == NULL) {
+        s_init_lock = xSemaphoreCreateMutex();
+        if (s_init_lock == NULL) return;   /* nothing sensible without it */
+    }
+    xSemaphoreTake(s_init_lock, portMAX_DELAY);
+    obd_ble_init_locked();
+    xSemaphoreGive(s_init_lock);
+}
+
+/* The one-shot mount sequence, run with s_init_lock held. Sets s_init_done
+ * only on success, so a failed mount can be retried by a later caller
+ * (e.g. the panel toggle retrying after a transient RAM squeeze). */
+static void obd_ble_init_locked(void)
 {
     if (s_init_done) return;
     const uint32_t largest =
@@ -735,11 +763,19 @@ void boost_obd_ble_init(void)
 void boost_obd_ble_host_start(void)
 {
     static bool s_host_started;
-    if (!s_init_done || s_host_started) return;
+    /* Same lock as init: host_start is on the panel-toggle path too, and a
+     * double nimble_port_freertos_init() is exactly as fatal as a double
+     * mount. Registration between mount and start stays the caller's job. */
+    if (s_init_lock != NULL) xSemaphoreTake(s_init_lock, portMAX_DELAY);
+    if (!s_init_done || s_host_started) {
+        if (s_init_lock != NULL) xSemaphoreGive(s_init_lock);
+        return;
+    }
     s_host_started = true;
     /* Starts the host task. GATT service registration must complete BEFORE
      * this call (boost_app_ble_init registers between mount and start). */
     nimble_port_freertos_init(host_task);
+    if (s_init_lock != NULL) xSemaphoreGive(s_init_lock);
 }
 
 bool boost_obd_ble_host_up(void)

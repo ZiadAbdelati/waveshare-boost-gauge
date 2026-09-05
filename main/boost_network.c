@@ -418,7 +418,19 @@ esp_err_t boost_network_start(uint32_t timeout_ms)
         ESP_LOGI(TAG, "SoftAP-only");
         return ESP_OK;
     }
+    /* The STA/DHCP wait lives in boost_network_wait_sta(), called AFTER the
+     * web server is listening - see boost_web_start() for why that ordering
+     * is load-bearing for OTA rollback confirmation. */
+    return ESP_OK;
+}
 
+/* Block up to timeout_ms waiting for the STA to join and land a DHCP lease.
+ * Split out of boost_network_start() so the web server can start listening
+ * (SoftAP, available from boot) BEFORE this wait - the OTA rollback confirm
+ * gate then fires within ~1 s of boot instead of ~25 s. */
+void boost_network_wait_sta(uint32_t timeout_ms)
+{
+    if (!s_started || !s_sta_netif) return;
     ESP_LOGI(TAG, "waiting up to %u ms for STA DHCP…", (unsigned)timeout_ms);
     EventBits_t bits = xEventGroupWaitBits(s_events, WIFI_BIT_GOT_IP, pdFALSE, pdFALSE,
                                            pdMS_TO_TICKS(timeout_ms ? timeout_ms : 1));
@@ -427,7 +439,6 @@ esp_err_t boost_network_start(uint32_t timeout_ms)
     } else {
         ESP_LOGW(TAG, "STA not associated yet; SoftAP still available");
     }
-    return ESP_OK;
 }
 
 static void boost_network_get_config(boost_net_config_t *out)
