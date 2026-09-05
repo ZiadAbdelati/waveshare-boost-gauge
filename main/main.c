@@ -15,6 +15,7 @@
 #include "boost_tpms.h"
 #include "boost_tpms_mock.h"
 #include "boost_app_ble.h"
+#include "boost_network.h"
 #include "boost_obd.h"
 #include "boost_obd_ble.h"
 #include "esp_ota_ops.h"
@@ -244,6 +245,14 @@ void app_main(void)
     } else {
         ESP_LOGW(TAG, "control plane down; leaving OTA image unconfirmed for rollback");
     }
+
+    /* The STA/DHCP wait runs AFTER the confirm gate on purpose: web_start
+     * only waits for the server to listen (SoftAP exists from boot), so a
+     * fresh OTA is confirmed within ~1 s of boot no matter how long the
+     * join takes. Waiting before the confirm was the exposure of the
+     * 2026-09-01 field rollback - a crash during the 25 s window reverted a
+     * healthy image. */
+    boost_network_wait_sta(25000);
 
     ESP_LOGI(TAG, "tap=reset peak · hold 1s=brightness toggle · AP password boost1234");
 }

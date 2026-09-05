@@ -1671,10 +1671,11 @@ esp_err_t boost_web_start(void)
                                 (TaskHandle_t *)&s_state_ws_task, 1) != pdPASS) {
         ESP_LOGW(TAG, "live WebSocket task not started");
     }
-    /* LAST: the STA/DHCP wait. The server is already listening (SoftAP from
-     * boot + STA the moment DHCP lands), so main.c's OTA-confirm gate has
-     * already run by the time this blocks. See the reorder rationale at the
-     * top of this function. */
-    boost_network_wait_sta(25000);
+    /* The 25 s STA/DHCP wait deliberately does NOT happen here. main.c must
+     * confirm a freshly OTA'd image the moment this function returns (HTTP
+     * is listening on the SoftAP, which exists from boot); blocking inside
+     * web_start would stretch the unconfirmed window across the whole DHCP
+     * wait - the exact exposure of the 2026-09-01 field rollback. main.c
+     * calls boost_network_wait_sta() after the confirm gate. */
     return ESP_OK;
 }
