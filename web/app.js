@@ -454,8 +454,20 @@ function signed(psi) {
   return `${n >= 0 ? "+" : ""}${n.toFixed(1)}`;
 }
 
+/* dyno-cell readout dead zone (mirrors ARC_READOUT_DEADBAND in boost_gauge.c):
+ * a real MAP sensor idling at atmosphere hovers around +-0.1 psi and the
+ * readout flapped between "0.0" and "-0.1". Values inside the band fold to
+ * 0.0; outside it the raw value passes through (a one-band shift breaks the
+ * sign at the edge, so we fold). */
+const ARC_READOUT_DEADBAND = 0.1;
+
+function arcReadoutDisplayPsi(psi) {
+  if (psi >= -ARC_READOUT_DEADBAND && psi <= ARC_READOUT_DEADBAND) return 0;
+  return psi;
+}
+
 function drawFixedPsi(psi, decimalX, baselineY, scale) {
-  const value = Number(psi);
+  const value = arcReadoutDisplayPsi(Number(psi));
   const absoluteTenths = Math.round(Math.abs(value) * 10);
   const whole = Math.floor(absoluteTenths / 10);
   const tenth = absoluteTenths % 10;

@@ -64,6 +64,7 @@ def build_registry() -> list[TestSpec]:
         "test_network_semantics.py",
         "test_gesture_constants.py",
         "test_cadence_guard_math.py",
+        "test_readout_deadzone.py",
     ]
     specs = []
     for fname in existing:

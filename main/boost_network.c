@@ -35,8 +35,6 @@
 
 #define WIFI_BIT_GOT_IP BIT0
 #define WIFI_BIT_FAIL   BIT1
-#define WIFI_SCAN_ACTIVE_MIN_MS 40
-#define WIFI_SCAN_ACTIVE_MAX_MS 80
 /* Backoff before re-attempting a dropped station association. AP and STA share
  * one radio, so an out-of-range SSID reconnects in a tight scan->fail loop that
  * repeatedly yanks the radio off the SoftAP channel; a 10 s backoff gives the
@@ -58,7 +56,16 @@ static esp_netif_t *s_sta_netif;
 static TimerHandle_t s_reconnect_timer;
 static uint8_t s_try_index = 0;
 static uint8_t s_ap_clients = 0;
+/* With NimBLE coexistence the Wi-Fi driver refuses a custom active scan time
+ * ("Should use default active scan time parameter for WiFi scan when Bluetooth
+ * is enabled", hardware log 2026-09-05): when this repo's 40/80 ms values were
+ * set, esp_wifi_scan_start() returned WIFI_STATE_INIT and the BLE
+ * /network/scan route surfaced a failure (and once wedged until the phone
+ * gave up with its did-not-respond timeout). Leaving
+ * scan_time at the zero-default uses the driver's own dwell when BT is enabled,
+ * so the field stays out of the struct instead of being configured per-scan. */
 static TaskHandle_t s_scan_conn_task;
+static bool s_background_scan_running;
 
 static esp_err_t apply_sta_config(void);
 
@@ -75,17 +82,18 @@ static void scan_and_connect_task(void *arg)
     }
 
     ESP_LOGI(TAG, "running background Wi-Fi scan for saved networks");
-    
+    s_background_scan_running = true;
+
     wifi_scan_config_t scan_cfg = {
         .ssid = NULL,
         .bssid = NULL,
         .channel = 0,
         .show_hidden = false,
         .scan_type = WIFI_SCAN_TYPE_ACTIVE,
-        .scan_time.active.min = WIFI_SCAN_ACTIVE_MIN_MS,
-        .scan_time.active.max = WIFI_SCAN_ACTIVE_MAX_MS,
+        /* scan_time left zeroed: the driver's default dwell is REQUIRED while
+         * NimBLE coexists (custom active times are rejected, WIFI_STATE_INIT) */
     };
-    
+
     /* Perform blocking scan on the Wi-Fi driver */
     esp_err_t err = esp_wifi_scan_start(&scan_cfg, true);
     if (err == ESP_OK) {
@@ -129,6 +137,7 @@ static void scan_and_connect_task(void *arg)
         ESP_LOGW(TAG, "scan_start failed: %d", err);
     }
     
+    s_background_scan_running = false;
     s_scan_conn_task = NULL;
     vTaskDelete(NULL);
 }
@@ -691,10 +700,18 @@ esp_err_t boost_network_scan(boost_wifi_scan_record_t *records, uint16_t max_rec
             .channel = 0,
             .show_hidden = false,
             .scan_type = WIFI_SCAN_TYPE_ACTIVE,
-            .scan_time.active.min = WIFI_SCAN_ACTIVE_MIN_MS,
-            .scan_time.active.max = WIFI_SCAN_ACTIVE_MAX_MS,
+            /* scan_time left zeroed: default dwell REQUIRED with BLE coex */
         };
         err = esp_wifi_scan_start(&scan, true);
+        if (err == ESP_ERR_WIFI_STATE && s_background_scan_running) {
+            /* The background saved-network scan holds the radio; rather than
+             * surfacing a transient scan failure to the phone, retry once
+             * after its burst finishes. */
+            xSemaphoreGive(s_lock);
+            vTaskDelay(pdMS_TO_TICKS(1500));
+            xSemaphoreTake(s_lock, portMAX_DELAY);
+            err = esp_wifi_scan_start(&scan, true);
+        }
     }
     ESP_LOGI(TAG, "scan: mode_change=%d err=0x%x", needs_mode_change, err);
     if (err == ESP_OK) {

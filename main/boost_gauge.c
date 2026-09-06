@@ -4859,8 +4859,28 @@ static lv_color_t zone_color_for_psi(const boost_theme_t *theme, float psi)
     return c(theme->vacuum);
 }
 
+/* dyno-cell readout dead zone (user request 2026-09-05): with a real MAP
+ * sensor idling at atmosphere the raw psi hovers around +-0.1 and the readout
+ * flapped between "0.0" and "-0.1" every sample. Values inside +-0.1 psi fold
+ * to a solid 0.0; outside the band the raw value passes through unchanged.
+ * (A one-band shift keeps the map "continuous" on paper but breaks the sign
+ * at the edge: raw -0.15 shifted to -0.05 hit the sign threshold and rendered
+ * positive "0.1". The fold is monotone and sign-safe.) The arc wedge and zone
+ * colours keep using the raw value - their geometric gap already hides
+ * sub-gap motion. */
+#define ARC_READOUT_DEADBAND 0.1f
+
+static float arc_readout_display_psi(float psi)
+{
+    if (psi >= -ARC_READOUT_DEADBAND && psi <= ARC_READOUT_DEADBAND) {
+        return 0.0f;
+    }
+    return psi;
+}
+
 static void format_value_slots(char *sign, char *tens, char *ones, char *tenths, float psi)
 {
+    psi = arc_readout_display_psi(psi);
     const int tenths_psi = (int)lroundf(fabsf(psi) * 10.0f);
     const int whole = tenths_psi / 10;
     *sign = psi < -0.05f ? '-' : ' ';
