@@ -2,7 +2,7 @@
 
 This repository is an ESP-IDF 5.5.1 firmware/dashboard for an ESP32-S3 AMOLED boost gauge. These rules are load-bearing. A fresh agent must be able to resume from this file alone; do not rely on chat history.
 
-Current verified release is **`v0.9.5`** (ESP-IDF 5.5.1, app image ~2.5 MB in `release/`). Preserve that identity in hardware and release notes for current measurements. The full historical regression ledger lives in [`docs/regression-ledger.md`](docs/regression-ledger.md); the condensed guard rails below are the currently-actionable invariants, grouped by area. When a change touches one of these areas, re-read the relevant ledger rows for the measurement detail behind the rule.
+Current verified release is **`v0.9.6`** (ESP-IDF 5.5.1, app image ~2.5 MB in `release/`). Preserve that identity in hardware and release notes for current measurements. The full historical regression ledger lives in [`docs/regression-ledger.md`](docs/regression-ledger.md); the condensed guard rails below are the currently-actionable invariants, grouped by area. When a change touches one of these areas, re-read the relevant ledger rows for the measurement detail behind the rule.
 
 Regression tooling: run `python3 tools/test_suite.py` (host suite, before every commit) and `python3 tools/check_hardware_gates.py` (hardware release gates, before every release/flash-to-car); see `tools/tests/README.md`.
 
@@ -125,6 +125,7 @@ These are the currently-actionable invariants distilled from the regression ledg
 | Readout invalidation is per-glyph ink box (`arc_readout_ink_box()`/pen math) shared with the draw; re-run BOTH the host audit and a screenshot diff vs the prior build | 2026-08-13 |
 | Readout font is 65 px Archivo Black; any size change re-derives pitch/slot from the generated glyph advance | 2026-08-13 |
 | Do not reintroduce `transform_scale_x` for glyph widening (AA-seam failure) | 2026-08-12 |
+| Readout dead zone: values within ±0.1 psi fold to 0.0 in `arc_readout_display_psi()`/web `arcReadoutDisplayPsi()` (band edges inclusive); outside, the raw value passes through — a one-band shift breaks the sign at the edge (raw -0.15 rendered positive "0.1"). Wedge and zone colours keep RAW psi. Both sides must carry the same `ARC_READOUT_DEADBAND` (contract test `tools/tests/test_readout_deadzone.py`) | 2026-09-05 |
 
 ### vault-tec
 
@@ -247,6 +248,8 @@ These are the currently-actionable invariants distilled from the regression ledg
 | `CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=y` (82 KB DIRAM) buys nothing measurable — it is OFF; the RAM log ring lives in PSRAM, never internal `.bss` | 2026-07-26 |
 | A Kconfig symbol existing is not evidence it is being read; verify in the generated `sdkconfig` and on hardware | 2026-08-03 |
 | Never configure hardware from `managed_components/` (reverted by any dependency refresh); if a doc claims a hardware setting, there must be a line of code and a boot log to confirm it | 2026-07-26 |
+| A timezone whose TZ string is a FIXED offset (`UTC5`) instead of a DST-carrying rule (`EST5EDT,...`) during DST season IS the dim-schedule regression signature: the schedule math was right, the board's local time was an hour off. Fixed-offset TZ strings get written by offset-derived client writes; re-sync with a full POSIX rule and the DS3231 recalibrates in the same write | 2026-09-05 |
+| With NimBLE coexistence, `esp_wifi_scan_start()` MUST run with the default scan dwell (leave `scan_time` zeroed): a custom 40/80 ms active time is rejected (`wifi: Should use default active scan time parameter for WiFi scan when Bluetooth is enabled`) and the BLE `/network/scan` route surfaces scan failures/phone timeouts. `boost_network_scan()` retries once (1.5 s) when the background saved-network scan task holds the radio | 2026-09-05 |
 
 ### Web / settings / release process
 

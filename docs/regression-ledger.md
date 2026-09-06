@@ -326,3 +326,76 @@ dyno-cell fast-sweep, 30 s cadence gate median 60 FPS (min 57), serial
 clean (no ESP_ERR_NO_MEM / send color data failed / panics), both BLE
 toggles enabled via the web route with the board surviving, manual restart
 persists v0.9.5. Host suite 11/11.
+
+## 2026-09-05 — dim schedule missed in car (UTC5 timezone), BLE scan failures, dyno-cell ±0.1 readout dead zone
+
+### Dim did not engage at 20:20
+
+Field symptom: with the gauge in the car, dim (start 20:20, brightnessLow 25)
+did not engage at 20:25. The schedule code was never wrong — the board's
+TIMEZONE was. `/config` reported `timezoneTz: "UTC5"` (fixed UTC-5, no DST
+rule) with effective offset -300 in September (EDT is -240), so the board's
+"local" time was a full hour behind the car; 20:20 board-local is 21:20 real.
+
+Root cause: the phone app (iOS 0.9.4 build 4, which predates the curated-TZ
+fix already in the iOS tree at SettingsViewModel.swift "a synthetic UTC4
+overwrote the gauge's...") wrote an offset-derived POSIX string; the firmware
+then derives `UTC5` from the stored standard offset. The DST rule was lost at
+that write, not in the schedule evaluation.
+
+Live repair: POST /api/v1/time with the correct epochMs +
+`EST5EDT,M3.2.0/2,M11.1.0/2` re-seeded the clock AND recalibrated the DS3231
+(RTC is the write authority; OSF cleared). The panel dropped to 25% within
+one schedule tick — measured, not inferred. The web dashboard was never
+affected (tzForOffset() maps -300 to the EST5EDT rule).
+
+Guard added: dim-schedule rows in AGENTS.md now require timezoneTz to be a
+DST-carrying POSIX rule when the board's effective offset differs from the
+stored standard offset; a fixed UTC offset TZ string in September (EDT season)
+must be treated as the regression signature, not a cosmetic detail.
+
+### BLE /network/scan "scan failed" / "did not respond"
+
+The Wi-Fi scan itself was healthy (HTTP /network/scan returned 12 networks in
+5.1 s). Both failures were on the phone's BLE route, and the serial capture
+during an HTTP scan found the smoking gun:
+
+  W (690099) wifi: Error! Should use default active scan time parameter for
+  WiFi scan when Bluetooth is enabled!
+
+With NimBLE coexisting, the Wi-Fi driver rejects a custom active scan time.
+Both boost_network.c scan configs carried 40/80 ms active dwell values —
+when the driver refuses them, esp_wifi_scan_start() returns WIFI_STATE_INIT
+and the BLE route surfaced scan_failed; a second attempt that collides with
+the background saved-network scan burst (30 s, every 30 s per the 2026-08-15
+row) can hold the radio until the phone's 10 s timeout fires ("did not
+respond").
+
+Fixes: (1) both scan configs leave scan_time zeroed so the driver's default
+dwell applies under BLE coexistence; (2) boost_network_scan() retries once
+after 1.5 s when the background scan task is running (s_background_scan_running
+flag) instead of surfacing the transient state error to the phone.
+
+### dyno-cell readout ±0.1 psi dead zone
+
+User request: with a real MAP sensor idling at atmosphere the readout flapped
+between "0.0" and "-0.1" every sample. Added arc_readout_display_psi() in
+boost_gauge.c and arcReadoutDisplayPsi() in web/app.js: values within
+±0.1 psi fold to 0.0, raw values outside pass through. The one-band-shift
+"continuous" mapping was explicitly tested and REJECTED: raw -0.15 shifted to
+-0.05 clears the sign threshold (format_value_slots' -0.05) and renders
+POSITIVE "0.1" — a sign lie. The fold is monotone and sign-safe. The arc
+wedge (value_arc_angles) and zone colours keep raw psi; the geometric gap
+already hides sub-gap motion there. Inclusive band edges (>=/<=) so ±0.10
+exactly renders 0.0.
+
+Host contract test tools/tests/test_readout_deadzone.py (12/12 suite) guards:
+the fold shape on both sides, firmware/web band equality, wedge/zone excluded
+from the dead zone, both scan call sites leaving scan_time default, the retry
+path, and the WIFI_SCAN_ACTIVE_* macros staying gone.
+
+Hardware verification (v0.9.6-1-g9c2424b-dirty, flashed at 0x420000):
+served /app.js decompresses to carry the fold (grep-the-gzip proves nothing —
+decompress first), 30 s cadence gate on dyno-cell fast-sweep median 61
+(min 58), serial clean (no ESP_ERR_NO_MEM / send color data failed / panics),
+demo restored OFF, real-sensor mode active. Host suite 12/12.
