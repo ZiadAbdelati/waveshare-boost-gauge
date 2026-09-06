@@ -454,11 +454,12 @@ function signed(psi) {
   return `${n >= 0 ? "+" : ""}${n.toFixed(1)}`;
 }
 
-/* dyno-cell readout dead zone (mirrors ARC_READOUT_DEADBAND in boost_gauge.c):
+/* Readout dead zone (mirrors boost_readout_display_psi in boost_neon_geom.h):
  * a real MAP sensor idling at atmosphere hovers around +-0.1 psi and the
  * readout flapped between "0.0" and "-0.1". Values inside the band fold to
  * 0.0; outside it the raw value passes through (a one-band shift breaks the
- * sign at the edge, so we fold). */
+ * sign at the edge, so we fold). Shared by every theme's numeric readout
+ * EXCEPT vault-tec, which deliberately keeps the raw value. */
 const ARC_READOUT_DEADBAND = 0.1;
 
 function arcReadoutDisplayPsi(psi) {
@@ -853,7 +854,10 @@ function drawNeonGauge(sample, psi, g) {
   }
 
   const doto = Number(state.neonFont) === 1;
-  const tenthsTotal = Math.round(Math.abs(psi) * 10);
+  /* Readout digits fold through the shared dead zone (all themes except
+   * vault-tec); the ring run above keeps the raw psi. */
+  const readoutPsi = arcReadoutDisplayPsi(psi);
+  const tenthsTotal = Math.round(Math.abs(readoutPsi) * 10);
   const whole = Math.floor(tenthsTotal / 10);
   const chars = `${whole >= 10 ? Math.floor(whole / 10) : ""}${whole % 10}.${tenthsTotal % 10}`;
   /* NEON_SLOT_W / NEON_DOT_W, verbatim, on every layout now - marquee lost
@@ -865,7 +869,7 @@ function drawNeonGauge(sample, psi, g) {
   const dotW = doto ? 26 : 34;
   const widths = [...chars].map((ch) => ch === "." ? dotW * mq : slotW * mq);
   const total = widths.reduce((a, b) => a + b, 0);
-  const negativeShift = doto && psi < 0 && tenthsTotal !== 0 ? 16 * mq : 0;
+  const negativeShift = doto && readoutPsi < 0 && tenthsTotal !== 0 ? 16 * mq : 0;
   let x = -total / 2 + negativeShift;
   const readoutTop = -42 * mq - readoutLift;
   const fontPx = (doto ? 126 : 118) * mq;
@@ -894,7 +898,7 @@ function drawNeonGauge(sample, psi, g) {
       gx += w;
     }
   });
-  if (psi < 0 && tenthsTotal !== 0) {
+  if (readoutPsi < 0 && tenthsTotal !== 0) {
     if (doto) {
       const firstCell = slotW * mq;
       const glyphLeft = -total / 2 + firstCell / 2 - 0.6 * fontPx / 2 + 0.013 * fontPx;
@@ -1440,8 +1444,10 @@ function drawHudGauge(sample, psi, g) {
   ctx.font = `600 13px "Bahnschrift", system-ui, sans-serif`;
   ctx.fillText("◄  MANIFOLD PRESSURE  ►", 0, -108);
 
-  /* big italic value with a glitch shear on fast spikes */
-  const { neg, intPart, fracPart } = splitNum(psi, 1);
+  /* big italic value with a glitch shear on fast spikes.
+   * The readout folds through the shared dead zone (all themes except
+   * vault-tec); the track fill above keeps the raw psi. */
+  const { neg, intPart, fracPart } = splitNum(arcReadoutDisplayPsi(psi), 1);
   const intStr = `${neg ? "−" : ""}${intPart}`;
   ctx.font = `700 italic 88px "Bahnschrift", "DIN Alternate", system-ui, sans-serif`;
   /* Match the physical face's visible chromatic ghost passes. Keep the offset
@@ -1543,10 +1549,13 @@ function drawBigDigitGauge(sample, psi, g) {
   const decimalX = (slotW + dotW) / 4;
   const tenthsCenter = (3 * (slotW + dotW)) / 4;
 
-  const absTenths = Math.round(Math.abs(psi) * 10);
+  /* Readout digits fold through the shared dead zone (all themes except
+   * vault-tec); the ground colour above keeps the raw psi. */
+  const readoutPsi = arcReadoutDisplayPsi(psi);
+  const absTenths = Math.round(Math.abs(readoutPsi) * 10);
   const whole = Math.floor(absTenths / 10);
   const tenth = absTenths % 10;
-  const isNeg = psi < -0.05;
+  const isNeg = readoutPsi < -0.05;
   const intStr = String(whole);
 
   ctx.shadowColor = "rgba(0,0,0,0.30)";

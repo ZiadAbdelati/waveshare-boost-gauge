@@ -19,10 +19,21 @@ are published on the
   phone's "did not respond" timeout); scans now use the driver's default
   dwell, and a scan that collides with the background saved-network scan
   retries once instead of surfacing an error.
-- **Dyno Cell readout dead zone.** With a real MAP sensor idling at
-  atmosphere, the readout no longer flaps between `0.0` and `-0.1`:
-  readings within ±0.1 psi display as a solid `0.0`; outside the band the
-  true value shows. The dashboard mirror matches.
+- **Dyno Cell readout dead zone — now on every theme except Vault-Tec.**
+  With a real MAP sensor idling at atmosphere, the readout no longer flaps
+  between `0.0` and `-0.1`: readings within ±0.1 psi display as a solid
+  `0.0`; outside the band the true value shows. Applies to Dyno Cell, Night
+  City, Big Digit, and Neon; **Vault-Tec keeps showing the raw two-decimal
+  value** (that readout is part of the theme's look). The dashboard mirror
+  matches the panel on every theme.
+
+## Hardware verification note
+
+The v0.9.7 republish (2026-09-06) was verified on the host (full build,
+12/12 host tests, neon geometry + web-parity harnesses) but **not on
+hardware** — the gauge was already back in the car. After OTA-ing this
+build, give each theme a quick visual pass at idle; report anything odd
+before driving on it.
 
 ## Files
 

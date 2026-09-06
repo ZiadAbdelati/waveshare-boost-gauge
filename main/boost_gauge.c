@@ -4859,23 +4859,18 @@ static lv_color_t zone_color_for_psi(const boost_theme_t *theme, float psi)
     return c(theme->vacuum);
 }
 
-/* dyno-cell readout dead zone (user request 2026-09-05): with a real MAP
- * sensor idling at atmosphere the raw psi hovers around +-0.1 and the readout
- * flapped between "0.0" and "-0.1" every sample. Values inside +-0.1 psi fold
- * to a solid 0.0; outside the band the raw value passes through unchanged.
- * (A one-band shift keeps the map "continuous" on paper but breaks the sign
- * at the edge: raw -0.15 shifted to -0.05 hit the sign threshold and rendered
- * positive "0.1". The fold is monotone and sign-safe.) The arc wedge and zone
- * colours keep using the raw value - their geometric gap already hides
- * sub-gap motion. */
-#define ARC_READOUT_DEADBAND 0.1f
-
+/* dyno-cell readout dead zone (user request 2026-09-05, extended 2026-09-06
+ * to every theme EXCEPT vault-tec): with a real MAP sensor idling at
+ * atmosphere the raw psi hovers around +-0.1 and the readout flapped between
+ * "0.0" and "-0.1" every sample. The fold helper now lives in
+ * boost_neon_geom.h (boost_readout_display_psi) because that header is shared
+ * by every theme's readout path; vault-tec deliberately does NOT fold - its
+ * two-decimal phosphor readout is part of the retro-fiction. The arc wedge
+ * and zone colours keep using the raw value - their geometric gap already
+ * hides sub-gap motion. */
 static float arc_readout_display_psi(float psi)
 {
-    if (psi >= -ARC_READOUT_DEADBAND && psi <= ARC_READOUT_DEADBAND) {
-        return 0.0f;
-    }
-    return psi;
+    return boost_readout_display_psi(psi);
 }
 
 static void format_value_slots(char *sign, char *tens, char *ones, char *tenths, float psi)
@@ -6932,8 +6927,11 @@ static void update_hud(const boost_sample_t *sample, const boost_theme_t *theme)
      * previous raw sample, never against delayed geometry. */
     s_hud_fill_color_psi = raw_color_psi;
 
-    /* One decimal, fixed slots: decimal + tenths pinned, integer grows left. */
-    const int tenths_total = (int)lroundf(fabsf(sample->psi) * 10.0f);
+    /* One decimal, fixed slots: decimal + tenths pinned, integer grows left.
+     * The readout folds through the shared dead zone (all themes except
+     * vault-tec); the arc fill and colours above keep the raw sample. */
+    const float readout_psi = boost_readout_display_psi(sample->psi);
+    const int tenths_total = (int)lroundf(fabsf(readout_psi) * 10.0f);
     const int whole = tenths_total / 10;
     const bool has_tens = whole >= 10;
     char slot_txt[HUD_SLOT_COUNT][2] = {
@@ -6967,11 +6965,12 @@ static void update_hud(const boost_sample_t *sample, const boost_theme_t *theme)
     char prev_val[sizeof(s_hud_val_str)];
     snprintf(prev_val, sizeof(prev_val), "%s", s_hud_val_str);
     snprintf(s_hud_val_str, sizeof(s_hud_val_str), "%s%d.%d",
-             sample->psi < -0.05f ? "-" : "", whole, tenths_total % 10);
+             readout_psi < -0.05f ? "-" : "", whole, tenths_total % 10);
     const bool value_changed = strcmp(prev_val, s_hud_val_str) != 0;
     /* Sign is resolved before the ghost invalidation so a sign flip or a slide
-     * between the ones/tens anchors can widen the dirty box. */
-    const char *sign = sample->psi < -0.05f ? "-" : "";
+     * between the ones/tens anchors can widen the dirty box. Folded value,
+     * same threshold as the digits above. */
+    const char *sign = readout_psi < -0.05f ? "-" : "";
     bool sign_changed = false;
     if (strcmp(s_hud_sign_text, sign) != 0) {
         snprintf(s_hud_sign_text, sizeof(s_hud_sign_text), "%s", sign);
@@ -7317,7 +7316,10 @@ static void update_bigdigit(const boost_sample_t *sample, const boost_theme_t *t
         }
     }
 
-    const int tenths_total = (int)lroundf(fabsf(sample->psi) * 10.0f);
+    /* Readout digits fold through the shared dead zone (all themes except
+     * vault-tec); the ground colour above keeps the raw sample. */
+    const float readout_psi = boost_readout_display_psi(sample->psi);
+    const int tenths_total = (int)lroundf(fabsf(readout_psi) * 10.0f);
     const int whole = tenths_total / 10;
     const int tenth = tenths_total % 10;
     char d[2] = {0};
@@ -7342,7 +7344,7 @@ static void update_bigdigit(const boost_sample_t *sample, const boost_theme_t *t
         lv_obj_align(s_big_minus, LV_ALIGN_CENTER, minus_x, BIG_MINUS_Y);
     }
 
-    const bool neg = sample->psi < -0.05f;
+    const bool neg = readout_psi < -0.05f;
     const bool hidden = lv_obj_has_flag(s_big_minus, LV_OBJ_FLAG_HIDDEN);
     if (neg && hidden) lv_obj_remove_flag(s_big_minus, LV_OBJ_FLAG_HIDDEN);
     else if (!neg && !hidden) lv_obj_add_flag(s_big_minus, LV_OBJ_FLAG_HIDDEN);

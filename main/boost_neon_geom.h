@@ -19,6 +19,29 @@ typedef enum {
 #define BOOST_NEON_MAX_CELLS 4
 #define BOOST_NEON_SIGN_BARS 2
 
+/* Readout dead zone (user request 2026-09-05, extended 2026-09-06 to every
+ * theme EXCEPT vault-tec): with a real MAP sensor idling at atmosphere the
+ * raw psi hovers around +-0.1 and a numeric readout flapped between "0.0"
+ * and "-0.1" every sample. Values inside +-0.1 psi fold to a solid 0.0;
+ * outside the band the raw value passes through unchanged. (A one-band
+ * shift keeps the map "continuous" on paper but breaks the sign at the
+ * edge: raw -0.15 shifted to -0.05 hit the sign threshold and rendered
+ * positive "0.1". The fold is monotone and sign-safe.) Vault-Tec is the
+ * deliberate exception: its two-decimal phosphor readout is part of the
+ * retro-fiction and keeps showing the raw value.
+ * Lives here because this header is the one include shared by boost_gauge.c
+ * (arc/HUD/big-digit readouts) and boost_neon_geom.c (neon readout layout),
+ * so every folding theme routes through ONE definition. */
+#define BOOST_READOUT_DEADBAND_PSI 0.1f
+
+static inline float boost_readout_display_psi(float psi)
+{
+    if (psi >= -BOOST_READOUT_DEADBAND_PSI && psi <= BOOST_READOUT_DEADBAND_PSI) {
+        return 0.0f;
+    }
+    return psi;
+}
+
 /** Any out-of-range stored byte becomes the default rather than indexing off
  * the end of a dispatch table. */
 boost_neon_layout_t boost_neon_layout_clamp(uint8_t stored);

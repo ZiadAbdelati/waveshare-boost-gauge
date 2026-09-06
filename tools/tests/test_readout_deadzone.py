@@ -1,16 +1,29 @@
 #!/usr/bin/env python3
-"""dyno-cell readout dead zone - source-contract test (no device).
+"""Readout dead zone - source-contract test (no device).
 
-Guards the 2026-09-05 user-requested dead zone and the BLE/Wi-Fi coex scan
-contract it shipped with:
+Guards the 2026-09-05 user-requested dead zone, extended 2026-09-06 to every
+theme EXCEPT vault-tec, plus the BLE/Wi-Fi coex scan contract it shipped
+with:
 
-  * Readout dead zone: ARC_READOUT_DEADBAND = 0.1 in boost_gauge.c folds
-    psi within +-0.1 to a solid 0.0 and SHIFTS (not clamps) outside it, so
-    the mapping stays continuous at the edges; format_value_slots() routes
-    through arc_readout_display_psi(). The web mirror (web/app.js
-    drawFixedPsi -> arcReadoutDisplayPsi, ARC_READOUT_DEADBAND = 0.1) must
-    carry the same constant and the same shift semantics - firmware and
-    browser must agree or the mirrored face disagrees with the panel.
+  * Readout dead zone: BOOST_READOUT_DEADBAND_PSI = 0.1 in
+    boost_neon_geom.h (the one include shared by every theme's readout
+    path) folds psi within +-0.1 to a solid 0.0 and passes raw values
+    outside it (fold, NOT shift: a one-band shift breaks the sign at the
+    edge - raw -0.15 shifted to -0.05 cleared the sign threshold and
+    rendered positive "0.1"). Every folding theme's readout must route
+    through boost_readout_display_psi() / the web arcReadoutDisplayPsi():
+      - arc / dyno-cell: format_value_slots() via arc_readout_display_psi()
+      - night-city HUD:  update_hud() digits + sign
+      - big-digit:       update_bigdigit() digits + minus visibility
+      - neon:            boost_neon_layout_readout() (draw AND invalidation
+                         share this one function, so they fold identically)
+    The web mirror (web/app.js arcReadoutDisplayPsi, ARC_READOUT_DEADBAND =
+    0.1) must carry the same constant and the same fold semantics at the
+    same four sites - firmware and browser must agree or the mirrored face
+    disagrees with the panel.
+  * Vault-Tec is the DELIBERATE exception (user request 2026-09-06): its
+    two-decimal phosphor readout keeps the raw value. Neither update_vault()
+    (firmware) nor drawVaultGauge()/splitNum(psi, 2) (web) may fold.
   * The arc wedge and zone colours keep the RAW psi (draw_value_arc and
     value_arc_angles must not reference the dead band).
   * BLE coex scan: both esp_wifi_scan_start() call sites leave scan_time
@@ -31,6 +44,8 @@ import re
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 GAUGE_C = REPO_ROOT / "main" / "boost_gauge.c"
+GEOM_H = REPO_ROOT / "main" / "boost_neon_geom.h"
+GEOM_C = REPO_ROOT / "main" / "boost_neon_geom.c"
 APP_JS = REPO_ROOT / "web" / "app.js"
 NET_C = REPO_ROOT / "main" / "boost_network.c"
 
@@ -59,32 +74,82 @@ def display_psi(psi: float, band: float = 0.1) -> float:
     return psi
 
 
+def function_body(source: str, start_marker: str) -> str:
+    """Slice from start_marker to the first '\\n}\\n' - good enough for these
+    flat C/JS functions and keeps the checks anchored to real code."""
+    begin = source.index(start_marker)
+    chunk = source[begin:]
+    return chunk[: chunk.index("\n}\n")]
+
+
 def main() -> int:
     result = Result()
     gauge_c = GAUGE_C.read_text(encoding="utf-8")
+    geom_h = GEOM_H.read_text(encoding="utf-8")
+    geom_c = GEOM_C.read_text(encoding="utf-8")
     app_js = APP_JS.read_text(encoding="utf-8")
     net_c = NET_C.read_text(encoding="utf-8")
 
-    # --- firmware constant + shape ------------------------------------------
-    m = re.search(r"#define\s+ARC_READOUT_DEADBAND\s+([0-9.]+)f", gauge_c)
+    # --- firmware constant + fold shape (single shared definition) ----------
+    m = re.search(r"#define\s+BOOST_READOUT_DEADBAND_PSI\s+([0-9.]+)f", geom_h)
     result.check(m is not None,
-                 "boost_gauge.c defines ARC_READOUT_DEADBAND",
-                 "missing #define ARC_READOUT_DEADBAND")
+                 "boost_neon_geom.h defines BOOST_READOUT_DEADBAND_PSI",
+                 "missing #define BOOST_READOUT_DEADBAND_PSI")
     band = float(m.group(1)) if m else 0.1
     result.check(band == 0.1,
                  "dead band is 0.1 psi (user request 2026-09-05)",
                  f"band={band}")
 
-    result.check("if (psi >= -ARC_READOUT_DEADBAND && psi <= ARC_READOUT_DEADBAND)" in gauge_c
-                 and "return psi;" in gauge_c,
+    result.check("if (psi >= -BOOST_READOUT_DEADBAND_PSI && psi <= BOOST_READOUT_DEADBAND_PSI)" in geom_h
+                 and "return psi;" in geom_h,
                  "firmware FOLDS the band to 0.0 and passes raw values outside",
-                 "expected fold shape in arc_readout_display_psi")
+                 "expected fold shape in boost_readout_display_psi")
 
     result.check(re.search(
         r"static void format_value_slots\(char \*sign, char \*tens, char \*ones, char \*tenths, float psi\)\s*\{\s*psi = arc_readout_display_psi\(psi\);",
         gauge_c) is not None,
         "format_value_slots routes through arc_readout_display_psi",
-        "dead zone not applied in the readout formatter")
+        "dead zone not applied in the arc readout formatter")
+
+    # arc_readout_display_psi must delegate to the shared helper (no second
+    # definition of the band - one convention beside an existing one is the
+    # thing AGENTS.md forbids).
+    arc_helper = function_body(gauge_c, "static float arc_readout_display_psi(float psi)")
+    result.check("boost_readout_display_psi(psi)" in arc_helper
+                 and "#define" not in arc_helper,
+                 "arc_readout_display_psi delegates to the shared fold helper",
+                 "arc helper redefines the band locally")
+
+    # --- every folding theme routes through the shared helper ---------------
+    hud_body = function_body(gauge_c, "static void update_hud(const boost_sample_t *sample, const boost_theme_t *theme)")
+    result.check("boost_readout_display_psi(" in hud_body,
+                 "night-city HUD readout folds through the shared dead zone",
+                 "update_hud uses raw psi for its digit slots")
+    hud_sign = re.search(r"const char \*sign = (\w+) < -0\.05f \? \"-\" : \"\";", hud_body)
+    result.check(hud_sign is not None and hud_sign.group(1) == "readout_psi",
+                 "HUD sign uses the folded value (same threshold as its digits)",
+                 "HUD sign still reads the raw sample")
+
+    big_body = function_body(gauge_c, "static void update_bigdigit(const boost_sample_t *sample, const boost_theme_t *theme)")
+    result.check("boost_readout_display_psi(" in big_body,
+                 "big-digit readout folds through the shared dead zone",
+                 "update_bigdigit uses raw psi for its digit slots")
+    big_neg = re.search(r"const bool neg = (\w+) < -0\.05f;", big_body)
+    result.check(big_neg is not None and big_neg.group(1) == "readout_psi",
+                 "big-digit minus sign uses the folded value",
+                 "big-digit minus still reads the raw sample")
+
+    layout_body = function_body(geom_c, "void boost_neon_layout_readout(float psi, int slot_w, int dot_w,")
+    result.check("boost_readout_display_psi(psi)" in layout_body,
+                 "neon readout layout folds (draw and invalidation share this path)",
+                 "boost_neon_layout_readout uses raw psi")
+
+    # --- vault-tec is the deliberate exception ------------------------------
+    vault_body = function_body(gauge_c, "static void update_vault(const boost_sample_t *sample, const boost_theme_t *theme)")
+    result.check("boost_readout_display_psi" not in vault_body
+                 and "readout_psi" not in vault_body,
+                 "vault-tec keeps the RAW psi (deliberate exception, 2026-09-06)",
+                 "update_vault must not fold")
 
     # --- web mirror parity ---------------------------------------------------
     m_js = re.search(r"const\s+ARC_READOUT_DEADBAND\s*=\s*([0-9.]+)", app_js)
@@ -107,15 +172,39 @@ def main() -> int:
         "drawFixedPsi routes through arcReadoutDisplayPsi",
         "web dyno readout not using the dead zone")
 
+    result.check("splitNum(arcReadoutDisplayPsi(psi), 1)" in app_js,
+                 "web HUD readout folds through arcReadoutDisplayPsi",
+                 "web HUD still splits the raw psi")
+    result.check("splitNum(psi, 2)" in app_js,
+                 "web vault readout keeps the raw psi (deliberate exception)",
+                 "web vault must not fold")
+
+    vault_js = function_body(app_js, "function drawVaultGauge(sample, psi, g)")
+    result.check("arcReadoutDisplayPsi" not in vault_js,
+                 "web drawVaultGauge contains no fold call",
+                 "vault web mirror must stay raw")
+
+    bigdigit_js = function_body(app_js, "function drawBigDigitGauge(sample, psi, g)")
+    result.check("arcReadoutDisplayPsi(psi)" in bigdigit_js
+                 and "isNeg = readoutPsi < -0.05" in bigdigit_js,
+                 "web big-digit readout + minus fold",
+                 "web big-digit still uses raw psi")
+
+    neon_js = function_body(app_js, "function drawNeonGauge(sample, psi, g)")
+    result.check("const readoutPsi = arcReadoutDisplayPsi(psi);" in neon_js
+                 and "if (readoutPsi < 0 && tenthsTotal !== 0)" in neon_js,
+                 "web neon readout + sign fold",
+                 "web neon still uses raw psi for the digit composition")
+
     # --- wedge/zone use raw psi ---------------------------------------------
-    value_arc = gauge_c[gauge_c.index("static void value_arc_angles"):]
-    value_arc = value_arc[:value_arc.index("\n}\n")]
-    result.check("ARC_READOUT_DEADBAND" not in value_arc,
+    value_arc = function_body(gauge_c, "static void value_arc_angles")
+    result.check("ARC_READOUT_DEADBAND" not in value_arc
+                 and "BOOST_READOUT_DEADBAND_PSI" not in value_arc,
                  "value_arc_angles uses raw psi (dead zone is readout-only)")
 
-    zone_fn = gauge_c[gauge_c.index("static lv_color_t zone_color_for_psi"):]
-    zone_fn = zone_fn[:zone_fn.index("\n}\n")]
-    result.check("ARC_READOUT_DEADBAND" not in zone_fn,
+    zone_fn = function_body(gauge_c, "static lv_color_t zone_color_for_psi")
+    result.check("ARC_READOUT_DEADBAND" not in zone_fn
+                 and "BOOST_READOUT_DEADBAND_PSI" not in zone_fn,
                  "zone_color_for_psi uses raw psi (dead zone is readout-only)")
 
     # --- reference-value sanity for the shared mapping ----------------------

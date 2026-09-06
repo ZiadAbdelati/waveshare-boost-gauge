@@ -2,7 +2,7 @@
 
 This repository is an ESP-IDF 5.5.1 firmware/dashboard for an ESP32-S3 AMOLED boost gauge. These rules are load-bearing. A fresh agent must be able to resume from this file alone; do not rely on chat history.
 
-Current verified release is **`v0.9.6`** (ESP-IDF 5.5.1, app image ~2.5 MB in `release/`). Preserve that identity in hardware and release notes for current measurements. The full historical regression ledger lives in [`docs/regression-ledger.md`](docs/regression-ledger.md); the condensed guard rails below are the currently-actionable invariants, grouped by area. When a change touches one of these areas, re-read the relevant ledger rows for the measurement detail behind the rule.
+Current verified release is **`v0.9.7`** (ESP-IDF 5.5.1, app image ~2.5 MB in `release/`; republished 2026-09-06 with the all-themes-except-Vault-Tec dead zone). Preserve that identity in hardware and release notes for current measurements. The full historical regression ledger lives in [`docs/regression-ledger.md`](docs/regression-ledger.md); the condensed guard rails below are the currently-actionable invariants, grouped by area. When a change touches one of these areas, re-read the relevant ledger rows for the measurement detail behind the rule.
 
 Regression tooling: run `python3 tools/test_suite.py` (host suite, before every commit) and `python3 tools/check_hardware_gates.py` (hardware release gates, before every release/flash-to-car); see `tools/tests/README.md`.
 
@@ -125,7 +125,7 @@ These are the currently-actionable invariants distilled from the regression ledg
 | Readout invalidation is per-glyph ink box (`arc_readout_ink_box()`/pen math) shared with the draw; re-run BOTH the host audit and a screenshot diff vs the prior build | 2026-08-13 |
 | Readout font is 65 px Archivo Black; any size change re-derives pitch/slot from the generated glyph advance | 2026-08-13 |
 | Do not reintroduce `transform_scale_x` for glyph widening (AA-seam failure) | 2026-08-12 |
-| Readout dead zone: values within ±0.1 psi fold to 0.0 in `arc_readout_display_psi()`/web `arcReadoutDisplayPsi()` (band edges inclusive); outside, the raw value passes through — a one-band shift breaks the sign at the edge (raw -0.15 rendered positive "0.1"). Wedge and zone colours keep RAW psi. Both sides must carry the same `ARC_READOUT_DEADBAND` (contract test `tools/tests/test_readout_deadzone.py`) | 2026-09-05 |
+| Readout dead zone (ALL themes except vault-tec, 2026-09-06): values within ±0.1 psi fold to 0.0 through the shared `boost_readout_display_psi()`/`BOOST_READOUT_DEADBAND_PSI` in `boost_neon_geom.h` — arc (`format_value_slots`), HUD (`update_hud` digits + both sign checks), big-digit (`update_bigdigit` digits + minus), neon (`boost_neon_layout_readout`, the draw/invalidation choke point). Outside the band the raw value passes through — a one-band shift breaks the sign at the edge (raw -0.15 rendered positive "0.1"). Wedge/zone/track colours keep RAW psi. Web mirror: `arcReadoutDisplayPsi()` at the same four sites; `drawVaultGauge`/`splitNum(psi, 2)` stay RAW (user request). Never add a second band definition — the arc helper must delegate (contract test `tools/tests/test_readout_deadzone.py`) | 2026-09-05/06 |
 
 ### vault-tec
 
@@ -135,6 +135,7 @@ These are the currently-actionable invariants distilled from the regression ledg
 | `vaultNeedleTail` defaults off, persisted through theme store/API/web; draw and invalidation share the runtime extent | 2026-08-12 |
 | Red needle color changes the body only; hub stays green; both settings rebuild the full needle geometry | 2026-08-10 |
 | CRT scanlines are the topmost live overlay derived from absolute screen y (not region-relative); vignette is a per-pixel post-pass baked in the cache | 2026-07-28 |
+| Vault readout is the DELIBERATE dead-zone exception: `update_vault()` (raw hundredths slots + raw sign) and web `drawVaultGauge`/`splitNum(psi, 2)` keep the RAW psi — the ±0.1 fold is user-requested OFF for this theme. Do not "fix" Vault-Tec to fold | 2026-09-06 |
 
 ### night-city
 

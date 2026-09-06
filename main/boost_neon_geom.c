@@ -46,6 +46,12 @@ void boost_neon_layout_readout(float psi, int slot_w, int dot_w,
     const uint16_t *k_adv_per_mille = metrics->adv_per_mille;
     const uint16_t *k_lsb_per_mille = metrics->lsb_per_mille;
 
+    /* Readout dead zone: fold +-0.1 to a solid 0.0 BEFORE the sign/cell math
+     * so the sign threshold and the folded digits can never disagree (draw
+     * and invalidation both come through here, so they fold identically).
+     * See boost_readout_display_psi() in boost_neon_geom.h. */
+    psi = boost_readout_display_psi(psi);
+
     /* Round once, then decompose. Rounding per-digit lets 8.95 print as
      * "8.10" when the tenths carry but the whole part is taken from the
      * unrounded value. */

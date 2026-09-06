@@ -87,9 +87,11 @@ function extractConstLine(name) {
 
 const scope = { ARC_START, ARC_RANGE, DEG, NEON_INK_EM, clamp, degToRad, hexToRgb, ctx, roundRectPath, state, psiRange, calls };
 const body = [
+  extractConstLine("ARC_READOUT_DEADBAND"),
   extractConstLine("NEON_BLOOM"),
   extractConstLine("NEON_HALO_DIM"),
   extractConstLine("NEON_MARQUEE_SPIN_MS"),
+  extract("arcReadoutDisplayPsi"),
   extract("neonDim"),
   extract("psiToSweep"), extract("neonLitColor"), extract("neonBulbColor"),
   extract("rgbToHsl"), extract("hslHue2rgb"),

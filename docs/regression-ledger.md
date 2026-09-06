@@ -413,3 +413,61 @@ row above (cadence gate median 61, serial clean, host suite 12/12, served
 dashboard decompress-verified). Remaining unverified risks recorded there:
 dead zone not exercised against a real idle MAP trace (bench), phone-side
 scan fix pending the user's app update.
+
+## 2026-09-06 — dead zone extended to every theme except Vault-Tec; v0.9.7 republished
+
+Field request: keep the ±0.1 psi readout dead zone on all themes EXCEPT
+Vault-Tec, whose two-decimal phosphor readout is part of the retro-fiction
+and must keep showing the raw value. Republished into the existing v0.9.7
+release (OTA; the gauge was back in the car with no serial connection, so
+verification is host-side only and hardware re-verification is pending the
+next bench/car contact).
+
+Change shape: the fold helper moved to the ONE include every theme's readout
+path already shares — `boost_readout_display_psi()` /
+`BOOST_READOUT_DEADBAND_PSI 0.1f` in `main/boost_neon_geom.h` (included by
+both `boost_gauge.c` and `boost_neon_geom.c`), replacing the arc-local
+`ARC_READOUT_DEADBAND`. Applied at:
+
+- arc / dyno-cell: `format_value_slots()` via `arc_readout_display_psi()`
+  (unchanged behaviour, now delegating);
+- night-city HUD: `update_hud()` digit slots AND both its sign checks
+  (`s_hud_val_str` composition + ghost-pass sign) — folding only the digits
+  would have re-created the flap as a sign flap;
+- big-digit: `update_bigdigit()` digit slots + the `neg` minus-visibility
+  check;
+- neon: `boost_neon_layout_readout()` folds psi BEFORE the sign/cell math.
+  This is the single choke point shared by `draw_neon_live()` and the
+  invalidation composition in `update_neon()`, so draw and dirty-rect
+  tracking cannot disagree — the neon invalidation contract (same anchor
+  and bbox formula on both paths) is preserved by construction.
+- vault-tec: `update_vault()` untouched (raw hundredths slots, raw sign).
+
+Web mirror `web/app.js`: `arcReadoutDisplayPsi()` is the same shared fold,
+now routed at `drawFixedPsi` (arc), the HUD `splitNum(..., 1)`, big-digit
+digit/minus math, and the neon digit composition + both sign branches
+(doto shift + SF sign draw). `drawVaultGauge`/`splitNum(psi, 2)` stay raw.
+Embedded assets regenerated (tools/embed_web.py); served asset must be
+decompress-verified after the OTA.
+
+Contract test expanded: `tools/tests/test_readout_deadzone.py` now 39
+checks — per-theme routing (HUD/big-digit/neon), vault-tec raw-exclusion on
+both platforms, arc helper must delegate (no second band definition),
+sign-check parity, plus the prior band/edge/scan contract.
+`tools/test_neon_web_parity.js` scope extended with
+`arcReadoutDisplayPsi`/`ARC_READOUT_DEADBAND` extraction (it extracts the
+mirror's real code, so the fold ships through the parity test rather than
+around it).
+
+Verification (host-only, no serial): full IDF 5.5.1 build green;
+`python3 tools/test_suite.py` 12/12; `tools/test_neon_geom.c` (gcc, links
+boost_neon_geom.c + boost_theme.c + boost_sim.c) green — the existing
+sign/cell assertions (including `-0.02 -> sign:false, cells '0'` and the
+rounded-up `8.95 -> '9.0'` carry case) pass with the fold in place; neon web
+parity green. NOT verified on hardware: physical render on all five faces
+(no display attached — the 60 fps cadence gate and per-theme sweep could not
+run; the change touches only readout text composition, but the
+readout-only-risk judgement itself is unmeasured), and the served dashboard
+decompress check (needs the board online). Unverified-risk row for the
+release: first OTA to the car should be followed by a visual pass over
+every theme at idle atmosphere before trusting the fix.
