@@ -40,8 +40,8 @@ before driving on it.
 | File | Purpose |
 |---|---|
 | `bootloader.bin` @ `0x0` | 2nd-stage bootloader |
-| `partition-table.bin` @ `0x11000` | Partition table |
-| `ota_data_initial.bin` @ `0x12000` | OTA data (boots ota_0) |
+| `partition-table.bin` @ `0x8000` | Partition table |
+| `ota_data_initial.bin` @ `0xf000` | OTA data (boots ota_0) |
 | `boost_gauge.bin` @ `0x20000` | App image — use for **web OTA** |
 | `boost_gauge_merged.bin` @ `0x0` | Full-flash image for a complete reset |
 | `flash.sh` + `flash_args` | Helper to flash the merged image |
@@ -62,9 +62,12 @@ before driving on it.
   only after the app itself is updated.
 - The image reports `v0.9.7` on `/api/v1/state` (`firmwareVersion`) and on
   the connections page.
-- Hardware verification for this build: 30 s demo-mode dyno-cell
-  fast-sweep cadence gate median 61 FPS (min 58); serial clean; served
-  dashboard verified to carry the readout dead zone (decompressed). Host
-  suite 12/12.
+- Hardware verification: the original v0.9.7 firmware passed the 30 s
+  demo-mode dyno-cell fast-sweep cadence gate (median 61 FPS, min 58) with
+  clean serial. The 2026-09-06 republish (dead zone on every theme except
+  Vault-Tec) is host-verified only — full build, host suite 12/12, neon
+  geometry + web-parity harnesses green — because the gauge was back in the
+  car with no serial/display attached. Readout-text change only; still,
+  give each theme a quick visual pass at idle after OTA.
 - Companion apps are unchanged from v0.9.6: iOS **0.9.5 (build 5)**,
   Android **0.9.5 (versionCode 6)**.
