@@ -399,3 +399,17 @@ served /app.js decompresses to carry the fold (grep-the-gzip proves nothing —
 decompress first), 30 s cadence gate on dyno-cell fast-sweep median 61
 (min 58), serial clean (no ESP_ERR_NO_MEM / send color data failed / panics),
 demo restored OFF, real-sensor mode active. Host suite 12/12.
+
+## 2026-09-05 — v0.9.7 release (timezone, BLE-coex scan, readout dead zone)
+
+Tag `v0.9.7` on the fixes; artifacts from the release/ set (binary reports
+`v0.9.6-3-gee90519`, i.e. the release build of the fix commit). Companion
+apps unchanged: iOS 0.9.5 build 5, Android 0.9.5 versionCode 6. Published
+asset checksums re-downloaded and verified against release/SHA256SUMS before
+marking latest. The fixed-offset-timezone signature and the BLE-coex scan
+dwell are guards in AGENTS.md; the readout dead zone is contract-tested in
+tools/tests/test_readout_deadzone.py. Verification carried in the 2026-09-05
+row above (cadence gate median 61, serial clean, host suite 12/12, served
+dashboard decompress-verified). Remaining unverified risks recorded there:
+dead zone not exercised against a real idle MAP trace (bench), phone-side
+scan fix pending the user's app update.
