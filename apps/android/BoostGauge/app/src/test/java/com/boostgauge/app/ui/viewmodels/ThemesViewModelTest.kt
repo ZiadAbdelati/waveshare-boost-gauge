@@ -21,6 +21,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -344,5 +345,170 @@ class ThemesViewModelTest {
 
         assertTrue(resetBody.contains("\"id\":\"dyno-cell\""))
         assertTrue(resetBody.contains("\"reset\":true"))
+    }
+
+    // ---------------------------------------------------------------------------
+    // Field report 2026-09-09: stale colors must never ride along with a neon
+    // preset change, and neon controls apply immediately (web parity).
+    // ---------------------------------------------------------------------------
+
+    @Test
+    fun uneditedSaveOptionsSendsNoColorsKey() = runTest(dispatcher) {
+        var putBody = ""
+        val transport = FakeBleTransport { method, path, body ->
+            when (path) {
+                "themes" -> Resp(200, ApiFixtures.THEMES)
+                "themes/config" -> {
+                    assertEquals("PUT", method)
+                    putBody = body ?: ""
+                    Resp(200, ApiFixtures.THEMES)
+                }
+                else -> Resp(404, "{}")
+            }
+        }
+        val viewModel = ThemesViewModel(GaugeApi { transport })
+        viewModel.state.first { !it.loading }
+
+        // No color edits at all — the request must carry no colors object.
+        viewModel.saveOptions("neon")
+
+        testScheduler.advanceUntilIdle()
+
+        assertTrue(putBody.contains("\"id\":\"neon\""))
+        assertTrue(
+            "unedited save must not send colors",
+            !putBody.contains("\"colors\""),
+        )
+    }
+
+    @Test
+    fun editedColorSendsOnlyEditedKeys() = runTest(dispatcher) {
+        var putBody = ""
+        val transport = FakeBleTransport { method, path, body ->
+            when (path) {
+                "themes" -> Resp(200, ApiFixtures.THEMES)
+                "themes/config" -> {
+                    assertEquals("PUT", method)
+                    putBody = body ?: ""
+                    Resp(200, ApiFixtures.THEMES)
+                }
+                else -> Resp(404, "{}")
+            }
+        }
+        val viewModel = ThemesViewModel(GaugeApi { transport })
+        viewModel.state.first { !it.loading }
+
+        viewModel.setColor("neon", "boost", "#00FF66")
+        viewModel.saveOptions("neon")
+
+        testScheduler.advanceUntilIdle()
+
+        val colorsIdx = putBody.indexOf("\"colors\":")
+        assertTrue("colors object must be present after an edit", colorsIdx >= 0)
+        val edited = putBody.substring(colorsIdx)
+        assertTrue(edited.contains("\"boost\":\"#00FF66\""))
+        // Only the edited key: the server palette must not ride along.
+        assertFalse(
+            "unedited keys must not be sent: $putBody",
+            edited.contains("\"vacuum\"") || edited.contains("\"overboost\"") ||
+                edited.contains("\"face\"") || edited.contains("\"track\"") ||
+                edited.contains("\"text\"") || edited.contains("\"muted\"") ||
+                edited.contains("\"zero\""),
+        )
+    }
+
+    @Test
+    fun setNeonPresetSendsPresetOnlyBody() = runTest(dispatcher) {
+        var putBody = ""
+        // The firmware echoes the full themes payload with the applied value,
+        // like the real handler does for every accepted field.
+        val applied = ApiFixtures.THEMES.replace("\"neonPreset\": 0", "\"neonPreset\": 2")
+        val transport = FakeBleTransport { method, path, body ->
+            when (path) {
+                "themes" -> Resp(200, ApiFixtures.THEMES)
+                "themes/config" -> {
+                    assertEquals("PUT", method)
+                    putBody = body ?: ""
+                    Resp(200, applied)
+                }
+                else -> Resp(404, "{}")
+            }
+        }
+        val viewModel = ThemesViewModel(GaugeApi { transport })
+        viewModel.state.first { !it.loading }
+
+        viewModel.setNeonPreset(2)
+
+        testScheduler.advanceUntilIdle()
+
+        // Exactly one PUT, body {"neonPreset":2} — no colors, no id.
+        assertEquals(1, transport.requests.count { it.path == "themes/config" && it.method == "PUT" })
+        assertEquals("""{"neonPreset":2}""", putBody)
+        // The echoed payload folds back into state without dropping the value.
+        assertEquals(2, viewModel.state.value.neonPreset)
+    }
+
+    @Test
+    fun setNeonOutOfRangeValueIsNeverSent() = runTest(dispatcher) {
+        var putCount = 0
+        val transport = FakeBleTransport { method, path, _ ->
+            when (path) {
+                "themes" -> Resp(200, ApiFixtures.THEMES)
+                "themes/config" -> {
+                    if (method == "PUT") putCount++
+                    Resp(200, ApiFixtures.THEMES)
+                }
+                else -> Resp(404, "{}")
+            }
+        }
+        val viewModel = ThemesViewModel(GaugeApi { transport })
+        viewModel.state.first { !it.loading }
+
+        viewModel.setNeonPreset(7)
+        viewModel.setNeonLayout(9)
+        viewModel.setNeonFont(-1)
+
+        testScheduler.advanceUntilIdle()
+
+        assertEquals(0, putCount)
+    }
+
+    @Test
+    fun editedColorsSurviveActivateAndApplyOnSave() = runTest(dispatcher) {
+        // Edit boost, activate another theme (echo refreshes server colors),
+        // then apply: the edit must still go out under its own key only.
+        var putBody = ""
+        val transport = FakeBleTransport { method, path, body ->
+            when (path) {
+                "themes" -> Resp(200, ApiFixtures.THEMES)
+                "themes/active" -> Resp(200, ApiFixtures.THEMES)
+                "themes/config" -> {
+                    assertEquals("PUT", method)
+                    putBody = body ?: ""
+                    Resp(200, ApiFixtures.THEMES)
+                }
+                else -> Resp(404, "{}")
+            }
+        }
+        val viewModel = ThemesViewModel(GaugeApi { transport })
+        viewModel.state.first { !it.loading }
+
+        val neon = viewModel.state.value.themes.first { it.id == "neon" }
+        viewModel.setColor("neon", "boost", "#3388FF")
+        viewModel.activate("vault-tec")
+        testScheduler.advanceUntilIdle()
+
+        // The live swatch reads the edit (and still does after the activation
+        // echo refreshed the server colors).
+        assertEquals("#3388FF", viewModel.colorHex(neon, "boost"))
+
+        viewModel.saveOptions("neon")
+        testScheduler.advanceUntilIdle()
+
+        val colorsIdx = putBody.indexOf("\"colors\":")
+        assertTrue(colorsIdx >= 0)
+        val edited = putBody.substring(colorsIdx)
+        assertTrue(edited.contains("\"boost\":\"#3388FF\""))
+        assertFalse(edited.contains("\"vacuum\"") || edited.contains("\"overboost\""))
     }
 }

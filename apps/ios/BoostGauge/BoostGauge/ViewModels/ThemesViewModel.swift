@@ -26,6 +26,11 @@ final class ThemesViewModel: ObservableObject {
     @Published var neonPreset = 0
     @Published var neonMarqueeSpin = false
     @Published private(set) var themeColorEdits: [String: [String: String]] = [:]
+    /// Server-reported palette per theme (USER EDITS live in
+    /// `themeColorEdits`). Rebuilt from every applied ThemeList; the fallback
+    /// behind `colorHex`, so an unedited save never echoes the server palette
+    /// back onto the wire (field bug 2026-09-09).
+    private var serverColorBaselines: [String: [String: String]] = [:]
 
     private weak var transport: GaugeTransport?
     /// Monotonic activation sequence: bumped on every `select` request so a
@@ -44,6 +49,7 @@ final class ThemesViewModel: ObservableObject {
         configuration = nil
         errorMessage = nil
         themeColorEdits = [:]
+        serverColorBaselines = [:]
     }
 
     /// Tab re-entry / reconnect: the board is authoritative. If its
@@ -189,18 +195,51 @@ final class ThemesViewModel: ObservableObject {
         default:
             return
         }
-        let editable = themeColorEdits[themeID] ?? [:]
+        // Only USER-EDITED zone colors ride along. An always-sent palette
+        // (field bug 2026-09-09) overwrote the zones a neonPreset had just
+        // repainted — the firmware parses neonPreset first, then the id+colors
+        // branch. The web UI sends the options alone for the same flow. The
+        // firmware seeds colors from current values and only overwrites named
+        // keys, so a partial dict is correct.
+        let edited = themeColorEdits[themeID] ?? [:]
+        if !edited.isEmpty {
+            body["colors"] = edited
+        }
         body["id"] = themeID
-        body["colors"] = [
-            "vacuum": editable["vacuum"] ?? "#000000",
-            "boost": editable["boost"] ?? "#000000",
-            "overboost": editable["overboost"] ?? "#000000",
-        ]
         await put("themes/config", body: body)
     }
 
     func resetColors(for themeID: String) async {
         await put("themes/config", body: ["id": themeID, "reset": true])
+    }
+
+    // MARK: - Neon immediate applies (web parity: one control = one single-key
+    // PUT, never a colors block — the firmware parses neonPreset first, then
+    // the id+colors branch, so a stale palette in the same body would clobber
+    // the fresh one; field bug 2026-09-09). Ranges mirror the firmware's
+    // themes_config_put validation: preset 0..3, layout 0..2, font 0..1.
+
+    func setNeonPreset(_ value: Int) {
+        guard (0...3).contains(value) else { return }
+        neonPreset = value
+        Task { await put("themes/config", body: ["neonPreset": value]) }
+    }
+
+    func setNeonLayout(_ value: Int) {
+        guard (0...2).contains(value) else { return }
+        neonLayout = value
+        Task { await put("themes/config", body: ["neonLayout": value]) }
+    }
+
+    func setNeonFont(_ value: Int) {
+        guard (0...1).contains(value) else { return }
+        neonFont = value
+        Task { await put("themes/config", body: ["neonFont": value]) }
+    }
+
+    func setNeonMarqueeSpin(_ value: Bool) {
+        neonMarqueeSpin = value
+        Task { await put("themes/config", body: ["neonMarqueeSpin": value]) }
     }
 
     /// Shared PUT skeleton for the theme mutations: PUT, require 200, decode
@@ -253,17 +292,7 @@ final class ThemesViewModel: ObservableObject {
 
     func colorHex(for theme: Theme, key: String) -> String? {
         if let edited = themeColorEdits[theme.id]?[key] { return edited }
-        switch key {
-        case "face": return theme.colors?.face
-        case "track": return theme.colors?.track
-        case "text": return theme.colors?.text
-        case "muted": return theme.colors?.muted
-        case "vacuum": return theme.colors?.vacuum
-        case "boost": return theme.colors?.boost
-        case "overboost": return theme.colors?.overboost
-        case "zero": return theme.colors?.zero
-        default: return nil
-        }
+        return serverColorBaselines[theme.id]?[key]
     }
 
     func setColor(_ hex: String, for themeID: String, key: String) {
@@ -307,12 +336,20 @@ final class ThemesViewModel: ObservableObject {
         if let value = list.neonFont { neonFont = value }
         if let value = list.neonPreset { neonPreset = value }
         if let value = list.neonMarqueeSpin { neonMarqueeSpin = value }
+        // USER EDITS vs SERVER BASELINE: `themeColorEdits` holds only what the
+        // user changed since the last authoritative snapshot (saveOptions sends
+        // exactly these keys); `serverColorBaselines` holds the board's palette
+        // so previews/rows keep reading correct colors. Rebuild both wholesale
+        // — the board is authoritative and this is the point where unsaved
+        // edits converge onto it (same overwrite semantics as before).
+        themeColorEdits = [:]
+        serverColorBaselines = [:]
         for theme in list.themes ?? [] {
             var colors: [String: String] = [:]
             for key in Self.paletteKeys {
                 if let value = colorHexFromPayload(theme, key: key) { colors[key] = value }
             }
-            themeColorEdits[theme.id] = colors
+            serverColorBaselines[theme.id] = colors
         }
     }
 

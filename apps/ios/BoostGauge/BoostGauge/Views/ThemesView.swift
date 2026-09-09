@@ -259,23 +259,40 @@ struct ThemesView: View {
                     )
                 }
             case "neon":
-                Picker("Layout", selection: $vm.neonLayout) {
+                // Web parity: every Neon control applies IMMEDIATELY with a
+                // single-key PUT (one control = one PUT, no colors block —
+                // a stale palette in the same body would overwrite the zones
+                // a fresh preset just repainted, field bug 2026-09-09). The
+                // published values stay the read side; the vm setters PUT.
+                Picker("Layout", selection: Binding(
+                    get: { vm.neonLayout },
+                    set: { vm.setNeonLayout($0) }
+                )) {
                     Text("Tube").tag(0)
                     Text("Segments").tag(1)
                     Text("Marquee").tag(2)
                 }
-                Picker("Preset", selection: $vm.neonPreset) {
+                Picker("Preset", selection: Binding(
+                    get: { vm.neonPreset },
+                    set: { vm.setNeonPreset($0) }
+                )) {
                     Text("Violet").tag(0)
                     Text("Miami").tag(1)
                     Text("Toxic").tag(2)
                     Text("Blood Moon").tag(3)
                 }
-                Picker("Readout font", selection: $vm.neonFont) {
+                Picker("Readout font", selection: Binding(
+                    get: { vm.neonFont },
+                    set: { vm.setNeonFont($0) }
+                )) {
                     Text("SF Alien").tag(0)
                     Text("Doto").tag(1)
                 }
                 if vm.neonLayout == 2 {
-                    Toggle("Marquee spin", isOn: $vm.neonMarqueeSpin)
+                    Toggle("Marquee spin", isOn: Binding(
+                        get: { vm.neonMarqueeSpin },
+                        set: { vm.setNeonMarqueeSpin($0) }
+                    ))
                 }
             default:
                 Text("This theme has no additional options.")
@@ -294,6 +311,13 @@ struct ThemesView: View {
                 Button("Reset to default colors", role: .destructive) {
                     Task { await vm.resetColors(for: theme.id) }
                 }
+                // Explicit borderless style: a default-styled Button inside a
+                // List row claims the WHOLE DisclosureGroup cell as its hit
+                // area, so a tap anywhere in the editor (including the Layout
+                // picker row) resolved to this button/cell and the Layout
+                // dropdown popped open instead of the reset running
+                // (field bug 2026-09-09, sim-reproduced).
+                .buttonStyle(.borderless)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
                 .disabled(vm.isLoading)

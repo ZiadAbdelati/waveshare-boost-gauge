@@ -114,6 +114,71 @@ final class SimAcceptanceUITests: XCTestCase {
         attach("sim-themes-neon-editor", app.screenshot())
     }
 
+    /// Field flow from the user report (2026-09-09): expand Neon, apply its
+    /// options (which flips the theme customized and reveals the reset
+    /// button), then tap "Reset to default colors". The reset removes the
+    /// button mid-gesture and re-renders the options panel; the regression
+    /// was the Layout picker's menu OPENING as part of that re-render (the
+    /// sim fixture cannot reproduce the zone-color clobber, but it does
+    /// reproduce the view-structure churn that drives it).
+    func testNeonResetColorsDoesNotOpenLayoutPicker() throws {
+        let app = XCUIApplication()
+        // -e2eNeonCustomized 1 marks the neon fixture customized at boot so
+        // the reset button exists without driving the out-of-process system
+        // color sheet (the "colors edit flips customized" contract itself is
+        // pinned at unit level by the ViewModelTests colors assertions).
+        app.launchArguments = ["-e2eSimBle", "-e2eTab", "themes", "-e2eNeonCustomized", "1"]
+        app.launch()
+
+        XCTAssertTrue(app.navigationBars["Themes"].waitForExistence(timeout: 15))
+
+        // Expand Neon and reach its editor (lazy List: scroll while waiting).
+        let neonRow = app.cells.containing(.staticText, identifier: "Neon").firstMatch
+        XCTAssertTrue(waitForElement(neonRow, app: app, timeout: 15, scroll: .down), "neon row")
+        bringIntoView(neonRow, app: app)
+        let chevron = neonRow.buttons.matching(NSPredicate(format: "label == ''")).firstMatch
+        XCTAssertTrue(chevron.waitForExistence(timeout: 6))
+        chevron.tap()
+
+        let apply = app.buttons["Apply Neon options"]
+        XCTAssertTrue(apply.waitForExistence(timeout: 6))
+        bringIntoView(apply, app: app)
+        // The neon fixture boots customized (-e2eNeonCustomized), so the
+        // reset button is present from the start and the reset flow below
+        // exercises the borderless-hit-area regression exactly as the user
+        // hit it.
+        let reset = app.buttons["Reset to default colors"]
+        XCTAssertTrue(
+            waitForElement(reset, app: app, timeout: 8),
+            "customized fixture must expose the reset button"
+        )
+
+        bringIntoView(reset, app: app)
+        sleep(2)
+        reset.tap()
+
+        // THE regression (fixed 2026-09-09): the reset button was a
+        // default-styled Button inside the List cell, so it claimed the whole
+        // DisclosureGroup cell as its hit area — the tap resolved to the cell
+        // and the Layout picker's dropdown opened INSTEAD of the reset firing
+        // (no PUT was sent). The fix pins .buttonStyle(.borderless) on the
+        // reset button; if that style is removed this test fails.
+        sleep(1)
+        XCTAssertFalse(app.buttons["Tube"].exists, "Layout picker menu must not open on Reset tap")
+        XCTAssertFalse(app.buttons["Segments"].exists, "Layout picker menu must not open on Reset tap")
+        XCTAssertFalse(app.buttons["Marquee"].exists, "Layout picker menu must not open on Reset tap")
+        XCTAssertFalse(app.buttons["Violet"].exists, "Preset picker menu must not open on Reset tap")
+        XCTAssertFalse(app.buttons["Miami"].exists, "Preset picker menu must not open on Reset tap")
+        XCTAssertFalse(app.buttons["Toxic"].exists, "Preset picker menu must not open on Reset tap")
+        XCTAssertFalse(app.buttons["Blood Moon"].exists, "Preset picker menu must not open on Reset tap")
+        // And the reset itself must have completed: customized flag cleared.
+        XCTAssertFalse(
+            waitForElement(app.buttons["Reset to default colors"], app: app, timeout: 2),
+            "reset button must disappear after the reset"
+        )
+        attach("sim-themes-neon-reset", app.screenshot())
+    }
+
     func testStatusShowsNativeTPMSCard() throws {
         let app = XCUIApplication()
         app.launchArguments = ["-e2eSimBle", "-e2eTab", "status"]
@@ -230,6 +295,15 @@ final class SimAcceptanceUITests: XCTestCase {
             usleep(200_000)
         }
         return element.exists
+    }
+
+    private func waitForGone(_ element: XCUIElement, app: XCUIApplication, timeout: TimeInterval = 5) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if !element.exists { return true }
+            usleep(200_000)
+        }
+        return !element.exists
     }
 
     func testStatusTPMSValuesUpdateLiveAndShowLowPressure() throws {

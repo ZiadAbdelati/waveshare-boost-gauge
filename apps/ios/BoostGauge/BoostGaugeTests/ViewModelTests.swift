@@ -198,25 +198,92 @@ final class ViewModelTests: XCTestCase {
         XCTAssertNotNil(settings["neonPreset"])
     }
 
-    func testThemesViewModelSaveOptionsSendsPerThemeColorsFromServer() async throws {
+    func testThemesViewModelSaveOptionsSendsNoColorsWhenUnedited() async throws {
         let transport = FakeTransport()
         transport.responses["themes"] = FakeTransport.resp(200, Fixtures.themesObject)
         transport.responses["themes/config"] = FakeTransport.resp(200, Fixtures.themesObject)
         let vm = ThemesViewModel()
         vm.reset(transport: transport)
         await vm.load()
-        // Load seeds themeColorEdits from the server, so an unedited save must
-        // echo the server's vacuum/boost/overboost, never a black fallback.
+        // An unedited save must carry NO colors block at all (web parity):
+        // the board already holds its palette, and an echoed one raced the
+        // neonPreset branch in the firmware (preset parsed first, id+colors
+        // second — the stale palette clobbered the fresh one).
         await vm.saveOptions(for: "dyno-cell")
         XCTAssertEqual(transport.recordedPaths.last, "themes/config")
         let body = try XCTUnwrap(transport.recordedBodies.last)
         XCTAssertEqual(body["id"] as? String, "dyno-cell")
         XCTAssertEqual(body["arcGradient"] as? Bool, false)
-        let colors = try XCTUnwrap(body["colors"] as? [String: String])
-        XCTAssertEqual(colors["vacuum"], "#4DD2FF")
-        XCTAssertEqual(colors["boost"], "#B8F35A")
-        XCTAssertEqual(colors["overboost"], "#FF4F6D")
+        XCTAssertNil(body["colors"], "unedited save must not echo the server palette")
     }
+
+    func testThemesViewModelSaveOptionsSendsOnlyEditedColorKeys() async throws {
+        let transport = FakeTransport()
+        transport.responses["themes"] = FakeTransport.resp(200, Fixtures.themesObject)
+        transport.responses["themes/config"] = FakeTransport.resp(200, Fixtures.themesObject)
+        let vm = ThemesViewModel()
+        vm.reset(transport: transport)
+        await vm.load()
+        // A user edit sends a colors dict containing ONLY the edited key with
+        // the edited value (the firmware seeds from current values and only
+        // overwrites named keys, so a partial dict is correct).
+        vm.setColor("#112233", for: "dyno-cell", key: "boost")
+        await vm.saveOptions(for: "dyno-cell")
+        let body = try XCTUnwrap(transport.recordedBodies.last)
+        XCTAssertEqual(body["id"] as? String, "dyno-cell")
+        let colors = try XCTUnwrap(body["colors"] as? [String: String])
+        XCTAssertEqual(colors, ["boost": "#112233"])
+    }
+
+    func testThemesViewModelSetNeonPresetSendsSingleKeyPutWithoutColors() async throws {
+        let transport = FakeTransport()
+        transport.responses["themes"] = FakeTransport.resp(200, Fixtures.themesObject)
+        transport.responses["themes/config"] = FakeTransport.resp(200, Fixtures.themesObject)
+        let vm = ThemesViewModel()
+        vm.reset(transport: transport)
+        await vm.load()
+        // Web parity: picking a preset applies IMMEDIATELY with a single-key
+        // PUT — no colors block, no id (either would feed the firmware's
+        // id+colors branch AFTER the preset and clobber the fresh palette).
+        vm.setNeonPreset(2)
+        try await waitUntilPutRecorded(transport)
+        XCTAssertEqual(transport.recordedPaths.last, "themes/config")
+        let body = try XCTUnwrap(transport.recordedBodies.last)
+        XCTAssertEqual(body["neonPreset"] as? Int, 2)
+        XCTAssertNil(body["colors"])
+        XCTAssertNil(body["id"])
+        XCTAssertEqual(vm.neonPreset, 2)
+    }
+
+    func testThemesViewModelSetNeonControlsRejectOutOfRangeValues() async throws {
+        let transport = FakeTransport()
+        transport.responses["themes"] = FakeTransport.resp(200, Fixtures.themesObject)
+        transport.responses["themes/config"] = FakeTransport.resp(200, Fixtures.themesObject)
+        let vm = ThemesViewModel()
+        vm.reset(transport: transport)
+        await vm.load()
+        // Firmware validation mirrored client-side: preset 0..3, layout 0..2,
+        // font 0..1 — out-of-range values are never sent (the board would
+        // answer 400 invalid_neon_preset/invalid_neon_layout/invalid_neon_font).
+        vm.setNeonPreset(4)
+        vm.setNeonPreset(-1)
+        vm.setNeonLayout(3)
+        vm.setNeonFont(2)
+        XCTAssertFalse(transport.recordedPaths.contains("themes/config"),
+                       "out-of-range Neon values must never reach the wire")
+        XCTAssertEqual(vm.neonPreset, 2)
+        XCTAssertEqual(vm.neonLayout, 1)
+        XCTAssertEqual(vm.neonFont, 1)
+
+        // In-range values pass and PUT their single key.
+        vm.setNeonLayout(2)
+        try await waitUntilPutRecorded(transport)
+        let body = try XCTUnwrap(transport.recordedBodies.last)
+        XCTAssertEqual(body["neonLayout"] as? Int, 2)
+        XCTAssertNil(body["colors"])
+        XCTAssertNil(body["id"])
+    }
+
 
     func testThemesViewModelSaveOptionsBigDigitSendsColorsAndReflectsEdit() async throws {
         let transport = FakeTransport()
@@ -759,6 +826,23 @@ final class ViewModelTests: XCTestCase {
     }
 
     // MARK: - Helpers
+
+    /// The Neon setters are synchronous (they spawn their PUT as an internal
+    /// Task so the SwiftUI binding's `set` never awaits); yield the main actor
+    /// until the spawned task's PUT lands on the fake transport.
+    private func waitUntilPutRecorded(
+        _ transport: FakeTransport, timeout: TimeInterval = 2, file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline && !transport.recordedPaths.contains("themes/config") {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(
+            transport.recordedPaths.contains("themes/config"),
+            "the setter's PUT task must reach the transport", file: file, line: line
+        )
+    }
 
     private func waitForState(_ vm: StatusViewModel) async throws -> GaugeState {
         let deadline = Date().addingTimeInterval(2)

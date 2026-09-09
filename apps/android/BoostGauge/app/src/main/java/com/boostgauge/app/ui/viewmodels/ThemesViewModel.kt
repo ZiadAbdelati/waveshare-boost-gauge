@@ -37,6 +37,8 @@ class ThemesViewModel(
         val payload: ThemesPayload? = null,
         val config: Config? = null,
         val status: Status? = null,
+        /** User color edits only (keyed themeId → key → hex). Never pre-filled
+         *  from the server; every entry here is sent verbatim by saveOptions. */
         val themeColorEdits: Map<String, Map<String, String>> = emptyMap(),
         val arcGradient: Boolean = false,
         val hudGradient: Boolean = false,
@@ -57,6 +59,59 @@ class ThemesViewModel(
 
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
+
+    /**
+     * Server-side color baseline per theme (keyed themeId → key → hex), filled
+     * from every themes payload the VM accepts. This is what colorHex falls
+     * back to and what saveOptions must NOT re-send: the firmware seeds colors
+     * from current values and overwrites only the named keys, so a partial
+     * `colors` object is always correct. Keeping server colors out of
+     * themeColorEdits is what stops stale palette keys from riding along with
+     * a neon preset change (field report 2026-09-09).
+     */
+    private val serverColorBaselines = MutableStateFlow<Map<String, Map<String, String>>>(emptyMap())
+
+    /** Flattens a theme's server colors into the baseline map shape. */
+    private fun baselineColorsOf(theme: ThemeInfo): Map<String, String> = buildMap {
+        if (theme.colors.face.isNotBlank()) put("face", theme.colors.face)
+        if (theme.colors.track.isNotBlank()) put("track", theme.colors.track)
+        if (theme.colors.text.isNotBlank()) put("text", theme.colors.text)
+        if (theme.colors.muted.isNotBlank()) put("muted", theme.colors.muted)
+        if (theme.colors.vacuum.isNotBlank()) put("vacuum", theme.colors.vacuum)
+        if (theme.colors.boost.isNotBlank()) put("boost", theme.colors.boost)
+        if (theme.colors.overboost.isNotBlank()) put("overboost", theme.colors.overboost)
+        if (theme.colors.zero.isNotBlank()) put("zero", theme.colors.zero)
+    }
+
+    /**
+     * Refreshes baselines from a response payload so the colorHex fallback
+     * always reads the board's latest colors (same values the old per-key
+     * ThemeInfo probe returned). Optionally clears user edits: ALL of them
+     * after a full load (the board is authoritative; unapplied edits are
+     * dropped with it), or one theme's after its save/reset echo (the edits
+     * became server state). Other echoes (activate/resync/neon field PUT)
+     * keep pending edits untouched.
+     */
+    private fun adoptBaselines(
+        payload: ThemesPayload,
+        clearAllEdits: Boolean = false,
+        clearThemeId: String? = null,
+    ) {
+        val next = serverColorBaselines.value.toMutableMap()
+        for (theme in payload.themes) {
+            next[theme.id] = baselineColorsOf(theme)
+        }
+        serverColorBaselines.value = next
+        if (!clearAllEdits && clearThemeId == null) return
+        _state.update { prev ->
+            val clearedEdits = if (clearAllEdits) {
+                emptyMap()
+            } else {
+                prev.themeColorEdits.toMutableMap().apply { remove(clearThemeId) }
+            }
+            prev.copy(themeColorEdits = clearedEdits)
+        }
+    }
 
     /** Concurrent load result: themes (mandatory) + best-effort config/status. */
     private data class Loaded(
@@ -162,20 +217,11 @@ class ThemesViewModel(
         val payload = loaded.themes
         val config = loaded.config
         val status = loaded.status
+        // Adopt the board's colors as the baseline and clear user edits for
+        // every theme: a fresh load is authoritative, any pending edit the
+        // user had not applied is dropped with it.
+        adoptBaselines(payload, clearAllEdits = true)
         _state.update { prev ->
-            val initialColors = mutableMapOf<String, Map<String, String>>()
-            for (theme in payload.themes) {
-                val colors = mutableMapOf<String, String>()
-                if (theme.colors.face.isNotBlank()) colors["face"] = theme.colors.face
-                if (theme.colors.track.isNotBlank()) colors["track"] = theme.colors.track
-                if (theme.colors.text.isNotBlank()) colors["text"] = theme.colors.text
-                if (theme.colors.muted.isNotBlank()) colors["muted"] = theme.colors.muted
-                if (theme.colors.vacuum.isNotBlank()) colors["vacuum"] = theme.colors.vacuum
-                if (theme.colors.boost.isNotBlank()) colors["boost"] = theme.colors.boost
-                if (theme.colors.overboost.isNotBlank()) colors["overboost"] = theme.colors.overboost
-                if (theme.colors.zero.isNotBlank()) colors["zero"] = theme.colors.zero
-                initialColors[theme.id] = colors
-            }
             prev.copy(
                 loading = false,
                 themes = payload.themes,
@@ -184,7 +230,6 @@ class ThemesViewModel(
                 payload = payload,
                 config = config,
                 status = status,
-                themeColorEdits = initialColors,
                 arcGradient = payload.arcGradient,
                 hudGradient = payload.hudGradient,
                 hudTrueBlack = payload.hudTrueBlack,
@@ -312,17 +357,11 @@ class ThemesViewModel(
         if (edits != null && edits.containsKey(key)) {
             return edits[key]
         }
-        return when (key) {
-            "face" -> theme.colors.face.takeIf { it.isNotBlank() }
-            "track" -> theme.colors.track.takeIf { it.isNotBlank() }
-            "text" -> theme.colors.text.takeIf { it.isNotBlank() }
-            "muted" -> theme.colors.muted.takeIf { it.isNotBlank() }
-            "vacuum" -> theme.colors.vacuum.takeIf { it.isNotBlank() }
-            "boost" -> theme.colors.boost.takeIf { it.isNotBlank() }
-            "overboost" -> theme.colors.overboost.takeIf { it.isNotBlank() }
-            "zero" -> theme.colors.zero.takeIf { it.isNotBlank() }
-            else -> null
-        }
+        // Fallback chain: user edits first, then the server baseline (kept in
+        // sync with every accepted themes payload). Same values the old
+        // per-key ThemeInfo probe returned — the baseline is blank-filtered
+        // by construction.
+        return serverColorBaselines.value[theme.id]?.get(key)
     }
 
     fun updateArcGradient(value: Boolean) { _state.update { it.copy(arcGradient = value) } }
@@ -336,16 +375,97 @@ class ThemesViewModel(
     fun updateVaultVignette(value: Int) { _state.update { it.copy(vaultVignette = value) } }
     fun updateVaultNeedleRed(value: Boolean) { _state.update { it.copy(vaultNeedleRed = value) } }
     fun updateVaultNeedleTail(value: Boolean) { _state.update { it.copy(vaultNeedleTail = value) } }
-    fun updateNeonLayout(value: Int) { _state.update { it.copy(neonLayout = value) } }
-    fun updateNeonFont(value: Int) { _state.update { it.copy(neonFont = value) } }
-    fun updateNeonPreset(value: Int) { _state.update { it.copy(neonPreset = value) } }
-    fun updateNeonMarqueeSpin(value: Boolean) { _state.update { it.copy(neonMarqueeSpin = value) } }
+
+    /**
+     * Neon controls apply each change immediately with a single-field PUT
+     * (web parity — the web UI puts each neon control on its own
+     * `PUT /api/v1/themes/config`). The firmware seeds colors from the
+     * current values and overwrites only the named keys, so a one-field body
+     * never repaints a stale palette — the exact bug the old
+     * colors-always-attached saveOptions had.
+     */
+    private fun putNeonField(key: String, value: JsonPrimitive) {
+        viewModelScope.launch {
+            _state.update { it.copy(loading = true, error = null) }
+            val reqObj = buildJsonObject { put(key, value) }
+            val result = withTimeoutOrNull(THEME_OP_TIMEOUT_MS) {
+                runCatching { api.updateThemesConfig(reqObj) }
+            }
+            when {
+                result == null -> _state.update {
+                    it.copy(loading = false, error = "theme options request timed out")
+                }
+                result.isSuccess -> {
+                    val payload = result.getOrThrow()
+                    adoptBaselines(payload)
+                    _state.update {
+                        it.copy(
+                            loading = false,
+                            themes = payload.themes,
+                            activeThemeId = payload.activeThemeId,
+                            payload = payload,
+                            arcGradient = payload.arcGradient,
+                            hudGradient = payload.hudGradient,
+                            hudTrueBlack = payload.hudTrueBlack,
+                            bigDigitStaticBg = payload.bigDigitStaticBg,
+                            bigDigitColorText = payload.bigDigitColorText,
+                            bigDigitStaticColor = payload.bigDigitStaticColor.ifBlank { "#000000" },
+                            bigDigitTextColor = payload.bigDigitTextColor.ifBlank { "#ffffff" },
+                            vaultFace = payload.vaultFace,
+                            vaultVignette = payload.vaultVignette,
+                            vaultNeedleRed = payload.vaultNeedleRed,
+                            vaultNeedleTail = payload.vaultNeedleTail,
+                            neonLayout = payload.neonLayout,
+                            neonFont = payload.neonFont,
+                            neonPreset = payload.neonPreset,
+                            neonMarqueeSpin = payload.neonMarqueeSpin,
+                        )
+                    }
+                }
+                else -> _state.update {
+                    it.copy(
+                        loading = false,
+                        error = result.exceptionOrNull()?.message ?: "failed to save theme options",
+                    )
+                }
+            }
+        }
+    }
+
+    fun setNeonPreset(value: Int) {
+        if (value !in 0..3) return
+        _state.update { it.copy(neonPreset = value) }
+        putNeonField("neonPreset", JsonPrimitive(value))
+    }
+
+    fun setNeonLayout(value: Int) {
+        if (value !in 0..2) return
+        _state.update { it.copy(neonLayout = value) }
+        putNeonField("neonLayout", JsonPrimitive(value))
+    }
+
+    fun setNeonFont(value: Int) {
+        if (value !in 0..1) return
+        _state.update { it.copy(neonFont = value) }
+        putNeonField("neonFont", JsonPrimitive(value))
+    }
+
+    fun setNeonMarqueeSpin(value: Boolean) {
+        _state.update { it.copy(neonMarqueeSpin = value) }
+        putNeonField("neonMarqueeSpin", JsonPrimitive(value))
+    }
 
     fun saveOptions(themeId: String) {
         viewModelScope.launch {
             val cur = _state.value
             _state.update { it.copy(loading = true, error = null) }
-            val editable = cur.themeColorEdits[themeId] ?: emptyMap()
+            // Only user edits go out, only under their own keys. The firmware
+            // seeds colors from the current stored values before applying the
+            // patch, so a partial `colors` object can never repaint a zone
+            // with a value the user never touched (the old behavior
+            // pre-filled edits from the server echo and always attached all
+            // of them — a preset change then re-sent the old palette over it).
+            val editedColors = cur.themeColorEdits[themeId]
             val reqObj = buildJsonObject {
                 put("id", themeId)
                 when (themeId) {
@@ -375,11 +495,11 @@ class ThemesViewModel(
                         put("neonMarqueeSpin", cur.neonMarqueeSpin)
                     }
                 }
-                if (editable.isNotEmpty()) {
+                if (!editedColors.isNullOrEmpty()) {
                     putJsonObject("colors") {
-                        editable["vacuum"]?.let { put("vacuum", it) }
-                        editable["boost"]?.let { put("boost", it) }
-                        editable["overboost"]?.let { put("overboost", it) }
+                        for ((key, hex) in editedColors) {
+                            put(key, hex)
+                        }
                     }
                 }
             }
@@ -393,6 +513,10 @@ class ThemesViewModel(
                 }
                 result.isSuccess -> {
                     val payload = result.getOrThrow()
+                    // The save echo is authoritative for the saved theme:
+                    // reseed its baseline and drop its user edits (they are
+                    // now server state).
+                    adoptBaselines(payload, clearThemeId = themeId)
                     _state.update {
                         it.copy(
                             loading = false,
@@ -444,27 +568,15 @@ class ThemesViewModel(
                 }
                 result.isSuccess -> {
                     val payload = result.getOrThrow()
+                    // The reset echo is authoritative for the reset theme:
+                    // reseed its baseline and drop its user edits.
+                    adoptBaselines(payload, clearThemeId = themeId)
                     _state.update {
-                        val updatedColors = it.themeColorEdits.toMutableMap()
-                        val targetTheme = payload.themes.firstOrNull { t -> t.id == themeId }
-                        if (targetTheme != null) {
-                            val colors = mutableMapOf<String, String>()
-                            if (targetTheme.colors.face.isNotBlank()) colors["face"] = targetTheme.colors.face
-                            if (targetTheme.colors.track.isNotBlank()) colors["track"] = targetTheme.colors.track
-                            if (targetTheme.colors.text.isNotBlank()) colors["text"] = targetTheme.colors.text
-                            if (targetTheme.colors.muted.isNotBlank()) colors["muted"] = targetTheme.colors.muted
-                            if (targetTheme.colors.vacuum.isNotBlank()) colors["vacuum"] = targetTheme.colors.vacuum
-                            if (targetTheme.colors.boost.isNotBlank()) colors["boost"] = targetTheme.colors.boost
-                            if (targetTheme.colors.overboost.isNotBlank()) colors["overboost"] = targetTheme.colors.overboost
-                            if (targetTheme.colors.zero.isNotBlank()) colors["zero"] = targetTheme.colors.zero
-                            updatedColors[themeId] = colors
-                        }
                         it.copy(
                             loading = false,
                             themes = payload.themes,
                             activeThemeId = payload.activeThemeId,
                             payload = payload,
-                            themeColorEdits = updatedColors,
                         )
                     }
                 }

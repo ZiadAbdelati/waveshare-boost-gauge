@@ -610,25 +610,25 @@ private fun ThemeOptionsEditor(
                     label = "Layout",
                     options = listOf("Tube", "Segments", "Marquee"),
                     selectedIndex = state.neonLayout.coerceIn(0, 2),
-                    onSelect = viewModel::updateNeonLayout,
+                    onSelect = viewModel::setNeonLayout,
                 )
                 DropdownPickerRow(
                     label = "Preset",
                     options = listOf("Violet", "Miami", "Toxic", "Blood Moon"),
                     selectedIndex = state.neonPreset.coerceIn(0, 3),
-                    onSelect = viewModel::updateNeonPreset,
+                    onSelect = viewModel::setNeonPreset,
                 )
                 DropdownPickerRow(
                     label = "Readout font",
                     options = listOf("SF Alien", "Doto"),
                     selectedIndex = state.neonFont.coerceIn(0, 1),
-                    onSelect = viewModel::updateNeonFont,
+                    onSelect = viewModel::setNeonFont,
                 )
                 if (state.neonLayout == 2) {
                     ToggleRow(
                         label = "Marquee spin",
                         checked = state.neonMarqueeSpin,
-                        onCheckedChange = viewModel::updateNeonMarqueeSpin,
+                        onCheckedChange = viewModel::setNeonMarqueeSpin,
                     )
                 }
             }

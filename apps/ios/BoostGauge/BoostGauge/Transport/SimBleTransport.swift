@@ -31,6 +31,20 @@ final class SimBleTransport: GaugeTransport {
     ]
 
     private var themesPayload: [String: Any] = SimBleTransport.defaultThemesPayload
+
+    init() {
+        #if DEBUG
+        // Sim-only test seam: `-e2eNeonCustomized 1` marks the neon fixture
+        // customized at boot, so UI tests can exercise the reset-colors flow
+        // (which the stale-colors fix made unreachable through a bare Apply)
+        // without driving the out-of-process system color sheet.
+        let arguments = ProcessInfo.processInfo.arguments
+        if let index = arguments.firstIndex(of: "-e2eNeonCustomized"),
+           index + 1 < arguments.count, arguments[index + 1] == "1" {
+            updateTheme("neon") { theme in theme["customized"] = true }
+        }
+        #endif
+    }
     private var activePage = 0
 
     func readDeviceInfo() -> BleDeviceInfo {
