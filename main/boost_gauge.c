@@ -1679,11 +1679,26 @@ static void paint_neon_background(lv_obj_t *canvas, const boost_theme_t *theme)
 /* The ONE place the neon zone colour is decided. Drawing and flip detection
  * must agree: the colour is chosen here and flips are detected here. Using
  * color_for_psi() for the flip test while drawing from a different threshold
- * set left the readout recolouring at 0.05 psi with nothing invalidated. */
+ * set left the readout recolouring at 0.05 psi with nothing invalidated.
+ *
+ * The decision consumes the READOUT-FOLDED value (2026-09-09 user override of
+ * the earlier "zone colours keep RAW psi" decision): engine-off sensor noise
+ * (~+-0.05 psi) straddled the raw 0.05 threshold and flipped vacuum<->boost
+ * on every sample, re-firing the marquee's deferred zone-flip repaint
+ * (word-first, arc-next-frame) as visible second-ring flashing. Folding
+ * through boost_readout_display_psi() BEFORE the threshold tests makes the
+ * zone constant inside the +-0.1 psi band (BOOST_READOUT_DEADBAND_PSI - the
+ * ONE band definition; never a second one here): any psi within +-0.1 reads
+ * 0.0 -> zone 0, vacuum colour, zero flicker. Outside the band the raw value
+ * passes through unchanged (raw -0.15 stays vacuum, +0.12 becomes boost).
+ * dyno-cell's zone_color_for_psi()/value_arc_angles() keep the RAW psi: the
+ * arc's geometric gap already draws nothing at atmosphere. The ATMO word
+ * thresholds (neon_word_id, +-0.35) are stable and keep their raw tests. */
 static uint32_t neon_zone_rgb(const boost_theme_t *t, float psi)
 {
-    return (psi >= s_psi_overboost) ? t->overboost
-         : (psi > 0.05f) ? t->boost : t->vacuum;
+    const float dpsi = boost_readout_display_psi(psi);
+    return (dpsi >= s_psi_overboost) ? t->overboost
+         : (dpsi > 0.05f) ? t->boost : t->vacuum;
 }
 
 /* The peak tell-tale's fixed ink, shared by the tube and segments layouts:
@@ -1727,16 +1742,21 @@ uint32_t g_neon_sprite_blits;
 #endif
 
 #if BOOST_NEON_GLYPH_SPRITES
-/* Mirrors the two-tier threshold in neon_zone_rgb() exactly. Kept as its own
- * one-line function, rather than refactoring neon_zone_rgb() to share it, so
- * the existing (already relied upon) function is not touched by this work.
- * Lives OUTSIDE the sprite guard: the marquee's live accent bulbs and the
- * live accent bulbs call it, and those bulbs are drawn with plain lv_draw_rect
- * whether or not glyph sprites exist. */
+/* Mirrors the two-tier threshold in neon_zone_rgb() exactly - INCLUDING the
+ * readout fold (2026-09-09 user override): both re-fold through
+ * boost_readout_display_psi() (the one shared band definition, never a
+ * second one), so the zone colour the draw picks and the zone id the
+ * invalidation computes can never disagree at the band edges. Kept as its
+ * own one-line function, rather than refactoring neon_zone_rgb() to share
+ * it, so the existing (already relied upon) function is not touched by this
+ * work. Lives OUTSIDE the sprite guard: the marquee's live accent bulbs and
+ * the live accent bulbs call it, and those bulbs are drawn with plain
+ * lv_draw_rect whether or not glyph sprites exist. */
 #endif
 static inline int neon_zone_id(float psi)
 {
-    return (psi >= s_psi_overboost) ? 2 : (psi > 0.05f) ? 1 : 0;
+    const float dpsi = boost_readout_display_psi(psi);
+    return (dpsi >= s_psi_overboost) ? 2 : (dpsi > 0.05f) ? 1 : 0;
 }
 
 /* ATMO is a display-only word around zero. It deliberately does not add a

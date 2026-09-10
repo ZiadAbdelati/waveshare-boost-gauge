@@ -213,6 +213,23 @@ final class ThemesViewModel: ObservableObject {
         await put("themes/config", body: ["id": themeID, "reset": true])
     }
 
+    /// Reset-button visibility for one theme's editor: true as soon as the
+    /// theme has UNSAVED local colour edits (`themeColorEdits`) OR the board
+    /// reports its committed palette as customized (`Theme.customized`).
+    /// Per-theme scoping: `themeColorEdits[themeID]` holds only that theme's
+    /// edits, so an unsaved Neon edit never lights a reset button inside the
+    /// Dyno Cell editor. The server flag alone is not enough — it only flips
+    /// once Apply writes the edited colors (the firmware compares COMMITTED
+    /// colors to the preset baseline), so the button must also key off local
+    /// state (bug 2026-09-09: "Reset to default colors" appeared only after
+    /// Apply). A failed reset PUT leaves the edits untouched — the echo-driven
+    /// `apply()` is the only thing that clears them, so user edits survive a
+    /// reset that never reached the board.
+    func showsResetColors(for themeID: String) -> Bool {
+        if let edits = themeColorEdits[themeID], !edits.isEmpty { return true }
+        return themes.first { $0.id == themeID }?.customized == true
+    }
+
     // MARK: - Neon immediate applies (web parity: one control = one single-key
     // PUT, never a colors block — the firmware parses neonPreset first, then
     // the id+colors branch, so a stale palette in the same body would clobber

@@ -471,3 +471,92 @@ readout-only-risk judgement itself is unmeasured), and the served dashboard
 decompress check (needs the board online). Unverified-risk row for the
 release: first OTA to the car should be followed by a visual pass over
 every theme at idle atmosphere before trusting the fix.
+
+## 2026-09-09 — Neon zone-colour fold (engine-off zone flicker + marquee second-ring flashing). HOST-VERIFIED ONLY
+
+Field report (engine fully off, Neon theme): the zone colour rapidly flips
+between the vacuum and boost colours, and on the marquee layout the second
+ring (the boost-stage bulb ring) flashes on/off.
+
+Root cause (confirmed by code read, not re-litigated): the 2026-09-06 readout
+dead zone (±0.1 psi) was applied ONLY to displayed numbers. The Neon zone
+decision stayed on RAW psi — `neon_zone_rgb()` / `neon_zone_id()` in
+`main/boost_gauge.c` tested `psi > 0.05f` on the raw sample — and the web
+mirror repeated it (`web/app.js` accent + marquee `zone`). Engine-off sensor
+noise (~±0.05 psi) straddles 0.05, so the zone id flipped on every 16 ms
+sample. Consequence chain: `update_neon()`'s colour-flip test calls
+`neon_zone_rgb()` on the previous and current sample, so the flip fired
+constantly; a zone flip defers the run repaint one frame (word-first,
+arc-next-frame — the accepted 2026-08-11 lag), so constant flips meant a
+pending repaint every other frame, visible as the marquee's second ring
+flashing and the ring/bar flickering between vacuum and boost colours.
+
+Fix (smallest change, one band definition — 2026-09-09 user override of the
+earlier "zone colours keep RAW psi" decision): BOTH choke points and their
+web mirrors now consume the existing fold helper BEFORE the threshold tests:
+
+- `main/boost_gauge.c` `neon_zone_rgb()`: folds psi through
+  `boost_readout_display_psi()` (the shared ±0.1 band from
+  `boost_neon_geom.h` — the ONE band definition, no second constant), then
+  applies the unchanged overboost/boost thresholds to the folded value;
+- `main/boost_gauge.c` `neon_zone_id()`: same fold, same thresholds;
+- `web/app.js`: new `neonZoneDisplayPsi()` which delegates to
+  `arcReadoutDisplayPsi()` (one band definition), routed at the accent
+  (zone colour) and marquee bulb-ladder (zone id) sites.
+
+Inside ±0.1 psi the folded value is exactly 0.0, so the zone is constant
+(zone 0, vacuum colour) with zero flicker; outside the band the raw value
+passes through unchanged (raw -0.15 stays vacuum, +0.12 becomes boost —
+same behaviour as before beyond the band). No hysteresis and no second
+threshold band were added. Because the draw (`draw_neon_live()` accent/bar
+colour, arc gradient-bake keying, accent bulbs, ring bands) and the
+flip-detection/invalidation (`update_neon()` colour-flip test, deferred
+zone-flip repaint, accent-bulb pair boxes, gradient-bake zone selection)
+all decide through these two functions, draw and flip detection share the
+folded decision by construction.
+
+Deliberately left RAW (call sites checked, unchanged):
+
+- dyno-cell: `zone_color_for_psi()` / `zone_for_psi()` / `value_arc_angles()`
+  — the zero-gap guard already draws nothing at atmosphere, so there is
+  nothing to flicker; unchanged per the existing ledger row;
+- vault-tec readout (`update_vault()`, web `drawVaultGauge`/`splitNum(psi,2)`)
+  — the deliberate raw exception;
+- neon ATMO word thresholds (`neon_word_id()`, ±0.35) — the word is stable at
+  engine off (band width ≫ noise) and is display-only;
+- static scale tick labels (`format_tick_text()` / `formatTickLabel()`,
+  ±0.05 round-to-zero) — labels of the FIXED scale, not sample-driven;
+- web `splitNum()`'s internal `psi < -0.05` — a generic helper; its vault
+  caller must stay raw (deliberate exception) and its night-city caller
+  already folds at the call site; the neon/bid-digit sign checks are fed
+  pre-folded values (`readoutPsi` / `splitNum(arcReadoutDisplayPsi(psi), 1)`).
+
+Verification — HOST-VERIFIED ONLY, no hardware run yet (no board attached;
+do not treat this row as hardware evidence):
+
+- `python3 tools/test_suite.py` — 12/12 PASS (11.5 s);
+- `tools/tests/test_readout_deadzone.py` extended 39 → 46 checks: contract
+  that `neon_zone_rgb`/`neon_zone_id` reference `boost_readout_display_psi`
+  and keep no raw `0.05` zone threshold at those sites, that the web zone
+  helper delegates without a second band constant, and that both web zone
+  sites consume it;
+- `node tools/test_neon_web_parity.js` — PASS (exit 0): the mirror renders
+  the real `drawNeonGauge`, so the fold ships through the parity harness;
+  its extraction list now includes `neonZoneDisplayPsi`;
+- host sim (`cmake` build of the real `main/boost_gauge.c`) builds clean and
+  headless screenshots render all five faces (`preview/sim/gauge_*.png`);
+
+NOT verified on hardware: the physical panel at engine-off atmosphere (the
+actual field condition), the marquee second-ring stability on glass, and the
+served-asset decompress check after the next OTA. First flash to hardware
+should park the car engine-off on the Neon marquee layout and watch the
+rings for a full minute before trusting the fix.
+Version string: there is NO editable firmware version constant in `main/` —
+`/api/v1/state`'s `firmwareVersion` comes from `esp_app_get_description()`
+(`main/boost_model.c:437`), which ESP-IDF fills from `PROJECT_VER`, which
+derives from `git describe` (`CONFIG_APP_PROJECT_VER_FROM_CONFIG` is not
+set; no `version.txt`; the only literal is the sim-only `v0.9.5-sim`
+fallback in `main/boost_page.c`). The requested `0.9.9` bump therefore
+lands with the release commit + `v0.9.9` tag for this change-set, at which
+point `/api/v1/state` reports `v0.9.9(-n-gXXXXXX)`. Left to the coordinator
+because tagging is a release action; no source edit can make it sooner.

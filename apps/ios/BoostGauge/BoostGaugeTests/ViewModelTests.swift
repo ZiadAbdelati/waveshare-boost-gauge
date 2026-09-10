@@ -319,6 +319,109 @@ final class ViewModelTests: XCTestCase {
         XCTAssertEqual(body["reset"] as? Bool, true)
     }
 
+    // MARK: - Reset-to-default-colors visibility (bug 2026-09-09)
+
+    func testShowsResetColorsTrueWithUnsavedEditsEvenWhenServerNotCustomized() async throws {
+        // (a) The bug: the button keyed on the server `customized` flag alone,
+        // which only flips once Apply writes the edited colors — so unsaved
+        // edits never revealed it. Local edits alone must light the button.
+        let transport = FakeTransport()
+        transport.responses["themes"] = FakeTransport.resp(200, Fixtures.themesObject)
+        let vm = ThemesViewModel()
+        vm.reset(transport: transport)
+        await vm.load()
+        XCTAssertFalse(vm.showsResetColors(for: "neon"), "pristine theme: no edits, not customized")
+        vm.setColor("#112233", for: "neon", key: "boost")
+        XCTAssertTrue(vm.showsResetColors(for: "neon"),
+                      "unsaved local edits must reveal Reset BEFORE Apply")
+    }
+
+    func testShowsResetColorsTrueWhenServerCustomizedWithNoEdits() async throws {
+        // (b) A board-committed customized palette still shows the button with
+        // zero local edits (e.g. customized by the web UI or another phone).
+        let transport = FakeTransport()
+        transport.responses["themes"] = FakeTransport.resp(200, Fixtures.themesObjectNeonCustomized)
+        let vm = ThemesViewModel()
+        vm.reset(transport: transport)
+        await vm.load()
+        XCTAssertTrue(vm.showsResetColors(for: "neon"),
+                      "server-customized palette must reveal Reset with no local edits")
+    }
+
+    func testShowsResetColorsFalseWhenPristine() async throws {
+        // (c) Neither edits nor server customization → no button.
+        let transport = FakeTransport()
+        transport.responses["themes"] = FakeTransport.resp(200, Fixtures.themesObject)
+        let vm = ThemesViewModel()
+        vm.reset(transport: transport)
+        await vm.load()
+        XCTAssertFalse(vm.showsResetColors(for: "neon"))
+        XCTAssertFalse(vm.showsResetColors(for: "dyno-cell"))
+    }
+
+    func testShowsResetColorsIsPerTheme() async throws {
+        // Edits are scoped per theme: an unsaved Neon edit must not light the
+        // button inside the Dyno Cell editor (or vice versa).
+        let transport = FakeTransport()
+        transport.responses["themes"] = FakeTransport.resp(200, Fixtures.themesObject)
+        let vm = ThemesViewModel()
+        vm.reset(transport: transport)
+        await vm.load()
+        vm.setColor("#112233", for: "neon", key: "boost")
+        XCTAssertTrue(vm.showsResetColors(for: "neon"))
+        XCTAssertFalse(vm.showsResetColors(for: "dyno-cell"),
+                       "another theme's edits must not leak into this editor")
+    }
+
+    func testResetColorsEchoClearsEditsSoButtonHides() async throws {
+        // (d) Reset re-seeds from the server echo: the PUT response carries the
+        // reverted (non-customized) list, apply() rebuilds baselines and CLEARS
+        // themeColorEdits, so the button hides again.
+        let transport = FakeTransport()
+        transport.responses["themes"] = FakeTransport.resp(200, Fixtures.themesObjectNeonCustomized)
+        transport.responses["themes/config"] = FakeTransport.resp(200, Fixtures.themesObject)
+        let vm = ThemesViewModel()
+        vm.reset(transport: transport)
+        await vm.load()
+        vm.setColor("#112233", for: "neon", key: "boost")
+        XCTAssertTrue(vm.showsResetColors(for: "neon"))
+        await vm.resetColors(for: "neon")
+        XCTAssertEqual(transport.recordedPaths.last, "themes/config")
+        // The echo (pristine fixture) has been applied: edits cleared AND the
+        // server flag reverted.
+        XCTAssertFalse(vm.showsResetColors(for: "neon"),
+                       "after a successful reset the button must hide again")
+        XCTAssertTrue(vm.themeColorEdits.isEmpty, "reset echo clears unsaved edits")
+        let baseline = vm.colorHex(for: neonTheme, key: "boost")
+        XCTAssertEqual(baseline, "#FF2BD6", "pickers re-seed from the echoed server palette")
+    }
+
+    func testApplyOfPresetMatchingEditsClearsEditsAndHidesButton() async throws {
+        // Flow (task item 4): after Apply the server decides. The echo here
+        // reports the preset baseline (customized false) — edits were applied
+        // and match the preset, so the server flag went false AND apply()
+        // cleared the local edits → button hides. (If the board HAD accepted a
+        // divergent palette it would echo customized true and the button would
+        // stay via the server half — the OR in the visibility covers both.)
+        let transport = FakeTransport()
+        transport.responses["themes"] = FakeTransport.resp(200, Fixtures.themesObject)
+        transport.responses["themes/config"] = FakeTransport.resp(200, Fixtures.themesObject)
+        let vm = ThemesViewModel()
+        vm.reset(transport: transport)
+        await vm.load()
+        vm.setColor("#112233", for: "neon", key: "boost")
+        XCTAssertTrue(vm.showsResetColors(for: "neon"))
+        await vm.saveOptions(for: "neon")
+        XCTAssertFalse(vm.showsResetColors(for: "neon"),
+                       "applied-and-echoed state clears edits; server flag false → button hides")
+        XCTAssertTrue(vm.themeColorEdits.isEmpty)
+    }
+
+    /// The Neon fixture theme, for baseline reads after an echo.
+    private var neonTheme: Theme {
+        Theme(id: "neon", name: "Neon", style: "neon", colors: nil, customized: nil)
+    }
+
     func testSettingsViewModelLoadsConfigThemeFlagsAndTPMS() async throws {
         let transport = FakeTransport()
         transport.responses["config"] = FakeTransport.resp(200, Fixtures.configObject)
@@ -1040,6 +1143,25 @@ enum Fixtures {
         object["activeThemeId"] = "neon"
         return object
     }()
+
+    /// Same list with Neon's board-committed palette flagged customized
+    /// (`boost_theme_is_customized()` reports the COMMITTED colors against the
+    /// preset baseline) — the server half of the reset-button visibility.
+    static let themesObjectNeonCustomized: [String: Any] = {
+        var object = themesObject
+        var themes = object["themes"] as! [[String: Any]]
+        themes = themes.map { theme in
+            var theme = theme
+            if theme["id"] as? String == "neon" { theme["customized"] = true }
+            return theme
+        }
+        object["themes"] = themes
+        return object
+    }()
+
+    /// Neon reverted to the preset baseline (`customized` false) — the echo
+    /// after Apply-of-preset-matching-edits or a reset.
+    static let themesObjectNeonPristine: [String: Any] = themesObject
 
     static let configObject: [String: Any] = [
         "brightnessHigh": 100,

@@ -24,8 +24,18 @@ with:
   * Vault-Tec is the DELIBERATE exception (user request 2026-09-06): its
     two-decimal phosphor readout keeps the raw value. Neither update_vault()
     (firmware) nor drawVaultGauge()/splitNum(psi, 2) (web) may fold.
-  * The arc wedge and zone colours keep the RAW psi (draw_value_arc and
-    value_arc_angles must not reference the dead band).
+  * Neon zone colour/id (user override 2026-09-09): the zone decision folds
+    through the SAME helper BEFORE its thresholds - neon_zone_rgb()/
+    neon_zone_id() consume boost_readout_display_psi() and the web mirror's
+    drawNeonGauge consumes neonZoneDisplayPsi() (which itself delegates to
+    arcReadoutDisplayPsi - one band definition, never a second). Reason:
+    engine-off noise (~+-0.05 psi) straddled the raw 0.05 zone threshold and
+    flipped vacuum<->boost every sample, re-firing the marquee's deferred
+    zone-flip repaint (word-first, arc-next-frame) as visible second-ring
+    flashing. dyno-cell's zone_color_for_psi()/value_arc_angles() KEEP the
+    raw psi: its arc draws nothing at atmosphere by the zero-gap guard.
+  * The dyno-cell arc wedge and zone colours keep the RAW psi (draw_value_arc
+    and value_arc_angles must not reference the dead band).
   * BLE coex scan: both esp_wifi_scan_start() call sites leave scan_time
     zeroed (default dwell REQUIRED when Bluetooth is enabled - custom
     40/80 ms values returned WIFI_STATE_INIT and BLE /network/scan answered
@@ -144,6 +154,30 @@ def main() -> int:
                  "neon readout layout folds (draw and invalidation share this path)",
                  "boost_neon_layout_readout uses raw psi")
 
+    # --- neon zone colour/id fold (2026-09-09 user override) -----------------
+    # The zone decision (colour + id) must consume the READOUT-FOLDED value
+    # BEFORE its thresholds: engine-off noise straddling raw 0.05 flipped
+    # vacuum<->boost every sample and re-fired the marquee's deferred
+    # zone-flip repaint. Draw and flip detection both call these two
+    # functions, so folding here keeps them on one decision.
+    zone_rgb_body = function_body(
+        gauge_c, "static uint32_t neon_zone_rgb(const boost_theme_t *t, float psi)\n{")
+    result.check("boost_readout_display_psi(" in zone_rgb_body,
+                 "neon_zone_rgb folds psi through the shared helper before the zone thresholds",
+                 "neon_zone_rgb decides the zone colour on raw psi")
+    result.check("(psi > 0.05f)" not in zone_rgb_body
+                 and "(psi >= s_psi_overboost)" not in zone_rgb_body,
+                 "neon_zone_rgb has no raw-psi zone threshold left",
+                 "thresholds must test the folded value, not raw psi")
+    zone_id_body = function_body(gauge_c, "static inline int neon_zone_id(float psi)\n{")
+    result.check("boost_readout_display_psi(" in zone_id_body,
+                 "neon_zone_id folds psi through the shared helper before the zone thresholds",
+                 "neon_zone_id decides the zone id on raw psi")
+    result.check("(psi > 0.05f)" not in zone_id_body
+                 and "(psi >= s_psi_overboost)" not in zone_id_body,
+                 "neon_zone_id has no raw-psi zone threshold left",
+                 "thresholds must test the folded value, not raw psi")
+
     # --- vault-tec is the deliberate exception ------------------------------
     vault_body = function_body(gauge_c, "static void update_vault(const boost_sample_t *sample, const boost_theme_t *theme)")
     result.check("boost_readout_display_psi" not in vault_body
@@ -195,6 +229,20 @@ def main() -> int:
                  and "if (readoutPsi < 0 && tenthsTotal !== 0)" in neon_js,
                  "web neon readout + sign fold",
                  "web neon still uses raw psi for the digit composition")
+
+    # --- web mirror: neon zone colour/id fold (2026-09-09 user override) -----
+    neon_zone_js = function_body(app_js, "function neonZoneDisplayPsi(psi)")
+    result.check("return arcReadoutDisplayPsi(psi);" in neon_zone_js
+                 and "0.1" not in neon_zone_js,
+                 "web neonZoneDisplayPsi delegates to the shared fold (no second band constant)",
+                 "zone helper redefines the band locally")
+    result.check(neon_js.count("neonZoneDisplayPsi(psi)") >= 2,
+                 "web neon zone colour AND zone id consume the folded value",
+                 "drawNeonGauge must route both zone sites through neonZoneDisplayPsi")
+    result.check("psi > 0.05 ? p.boost : p.vacuum" not in neon_js
+                 and "? 2 : psi > 0.05" not in neon_js,
+                 "no raw-psi zone threshold remains at the web neon zone sites",
+                 "zone thresholds must test the folded value, not raw psi")
 
     # --- wedge/zone use raw psi ---------------------------------------------
     value_arc = function_body(gauge_c, "static void value_arc_angles")

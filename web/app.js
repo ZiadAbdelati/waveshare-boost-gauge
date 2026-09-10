@@ -467,6 +467,20 @@ function arcReadoutDisplayPsi(psi) {
   return psi;
 }
 
+/* Neon ZONE colour/id decision (2026-09-09 user override of the earlier
+ * "zone colours keep RAW psi" rule): consumes the READOUT-FOLDED value so
+ * engine-off sensor noise (~+-0.05 psi) cannot straddle the 0.05 threshold
+ * and flip vacuum<->boost on every sample. Mirror of the firmware
+ * neon_zone_rgb()/neon_zone_id() fold in boost_gauge.c. One band definition:
+ * this delegates to arcReadoutDisplayPsi() - never a second constant. Inside
+ * +-0.1 psi the zone is constant (vacuum) with zero flicker; outside the
+ * band the raw value passes through unchanged. dyno-cell's value arc and
+ * drawVaultGauge keep the raw psi (the arc's gap draws nothing at
+ * atmosphere; vault's readout is the deliberate raw exception). */
+function neonZoneDisplayPsi(psi) {
+  return arcReadoutDisplayPsi(psi);
+}
+
 function drawFixedPsi(psi, decimalX, baselineY, scale) {
   const value = arcReadoutDisplayPsi(Number(psi));
   const absoluteTenths = Math.round(Math.abs(value) * 10);
@@ -675,7 +689,11 @@ function drawNeonGauge(sample, psi, g) {
   const zero = psiToSweep(0, start, start + sweep, range);
   const value = psiToSweep(psi, start, start + sweep, range);
   const zone = psi >= range.psiOverboost ? "OVERBOOST" : psi >= 0.35 ? "BOOST" : psi > -0.35 ? "ATMO" : "VACUUM";
-  const accent = psi >= range.psiOverboost ? p.overboost : psi > 0.05 ? p.boost : p.vacuum;
+  /* Zone colour from the FOLDED psi (neonZoneDisplayPsi, dead zone override
+   * 2026-09-09): engine-off noise inside +-0.1 psi must hold the vacuum
+   * colour instead of flipping vacuum<->boost across 0.05 every sample. */
+  const zoneColorPsi = neonZoneDisplayPsi(psi);
+  const accent = zoneColorPsi >= range.psiOverboost ? p.overboost : zoneColorPsi > 0.05 ? p.boost : p.vacuum;
   const lit = neonLitColor(accent);
   const tubeMid = neonTrackMiddle(accent);
   const trackOuter = neonTrackOuter(accent);
@@ -748,7 +766,11 @@ function drawNeonGauge(sample, psi, g) {
      * partner one dot left) - so lit rings align inner/outer and the middle
      * marks the boost stage (NEON_BULB_IS_ACCENT). */
     const ringRgb = [p.vacuum, p.boost, p.overboost];
-    const zone = psi >= range.psiOverboost ? 2 : psi > 0.05 ? 1 : 0;
+    /* Zone id from the FOLDED psi (neonZoneDisplayPsi, dead zone override
+     * 2026-09-09) - same decision the accent colour above makes, so the
+     * bulb ladder and the bar can never disagree at the band edges. */
+    const zoneColorPsi = neonZoneDisplayPsi(psi);
+    const zone = zoneColorPsi >= range.psiOverboost ? 2 : zoneColorPsi > 0.05 ? 1 : 0;
     /* Per-ring bulb counts for uniform chord spacing: outer 72, middle 66,
      * inner 54 (parity reads NEON_BULB_N_INNER/MID/OUTER from the panel).
      * All divisible by 6 so the 2-lit/4-dark accent pattern stays seamless. */

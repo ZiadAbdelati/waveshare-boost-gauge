@@ -13,8 +13,8 @@ android {
         applicationId = "com.boostgauge.app"
         minSdk = 31
         targetSdk = 34
-        versionCode = 7
-        versionName = "0.9.6"
+        versionCode = 8
+        versionName = "0.9.7"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

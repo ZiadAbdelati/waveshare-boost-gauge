@@ -92,6 +92,7 @@ const body = [
   extractConstLine("NEON_HALO_DIM"),
   extractConstLine("NEON_MARQUEE_SPIN_MS"),
   extract("arcReadoutDisplayPsi"),
+  extract("neonZoneDisplayPsi"),
   extract("neonDim"),
   extract("psiToSweep"), extract("neonLitColor"), extract("neonBulbColor"),
   extract("rgbToHsl"), extract("hslHue2rgb"),

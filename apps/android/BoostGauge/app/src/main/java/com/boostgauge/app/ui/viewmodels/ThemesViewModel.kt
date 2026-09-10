@@ -364,6 +364,27 @@ class ThemesViewModel(
         return serverColorBaselines.value[theme.id]?.get(key)
     }
 
+    /**
+     * Single visibility decision for a theme editor's "Reset to default
+     * colors" button: ANY local unsaved color edit for the theme, OR the
+     * server's `customized` flag (firmware compares COMMITTED colors to the
+     * preset baseline, so that flag only flips once an Apply writes the
+     * edited colors — keying the button on it alone made it appear only
+     * after Apply, leaving unsaved edits with no reset affordance).
+     *
+     * Computed from existing state because both inputs already live in
+     * UiState and the server flag is per-theme (`ThemeInfo.customized`
+     * inside state.themes), so a single Boolean StateFlow cannot express it.
+     * The screen recomposes on every UiState change (unstable data class),
+     * the same reactive pattern `colorHex()` uses for the palette swatches.
+     */
+    fun showsResetColors(themeId: String): Boolean {
+        val cur = _state.value
+        val hasUnsavedEdits = !cur.themeColorEdits[themeId].isNullOrEmpty()
+        val serverCustomized = cur.themes.firstOrNull { it.id == themeId }?.customized == true
+        return hasUnsavedEdits || serverCustomized
+    }
+
     fun updateArcGradient(value: Boolean) { _state.update { it.copy(arcGradient = value) } }
     fun updateHudGradient(value: Boolean) { _state.update { it.copy(hudGradient = value) } }
     fun updateHudTrueBlack(value: Boolean) { _state.update { it.copy(hudTrueBlack = value) } }

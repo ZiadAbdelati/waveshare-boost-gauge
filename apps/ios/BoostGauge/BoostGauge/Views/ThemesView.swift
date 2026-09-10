@@ -307,7 +307,12 @@ struct ThemesView: View {
             .contentShape(Rectangle())
             .disabled(vm.isLoading)
             .padding(.top, 4)
-            if theme.customized == true {
+            // Visible as soon as there is ANYTHING to reset: unsaved local
+            // colour edits (the pickers above) OR a board-committed customized
+            // palette. Gating on the server `customized` flag alone meant the
+            // button only appeared AFTER Apply (the flag compares COMMITTED
+            // colors to the preset baseline), bug 2026-09-09.
+            if vm.showsResetColors(for: theme.id) {
                 Button("Reset to default colors", role: .destructive) {
                     Task { await vm.resetColors(for: theme.id) }
                 }

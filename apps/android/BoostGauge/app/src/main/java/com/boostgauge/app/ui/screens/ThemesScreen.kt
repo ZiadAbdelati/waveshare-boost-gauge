@@ -650,7 +650,10 @@ private fun ThemeOptionsEditor(
             Text("Apply ${theme.name} options")
         }
 
-        if (theme.customized) {
+        // Reset affordance for ANY resettable state: the server-customized
+        // flag OR local unsaved color edits (the flag alone only flipped
+        // after Apply committed the colors — field report 2026-09-14).
+        if (viewModel.showsResetColors(theme.id)) {
             TextButton(
                 onClick = { viewModel.resetColors(theme.id) },
                 enabled = !state.loading,

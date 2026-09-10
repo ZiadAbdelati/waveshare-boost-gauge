@@ -511,4 +511,123 @@ class ThemesViewModelTest {
         assertTrue(edited.contains("\"boost\":\"#3388FF\""))
         assertFalse(edited.contains("\"vacuum\"") || edited.contains("\"overboost\""))
     }
+
+    // ---------------------------------------------------------------------------
+    // Field report 2026-09-14: "Reset to default colors" must appear as soon as
+    // unsaved color edits exist, not only after Apply commits them. The server
+    // `customized` flag alone cannot drive the button (firmware compares
+    // COMMITTED colors to the preset baseline), so the VM exposes one derived
+    // decision over edits + the server flag.
+    // ---------------------------------------------------------------------------
+
+    private fun themesOnlyTransport() = FakeBleTransport { _, path, _ ->
+        when (path) {
+            "themes" -> Resp(200, ApiFixtures.THEMES)
+            else -> Resp(404, "{}")
+        }
+    }
+
+    @Test
+    fun showsResetColorsTrueWithUnsavedEditsBeforeApply() = runTest(dispatcher) {
+        val viewModel = ThemesViewModel(GaugeApi { themesOnlyTransport() })
+        viewModel.state.first { !it.loading }
+
+        // Neon is NOT server-customized in the fixture: before the fix the
+        // reset button only appeared after Apply committed the edits.
+        assertFalse(viewModel.showsResetColors("neon"))
+
+        viewModel.setColor("neon", "boost", "#00FF66")
+
+        assertTrue(viewModel.showsResetColors("neon"))
+    }
+
+    @Test
+    fun showsResetColorsTrueWhenServerCustomizedWithoutEdits() = runTest(dispatcher) {
+        val viewModel = ThemesViewModel(GaugeApi { themesOnlyTransport() })
+        viewModel.state.first { !it.loading }
+
+        // night-city carries "customized": true in the fixture; no edits made.
+        assertTrue(viewModel.showsResetColors("night-city"))
+        // And the no-edit, non-customized theme stays hidden — one decision,
+        // driven by either input alone.
+        assertFalse(viewModel.showsResetColors("neon"))
+    }
+
+    @Test
+    fun showsResetColorsFalseWithoutEditsOrCustomization() = runTest(dispatcher) {
+        val viewModel = ThemesViewModel(GaugeApi { themesOnlyTransport() })
+        viewModel.state.first { !it.loading }
+
+        // Fresh load, untouched palette: every theme the board does not report
+        // customized stays without the reset affordance.
+        val uncustomized = viewModel.state.value.themes.filter { !it.customized }
+        assertTrue("fixture must cover uncustomized themes", uncustomized.isNotEmpty())
+        for (theme in uncustomized) {
+            assertFalse("theme ${theme.id} must not offer reset yet", viewModel.showsResetColors(theme.id))
+        }
+    }
+
+    @Test
+    fun resetColorsClearsUnsavedEditsAndHidesReset() = runTest(dispatcher) {
+        var resetBody = ""
+        val transport = FakeBleTransport { method, path, body ->
+            when (path) {
+                "themes" -> Resp(200, ApiFixtures.THEMES)
+                "themes/config" -> {
+                    assertEquals("PUT", method)
+                    resetBody = body ?: ""
+                    Resp(200, ApiFixtures.THEMES)
+                }
+                else -> Resp(404, "{}")
+            }
+        }
+        val viewModel = ThemesViewModel(GaugeApi { transport })
+        viewModel.state.first { !it.loading }
+
+        viewModel.setColor("neon", "boost", "#00FF66")
+        assertTrue(viewModel.showsResetColors("neon"))
+
+        viewModel.resetColors("neon")
+        testScheduler.advanceUntilIdle()
+
+        assertTrue(resetBody.contains("\"id\":\"neon\""))
+        assertTrue(resetBody.contains("\"reset\":true"))
+        // The reset echo is authoritative: edits cleared and the baseline
+        // reseeded from the echo, so the button hides again and the picker
+        // re-seeds from the server (default) color.
+        assertFalse(viewModel.showsResetColors("neon"))
+        val neon = viewModel.state.value.themes.first { it.id == "neon" }
+        assertEquals("#ff2bd6", viewModel.colorHex(neon, "boost"))
+    }
+
+    @Test
+    fun applyClearsUnsavedEditsAndHidesResetWhenEchoNotCustomized() = runTest(dispatcher) {
+        // The firmware recomputes `customized` on every echo: applying edits
+        // that match the preset baseline echoes customized:false. The saved
+        // edits become server state, the local edit set is cleared, and the
+        // reset button must hide again (OR of both inputs is false).
+        var putBody = ""
+        val transport = FakeBleTransport { method, path, body ->
+            when (path) {
+                "themes" -> Resp(200, ApiFixtures.THEMES)
+                "themes/config" -> {
+                    assertEquals("PUT", method)
+                    putBody = body ?: ""
+                    Resp(200, ApiFixtures.THEMES)
+                }
+                else -> Resp(404, "{}")
+            }
+        }
+        val viewModel = ThemesViewModel(GaugeApi { transport })
+        viewModel.state.first { !it.loading }
+
+        viewModel.setColor("neon", "boost", "#00FF66")
+        assertTrue(viewModel.showsResetColors("neon"))
+
+        viewModel.saveOptions("neon")
+        testScheduler.advanceUntilIdle()
+
+        assertTrue(putBody.contains("\"boost\":\"#00FF66\""))
+        assertFalse(viewModel.showsResetColors("neon"))
+    }
 }
