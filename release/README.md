@@ -63,7 +63,7 @@ preset/layout/font apply, iOS reset-button hit area). New in this release:
 
 ## Firmware binaries — NEW in this release
 
-`boost_gauge.bin` (SHA-256 `70f26f49…b505c85`), `bootloader.bin`,
+`boost_gauge.bin` (SHA-256 `84de48bc…335c37d`), `bootloader.bin`,
 `partition-table.bin`, `ota_data_initial.bin`, and `boost_gauge_merged.bin`
 are fresh v0.9.9 builds. This is an OTA-capable app-image release: web OTA
 uses `boost_gauge.bin`; `boost_gauge_merged.bin` is for a full-flash reset
