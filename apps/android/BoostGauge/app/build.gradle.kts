@@ -11,9 +11,12 @@ android {
 
     defaultConfig {
         applicationId = "com.boostgauge.app"
-        minSdk = 31
+        // 29 (Android 10) for car-head-unit compatibility: the FGS
+        // connectedDevice type exists there, and the legacy Bluetooth
+        // permission path (see manifest) covers BLE pre-12.
+        minSdk = 29
         targetSdk = 34
-        versionCode = 8
+        versionCode = 9
         versionName = "0.9.7"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

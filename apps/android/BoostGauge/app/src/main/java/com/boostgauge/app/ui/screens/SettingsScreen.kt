@@ -3,6 +3,7 @@ package com.boostgauge.app.ui.screens
 import android.Manifest
 import android.app.Application
 import android.content.pm.PackageManager
+import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -402,10 +403,19 @@ private fun TransportSection(
         }
         Button(
             onClick = {
-                val missing = listOf(
-                    Manifest.permission.BLUETOOTH_SCAN,
-                    Manifest.permission.BLUETOOTH_CONNECT,
-                ).filter {
+                // Android 12 (API 31) split Bluetooth into runtime
+                // permissions (scan/connect); Android 10/11 head units
+                // still require ACCESS_FINE_LOCATION at runtime for BLE
+                // scanning — request whichever set this OS actually uses.
+                val wanted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    listOf(
+                        Manifest.permission.BLUETOOTH_SCAN,
+                        Manifest.permission.BLUETOOTH_CONNECT,
+                    )
+                } else {
+                    listOf(Manifest.permission.ACCESS_FINE_LOCATION)
+                }
+                val missing = wanted.filter {
                     ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
                 }
                 if (missing.isEmpty()) onScan() else permissionLauncher.launch(missing.toTypedArray())

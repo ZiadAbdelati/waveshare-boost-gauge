@@ -192,7 +192,13 @@ interface BondOperations {
     suspend fun awaitBondSettled(device: BluetoothDevice, timeoutMs: Long)
 }
 
-/** Production [BondOperations] backed by the real Android Bluetooth stack. */
+/** Production [BondOperations] backed by the real Android Bluetooth stack.
+ *
+ * Every public entry point is reached only through callers that check
+ * [BleTransport.hasBondPermission] first (attemptBond and the re-bond
+ * recovery path), so the runtime permission gate lives there — one
+ * decision point instead of one per low-level call. */
+@Suppress("MissingPermission")
 class AndroidBondOperations(private val context: Context) : BondOperations {
     override fun bondState(device: BluetoothDevice): Int = device.bondState
 
@@ -575,7 +581,12 @@ class BleTransport(
     }
 
     private fun hasBondPermission(): Boolean =
-        ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) ==
+        // API 31+ gates bonding behind the runtime BLUETOOTH_CONNECT
+        // permission; on Android 10/11 the legacy install-time BLUETOOTH
+        // permission (declared in the manifest with maxSdkVersion 30)
+        // already covers createBond, so the gate only applies on 31+.
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) ==
             PackageManager.PERMISSION_GRANTED
 
     private suspend fun attemptBond(device: BluetoothDevice) {

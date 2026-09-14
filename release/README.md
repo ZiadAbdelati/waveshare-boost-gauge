@@ -45,7 +45,7 @@ are NEW in this release (not a reuse of v0.9.7).
   - Real motion: constant-slew 9.789 psi/s still flips at exactly the real
     crossings on all three layouts (zone color is not frozen).
 
-## Companion apps fixed (iOS 0.9.7 (7) / Android 0.9.7 (8))
+## Companion apps fixed (iOS 0.9.7 (7) / Android 0.9.7 (9, Android 10+))
 
 All v0.9.8 fixes carry over (Neon preset stale-color clobber, instant
 preset/layout/font apply, iOS reset-button hit area). New in this release:
@@ -79,7 +79,7 @@ zone-fold touches only the Neon zone-decision and its web mirror.
 | `boost_gauge_merged.bin` | full-flash image (all four partitions, offset 0x0) |
 | `bootloader.bin`, `partition-table.bin`, `ota_data_initial.bin` | individual partitions |
 | `flash.sh` + `flash_args` | one-command full flash helper |
-| `BoostGauge-android-debug.apk` | Android 0.9.7 (versionCode 8), debug build |
+| `BoostGauge-android-debug.apk` | Android 0.9.7 (versionCode 9, minSdk 29 — installs on Android 10+ head units), debug build |
 | `BoostGauge-0.9.7-ios.ipa` | iOS 0.9.7 (build 7), sideload IPA |
 | `BoostGauge-ios-app.zip` | same .app for devicectl install |
 | `SHA256SUMS` | checksums for every file above |
