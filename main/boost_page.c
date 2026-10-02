@@ -32,12 +32,37 @@ static void boost_obd_set_enabled(bool e) { g_sim_obd_set_calls++; g_sim_obd_sta
 static void boost_app_ble_set_enabled(bool e) { g_sim_app_ble_set_calls++; g_sim_app_ble_state = e; }
 #define BOOST_AP_PASSWORD "boost1234"
 /* Host sim firmware version: the sim does not build boost_model.c, so the
- * toggles page's version readout gets a fixed stand-in (overridable via
- * SIM_FW_VERSION for screenshot tests). */
+ * toggles page's version readout needs a value from somewhere. It used to be a
+ * literal ("v0.9.5-sim") that outlived v0.9.5 by four releases. Read the
+ * canonical version.txt - the same file ESP-IDF bakes into the device - so the
+ * sim and the panel can never disagree. SIM_FW_VERSION still wins for
+ * screenshot tests. */
 static const char *sim_fw_version(void)
 {
+    static char buf[32];
     const char *v = getenv("SIM_FW_VERSION");
-    return (v != NULL && v[0] != '\0') ? v : "v0.9.5-sim";
+    if (v != NULL && v[0] != '\0') {
+        return v;
+    }
+    if (buf[0] == '\0') {
+        FILE *f = fopen("version.txt", "r");
+        if (f == NULL) {
+            f = fopen("../../version.txt", "r"); /* when run from sim/build/ */
+        }
+        if (f != NULL) {
+            if (fgets(buf, sizeof(buf), f) != NULL) {
+                size_t n = strlen(buf);
+                while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == '\r')) {
+                    buf[--n] = '\0';
+                }
+            }
+            fclose(f);
+        }
+        if (buf[0] == '\0') {
+            snprintf(buf, sizeof(buf), "unknown");
+        }
+    }
+    return buf;
 }
 #endif
 

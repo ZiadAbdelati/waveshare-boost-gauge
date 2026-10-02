@@ -7,11 +7,12 @@ Two runners keep the AGENTS.md guard rails and the regression ledger
 |---|---|---|
 | `python3 tools/test_suite.py` | **before every commit** | all host-side tests (existing harnesses + ledger-derived contract tests) |
 | `python3 tools/check_hardware_gates.py` | **before every release / flash-to-car** | the live board's physical gates (cadence, WebSocket pool, media, OTA, logs, …) |
+| `python3 tools/tests/test_version_consistency.py --release` | **before publishing a release** | the SHIPPED artifacts embed the `version.txt` release version (firmware app descriptor, IPA/APK build metadata) and `SHA256SUMS` matches the bytes on disk |
 
-Both are **stdlib-only** (plus the repo's own scripts). Neither flashes the
-board; `check_hardware_gates.py` only talks to the board over HTTP/WebSocket,
-and its optional `--serial` capture is read-only (DTR/RTS off) - if another
-session owns the port it reports SKIP, never FAIL.
+All three are **stdlib-only** (plus the repo's own scripts). Only
+`check_hardware_gates.py` talks to a board, and it never flashes; its optional
+`--serial` capture is read-only (DTR/RTS off) - if another session owns the port
+it reports SKIP, never FAIL. The version gate never needs a board at all.
 
 ## Host suite
 
@@ -34,6 +35,7 @@ and its registry plumbing are the future-proofing mechanism.
 
 | Test | Guards (regression-ledger rows) |
 |---|---|
+| `test_version_consistency.py` | Version drift (2026-10-02): `version.txt` is the single release version. Source mode asserts monotonicity against the highest git tag, that nothing shadows it for ESP-IDF (`PROJECT_VER` override, `CONFIG_APP_PROJECT_VER_FROM_CONFIG`), Android `versionName`/`versionCode`, iOS `project.yml` AND every occurrence in the generated pbxproj, the mock deriving from `version.txt`, that `version.txt` is tracked (an untracked copy falls back to `git describe`), and that no superseded version literal survives in code. `--release` additionally parses the shipped `boost_gauge.bin` + merged-image `esp_app_desc`, the IPA's built `Info.plist`, the APK's `versionName`/`versionCode` via `aapt2`, and re-hashes every `SHA256SUMS` entry |
 | `test_web_api_contract.py` | Every `/api/v1` schema the apps parse (`/state` incl. tpms/obd/display, `/config` incl. `appBle`, `/themes` order Dyno Cell→Vault-Tec→Night City→Big Digit→Neon, `/tpms/config` bounds 100-400 kPa / 2000-120000 ms, `/time` + firmware `409 clock_rejected` 5-min rule, `/logs.csv` header, `/media` 409 overlap + repeat DELETE, `/ota` 0xE9 magic, `/restart`, `/network` GET/PUT/DELETE + saved-list semantics) |
 | `test_gatt_contract.py` | Three-way consistency of `docs/bluetooth-gatt.md`, `main/boost_app_ble.c`, `tools/ble_gauge_sim`: UUIDs, 480 B/413 rule, BGL1 log format, zone tokens VAC/ATMO/BOOST/OVER, one-in-flight, `api:1` |
 | `test_theme_store_invariants.py` | `s_defaults[]` order + names; sport-cluster token absence; `demoFastSweep` persisted separately from `demoMode` (`demo_fast_sweep` vs `demo_mode`) and never reset by `boost_sim_init()`; firmware/mock/sim order agreement |
@@ -77,8 +79,14 @@ theme/demo/pixel-shift state afterwards.
 ## Convention
 
 1. Run `python3 tools/test_suite.py` before every commit - it must be green.
+   (It includes `test_version_consistency.py`, which fails the moment any surface
+   drifts from `version.txt`.)
 2. Run `python3 tools/check_hardware_gates.py` (with `--skip ap` on a Mac you
    cannot disassociate, and `--skip ble` where blueutil is unavailable) before
    every release and before flashing the car.
-3. A hardware measurement claim must quote the gate output, never a host-only
+3. Run `python3 tools/tests/test_version_consistency.py --release` before
+   publishing: it verifies the SHIPPED bytes (firmware app descriptors, the IPA's
+   `Info.plist`, the APK's version metadata, `SHA256SUMS` against the files)
+   rather than the sources a maintainer already edited.
+4. A hardware measurement claim must quote the gate output, never a host-only
    run.

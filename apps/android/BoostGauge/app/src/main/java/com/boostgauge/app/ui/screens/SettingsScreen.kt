@@ -1250,7 +1250,7 @@ private fun AboutSection(status: com.boostgauge.app.data.api.Status?) {
         val info = context.packageManager.getPackageInfo(context.packageName, 0)
         "${info.versionName} (${info.longVersionCode})"
     } catch (_: Exception) {
-        "0.9.1"
+        "unknown"
     }
     val firmware = status?.firmwareVersion?.takeIf { it.isNotBlank() } ?: "Not connected"
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {

@@ -51,10 +51,14 @@ from urllib.parse import parse_qs, urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB_ROOT = ROOT / "web"
+# Canonical release version lives at the repo root as a bare string, e.g. "1.0.0".
+VERSION_FILE = ROOT / "version.txt"
 
 STARTED_AT = time.time()
 TIME_ANCHOR_MS = int(STARTED_AT * 1000)
 SEED: int | None = None
+# Loaded from VERSION_FILE once at server start (see BoostMockServer.start).
+FIRMWARE_VERSION = ""
 
 STATE_LOCK = threading.RLock()
 
@@ -679,9 +683,28 @@ def obd_block() -> dict:
     }
 
 
+def load_firmware_version() -> str:
+    """Canonical release version from the repo-root `version.txt`.
+
+    Read once at server start. The mock is a test fixture, so a missing,
+    unreadable, or empty file is a hard startup failure - never a silent
+    fallback that would let the served version drift from the release.
+    """
+    try:
+        text = VERSION_FILE.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise RuntimeError(f"mock_server: cannot read {VERSION_FILE}: {exc}") from exc
+    if not text:
+        raise RuntimeError(f"mock_server: {VERSION_FILE} is empty")
+    return text
+
+
 def state_payload() -> dict:
     """Full /api/v1/state body; names/types mirror boost_web.c:state_json."""
     global PEAK
+    if not FIRMWARE_VERSION:
+        raise RuntimeError(
+            "mock_server: firmware version not loaded; call BoostMockServer.start() first")
     psi = current_psi()
     PEAK = max(PEAK, psi)
     demo = bool(THEME.get("demoMode", False))
@@ -718,7 +741,7 @@ def state_payload() -> dict:
         "zone": zone_for(psi),
         "demo": demo,
         "brightness": int(CONFIG["brightnessHigh"]),
-        "firmwareVersion": "v0.8.0",
+        "firmwareVersion": FIRMWARE_VERSION,
         "uptimeMs": uptime_ms(),
         "epochMs": epoch,
         "timezoneOffsetMinutes": int(CONFIG["timezoneOffsetMinutes"]),
@@ -1632,6 +1655,8 @@ class BoostMockServer:
         return f"http://{self.host}:{self.port}"
 
     def start(self) -> "BoostMockServer":
+        global FIRMWARE_VERSION
+        FIRMWARE_VERSION = load_firmware_version()
         reset_mock_state(self.seed)
         Handler.verbose = self.verbose
         self._httpd = ThreadingHTTPServer((self.host, self.port), Handler)

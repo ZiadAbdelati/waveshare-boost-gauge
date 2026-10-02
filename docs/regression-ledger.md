@@ -875,3 +875,75 @@ returned FIXED for every reported finding):
   canonical PSI, so no Save can be corrupted by it.
 - At an exact rounding tie (`|value| == 0.5/10^d`, e.g. -0.0725 psi in kPa) the web
   prints `-1` where the firmware prints `-0`; measure-zero and both are one step.
+
+## 2026-10-02 — v1.0.0 release: one version source, enforced by a gate
+
+The release version had no single owner, and had already drifted before this
+release was cut: `AGENTS.md` still claimed v0.9.7 while the tags and `release/`
+were at v0.9.9; the iOS XcodeGen spec said 0.9.2 while the committed generated
+pbxproj said 0.9.7 (so a regeneration would have silently DOWNGRADED the shipped
+app); Android said 0.9.7; the mock served a hardcoded `v0.8.0` that the suite in
+turn pinned; the sim's fallback literal `v0.9.5-sim` had outlived v0.9.5 by four
+releases. The historical failure is on record too: the v0.9.7 release shipped a
+binary reporting `v0.9.6-3-gee90519`, because PROJECT_VER was never set and
+ESP-IDF filled `esp_app_desc.version` from `git describe` at build time - a
+binary built one commit after a tag can then never name the release it is in.
+
+Root cause: the version was an OUTPUT of the build environment (`git describe`,
+hand-edited literals) instead of an INPUT of the build.
+
+Fix: `version.txt` (repo root, bare `MAJOR.MINOR.PATCH`, committed) is that input.
+
+- Firmware: ESP-IDF reads it in `project.cmake`
+  (`__project_get_revision_from_version_file`) into PROJECT_VER ->
+  `esp_app_desc.version` -> `/state.firmwareVersion` and the BLE DeviceInfo.
+  Nothing may shadow it: no `set(PROJECT_VER ...)` in CMake, no
+  `CONFIG_APP_PROJECT_VER_FROM_CONFIG`.
+- Sim: `sim_fw_version()` reads the same file (host-only path); `SIM_FW_VERSION`
+  still overrides it for screenshot work.
+- Mock: `load_firmware_version()` reads it once at startup and FAILS LOUDLY if the
+  file is absent or empty; `test_mock_api.py` asserts against the file itself
+  rather than a copied literal (drift-detection proven by pointing the mock at a
+  temp file containing 9.9.9 and observing /state serve 9.9.9).
+- iOS: `project.yml` and every `MARKETING_VERSION`/`CURRENT_PROJECT_VERSION`
+  occurrence in the generated pbxproj. Android: `versionName`/`versionCode`.
+  The Android `About` fallback literal `"0.9.1"` (shown when the PackageManager
+  read throws) became a non-version `"unknown"`: a fallback must never claim a
+  release number.
+
+Gate: `tools/tests/test_version_consistency.py`, in the host suite on the SOURCE
+surfaces and as `--release` before publishing. `--release` reads the SHIPPED
+bytes, not the sources: it parses `esp_app_desc` out of `release/boost_gauge.bin`
+and out of the merged image at the app-partition offset taken from `flash_args`,
+reads the IPA's built `Info.plist` through plistlib, reads the APK's
+`versionName`/`versionCode` through `aapt2`, and re-hashes every `SHA256SUMS`
+entry against the file it names. It also fails when `version.txt` is not tracked
+by git - an untracked copy means a fresh clone has no version file and ESP-IDF
+silently falls back to `git describe`, which is the original failure - and when
+any superseded version literal survives in code.
+
+Two of the new checks proved themselves non-vacuous while being written: the
+tracking check failed on the then-untracked file, and the stale-literal sweep
+initially MISSED `"v0.9.5-sim"` because `\b0\.9\.` cannot match after a `v` (both
+are word characters); the pattern is now `(?<![\d.])0\.9\.\d+(?![\d.])`.
+
+iOS note: `xcodegen generate` was attempted and ABORTED. In this worktree it
+rewrote the root PBXGroup to the worktree's directory name and rehashed the five
+web resource file references (35 insertions/35 deletions of unrelated churn). The
+four version fields were edited directly instead, which is why the pbxproj diff is
+exactly 4 lines. The invariant the gate enforces is that the spec and the
+generated project AGREE, not that any particular tool produced it.
+
+Release verification: `idf.py -B build_release build` + `merge-bin` clean;
+`tools/test_suite.py` green (13 tests); `test_version_consistency.py --release`
+PASS; Android `:app:assembleDebug :app:testDebugUnitTest` 109 tests 0 failures,
+with `aapt2` reading `versionName='1.0.0' versionCode='10'` from the shipped APK;
+iOS unsigned Release archive (`CODE_SIGNING_ALLOWED=NO` - the only provisioning
+profile on this machine is an unrelated tvOS profile expiring 2026-10-03), IPA's
+built `Info.plist` reading 1.0.0 (8), binary arm64 (device, not simulator).
+Hashes for every artifact are in `release/SHA256SUMS`.
+
+HARDWARE: not run - no board was attached. 1.0.0's firmware is host-built and
+simulator-verified only; the converted big-digit cadence A/B and the physical feel
+of the overlay UNITS button remain unmeasured on glass. v0.9.7 stays the last
+hardware-verified baseline.

@@ -2,9 +2,9 @@
 
 This repository is an ESP-IDF 5.5.1 firmware/dashboard for an ESP32-S3 AMOLED boost gauge. These rules are load-bearing. A fresh agent must be able to resume from this file alone; do not rely on chat history.
 
-Current verified release is **`v0.9.7`** (ESP-IDF 5.5.1, app image ~2.5 MB in `release/`; republished 2026-09-06 with the all-themes-except-Vault-Tec dead zone). Preserve that identity in hardware and release notes for current measurements. The full historical regression ledger lives in [`docs/regression-ledger.md`](docs/regression-ledger.md); the condensed guard rails below are the currently-actionable invariants, grouped by area. When a change touches one of these areas, re-read the relevant ledger rows for the measurement detail behind the rule.
+Current release is **`v1.0.0`** (ESP-IDF 5.5.1, app image ~2.5 MB in `release/`, released 2026-10-02 with selectable pressure units). The last **hardware-verified** release is **`v0.9.7`** — 1.0.0's firmware is host-built and simulator-verified only, so its on-glass cadence and overlay unit-cycle behaviour are unmeasured; quote v0.9.7 (or a fresh board run) for physical measurements, never 1.0.0. The release version has exactly ONE source, `version.txt`, and `tools/tests/test_version_consistency.py --release` is the gate that stops the firmware image and both apps from disagreeing with it. The full historical regression ledger lives in [`docs/regression-ledger.md`](docs/regression-ledger.md); the condensed guard rails below are the currently-actionable invariants, grouped by area. When a change touches one of these areas, re-read the relevant ledger rows for the measurement detail behind the rule.
 
-Regression tooling: run `python3 tools/test_suite.py` (host suite, before every commit) and `python3 tools/check_hardware_gates.py` (hardware release gates, before every release/flash-to-car); see `tools/tests/README.md`.
+Regression tooling: run `python3 tools/test_suite.py` (host suite, before every commit), `python3 tools/tests/test_version_consistency.py --release` (version gate, before publishing any release) and `python3 tools/check_hardware_gates.py` (hardware release gates, before every release/flash-to-car); see `tools/tests/README.md`.
 
 ## Working agreements
 
@@ -291,6 +291,7 @@ These are the currently-actionable invariants distilled from the regression ledg
 | The sim must run the same init the firmware does (`boost_theme_init()`); when a host harness and the device disagree, suspect harness init before rendering | 2026-08-11 |
 | Commit the harness before quoting its numbers — a measurement nobody can re-run is worse than arithmetic | 2026-08-01 |
 | Draw escaped marks as shapes, never shell-escaped glyph codepoints; grep for non-ASCII bytes outside comments and for NUL bytes before building | 2026-07-24 |
+| Version drift has ONE source: `version.txt` (repo root, bare `MAJOR.MINOR.PATCH`, committed). ESP-IDF bakes it into `esp_app_desc.version` (`project.cmake` `__project_get_revision_from_version_file`), the sim reads it, the mock reads it, and the iOS `project.yml`/generated pbxproj and Android `versionName` mirror it. `tools/tests/test_version_consistency.py` runs in the host suite on the SOURCE surfaces and with `--release` before publishing, where it parses the shipped `boost_gauge.bin` and merged-image app descriptors, the IPA's built `Info.plist`, the APK via `aapt2`, and re-hashes every `SHA256SUMS` entry against the bytes on disk. Never reintroduce a version literal anywhere in code, and never let `project.yml` and the generated pbxproj disagree — `xcodegen generate` from a stale spec silently DOWNGRADES the shipped app (they sat at 0.9.2 vs 0.9.7) | 2026-10-02 |
 
 ## Commit hygiene
 
