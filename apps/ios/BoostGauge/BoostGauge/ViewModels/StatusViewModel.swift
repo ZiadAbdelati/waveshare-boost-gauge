@@ -11,6 +11,9 @@ final class StatusViewModel: ObservableObject {
     @Published private(set) var tpmsBleEnabled: Bool?
 
     private weak var transport: GaugeTransport?
+    /// Shared session: the `/themes` probe already run for theme names also
+    /// carries `pressureUnit`, which must reach the other tabs.
+    weak var appSession: AppSession?
     private var statusStream: AsyncStream<Result<Data, Error>>?
     private var updateTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
@@ -96,9 +99,17 @@ final class StatusViewModel: ObservableObject {
     private func apply(statusData: Data) async {
         do {
             let decoded = try JSONDecoder().decode(GaugeState.self, from: statusData)
+            // The unit travels on every /state sample (units contract item 2):
+            // this is the live path when the physical panel's UNITS button
+            // changes the unit, and it recovers a client that missed the
+            // initial /themes fetch.
+            let stateUnit = Self.pressureUnit(from: statusData)
             await MainActor.run {
                 assertMainThread()
                 self.state = decoded
+                if let stateUnit {
+                    self.appSession?.applyPressureUnitFromState(stateUnit)
+                }
                 self.isLoading = false
                 self.errorMessage = nil
                 if let id = decoded.activeThemeId {
@@ -113,6 +124,13 @@ final class StatusViewModel: ObservableObject {
         }
     }
 
+    /// Reads `pressureUnit` from a raw `/state` payload without extending the
+    /// decoded `GaugeState` model (the field is presentation-only).
+    private static func pressureUnit(from data: Data) -> String? {
+        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
+        return object["pressureUnit"] as? String
+    }
+
     func loadThemeNames(_ transport: GaugeTransport) async {
         guard let response = try? await transport.get("themes"),
               let object = try? response.jsonObject(),
@@ -120,6 +138,7 @@ final class StatusViewModel: ObservableObject {
             return
         }
         let tpmsBle = object["tpmsBle"] as? Bool
+        let pressureUnit = object["pressureUnit"] as? String
         var names: [String: String] = [:]
         for row in rows {
             if let id = row["id"] as? String {
@@ -128,6 +147,9 @@ final class StatusViewModel: ObservableObject {
         }
         await MainActor.run {
             self.tpmsBleEnabled = tpmsBle
+            if let pressureUnit {
+                self.appSession?.applyPressureUnit(pressureUnit)
+            }
             if let id = self.state?.activeThemeId {
                 self.themeName = names[id] ?? id
             }

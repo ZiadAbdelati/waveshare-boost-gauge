@@ -7,6 +7,8 @@ import com.boostgauge.app.data.GaugeRepository
 import com.boostgauge.app.data.api.GaugeApi
 import com.boostgauge.app.data.api.Config
 import com.boostgauge.app.data.api.ThemesPayload
+import com.boostgauge.app.ui.PressureUnit
+import com.boostgauge.app.ui.PressureUnitState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -15,6 +17,7 @@ import kotlinx.coroutines.launch
 class StatusViewModel(
     private val repository: GaugeRepository,
     private val api: GaugeApi,
+    private val pressureUnitState: PressureUnitState,
 ) : ViewModel() {
 
     val status: StateFlow<com.boostgauge.app.data.api.Status?> = repository.status
@@ -29,7 +32,19 @@ class StatusViewModel(
     private val _themes = MutableStateFlow<ThemesPayload?>(null)
     val themes: StateFlow<ThemesPayload?> = _themes.asStateFlow()
 
+    /** The process-wide unit this view model publishes, adopted from /state. */
+    val pressureUnit: StateFlow<PressureUnit> = pressureUnitState.unit
+
     init {
+        // Adopt the unit from EVERY /state sample the repository delivers
+        // (HTTP 4 Hz / BLE notifications). This is the live propagation path
+        // when the panel's UNITS button changes the unit, and it covers
+        // reconnect — no dependency on the one-shot /themes fetch below.
+        viewModelScope.launch {
+            repository.status.collect { sample ->
+                sample?.pressureUnit?.let { pressureUnitState.apply(it) }
+            }
+        }
         viewModelScope.launch {
             runCatching { api.getThemes() }
                 .getOrNull()

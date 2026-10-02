@@ -22,6 +22,8 @@ struct Theme: Codable, Identifiable {
 struct ThemeList: Codable {
     let activeThemeId: String?
     let themes: [Theme]?
+    /// Global pressure-display unit ("psi" | "bar" | "kPa"); units contract v1.
+    let pressureUnit: String?
     let bigDigitStaticBg: Bool?
     let bigDigitColorText: Bool?
     let bigDigitStaticColor: String?

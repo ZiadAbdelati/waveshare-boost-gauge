@@ -388,6 +388,7 @@ final class SimBleTransport: GaugeTransport {
 
     private static let defaultThemesPayload: [String: Any] = [
         "activeThemeId": "neon",
+        "pressureUnit": "psi",
         "bigDigitStaticBg": true,
         "bigDigitColorText": false,
         "bigDigitStaticColor": "#000000",

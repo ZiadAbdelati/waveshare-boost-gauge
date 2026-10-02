@@ -54,6 +54,7 @@ struct SettingsView: View {
             }
             .onAppear {
                 session.refreshBLELinkState()
+                vm.appSession = session
                 vm.reset(transport: session.transport)
             }
             .onChange(of: session.transportID) { _ in
@@ -264,11 +265,25 @@ struct SettingsView: View {
             if vm.config == nil {
                 unavailableRow("gauge", loading: vm.isLoading)
             } else {
+            Picker("Pressure unit", selection: Binding(
+                get: { session.pressureUnit },
+                set: { unit in
+                    // The unit publishes only once the gauge confirms the
+                    // write (the PUT echo); a failed or superseded write leaves
+                    // the last confirmed unit in place. The view model
+                    // sequences rapid selections so the newest one wins.
+                    Task { await vm.selectPressureUnit(unit) }
+                }
+            )) {
+                ForEach(PressureUnit.all, id: \.self) { unit in
+                    Text(PressureUnit.label(unit)).tag(unit)
+                }
+            }
             HStack {
                 Text("psiMin")
                     .foregroundColor(.secondary)
                 Spacer()
-                TextField("−15.0", value: $vm.psiMin, format: .number)
+                TextField(rangePlaceholder(-15.0, psiDecimals: 1), value: psiDisplayBinding($vm.psiMin), format: .number)
                     .keyboardType(.decimalPad)
                     .multilineTextAlignment(.trailing)
                     .frame(width: 90)
@@ -277,7 +292,7 @@ struct SettingsView: View {
                 Text("psiMax")
                     .foregroundColor(.secondary)
                 Spacer()
-                TextField("10.0", value: $vm.psiMax, format: .number)
+                TextField(rangePlaceholder(10.0, psiDecimals: 1), value: psiDisplayBinding($vm.psiMax), format: .number)
                     .keyboardType(.decimalPad)
                     .multilineTextAlignment(.trailing)
                     .frame(width: 90)
@@ -286,7 +301,7 @@ struct SettingsView: View {
                 Text("psiOverboost")
                     .foregroundColor(.secondary)
                 Spacer()
-                TextField("8.0", value: $vm.psiOverboost, format: .number)
+                TextField(rangePlaceholder(8.0, psiDecimals: 1), value: psiDisplayBinding($vm.psiOverboost), format: .number)
                     .keyboardType(.decimalPad)
                     .multilineTextAlignment(.trailing)
                     .frame(width: 90)
@@ -304,6 +319,48 @@ struct SettingsView: View {
                 Task { await vm.saveConfig() }
             }
             }
+        }
+    }
+
+    /// Range TextField binding: shows the canonical PSI value in the selected
+    /// unit while the ViewModel keeps PSI (wire-canonical); edits convert back
+    /// to PSI at the input boundary, so `saveConfig` always PUTs PSI.
+    private func psiDisplayBinding(_ source: Binding<Double>) -> Binding<Double> {
+        Binding(
+            get: { PressureUnit.displayRounded(fromPsi: source.wrappedValue, unit: session.pressureUnit) },
+            set: { source.wrappedValue = PressureUnit.psi(fromDisplay: $0, unit: session.pressureUnit) }
+        )
+    }
+
+    /// Converted placeholder mirroring the default PSI hint (negative values
+    /// keep the UI's U+2212 minus sign, matching today's `−15.0`).
+    private func rangePlaceholder(_ psi: Double, psiDecimals: Int) -> String {
+        let text = Format.pressure(psi, unit: session.pressureUnit, psiDecimals: psiDecimals)
+        return text.hasPrefix("-") ? "−" + text.dropFirst() : text
+    }
+
+    /// TPMS threshold binding: the stepper displays/edits in the selected unit
+    /// while the ViewModel keeps PSI (canonical; `saveTPMSConfig` sends
+    /// `lowPsi`).
+    private var tpmsLowDisplayBinding: Binding<Double> {
+        Binding(
+            get: { PressureUnit.displayRounded(fromPsi: vm.tpmsLowPsi, unit: session.pressureUnit) },
+            set: { vm.tpmsLowPsi = PressureUnit.psi(fromDisplay: $0, unit: session.pressureUnit) }
+        )
+    }
+
+    /// The existing 14.5...58 psi bounds expressed in the selected unit.
+    private var tpmsLowDisplayRange: ClosedRange<Double> {
+        let lower = PressureUnit.displayRounded(fromPsi: 14.5, unit: session.pressureUnit)
+        let upper = PressureUnit.displayRounded(fromPsi: 58.0, unit: session.pressureUnit)
+        return lower...upper
+    }
+
+    private var tpmsLowDisplayStep: Double {
+        switch PressureUnit.normalized(session.pressureUnit) {
+        case PressureUnit.bar: return 0.05
+        case PressureUnit.kPa: return 5
+        default: return 0.5
         }
     }
 
@@ -332,7 +389,10 @@ struct SettingsView: View {
             Section("TPMS") {
                 Toggle("BLE link", isOn: $vm.tpmsBle)
                     .onChange(of: vm.tpmsBle) { _ in Task { await vm.saveTpmsBle() } }
-                Stepper("Low pressure: \(Format.psi(vm.tpmsLowPsi)) psi", value: $vm.tpmsLowPsi, in: 14.5...58.0, step: 0.5)
+                Stepper("Low pressure: \(Format.pressure(vm.tpmsLowPsi, unit: session.pressureUnit, psiDecimals: 1)) \(PressureUnit.suffix(session.pressureUnit))",
+                        value: tpmsLowDisplayBinding,
+                        in: tpmsLowDisplayRange,
+                        step: tpmsLowDisplayStep)
                 Picker("Stale after", selection: $vm.tpmsStaleAfterMs) {
                     // A custom value saved from the web (e.g. 25 s) isn't in the
                     // preset list — prepend it so the picker shows the real state.

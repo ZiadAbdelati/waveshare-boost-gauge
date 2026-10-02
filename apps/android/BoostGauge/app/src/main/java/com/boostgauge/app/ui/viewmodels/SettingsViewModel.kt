@@ -13,6 +13,7 @@ import com.boostgauge.app.data.settings.TransportSelection
 import com.boostgauge.app.data.settings.TransportType
 import com.boostgauge.app.data.transport.BleScanResult
 import com.boostgauge.app.ui.Format
+import com.boostgauge.app.ui.PressureUnit
 import com.boostgauge.app.ui.Timezones
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -50,6 +51,16 @@ class SettingsViewModel(
         val psiMin: String = "-15.0",
         val psiMax: String = "10.0",
         val psiOverboost: String = "8.0",
+        /**
+         * Canonical PSI each pressure string was last rendered from. The
+         * strings above are display-only (rounded to the unit's decimals), so
+         * Save must send THIS value when the user did not edit the field —
+         * reconstructing PSI from the rounded string silently drifts the
+         * gauge geometry (bar) or trips the firmware's -30 psi floor (kPa).
+         */
+        val psiMinValue: Double = -15.0,
+        val psiMaxValue: Double = 10.0,
+        val psiOverboostValue: Double = 8.0,
         val zeroAngle: String = "90.0",
         val appBle: Boolean = false,
         val demoMode: Boolean = false,
@@ -62,6 +73,8 @@ class SettingsViewModel(
         val pixelShiftSec: String = "90",
         val tpmsBle: Boolean = false,
         val lowPsi: String = "32.0",
+        /** Display unit for every pressure field/readout on this form. */
+        val pressureUnit: PressureUnit = PressureUnit.default,
         val staleAfterMs: String = "15000",
         val timezoneOffsetMinutes: Int = 0,
         val timezoneTz: String = "",
@@ -72,9 +85,12 @@ class SettingsViewModel(
             dimEnabled = config.dimSchedule.enabled,
             dimStart = config.dimSchedule.startMinutes.toString(),
             dimEnd = config.dimSchedule.endMinutes.toString(),
-            psiMin = Format.fmt(config.psiMin, 1),
-            psiMax = Format.fmt(config.psiMax, 1),
-            psiOverboost = Format.fmt(config.psiOverboost, 1),
+            psiMin = pressureUnit.format(config.psiMin, 1),
+            psiMax = pressureUnit.format(config.psiMax, 1),
+            psiOverboost = pressureUnit.format(config.psiOverboost, 1),
+            psiMinValue = config.psiMin,
+            psiMaxValue = config.psiMax,
+            psiOverboostValue = config.psiOverboost,
             zeroAngle = Format.fmt(config.zeroAngle, 0),
             appBle = config.appBle,
             timezoneOffsetMinutes = config.timezoneOffsetMinutes,
@@ -91,19 +107,42 @@ class SettingsViewModel(
             pixelShift = themes.pixelShift,
             pixelShiftSec = themes.pixelShiftSec.toString(),
             tpmsBle = themes.tpmsBle,
+            pressureUnit = PressureUnit.fromWire(themes.pressureUnit),
         )
 
         fun withTpms(tpms: TpmsConfig): FieldState = copy(
-            lowPsi = Format.fmt(tpms.lowPsi, 1),
+            lowPsi = pressureUnit.format(tpms.lowPsi, 1),
             staleAfterMs = tpms.staleAfterMs.toString(),
         )
 
+        /**
+         * Re-formats ONLY the pressure strings from the authoritative PSI
+         * payloads after the device unit changed, leaving every other field
+         * (and its unsaved edits) untouched. Seeding from the payload — rather
+         * than converting the displayed strings — keeps psi values exact on a
+         * unit round-trip.
+         */
+        fun withPressureUnit(config: Config?, tpms: TpmsConfig?, unit: PressureUnit): FieldState = copy(
+            pressureUnit = unit,
+            psiMin = config?.let { unit.format(it.psiMin, 1) } ?: psiMin,
+            psiMax = config?.let { unit.format(it.psiMax, 1) } ?: psiMax,
+            psiOverboost = config?.let { unit.format(it.psiOverboost, 1) } ?: psiOverboost,
+            psiMinValue = config?.psiMin ?: psiMinValue,
+            psiMaxValue = config?.psiMax ?: psiMaxValue,
+            psiOverboostValue = config?.psiOverboost ?: psiOverboostValue,
+            lowPsi = tpms?.let { unit.format(it.lowPsi, 1) } ?: lowPsi,
+        )
+
         companion object {
-            /** Initialises the form once per explicit load; null payload keeps defaults. */
+            /**
+             * Initialises the form once per explicit load; null payload keeps
+             * defaults. Themes first: it carries `pressureUnit`, and the
+             * config/tpms pressure strings are formatted in that unit.
+             */
             fun from(config: Config?, themes: ThemesPayload?, tpms: TpmsConfig?): FieldState {
                 var fields = FieldState()
-                if (config != null) fields = fields.withConfig(config)
                 if (themes != null) fields = fields.withThemes(themes)
+                if (config != null) fields = fields.withConfig(config)
                 if (tpms != null) fields = fields.withTpms(tpms)
                 return fields
             }
@@ -154,7 +193,7 @@ class SettingsViewModel(
                         config = config,
                         tpms = tpms,
                         themes = themes,
-                        fields = it.fields.withConfig(config).withThemes(themes).withTpms(tpms),
+                        fields = it.fields.withThemes(themes).withConfig(config).withTpms(tpms),
                         networkStatus = network,
                     )
                 }
@@ -236,7 +275,7 @@ class SettingsViewModel(
             },
             message = "Display saved",
         ) { (config, themes) ->
-            { s -> s.copy(config = config, themes = themes, fields = s.fields.withConfig(config).withThemes(themes)) }
+            { s -> s.copy(config = config, themes = themes, fields = s.fields.withThemes(themes).withConfig(config)) }
         }
     }
 
@@ -258,10 +297,19 @@ class SettingsViewModel(
 
     fun saveRange() {
         val fields = _state.value.fields
+        val unit = fields.pressureUnit
+        // An untouched field sends the canonical PSI it was rendered from;
+        // only a field the user actually edited converts back from the display
+        // unit. Reconstructing PSI from the rounded display string drifts the
+        // gauge geometry (bar: 10.0 -> 10.0076) and trips the firmware's
+        // -30 psi floor (kPa), so it must never happen for an untouched field.
+        fun canonical(display: String, retained: Double): Double? =
+            if (display == unit.format(retained, 1)) retained
+            else display.toDoubleOrNull()?.let { unit.toPsi(it) }
         val patch = buildJsonObject {
-            fields.psiMin.toDoubleOrNull()?.let { put("psiMin", it) }
-            fields.psiMax.toDoubleOrNull()?.let { put("psiMax", it) }
-            fields.psiOverboost.toDoubleOrNull()?.let { put("psiOverboost", it) }
+            canonical(fields.psiMin, fields.psiMinValue)?.let { put("psiMin", it) }
+            canonical(fields.psiMax, fields.psiMaxValue)?.let { put("psiMax", it) }
+            canonical(fields.psiOverboost, fields.psiOverboostValue)?.let { put("psiOverboost", it) }
             fields.zeroAngle.toDoubleOrNull()?.let { put("zeroAngle", it) }
         }
         save(
@@ -272,11 +320,36 @@ class SettingsViewModel(
         }
     }
 
+    /**
+     * Persist the pressure unit on its own (themes/config accepts partial
+     * patches, mirroring [saveTpmsBle]). The echoed payload carries the unit;
+     * the pressure fields are re-formatted from the last known server values
+     * so no psi string is left in the previous unit.
+     */
+    fun savePressureUnit(unit: PressureUnit) {
+        save(
+            body = { api.updateThemesConfig(buildJsonObject { put("pressureUnit", unit.wire) }) },
+            message = "Pressure unit set to ${unit.suffix}",
+        ) { themes ->
+            { s ->
+                s.copy(
+                    themes = themes,
+                    fields = s.fields.withPressureUnit(
+                        config = s.config,
+                        tpms = s.tpms,
+                        unit = PressureUnit.fromWire(themes.pressureUnit),
+                    ),
+                )
+            }
+        }
+    }
+
     fun saveThemeFlags() = saveDemoMode()
 
     fun saveTpms() {
         val fields = _state.value.fields
-        val lowPsi = fields.lowPsi.toDoubleOrNull() ?: return
+        // The field edits the display unit; the wire lowPsi is always PSI.
+        val lowPsi = fields.lowPsi.toDoubleOrNull()?.let { fields.pressureUnit.toPsi(it) } ?: return
         val staleAfterMs = fields.staleAfterMs.toLongOrNull() ?: return
         save(
             body = { api.updateTpmsConfig(lowPsi, staleAfterMs) },

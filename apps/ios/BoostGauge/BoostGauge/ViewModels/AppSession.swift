@@ -18,11 +18,60 @@ final class AppSession: ObservableObject {
     @Published private(set) var hardwareBleE2EStatus: String?
     @Published private(set) var hardwareBleE2ESteps: [String: String] = [:]
 
+    /// App-wide pressure-display unit from the last `/themes` payload (units
+    /// contract v1). Canonical wire values stay PSI; every screen converts at
+    /// display time so a change in Settings is reflected across tabs at once.
+    /// This is the single source of truth for the displayed unit.
+    @Published private(set) var pressureUnit = PressureUnit.psi
+
+    /// Locally confirmed unit still awaiting agreement from a live `/state`
+    /// sample. Set when a unit PUT is confirmed by the gauge's own echo; until
+    /// a sample carries the same unit, a disagreeing sample is stale (in
+    /// flight across the write) and must not revert the confirmed selection.
+    private var awaitingStateUnit: String?
+
     let hardwareBleE2ERequested: Bool
     let simBleRequested: Bool
 
     var transportID: ObjectIdentifier? {
         transport.map { ObjectIdentifier($0) }
+    }
+
+    /// Adopt the unit reported by a `/themes` payload (initial load, or the
+    /// echo of a generic theme write). `/themes` is the persisted config, so it
+    /// is authoritative; the Settings unit write sequence keeps a payload that
+    /// predates an in-flight unit selection from publishing.
+    @MainActor
+    func applyPressureUnit(_ raw: String) {
+        let unit = PressureUnit.normalized(raw)
+        guard unit != pressureUnit else { return }
+        pressureUnit = unit
+    }
+
+    /// Confirm a locally initiated unit write (its PUT echo). Publishes the
+    /// unit and holds it against stale `/state` samples until one agrees.
+    @MainActor
+    func confirmLocalPressureUnit(_ raw: String) {
+        let unit = PressureUnit.normalized(raw)
+        awaitingStateUnit = unit
+        guard unit != pressureUnit else { return }
+        pressureUnit = unit
+    }
+
+    /// Adopt the unit from a live `/state` sample (contract item 2), so the app
+    /// follows the physical panel's UNITS button and recovers when the initial
+    /// `/themes` fetch was missed. While a locally confirmed change awaits
+    /// agreement, a disagreeing sample is ignored; the first agreeing sample
+    /// releases the hold and samples lead again.
+    @MainActor
+    func applyPressureUnitFromState(_ raw: String) {
+        let unit = PressureUnit.normalized(raw)
+        if let awaiting = awaitingStateUnit {
+            if unit == awaiting { awaitingStateUnit = nil }
+            return
+        }
+        guard unit != pressureUnit else { return }
+        pressureUnit = unit
     }
 
     /// The HTTP host the app can reach the gauge's full HTTP API from. For

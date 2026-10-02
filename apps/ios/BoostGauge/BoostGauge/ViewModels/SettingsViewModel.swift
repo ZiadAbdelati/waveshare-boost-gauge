@@ -69,7 +69,20 @@ final class SettingsViewModel: ObservableObject {
     @Published var isForgettingOBDPeer = false
 
     private weak var transport: GaugeTransport?
+    /// Shared session so a unit change/load reaches every tab that renders
+    /// pressure (Status/Logs/Themes). Weak: the session owns the app lifetime.
+    weak var appSession: AppSession?
+    /// Monotonic sequence over unit writes: only the newest selection's echo
+    /// may publish, so a slow older PUT can never overwrite a newer one.
+    private var unitWriteSeq = 0
+    /// Newest unit-write sequence that has COMPLETED (success or failure).
+    /// While `unitWriteSeq != unitConfirmedSeq` a unit-carrying `/themes`
+    /// payload predates the in-flight write and must not publish.
+    private var unitConfirmedSeq = 0
     private var obdPollTask: Task<Void, Never>?
+
+    /// Which authority a decoded `/themes` unit came from.
+    private enum UnitSource { case remote, local }
 
     func reset(transport: GaugeTransport?) {
         assertMainThread()
@@ -470,6 +483,51 @@ final class SettingsViewModel: ObservableObject {
         await saveDemoMode()
     }
 
+    /// Range ▸ Pressure unit: persist the picker's selection.
+    ///
+    /// The unit does NOT publish until the gauge confirms it (the PUT echo):
+    /// a failed write leaves the UI on the last confirmed unit, and the
+    /// monotonic `unitWriteSeq` guarantees a late echo from an older selection
+    /// can never overwrite a newer one. The firmware echoes the full `/themes`
+    /// payload, which `applyThemeFlags` folds back.
+    func selectPressureUnit(_ unit: String) async {
+        let unit = PressureUnit.normalized(unit)
+        guard let transport else {
+            await MainActor.run { errorMessage = "No gauge connection — reconnect, then retry." }
+            return
+        }
+        savedMessage = nil
+        unitWriteSeq += 1
+        let seq = unitWriteSeq
+        do {
+            let response = try await transport.send("PUT", path: "themes/config", body: ["pressureUnit": unit])
+            await MainActor.run {
+                // A newer selection superseded this write: drop the stale echo.
+                guard seq == self.unitWriteSeq else { return }
+                self.unitConfirmedSeq = seq
+                guard response.status == 200 else {
+                    self.errorMessage = APIErrorText.from(response)
+                    return
+                }
+                if let decoded = try? JSONDecoder().decode(ThemeList.self, from: response.body),
+                   decoded.pressureUnit != nil {
+                    self.applyThemeFlags(decoded, unitSource: .local)
+                } else {
+                    // Echo without the field (older firmware): confirm the
+                    // value we just wrote so the UI still adopts it.
+                    self.appSession?.confirmLocalPressureUnit(unit)
+                }
+                self.savedMessage = "Saved"
+            }
+        } catch {
+            await MainActor.run {
+                guard seq == self.unitWriteSeq else { return }
+                self.unitConfirmedSeq = seq
+                self.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
     func saveTPMSConfig() async {
         guard let transport else { return }
         savedMessage = nil
@@ -662,9 +720,23 @@ final class SettingsViewModel: ObservableObject {
             .map { $0.id } ?? SettingsViewModel.customTimezoneID
     }
 
-    private func applyThemeFlags(_ flags: ThemeList) {
+    private func applyThemeFlags(_ flags: ThemeList, unitSource: UnitSource = .remote) {
         assertMainThread()
         themeFlags = flags
+        if let value = flags.pressureUnit {
+            let unit = PressureUnit.normalized(value)
+            switch unitSource {
+            case .local:
+                // Our own PUT echo: publish and hold against stale /state.
+                appSession?.confirmLocalPressureUnit(unit)
+            case .remote:
+                // A GET or a non-unit echo may predate an in-flight unit write;
+                // only publish once no unit write is pending.
+                if unitWriteSeq == unitConfirmedSeq {
+                    appSession?.applyPressureUnit(unit)
+                }
+            }
+        }
         if let value = flags.demoMode { demoMode = value }
         if let value = flags.demoFastSweep { demoFastSweep = value }
         if let value = flags.tpmsBle { tpmsBle = value }

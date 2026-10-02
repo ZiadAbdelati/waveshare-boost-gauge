@@ -798,6 +798,24 @@ static esp_err_t themes_config_put(httpd_req_t *req)
         boost_obd_set_enabled(cJSON_IsTrue(tble));
     }
 
+    /* Global pressure-display unit. Presentation-only: canonical values stay
+     * psi. Validate here so a rejected body leaves the persisted unit
+     * untouched, but APPLY only after every other field has been validated -
+     * the trailing rebuild re-rasterises the unit marks and readouts. A
+     * present non-string is a client bug and gets the same 400 as a bad token
+     * rather than being silently ignored. */
+    const cJSON *punit = cJSON_GetObjectItemCaseSensitive(root, "pressureUnit");
+    boost_unit_t pending_unit = BOOST_UNIT_DEFAULT;
+    bool have_unit = false;
+    if (punit != NULL) {
+        if (!cJSON_IsString(punit) ||
+            !boost_units_parse(punit->valuestring, &pending_unit)) {
+            cJSON_Delete(root);
+            return send_err(req, HTTPD_400, "invalid_pressure_unit");
+        }
+        have_unit = true;
+    }
+
     const cJSON *vface = cJSON_GetObjectItemCaseSensitive(root, "vaultFace");
     if (vface != NULL) {
         uint32_t rgb = 0;
@@ -903,6 +921,9 @@ static esp_err_t themes_config_put(httpd_req_t *req)
             }
             boost_theme_set_colors(id->valuestring, &colors);
         }
+    }
+    if (have_unit) {
+        boost_theme_set_pressure_unit(pending_unit);
     }
     cJSON_Delete(root);
 

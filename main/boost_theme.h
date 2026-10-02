@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "boost_neon_geom.h"
+#include "boost_units.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -191,6 +192,14 @@ void boost_theme_set_demo_fast_sweep(bool enabled);
  */
 bool boost_theme_tpms_ble(void);
 void boost_theme_set_tpms_ble(bool enabled);
+
+/*
+ * Global pressure-display unit (PSI / bar / kPa). Persisted under NVS "unit".
+ * Every canonical value stays PSI; this only selects how numbers are rendered
+ * on the panel, the dashboard and the companion apps. Default PSI.
+ */
+boost_unit_t boost_theme_pressure_unit(void);
+void boost_theme_set_pressure_unit(boost_unit_t unit);
 
 /* Vault-Tec dial glow: the face colour the dial fills with and the vignette
  * darkens from, plus the vignette depth as a percentage (0 = flat, higher =

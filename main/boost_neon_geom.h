@@ -105,6 +105,18 @@ void boost_neon_layout_readout(float psi, int slot_w, int dot_w,
                                const boost_neon_digit_metrics_t *metrics,
                                boost_neon_readout_t *out);
 
+/**
+ * Same layout, but from an already-unit-converted `value` with the given
+ * decimal count (0..3). Callers converting psi to bar/kPa fold the +-0.1 PSI
+ * dead zone BEFORE conversion and pass the converted value here. The legacy
+ * PSI wrapper above is exactly this with the fold applied and 1 decimal.
+ */
+void boost_neon_layout_readout_fmt(float value, int decimals, int slot_w, int dot_w,
+                                   int sign_w, int sign_gap, int negative_shift,
+                                   int font_px,
+                                   const boost_neon_digit_metrics_t *metrics,
+                                   boost_neon_readout_t *out);
+
 /*
  * One slanted bar of the sign mark. Six values, not four: the bar is a
  * parallelogram, so the top edge is offset from the bottom by the italic

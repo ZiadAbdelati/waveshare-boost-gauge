@@ -48,6 +48,7 @@ import com.boostgauge.app.ui.BoostFootnote
 import com.boostgauge.app.ui.BoostMetric
 import com.boostgauge.app.ui.BoostNavTitle
 import com.boostgauge.app.ui.Format
+import com.boostgauge.app.ui.PressureUnit
 import com.boostgauge.app.ui.components.GroupedSection
 import com.boostgauge.app.ui.components.MetricRow
 import com.boostgauge.app.ui.viewmodels.CalibrationViewModel
@@ -63,6 +64,7 @@ fun CalibrationScreen(container: AppContainer) {
         },
     )
     val state by viewModel.state.collectAsState()
+    val pressureUnit by container.pressureUnit.unit.collectAsState()
     val focusManager = LocalFocusManager.current
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -108,6 +110,7 @@ fun CalibrationScreen(container: AppContainer) {
                     item {
                         SavedCalibrationSection(
                             cal = calibration.calibration,
+                            unit = pressureUnit,
                             savingSupply = state.savingSupply,
                             onSaveSupply = viewModel::setSupplyVolts,
                         )
@@ -232,6 +235,7 @@ private fun LiveSensorsSection(live: CalibrationLive) {
 @Composable
 private fun SavedCalibrationSection(
     cal: com.boostgauge.app.data.api.CalibrationValues,
+    unit: PressureUnit,
     savingSupply: Boolean,
     onSaveSupply: (Double) -> Unit,
 ) {
@@ -244,7 +248,7 @@ private fun SavedCalibrationSection(
                 modifier = Modifier.padding(vertical = 12.dp),
             )
         } else {
-            MetricRow("Offset", "${Format.fmt(cal.offsetPsi, 2)} psi")
+            MetricRow("Offset", "${unit.format(cal.offsetPsi, 2)} ${unit.suffix}")
             if (cal.offsetKpa != null) {
                 HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
                 MetricRow("Offset kPa", Format.fmt(cal.offsetKpa, 2))

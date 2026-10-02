@@ -59,15 +59,16 @@ struct LogsView: View {
                                     .accessibilityIdentifier("logsSampleCount")
                             }
                             LogPressureChart(samples: vm.samples, anchor: vm.anchor, revision: vm.dataRevision,
+                                 unit: session.pressureUnit,
                                  fixtureCrosshair: ProcessInfo.processInfo.arguments.contains("-e2eCrosshair"))
                                 .frame(height: 200)
                                 .padding(.vertical, 8)
                             if let minimum = vm.samples.map(\.psi).min(),
                                let maximum = vm.samples.map(\.psi).max() {
                                 HStack {
-                                    Label("Min \(Format.psi2(minimum)) psi", systemImage: "arrow.down")
+                                    Label("Min \(Format.pressure(minimum, unit: session.pressureUnit, psiDecimals: 2)) \(PressureUnit.suffix(session.pressureUnit))", systemImage: "arrow.down")
                                     Spacer()
-                                    Label("Max \(Format.psi2(maximum)) psi", systemImage: "arrow.up")
+                                    Label("Max \(Format.pressure(maximum, unit: session.pressureUnit, psiDecimals: 2)) \(PressureUnit.suffix(session.pressureUnit))", systemImage: "arrow.up")
                                 }
                                 .font(.caption.monospacedDigit())
                                 .foregroundColor(.secondary)
@@ -139,6 +140,9 @@ struct LogPressureChart: View {
     /// The LogsViewModel's data revision: the downsampled-column cache key so
     /// a refreshed window with the same column count still rebuilds its columns.
     var revision: Int = 0
+    /// Pressure-display unit for the y-axis labels and crosshair readout.
+    /// Geometry (domain, ticks, trace) stays in PSI; only the numerals convert.
+    var unit: String = PressureUnit.psi
     /// Test/screenshot fixture only: when true and no finger is down, show the
     /// crosshair readout at the newest sample so the UI is deterministic to
     /// capture. Gated by the `-e2eCrosshair` launch argument; never on in real
@@ -284,7 +288,7 @@ struct LogPressureChart: View {
                 path.addLine(to: CGPoint(x: plot.maxX, y: y))
             }
             .stroke(Color.secondary.opacity(0.15), lineWidth: 1)
-            Text(Self.tickLabel(tick))
+            Text(Self.tickLabel(tick, unit: unit))
                 .font(.caption2.monospacedDigit())
                 .foregroundColor(.secondary)
                 .frame(width: yAxisWidth - 6, alignment: .trailing)
@@ -346,7 +350,7 @@ struct LogPressureChart: View {
                 .frame(width: 8, height: 8)
                 .position(x: point.x, y: point.y)
 
-            let text = "\(Format.psi(point.value)) psi · \(timeText(for: point.sampleIndex))"
+            let text = "\(Format.pressure(point.value, unit: unit, psiDecimals: 1)) \(PressureUnit.suffix(unit)) · \(timeText(for: point.sampleIndex))"
             Text(text)
                 .font(.caption2.monospacedDigit())
                 .foregroundColor(.white)
@@ -448,10 +452,17 @@ struct LogPressureChart: View {
         return ticks
     }
 
-    static func tickLabel(_ value: Double) -> String {
-        if value == 0 { return "0" }
-        if value == value.rounded() { return String(format: "%.0f", value) }
-        return String(format: "%.1f", value)
+    /// Y-axis tick label from a PSI-domain tick value. PSI keeps the legacy
+    /// label rules (byte-identical default output); converted units render at
+    /// the contract precision. Tick positions stay PSI — only numerals change.
+    static func tickLabel(_ psiValue: Double, unit: String = PressureUnit.psi) -> String {
+        if PressureUnit.normalized(unit) != PressureUnit.psi {
+            let display = PressureUnit.display(fromPsi: psiValue, unit: unit)
+            return String(format: "%.\(PressureUnit.decimals(unit))f", display)
+        }
+        if psiValue == 0 { return "0" }
+        if psiValue == psiValue.rounded() { return String(format: "%.0f", psiValue) }
+        return String(format: "%.1f", psiValue)
     }
 
     static func relativeTime(_ tMs: Int64?, newestMs: Int64?) -> String {

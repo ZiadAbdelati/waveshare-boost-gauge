@@ -83,7 +83,7 @@ import com.boostgauge.app.ui.BoostMonoCaption
 import com.boostgauge.app.ui.BoostNavTitle
 import com.boostgauge.app.ui.BoostSectionHeader
 import com.boostgauge.app.ui.BoostCaptionSemibold
-import com.boostgauge.app.ui.Format
+import com.boostgauge.app.ui.PressureUnit
 import com.boostgauge.app.ui.viewmodels.LogsViewModel
 import com.boostgauge.app.ui.viewmodels.LogWindow
 import kotlinx.coroutines.launch
@@ -110,6 +110,7 @@ fun LogsScreen(container: AppContainer) {
         },
     )
     val state by viewModel.state.collectAsState()
+    val pressureUnit by container.pressureUnit.unit.collectAsState()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var exportDone by remember { mutableStateOf(false) }
@@ -252,6 +253,7 @@ fun LogsScreen(container: AppContainer) {
                             LogPressureChart(
                                 samples = state.samples,
                                 anchor = viewModel.anchor(),
+                                unit = pressureUnit,
                                 fixtureCrosshair = fixtureCrosshair,
                             )
 
@@ -275,7 +277,7 @@ fun LogsScreen(container: AppContainer) {
                                             modifier = Modifier.size(14.dp),
                                         )
                                         Text(
-                                            text = "Min ${Format.fmt(min, 2)} psi",
+                                            text = "Min ${pressureUnit.format(min, 2)} ${pressureUnit.suffix}",
                                             style = BoostMonoCaption,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         )
@@ -291,7 +293,7 @@ fun LogsScreen(container: AppContainer) {
                                             modifier = Modifier.size(14.dp),
                                         )
                                         Text(
-                                            text = "Max ${Format.fmt(max, 2)} psi",
+                                            text = "Max ${pressureUnit.format(max, 2)} ${pressureUnit.suffix}",
                                             style = BoostMonoCaption,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         )
@@ -338,6 +340,7 @@ private data class Crosshair(val x: Float, val y: Float, val value: Double, val 
 private fun LogPressureChart(
     samples: List<LogSample>,
     anchor: Status?,
+    unit: PressureUnit,
     fixtureCrosshair: Boolean = false,
 ) {
     val values = remember(samples) { samples.map { it.psi } }
@@ -392,7 +395,7 @@ private fun LogPressureChart(
             },
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
-            drawChart(values, domain, samples, anchor, plot, series, tracePath, userCrosshair, userTouched, fixtureCrosshair, gridColor, zeroColor)
+            drawChart(values, domain, samples, anchor, plot, series, tracePath, userCrosshair, userTouched, unit, fixtureCrosshair, gridColor, zeroColor)
         }
     }
 }
@@ -407,6 +410,7 @@ private fun DrawScope.drawChart(
     tracePath: Path?,
     userCrosshair: Crosshair?,
     userTouched: Boolean,
+    unit: PressureUnit,
     fixtureCrosshair: Boolean,
     gridColor: Color,
     zeroColor: Color,
@@ -414,7 +418,8 @@ private fun DrawScope.drawChart(
     if (plot == null) return
     val span = max(domain.max - domain.min, 1.0)
 
-    // Horizontal psi gridlines + value labels (left edge).
+    // Horizontal psi gridlines + value labels (left edge). The tick POSITIONS
+    // stay in psi (geometry); only the numerals convert.
     psiTicks(domain).forEach { tick ->
         val y = plot.top + plot.height * ((domain.max - tick) / span).toFloat()
         drawLine(
@@ -423,7 +428,7 @@ private fun DrawScope.drawChart(
             end = Offset(plot.right, y),
             strokeWidth = 1f,
         )
-        drawRightText(tickLabel(tick), rightX = plot.left - 6.dp.toPx(), centerY = y, color = gridColor)
+        drawRightText(unit.formatTick(tick), rightX = plot.left - 6.dp.toPx(), centerY = y, color = gridColor)
     }
 
     // Zero line (dashed, slightly stronger).
@@ -490,7 +495,7 @@ private fun DrawScope.drawChart(
             radius = 4.dp.toPx(),
             center = Offset(effective.x, effective.y),
         )
-        val text = "${psiLabel(effective.value)} psi · ${timeTextFor(samples, effective.sampleIndex, anchor)}"
+        val text = "${unit.format(effective.value, 1)} ${unit.suffix} · ${timeTextFor(samples, effective.sampleIndex, anchor)}"
         drawPill(text, plot)
     }
 }
@@ -632,11 +637,8 @@ fun psiTicks(domain: Domain): List<Double> {
     return ticks
 }
 
-fun tickLabel(value: Double): String = when {
-    value == 0.0 -> "0"
-    value == value.roundToInt().toDouble() -> String.format(Locale.US, "%.0f", value)
-    else -> String.format(Locale.US, "%.1f", value)
-}
+/** PSI tick numerals (historical 0 / integer / one-decimal rule). Converted units format via [PressureUnit.formatTick]. */
+fun tickLabel(value: Double): String = PressureUnit.PSI.formatTick(value)
 
 /** Bottom time ticks at [0,.25,.5,.75,1], dropping any that would overlap. */
 fun axisTicks(plotWidth: Float, minSpacing: Float): List<Float> {
@@ -659,8 +661,6 @@ private fun traceSeries(ys: List<Double>, plot: Rect, domain: Domain, span: Doub
         if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
     }
 }
-
-private fun psiLabel(value: Double): String = String.format(Locale.US, "%.1f", value)
 
 private fun epochMsFor(sample: LogSample, anchor: Status?): Long? {
     val a = anchor ?: return null

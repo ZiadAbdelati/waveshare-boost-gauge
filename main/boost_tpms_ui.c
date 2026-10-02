@@ -7,6 +7,7 @@ static void boost_tpms_ui_delete(void);
 #include <string.h>
 
 #include "tpms_powertrain_rgb565.h"
+#include "boost_theme.h"
 
 /* This module owns its local declaration for the compiled Saira
  * SemiCondensed-Bold physical readout font. */
@@ -57,10 +58,15 @@ static const tpms_capsule_t s_capsule[4] = {
  * margin below already accounts for the shadow, which spreads further). */
 #define TPMS_CAPSULE_GROW 2
 
+/* Distance from a readout label's top to its unit mark's top: the 23 px
+ * font_wide_22 line plus a 1 px gap. */
+#define TPMS_UNIT_DY 24
+
 static lv_obj_t *s_root;
 static lv_obj_t *s_canvas;
 static lv_obj_t *s_face;
 static lv_obj_t *s_psi[4];
+static lv_obj_t *s_unit[4];
 static void *s_canvas_buf;
 static uint32_t s_capsule_color[4] = {
     TPMS_OFFLINE, TPMS_OFFLINE, TPMS_OFFLINE, TPMS_OFFLINE,
@@ -119,10 +125,33 @@ static lv_obj_t *make_psi_label(lv_obj_t *parent, int x, int y, bool right_align
     return label;
 }
 
+/* Unit mark under a capsule readout. Converted (bar/kPa) values are otherwise
+ * bare numbers, so the active unit is named next to the value; PSI hides it,
+ * keeping that face byte-for-byte. Smaller and dimmer than the value, mirroring
+ * the unit marks on the other faces. */
+static lv_obj_t *make_unit_label(lv_obj_t *parent, int x, int y, bool right_aligned)
+{
+    lv_obj_t *label = lv_label_create(parent);
+    lv_label_set_text_static(label, boost_units_label(boost_theme_pressure_unit()));
+    lv_obj_set_width(label, 66);
+    lv_obj_set_pos(label, x, y);
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(label, tpms_color(TPMS_WHITE), 0);
+    lv_obj_set_style_text_opa(label, LV_OPA_70, 0);
+    lv_obj_set_style_text_align(label,
+                                right_aligned ? LV_TEXT_ALIGN_RIGHT : LV_TEXT_ALIGN_LEFT,
+                                0);
+    make_passive(label);
+    return label;
+}
+
 static void format_psi(char *out, size_t out_size, float psi)
 {
     if (out == NULL || out_size == 0) return;
-    snprintf(out, out_size, "%.1f", (double)psi);
+    /* Tire pressure follows the global display unit (canonical value is PSI;
+     * the low-pressure comparison above stays in kPa). No readout dead band -
+     * it is a psi-defined fold that does not apply to tire pressure. */
+    boost_units_format(boost_theme_pressure_unit(), psi, false, out, out_size);
 }
 
 void boost_tpms_ui_create(lv_obj_t *parent)
@@ -181,12 +210,43 @@ void boost_tpms_ui_create(lv_obj_t *parent)
     s_psi[2] = make_psi_label(s_root, 40, 318, true);
     s_psi[3] = make_psi_label(s_root, 359, 318, false);
 
+    /* Unit marks under each readout, aligned with the value they annotate.
+     * They always exist so a unit change (which does not rebuild this page)
+     * can show/hide them from boost_tpms_ui_update(). */
+    s_unit[0] = make_unit_label(s_root, 55, 119 + TPMS_UNIT_DY, true);
+    s_unit[1] = make_unit_label(s_root, 345, 119 + TPMS_UNIT_DY, false);
+    s_unit[2] = make_unit_label(s_root, 40, 318 + TPMS_UNIT_DY, true);
+    s_unit[3] = make_unit_label(s_root, 359, 318 + TPMS_UNIT_DY, false);
+
     boost_tpms_ui_update(NULL);
 }
 
 void boost_tpms_ui_update(const boost_tpms_snapshot_t *snapshot)
 {
     if (s_root == NULL) return;
+
+    /* Name the active unit under every readout so a converted (bar/kPa) value
+     * is unambiguous; PSI hides the mark and keeps its face unchanged. The
+     * text is static, so this allocates nothing. */
+    {
+        const boost_unit_t unit = boost_theme_pressure_unit();
+        const char *const unit_text = boost_units_label(unit);
+        const bool show = unit != BOOST_UNIT_PSI;
+        for (int i = 0; i < 4; ++i) {
+            lv_obj_t *label = s_unit[i];
+            if (label == NULL) continue;
+            if (strcmp(lv_label_get_text(label), unit_text) != 0) {
+                lv_label_set_text_static(label, unit_text);
+            }
+            if (show == lv_obj_has_flag(label, LV_OBJ_FLAG_HIDDEN)) {
+                /* A hidden object cannot be invalidated, so repaint first. */
+                if (!show) lv_obj_invalidate(label);
+                if (show) lv_obj_remove_flag(label, LV_OBJ_FLAG_HIDDEN);
+                else lv_obj_add_flag(label, LV_OBJ_FLAG_HIDDEN);
+                if (show) lv_obj_invalidate(label);
+            }
+        }
+    }
 
     boost_tpms_config_t cfg;
     boost_tpms_get_config(&cfg);
@@ -243,6 +303,7 @@ static void boost_tpms_ui_delete(void)
     s_canvas = NULL;
     s_face = NULL;
     memset(s_psi, 0, sizeof(s_psi));
+    memset(s_unit, 0, sizeof(s_unit));
 
     if (s_canvas_buf != NULL) {
         BG_FREE(s_canvas_buf);

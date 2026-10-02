@@ -604,6 +604,69 @@ final class SimAcceptanceUITests: XCTestCase {
         add(attachment)
     }
 
+    /// Range ▸ Pressure unit (2026-10-02): the global psi/bar/kPa selector
+    /// must render on the Range page, convert the psi fields when switched,
+    /// and leave the non-pressure zeroAngle field raw.
+    func testRangePressureUnitPickerConvertsFields() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["-e2eSimBle", "-e2eTab", "settings"]
+        app.launch()
+
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 15))
+        let rangeRow = app.cells.containing(.staticText, identifier: "Range").firstMatch
+        XCTAssertTrue(rangeRow.waitForExistence(timeout: 8), "Range sub-page row")
+        rangeRow.tap()
+        XCTAssertTrue(app.navigationBars["Range"].waitForExistence(timeout: 8))
+
+        let unitRow = app.cells.containing(.staticText, identifier: "Pressure unit").firstMatch
+        XCTAssertTrue(unitRow.waitForExistence(timeout: 8), "Pressure unit picker on Range")
+        attach("sim-units-range-psi", app.screenshot())
+
+        // Default psi: the fixture values pass through unconverted.
+        XCTAssertTrue(waitForFieldValues(app, ["-15", "10", "8", "220"]),
+                      "psi fixtures render raw, got \(fieldValues(app))")
+
+        selectPressureUnit(app, "bar")
+
+        // psiMin -15.0 -> -1.03 bar, psiMax 10.0 -> 0.69 bar, overboost 8.0 -> 0.55;
+        // zeroAngle is degrees and must never convert (stays 220).
+        XCTAssertTrue(waitForFieldValues(app, ["-1.03", "0.69", "0.55", "220"]),
+                      "bar converts the psi fields and leaves zeroAngle raw, got \(fieldValues(app))")
+        attach("sim-units-range-bar", app.screenshot())
+    }
+
+    /// Picker style is `.automatic` in a Form: iOS pushes a nested options
+    /// list in some versions and shows a menu in others — accept both.
+    private func selectPressureUnit(_ app: XCUIApplication, _ label: String) {
+        let unitRow = app.cells.containing(.staticText, identifier: "Pressure unit").firstMatch
+        unitRow.tap()
+        if app.navigationBars["Pressure unit"].waitForExistence(timeout: 3) {
+            let option = app.cells.containing(.staticText, identifier: label).firstMatch
+            XCTAssertTrue(option.waitForExistence(timeout: 4), "pressure-unit option \(label)")
+            option.tap()
+            _ = app.navigationBars["Range"].waitForExistence(timeout: 3)
+            return
+        }
+        let menu = app.buttons[label]
+        XCTAssertTrue(menu.waitForExistence(timeout: 3), "pressure-unit menu item \(label)")
+        menu.tap()
+    }
+
+    /// A TextField's rendered value is not addressable by its text through the
+    /// subscript API, so scan the visible fields.
+    private func fieldValues(_ app: XCUIApplication) -> [String] {
+        (0..<app.textFields.count).compactMap { app.textFields.element(boundBy: $0).value as? String }
+    }
+
+    private func waitForFieldValues(_ app: XCUIApplication, _ expected: [String], timeout: TimeInterval = 6) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if fieldValues(app).sorted() == expected.sorted() { return true }
+            usleep(250_000)
+        }
+        return false
+    }
+
     /// Regression for the iOS 26 floating tab bar riding over the Themes list:
     /// after scrolling to the bottom, the last theme row must sit fully above
     /// the bar (contentMargins(.bottom) clearance), not underneath it.
