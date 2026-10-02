@@ -74,7 +74,16 @@ static bool s_two_finger_seen;
  * the toggles; a fresh tap still dismisses the whole overlay. */
 static bool s_qr_toggles_shown;
 static int32_t s_qr_press_x;
+static int32_t s_qr_press_y;
 static bool s_qr_press_tracking;
+/* One-shot latch: set when the tracked drag crosses SWIPE_MIN_PX so the shared
+ * classifier fires exactly one action per gesture (the finger keeps generating
+ * PRESSING after the classification). */
+static bool s_qr_drag_classified;
+/* Set when that classification happened, so the CLICKED that LVGL delivers
+ * after the release (RELEASED is sent first, then CLICKED) is swallowed - a
+ * drag is not a tap. Cleared when the next press seeds a fresh gesture. */
+static bool s_qr_swipe_suppress;
 
 /* Connections page: three square buttons (2 up, 1 down). Order matches the
  * sim tap hook: 0 = OBD BLE, 1 = APP BLE, 2 = UNITS. */
@@ -97,10 +106,10 @@ static void qr_click_cb(lv_event_t *event);
 static void qr_pressing_cb(lv_event_t *event);
 static void qr_flip_to(bool toggles);
 static void qr_swipe_press_cb(lv_event_t *event);
-static void qr_swipe_release_cb(lv_event_t *event);
 static void qr_tap_obd_cb(lv_event_t *event);
 static void qr_tap_app_cb(lv_event_t *event);
 static void qr_tap_units_cb(lv_event_t *event);
+static void apply_theme_delta(int direction);
 typedef struct {
     char ap_ssid[33];
     bool sta_connected;
@@ -208,6 +217,8 @@ static void show_qr(void)
     lv_obj_add_event_cb(s_qr_overlay, qr_click_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_add_event_cb(s_qr_overlay, qr_pressing_cb, LV_EVENT_PRESSING, NULL);
     s_qr_press_tracking = false;
+    s_qr_drag_classified = false;
+    s_qr_swipe_suppress = false;
 
     /* Page indicator + swipe hint render on BOTH pages so the two-page
      * structure is visible from either side. The dots are real objects, not
@@ -227,19 +238,22 @@ static void show_qr(void)
 
         /* Three square buttons, 2 up + 1 down. Each is one big tappable square
          * so a mistap on the label cannot fall through to the overlay and
-         * dismiss the screen; the shared swipe press/release trackers let a
-         * drag that starts on a button still flip pages. */
+         * dismiss the screen. A press starting on a button is OWNED by the
+         * button, so the overlay never sees its PRESSING: PRESSED seeds the
+         * shared drag tracker and PRESSING (delivered to the pressed button
+         * while the finger stays inside it) runs the same classifier, letting
+         * a drag that starts on a button flip pages / change theme. */
         s_qr_btn[0] = qr_make_square(s_qr_overlay, 52, 100, boost_obd_enabled(), 0x62D6A5);
         qr_square_set_text(s_qr_btn[0], "OBD BLE", boost_obd_enabled() ? "ON" : "OFF");
         lv_obj_add_event_cb(s_qr_btn[0], qr_swipe_press_cb, LV_EVENT_PRESSED, NULL);
-        lv_obj_add_event_cb(s_qr_btn[0], qr_swipe_release_cb, LV_EVENT_RELEASED, NULL);
+        lv_obj_add_event_cb(s_qr_btn[0], qr_pressing_cb, LV_EVENT_PRESSING, NULL);
         lv_obj_add_event_cb(s_qr_btn[0], qr_tap_obd_cb, LV_EVENT_CLICKED, NULL);
 
         s_qr_btn[1] = qr_make_square(s_qr_overlay, PAGE_SIZE - 52 - QR_BTN_SIZE, 100,
                                      boost_app_ble_enabled(), 0x62D6A5);
         qr_square_set_text(s_qr_btn[1], "APP BLE", boost_app_ble_enabled() ? "ON" : "OFF");
         lv_obj_add_event_cb(s_qr_btn[1], qr_swipe_press_cb, LV_EVENT_PRESSED, NULL);
-        lv_obj_add_event_cb(s_qr_btn[1], qr_swipe_release_cb, LV_EVENT_RELEASED, NULL);
+        lv_obj_add_event_cb(s_qr_btn[1], qr_pressing_cb, LV_EVENT_PRESSING, NULL);
         lv_obj_add_event_cb(s_qr_btn[1], qr_tap_app_cb, LV_EVENT_CLICKED, NULL);
 
         /* The units button's second line is the current selection; tapping it
@@ -250,7 +264,7 @@ static void show_qr(void)
         s_qr_btn_unit_label =
             lv_obj_get_child(s_qr_btn[2], lv_obj_get_child_count(s_qr_btn[2]) - 1);
         lv_obj_add_event_cb(s_qr_btn[2], qr_swipe_press_cb, LV_EVENT_PRESSED, NULL);
-        lv_obj_add_event_cb(s_qr_btn[2], qr_swipe_release_cb, LV_EVENT_RELEASED, NULL);
+        lv_obj_add_event_cb(s_qr_btn[2], qr_pressing_cb, LV_EVENT_PRESSING, NULL);
         lv_obj_add_event_cb(s_qr_btn[2], qr_tap_units_cb, LV_EVENT_CLICKED, NULL);
 
         /* Firmware version readout, bottom-anchored above the swipe hint -
@@ -350,15 +364,34 @@ static void hide_qr(void)
     s_qr_active = false;
     s_qr_toggles_shown = false;
     s_qr_press_tracking = false;
+    s_qr_drag_classified = false;
+    s_qr_swipe_suppress = false;
     for (int i = 0; i < 3; ++i) s_qr_btn[i] = NULL;
     s_qr_btn_unit_label = NULL;
     /* Resume GIF playback (direct panel push) now that the overlay is gone. */
     boost_gauge_media_resume();
 }
 
+/* A theme/unit rebuild runs boost_gauge_apply_theme() -> build_scene(), and
+ * while a GIF is loaded that build hides every screen child except the media
+ * object (set_gauge_hidden(true)) and re-raises the media to the foreground.
+ * That buries a still-active overlay behind the paused GIF (tapping UNITS on
+ * the connections page was the repro). Re-assert the overlay's visibility and
+ * foreground order after any rebuild that can happen with the overlay up. */
+static void qr_reassert_overlay(void)
+{
+    if (!s_qr_active || s_qr_overlay == NULL) return;
+    lv_obj_clear_flag(s_qr_overlay, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(s_qr_overlay);
+    lv_obj_invalidate(s_qr_overlay);
+}
+
 static void qr_click_cb(lv_event_t *event)
 {
     (void)event;
+    /* A drag classified as a swipe is not a tap: swallow the CLICKED that
+     * follows its release so the overlay is not dismissed mid-gesture. */
+    if (s_qr_swipe_suppress) { s_qr_swipe_suppress = false; return; }
     hide_qr();
 }
 
@@ -391,6 +424,9 @@ static void qr_toggle_apply_cb(lv_timer_t *timer)
 #else
         boost_gauge_apply_theme(boost_theme_default());
 #endif
+        /* The rebuild re-raises a loaded GIF over every other screen child;
+         * keep the overlay the user is looking at on top. */
+        qr_reassert_overlay();
         return;
     }
     if (req <= 1) {
@@ -413,34 +449,29 @@ static void qr_toggle_request(int32_t req)
 }
 
 /* A drag that starts on a switch is OWNED by the switch (the overlay's
- * PRESSING tracker never sees it), so a horizontal swipe beginning on the
- * toggle flips pages only if we classify it here. If the finger excursion
- * since PRESSED exceeds the page-swipe threshold, the gesture is a swipe:
- * flip the page and swallow the toggle (LV_EVENT_VALUE_CHANGED is suppressed
- * via s_qr_swipe_suppress, checked by the toggle callbacks). */
-static bool s_qr_swipe_suppress;
+ * PRESSING tracker never sees it), so a swipe beginning on a toggle flips
+ * pages / changes theme only if we classify it here. PRESSED seeds the shared
+ * drag tracker from the true touch-down point; the button's own PRESSING
+ * callback then feeds the same classifier the overlay uses. Once the
+ * excursion since PRESSED crosses SWIPE_MIN_PX the gesture is a swipe: the
+ * action fires and the CLICKED LVGL delivers after the release is swallowed
+ * (s_qr_swipe_suppress, checked by the button and overlay CLICKED callbacks)
+ * so the button does not toggle. A genuine tap stays inside SWIPE_MIN_PX and
+ * toggles as before. */
 
 static void qr_swipe_press_cb(lv_event_t *event)
 {
     (void)event;
-    /* A press STARTED on a switch: the overlay never saw PRESSED, so seed the
-     * shared drag tracker HERE. From then on the overlay's PRESSING handler
-     * (which receives events once the finger leaves the switch) measures the
-     * excursion from the true touch-down point and flips the page. */
+    /* A press STARTED on a switch: the overlay never sees PRESSED, so seed the
+     * shared drag tracker HERE. */
     lv_indev_t *indev = lv_indev_get_act();
+    if (indev == NULL) return;
     lv_point_t p;
-    if (indev != NULL) { lv_indev_get_point(indev, &p); s_qr_press_x = p.x; }
+    lv_indev_get_point(indev, &p);
+    s_qr_press_x = p.x;
+    s_qr_press_y = p.y;
     s_qr_press_tracking = true;
-    s_qr_swipe_suppress = false;
-}
-
-static void qr_swipe_release_cb(lv_event_t *event)
-{
-    (void)event;
-    /* Released back inside the switch without ever crossing the threshold:
-     * clear the flag so a legitimate tap-toggle still fires. If a flip DID
-     * happen mid-drag the switch was deleted with the overlay, so this cb
-     * never runs for that case. */
+    s_qr_drag_classified = false;
     s_qr_swipe_suppress = false;
 }
 
@@ -481,21 +512,41 @@ static void qr_flip_to(bool toggles)
     show_qr();
 }
 
+/* The shared gesture classifier: the overlay's own PRESSING and each square
+ * button's PRESSING both land here. A predominantly horizontal drag of at
+ * least SWIPE_MIN_PX flips the overlay page; a predominantly vertical one
+ * changes theme (the gauge's direction: drag up = next theme). The ratio
+ * tests match the gauge's finish_press() classification. */
 static void qr_pressing_cb(lv_event_t *event)
 {
-    (void)event;
     if (!s_qr_active) return;
-    lv_indev_t *indev = lv_indev_get_act();
+    lv_indev_t *indev = lv_event_get_indev(event);
+    if (indev == NULL) indev = lv_indev_get_act();
     if (indev == NULL) return;
     lv_point_t p;
     lv_indev_get_point(indev, &p);
     if (!s_qr_press_tracking) {
-        s_qr_press_tracking = true;
+        /* A press that began on the overlay background has no PRESSED seed;
+         * the first PRESSING establishes the drag origin. */
         s_qr_press_x = p.x;
+        s_qr_press_y = p.y;
+        s_qr_press_tracking = true;
+        s_qr_drag_classified = false;
         return;
     }
-    if (s_qr_press_x - p.x >= SWIPE_MIN_PX || p.x - s_qr_press_x >= SWIPE_MIN_PX) {
+    if (s_qr_drag_classified) return;
+    const int32_t dx = p.x - s_qr_press_x;
+    const int32_t dy = p.y - s_qr_press_y;
+    const int32_t ax = abs_i32(dx);
+    const int32_t ay = abs_i32(dy);
+    if (ax >= SWIPE_MIN_PX && (int64_t)ax * 4 >= (int64_t)ay * 5) {
+        s_qr_drag_classified = true;
+        s_qr_swipe_suppress = true;
         qr_flip_to(!s_qr_toggles_shown);
+    } else if (ay >= SWIPE_MIN_PX && (int64_t)ay * 4 >= (int64_t)ax * 5) {
+        s_qr_drag_classified = true;
+        s_qr_swipe_suppress = true;
+        apply_theme_delta(dy < 0 ? 1 : -1);
     }
 }
 

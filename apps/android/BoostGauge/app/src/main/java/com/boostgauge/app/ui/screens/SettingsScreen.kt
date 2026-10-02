@@ -130,8 +130,9 @@ fun SettingsScreen(container: AppContainer) {
     LaunchedEffect(connectionStatus) {
         if (connectionStatus == ConnectionStatus.Connected) viewModel.refreshAll()
     }
-    // Mirror the device's unit process-wide so the dashboard/logs/calibration
-    // readouts follow the same selection.
+    // Initial-config mirror only: /themes carries the unit, but the live
+    // propagation path (panel UNITS button, reconnect) is StatusViewModel's
+    // adoption from every /state sample — this must not be load-bearing.
     LaunchedEffect(state.themes?.pressureUnit) {
         state.themes?.pressureUnit?.let { container.pressureUnit.apply(it) }
     }
@@ -702,6 +703,14 @@ private fun DisplaySection(
     }
 }
 
+/**
+ * Unit-picker choice label: the contract's `PSI / bar / kPa`. `PSI` is the
+ * panel's unit mark, distinct from the lowercase readout [PressureUnit.suffix]
+ * that keeps the psi default byte-identical to the pre-units build.
+ */
+private val PressureUnit.choiceLabel: String
+    get() = if (this == PressureUnit.PSI) "PSI" else wire
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun RangeSection(
@@ -736,7 +745,7 @@ private fun RangeSection(
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
                         Text(
-                            text = fields.pressureUnit.suffix,
+                            text = fields.pressureUnit.choiceLabel,
                             style = BoostSubheadline,
                             color = if (!saving) {
                                 MaterialTheme.colorScheme.primary
@@ -753,7 +762,7 @@ private fun RangeSection(
                 ) {
                     PressureUnit.entries.forEach { unit ->
                         DropdownMenuItem(
-                            text = { Text(unit.suffix) },
+                            text = { Text(unit.choiceLabel) },
                             onClick = {
                                 unitExpanded = false
                                 // Saves immediately; the echoed payload sets

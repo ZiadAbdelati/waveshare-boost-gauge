@@ -51,6 +51,16 @@ class SettingsViewModel(
         val psiMin: String = "-15.0",
         val psiMax: String = "10.0",
         val psiOverboost: String = "8.0",
+        /**
+         * Canonical PSI each pressure string was last rendered from. The
+         * strings above are display-only (rounded to the unit's decimals), so
+         * Save must send THIS value when the user did not edit the field —
+         * reconstructing PSI from the rounded string silently drifts the
+         * gauge geometry (bar) or trips the firmware's -30 psi floor (kPa).
+         */
+        val psiMinValue: Double = -15.0,
+        val psiMaxValue: Double = 10.0,
+        val psiOverboostValue: Double = 8.0,
         val zeroAngle: String = "90.0",
         val appBle: Boolean = false,
         val demoMode: Boolean = false,
@@ -78,6 +88,9 @@ class SettingsViewModel(
             psiMin = pressureUnit.format(config.psiMin, 1),
             psiMax = pressureUnit.format(config.psiMax, 1),
             psiOverboost = pressureUnit.format(config.psiOverboost, 1),
+            psiMinValue = config.psiMin,
+            psiMaxValue = config.psiMax,
+            psiOverboostValue = config.psiOverboost,
             zeroAngle = Format.fmt(config.zeroAngle, 0),
             appBle = config.appBle,
             timezoneOffsetMinutes = config.timezoneOffsetMinutes,
@@ -114,6 +127,9 @@ class SettingsViewModel(
             psiMin = config?.let { unit.format(it.psiMin, 1) } ?: psiMin,
             psiMax = config?.let { unit.format(it.psiMax, 1) } ?: psiMax,
             psiOverboost = config?.let { unit.format(it.psiOverboost, 1) } ?: psiOverboost,
+            psiMinValue = config?.psiMin ?: psiMinValue,
+            psiMaxValue = config?.psiMax ?: psiMaxValue,
+            psiOverboostValue = config?.psiOverboost ?: psiOverboostValue,
             lowPsi = tpms?.let { unit.format(it.lowPsi, 1) } ?: lowPsi,
         )
 
@@ -282,11 +298,18 @@ class SettingsViewModel(
     fun saveRange() {
         val fields = _state.value.fields
         val unit = fields.pressureUnit
+        // An untouched field sends the canonical PSI it was rendered from;
+        // only a field the user actually edited converts back from the display
+        // unit. Reconstructing PSI from the rounded display string drifts the
+        // gauge geometry (bar: 10.0 -> 10.0076) and trips the firmware's
+        // -30 psi floor (kPa), so it must never happen for an untouched field.
+        fun canonical(display: String, retained: Double): Double? =
+            if (display == unit.format(retained, 1)) retained
+            else display.toDoubleOrNull()?.let { unit.toPsi(it) }
         val patch = buildJsonObject {
-            // Typed values are in the display unit; the wire is always PSI.
-            fields.psiMin.toDoubleOrNull()?.let { put("psiMin", unit.toPsi(it)) }
-            fields.psiMax.toDoubleOrNull()?.let { put("psiMax", unit.toPsi(it)) }
-            fields.psiOverboost.toDoubleOrNull()?.let { put("psiOverboost", unit.toPsi(it)) }
+            canonical(fields.psiMin, fields.psiMinValue)?.let { put("psiMin", it) }
+            canonical(fields.psiMax, fields.psiMaxValue)?.let { put("psiMax", it) }
+            canonical(fields.psiOverboost, fields.psiOverboostValue)?.let { put("psiOverboost", it) }
             fields.zeroAngle.toDoubleOrNull()?.let { put("zeroAngle", it) }
         }
         save(

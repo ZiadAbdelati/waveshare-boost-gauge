@@ -54,3 +54,8 @@ after/
 deepseek-neon-review.*
 .build/
 .tmp/
+
+# Tool caches that appear in the working tree (clangd's index, Kotlin/Gradle
+# session dirs). Neither is a build input, and both are large binaries.
+.cache/
+**/.kotlin/

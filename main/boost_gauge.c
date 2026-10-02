@@ -495,7 +495,20 @@ static lv_obj_t *s_big_tens;
 static lv_obj_t *s_big_ones;
 static lv_obj_t *s_big_dot;
 static lv_obj_t *s_big_tenths;
-static lv_obj_t *s_big_val;    /* bar/kPa: one advances-centred string */
+/* bar/kPa: one label PER CHARACTER, each sized to its own glyph advance and
+ * placed on the same advances-centred baseline the single string used. A value
+ * change therefore invalidates only the glyphs that actually repaint (the psi
+ * odometer's per-slot cost), instead of a full-width string box: the previous
+ * single DISP_SIZE-wide label re-flushed 466x120 px on every 16 ms sample. */
+#define BIG_VAL_CELLS 6
+static lv_obj_t *s_big_val_cell[BIG_VAL_CELLS];
+/* Persistent per-cell text for lv_label_set_text_static: the per-sample
+ * bar/kPa path must not free/malloc a label string every value change. */
+static char s_big_val_ch[BIG_VAL_CELLS][2];
+static int16_t s_big_val_pen[BIG_VAL_CELLS];   /* box left, face-centre offset */
+static uint8_t s_big_val_n;
+/* The magnitude string, kept for the minus placement and the no-change guard. */
+static char s_big_val_buf[16];
 static lv_obj_t *s_big_unit;
 static lv_obj_t *s_big_zone;
 static lv_obj_t *s_big_peak;
@@ -4186,7 +4199,7 @@ static void update_neon(const boost_sample_t *sample, const boost_theme_t *theme
     }
     char buf[32];
     char peak_buf[16];
-    boost_units_format(boost_theme_pressure_unit(), s_neon_peak_value, true, peak_buf, sizeof(peak_buf));
+    boost_units_format(boost_theme_pressure_unit(), s_neon_peak_value, false, peak_buf, sizeof(peak_buf));
     snprintf(buf, sizeof(buf), "PEAK %s", peak_buf);
     if (strcmp(lv_label_get_text(s_neon_peak), buf) != 0) lv_label_set_text(s_neon_peak, buf);
     const float a_zero = psi_to_sweep(0.0f, (float)ARC_START, (float)(ARC_START + ARC_RANGE));
@@ -5686,7 +5699,7 @@ static void update_arc(const boost_sample_t *sample, const boost_theme_t *theme)
      * on every tick while the peak sits at the sweep's maximum. */
     if (s_peak_psi != s_arc_peak_text_psi) {
         char peak_buf[16];
-        boost_units_format(boost_theme_pressure_unit(), s_peak_psi, true, peak_buf, sizeof(peak_buf));
+        boost_units_format(boost_theme_pressure_unit(), s_peak_psi, false, peak_buf, sizeof(peak_buf));
         snprintf(s_arc_peak_text, sizeof(s_arc_peak_text), "PEAK  %s", peak_buf);
         s_arc_peak_text_psi = s_peak_psi;
     }
@@ -6292,7 +6305,7 @@ static void vault_build_cells(float psi)
     for (int i = 0; i < n; ++i) {
         s_vault_cell_ch[i][0] = buf[i];
         s_vault_cell_ch[i][1] = '\0';
-        s_vault_cell_x[i] = (int16_t)((i - (n - 1) / 2) * 24);
+        s_vault_cell_x[i] = (int16_t)((2 * i - (n - 1)) * 12);
     }
     s_vault_cell_n = (uint8_t)n;
 }
@@ -6771,11 +6784,16 @@ static void draw_hud_readout(lv_event_t *e)
 {
     if (s_hud_val_str[0] == '\0') return;
     lv_layer_t *layer = lv_event_get_layer(e);
+    /* PSI keeps the fixed-slot ghost box (right-aligned against the odometer
+     * slots); bar/kPa centre both ghosts on the same advances-centred area as
+     * the primary, so the chromatic passes stay registered to the converted
+     * string instead of the old fixed PSI anchor. */
+    const bool unit_is_psi = boost_theme_pressure_unit() == BOOST_UNIT_PSI;
     lv_area_t ghost_area = {
         px_icx() - 156,
-        px_icy() + HUD_VALUE_Y - 39,
+        px_icy() + HUD_VALUE_Y - (unit_is_psi ? 39 : 42),
         px_icx() + 105,
-        px_icy() + HUD_VALUE_Y + 39,
+        px_icy() + HUD_VALUE_Y + (unit_is_psi ? 39 : 42),
     };
     lv_area_t readout_area = {
         ghost_area.x1 - HUD_GLITCH_DX,
@@ -6795,7 +6813,9 @@ static void draw_hud_readout(lv_event_t *e)
     lv_draw_label_dsc_init(&d);
     d.font = font;
     d.text = s_hud_val_str;
-    d.align = LV_TEXT_ALIGN_RIGHT;
+    /* The primary uses fixed slots (right-aligned ghosts) in PSI and one
+     * centred string otherwise; the ghosts mirror that choice. */
+    d.align = unit_is_psi ? LV_TEXT_ALIGN_RIGHT : LV_TEXT_ALIGN_CENTER;
     d.text_local = 1;
     /* Ghost colours are pre-blended against the known true-black/dark face. */
     d.opa = LV_OPA_COVER;
@@ -7184,7 +7204,7 @@ static void update_hud(const boost_sample_t *sample, const boost_theme_t *theme)
     }
     if (strcmp(lv_label_get_text(s_hud_map), buf) != 0) lv_label_set_text(s_hud_map, buf);
     char pk_buf[16];
-    boost_units_format(boost_theme_pressure_unit(), s_peak_psi, true, pk_buf, sizeof(pk_buf));
+    boost_units_format(boost_theme_pressure_unit(), s_peak_psi, false, pk_buf, sizeof(pk_buf));
     snprintf(buf, sizeof(buf), "PK %s", pk_buf);
     if (strcmp(lv_label_get_text(s_hud_pk), buf) != 0) lv_label_set_text(s_hud_pk, buf);
     /* This one is a positive status indicator, not a demo watermark: LIVE means
@@ -7214,6 +7234,18 @@ static void update_hud(const boost_sample_t *sample, const boost_theme_t *theme)
 /* Sign hugs whichever integer digit is leftmost. */
 #define BIG_MINUS_ONES_X (-98)
 #define BIG_MINUS_TENS_X (-179)
+/* bar/kPa draw one advances-centred string, so the sign sits just left of the
+ * string's own left edge instead of a fixed slot (gap mirrors the ~3 px the
+ * fixed PSI slots leave between the minus and the ones digit). */
+#define BIG_MINUS_EDGE_GAP 3
+/* bar/kPa readout cell geometry. The string is drawn as one cell per character,
+ * each an alvida_big glyph box. The vertical anchor reproduces the previous
+ * single string label exactly: that label was 120 px tall, centred with a -8
+ * offset, so its text top sat at (face centre - 68); a BIG_VAL_LINE_H-tall cell
+ * with a BIG_VAL_Y offset keeps the same top (centre - 68). BIG_VAL_LINE_H is
+ * the font's own line height, so the cell clips nothing. */
+#define BIG_VAL_LINE_H  84
+#define BIG_VAL_Y       (-26)
 
 static int s_big_minus_x = BIG_MINUS_ONES_X;
 
@@ -7402,16 +7434,28 @@ static void build_bigdigit(lv_obj_t *scr)
     lv_obj_set_style_text_align(s_big_tenths, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(s_big_tenths, LV_ALIGN_CENTER, tenths_x, -8);
 
-    /* bar/kPa readout: one advances-centred string in place of the odometer
-     * slots, hidden while the unit is PSI. */
-    s_big_val = lv_label_create(scr);
-    lv_label_set_text(s_big_val, "");
-    lv_obj_set_style_text_font(s_big_val, BIGDIGIT_FONT, 0);
-    lv_obj_set_style_text_color(s_big_val, c(boost_theme_bigdigit_text_color()), 0);
-    lv_obj_set_size(s_big_val, DISP_SIZE, 120);
-    lv_obj_set_style_text_align(s_big_val, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(s_big_val, LV_ALIGN_CENTER, 0, -8);
-    lv_obj_add_flag(s_big_val, LV_OBJ_FLAG_HIDDEN);
+    /* bar/kPa readout: one advances-centred string laid out as one cell per
+     * character (see BIG_VAL_CELLS). A value change repaints only the cells
+     * whose glyph or pen position moved, matching the psi odometer's per-slot
+     * cost instead of re-flushing a DISP_SIZE-wide label box. Hidden while the
+     * unit is PSI. */
+    s_big_val_buf[0] = '\0';
+    s_big_val_n = 0;
+    for (int i = 0; i < BIG_VAL_CELLS; ++i) {
+        s_big_val_ch[i][0] = '\0';
+        s_big_val_ch[i][1] = '\0';
+        s_big_val_pen[i] = 0;
+        lv_obj_t *cell = lv_label_create(scr);
+        lv_label_set_text_static(cell, s_big_val_ch[i]);
+        lv_obj_set_style_text_font(cell, BIGDIGIT_FONT, 0);
+        lv_obj_set_style_text_color(cell, c(boost_theme_bigdigit_text_color()), 0);
+        lv_obj_set_style_text_align(cell, LV_TEXT_ALIGN_LEFT, 0);
+        lv_obj_set_style_pad_all(cell, 0, 0);
+        lv_obj_set_size(cell, 1, BIG_VAL_LINE_H);
+        lv_obj_align(cell, LV_ALIGN_CENTER, 0, BIG_VAL_Y);
+        lv_obj_add_flag(cell, LV_OBJ_FLAG_HIDDEN);
+        s_big_val_cell[i] = cell;
+    }
 
     /* Fat stylised minus: a chunky bar, not the font's hairline hyphen. */
     s_big_minus = lv_obj_create(scr);
@@ -7481,11 +7525,17 @@ static void update_bigdigit(const boost_sample_t *sample, const boost_theme_t *t
             const lv_color_t tc = c(next_color);
             if (!lv_color_eq(c(s_big_text_color), tc)) {
                 s_big_text_color = next_color;
-                lv_obj_t *const slots[5] = { s_big_tens, s_big_ones, s_big_dot, s_big_tenths, s_big_val };
-                for (int i = 0; i < 5; ++i) {
+                lv_obj_t *const slots[4] = { s_big_tens, s_big_ones, s_big_dot, s_big_tenths };
+                for (int i = 0; i < 4; ++i) {
                     if (slots[i] != NULL &&
                         !lv_color_eq(lv_obj_get_style_text_color(slots[i], 0), tc)) {
                         lv_obj_set_style_text_color(slots[i], tc, 0);
+                    }
+                }
+                for (int i = 0; i < BIG_VAL_CELLS; ++i) {
+                    if (s_big_val_cell[i] != NULL &&
+                        !lv_color_eq(lv_obj_get_style_text_color(s_big_val_cell[i], 0), tc)) {
+                        lv_obj_set_style_text_color(s_big_val_cell[i], tc, 0);
                     }
                 }
                 /* The sign is drawn, not a label, so it needs an explicit repaint. */
@@ -7498,22 +7548,88 @@ static void update_bigdigit(const boost_sample_t *sample, const boost_theme_t *t
      * vault-tec); the ground colour above keeps the raw sample. PSI keeps the
      * four fixed odometer slots; bar/kPa draw one advances-centred string. */
     if (boost_theme_pressure_unit() != BOOST_UNIT_PSI) {
+        /* bar/kPa: one advances-centred string. The Alvida big-digit cmap has
+         * no minus glyph, so format the MAGNITUDE here and drive the custom
+         * s_big_minus widget for the sign, exactly as the PSI branch does.
+         * Integer-only formatting plus a static label buffer keeps the 16 ms
+         * path free of float printf and per-sample heap churn. */
+        const boost_unit_t unit = boost_theme_pressure_unit();
+        const float readout_psi = boost_readout_display_psi(sample->psi);
+        const float value = boost_units_from_psi(unit, readout_psi);
+        const int decimals = boost_units_decimals(unit);
+        int scale = 1;
+        for (int i = 0; i < decimals; ++i) scale *= 10;
+        const int scaled = (int)lroundf(fabsf(value) * (float)scale);
         char vbuf[16];
-        boost_units_format(boost_theme_pressure_unit(), sample->psi, true, vbuf, sizeof(vbuf));
-        if (strcmp(lv_label_get_text(s_big_val), vbuf) != 0) lv_label_set_text(s_big_val, vbuf);
-        lv_obj_remove_flag(s_big_val, LV_OBJ_FLAG_HIDDEN);
+        boost_units_format_scaled(vbuf, sizeof(vbuf), (long)scaled, decimals);
+        if (strcmp(s_big_val_buf, vbuf) != 0) {
+            strcpy(s_big_val_buf, vbuf);
+            /* Lay the string out as one cell per character on the same
+             * advances-centred baseline the single label used: cell i's box
+             * left is the pen of glyph i, so a value change only dirties the
+             * cells whose glyph or pen actually moved. */
+            int n = (int)strlen(vbuf);
+            if (n > BIG_VAL_CELLS) n = BIG_VAL_CELLS;
+            int adv[BIG_VAL_CELLS];
+            int total = 0;
+            for (int i = 0; i < n; ++i) {
+                adv[i] = (int)lv_font_get_glyph_width(BIGDIGIT_FONT,
+                                                      (uint32_t)(unsigned char)vbuf[i], 0);
+                total += adv[i];
+            }
+            /* The old single label centred the string in a DISP_SIZE-wide box;
+             * `pen` is the same first-glyph pen expressed as a face-centre
+             * offset. */
+            int pen = (DISP_SIZE - total) / 2 - DISP_SIZE / 2;
+            for (int i = 0; i < n; ++i) {
+                /* Box left is the glyph's advance pen, so the glyph draws
+                 * where the advances-centred layout puts it; the width is the
+                 * glyph's own advance (which already covers its ink). */
+                const int w = (adv[i] + 3) & ~1;
+                if (s_big_val_ch[i][0] != vbuf[i] ||
+                    s_big_val_pen[i] != (int16_t)pen ||
+                    lv_obj_get_width(s_big_val_cell[i]) != w) {
+                    s_big_val_ch[i][0] = vbuf[i];
+                    s_big_val_ch[i][1] = '\0';
+                    s_big_val_pen[i] = (int16_t)pen;
+                    lv_obj_set_size(s_big_val_cell[i], w, BIG_VAL_LINE_H);
+                    lv_label_set_text_static(s_big_val_cell[i], s_big_val_ch[i]);
+                    lv_obj_align(s_big_val_cell[i], LV_ALIGN_CENTER, pen + w / 2, BIG_VAL_Y);
+                }
+                pen += adv[i];
+            }
+            for (int i = n; i < BIG_VAL_CELLS; ++i) {
+                if (s_big_val_ch[i][0] != '\0') {
+                    s_big_val_ch[i][0] = '\0';
+                    lv_label_set_text_static(s_big_val_cell[i], s_big_val_ch[i]);
+                }
+            }
+            s_big_val_n = (uint8_t)n;
+            /* Sign sits just left of the string's own advances-centred edge. */
+            const int minus_x = -(total / 2) - BIG_MINUS_EDGE_GAP - BIG_MINUS_W / 2;
+            if (minus_x != s_big_minus_x) {
+                s_big_minus_x = minus_x;
+                lv_obj_align(s_big_minus, LV_ALIGN_CENTER, minus_x, BIG_MINUS_Y);
+            }
+        }
+        for (int i = 0; i < BIG_VAL_CELLS; ++i) {
+            if (i < s_big_val_n) lv_obj_remove_flag(s_big_val_cell[i], LV_OBJ_FLAG_HIDDEN);
+            else lv_obj_add_flag(s_big_val_cell[i], LV_OBJ_FLAG_HIDDEN);
+        }
         lv_obj_t *const digits[4] = { s_big_tens, s_big_ones, s_big_dot, s_big_tenths };
         for (int i = 0; i < 4; ++i) {
             if (digits[i] != NULL && !lv_obj_has_flag(digits[i], LV_OBJ_FLAG_HIDDEN)) {
                 lv_obj_add_flag(digits[i], LV_OBJ_FLAG_HIDDEN);
             }
         }
-        if (!lv_obj_has_flag(s_big_minus, LV_OBJ_FLAG_HIDDEN)) {
-            lv_obj_add_flag(s_big_minus, LV_OBJ_FLAG_HIDDEN);
-        }
+        /* A value that rounds to zero is not negative, however it was measured. */
+        const bool neg = value < 0.0f && scaled != 0;
+        const bool hidden = lv_obj_has_flag(s_big_minus, LV_OBJ_FLAG_HIDDEN);
+        if (neg && hidden) lv_obj_remove_flag(s_big_minus, LV_OBJ_FLAG_HIDDEN);
+        else if (!neg && !hidden) lv_obj_add_flag(s_big_minus, LV_OBJ_FLAG_HIDDEN);
     } else {
-        if (!lv_obj_has_flag(s_big_val, LV_OBJ_FLAG_HIDDEN)) {
-            lv_obj_add_flag(s_big_val, LV_OBJ_FLAG_HIDDEN);
+        for (int i = 0; i < BIG_VAL_CELLS; ++i) {
+            if (s_big_val_cell[i] != NULL) lv_obj_add_flag(s_big_val_cell[i], LV_OBJ_FLAG_HIDDEN);
         }
         lv_obj_t *const digits[4] = { s_big_tens, s_big_ones, s_big_dot, s_big_tenths };
         for (int i = 0; i < 4; ++i) {
@@ -7556,7 +7672,7 @@ static void update_bigdigit(const boost_sample_t *sample, const boost_theme_t *t
 
     char buf[32];
     char peak_buf[16];
-    boost_units_format(boost_theme_pressure_unit(), s_peak_psi, true, peak_buf, sizeof(peak_buf));
+    boost_units_format(boost_theme_pressure_unit(), s_peak_psi, false, peak_buf, sizeof(peak_buf));
     /* Real-sensor mode drops the DEMO suffix and shows just the peak. */
     if (sample->demo) {
         snprintf(buf, sizeof(buf), "PEAK %s  DEMO", peak_buf);
@@ -7642,7 +7758,15 @@ static void destroy_scene(void)
     destroy_hud_readout_font();
 
     s_big_bg = s_big_minus = s_big_tens = s_big_ones = NULL;
-    s_big_dot = s_big_tenths = s_big_val = s_big_unit = s_big_zone = s_big_peak = NULL;
+    s_big_dot = s_big_tenths = s_big_unit = s_big_zone = s_big_peak = NULL;
+    for (int k = 0; k < BIG_VAL_CELLS; ++k) {
+        s_big_val_cell[k] = NULL;
+        s_big_val_ch[k][0] = '\0';
+        s_big_val_ch[k][1] = '\0';
+        s_big_val_pen[k] = 0;
+    }
+    s_big_val_n = 0;
+    s_big_val_buf[0] = '\0';
     /* s_neon_bg_buf and the baked sprite tiles are memoized static art, kept
      * across scene switches for the same reason s_vault_bg_buf is: rebuilding
      * them made every return to neon pause. Measured on the board before this,

@@ -59,8 +59,7 @@ bool boost_units_parse(const char *text, boost_unit_t *out)
     if (text == NULL || out == NULL) return false;
     if (strcmp(text, "psi") == 0) { *out = BOOST_UNIT_PSI; return true; }
     if (strcmp(text, "bar") == 0) { *out = BOOST_UNIT_BAR; return true; }
-    if (strcmp(text, "kPa") == 0 || strcmp(text, "kpa") == 0 ||
-        strcmp(text, "KPA") == 0) {
+    if (strcmp(text, "kPa") == 0) {
         *out = BOOST_UNIT_KPA;
         return true;
     }
@@ -74,16 +73,6 @@ float boost_units_from_psi(boost_unit_t unit, float psi)
         case BOOST_UNIT_KPA: return psi * BOOST_PSI_TO_KPA;
         case BOOST_UNIT_PSI:
         default:             return psi;
-    }
-}
-
-float boost_units_to_psi(boost_unit_t unit, float value)
-{
-    switch (unit) {
-        case BOOST_UNIT_BAR: return value / BOOST_PSI_TO_BAR;
-        case BOOST_UNIT_KPA: return value / BOOST_PSI_TO_KPA;
-        case BOOST_UNIT_PSI:
-        default:             return value;
     }
 }
 
@@ -104,6 +93,45 @@ void boost_units_format(boost_unit_t unit, float psi, bool fold_deadband,
     }
 }
 
+/* Format a non-negative scaled integer (display magnitude x 10^decimals) as
+ * the unit's magnitude string: 2.07 -> "2.07" (bar), 221 -> "221" (kPa).
+ * Integer arithmetic only, so a per-sample (16 ms) caller spends no float
+ * printf and allocates nothing. This is the ONE owner of the magnitude shape
+ * shared with boost_units_format(); the big-digit per-sample readout calls it
+ * rather than carrying its own copy of the digit-splitting rules. */
+void boost_units_format_scaled(char *buf, size_t cap, long scaled, int decimals)
+{
+    if (buf == NULL || cap == 0) return;
+    char digits[24];
+    int n = 0;
+    if (scaled <= 0) {
+        digits[n++] = '0';
+    } else {
+        while (scaled > 0 && n < (int)sizeof(digits)) {
+            digits[n++] = (char)('0' + (int)(scaled % 10));
+            scaled /= 10;
+        }
+    }
+    /* digits[] is least-significant first; the integer part is the top
+     * `n - decimals` digits, the fraction the rest (with a leading "0." when
+     * the value is below one unit). */
+    const int int_digits = n - decimals;
+    size_t w = 0;
+    if (int_digits > 0) {
+        for (int i = n - 1; i >= decimals && w + 1 < cap; --i) buf[w++] = digits[i];
+        if (decimals > 0 && w + 1 < cap) buf[w++] = '.';
+        for (int i = decimals - 1; i >= 0 && w + 1 < cap; --i) buf[w++] = digits[i];
+    } else {
+        if (w + 1 < cap) buf[w++] = '0';
+        if (decimals > 0) {
+            if (w + 1 < cap) buf[w++] = '.';
+            for (int i = 0; i < -int_digits && w + 1 < cap; ++i) buf[w++] = '0';
+            for (int i = n - 1; i >= 0 && w + 1 < cap; --i) buf[w++] = digits[i];
+        }
+    }
+    buf[w] = '\0';
+}
+
 static void trim_trailing_zeros(char *buf)
 {
     char *dot = strchr(buf, '.');
@@ -120,9 +148,12 @@ void boost_units_format_tick(boost_unit_t unit, float psi,
     const float value = boost_units_from_psi(unit, psi);
     const int decimals = boost_units_decimals(unit);
     /* Whole values print without a decimal point, matching the historic psi
-     * tick numerals ("0" / "-15" / "10"). */
+     * tick numerals ("0" / "-15" / "10"). One threshold only: it is already
+     * measured in the unit's own precision (psi 0.5/10 == 0.05), so a separate
+     * psi-scaled epsilon would widen bar's integer branch tenfold and make a
+     * tick disagree with boost_units_format(). */
     const float rounded = roundf(value);
-    if (fabsf(value - rounded) < 0.5f / powf(10.0f, (float)decimals) || fabsf(value) < 0.05f) {
+    if (fabsf(value - rounded) < 0.5f / powf(10.0f, (float)decimals)) {
         snprintf(out, out_len, "%d", (int)lroundf(value));
         if (strcmp(out, "-0") == 0) snprintf(out, out_len, "0");
         return;

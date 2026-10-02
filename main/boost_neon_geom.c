@@ -36,40 +36,20 @@ const boost_neon_digit_metrics_t boost_neon_doto_metrics = {
     100,
 };
 
-void boost_neon_layout_readout_fmt(float value, int decimals, int slot_w, int dot_w,
-                                   int sign_w, int sign_gap, int negative_shift,
-                                   int font_px,
-                                   const boost_neon_digit_metrics_t *metrics,
-                                   boost_neon_readout_t *out)
+/* Common geometry for both readout entry points: centre the already-filled
+ * cell block on the face, apply the negative shift and derive the sign
+ * position and half-width. Shared so the psi decomposition and the converted
+ * snprintf path cannot place glyphs differently.
+ *
+ * Fixed cell widths mean nothing moves as the value changes within a digit
+ * count; the block re-centres only when the digit count changes. The sign is
+ * placed outside the block, so appearing at the zero crossing does not shift
+ * the digits either. */
+static void neon_readout_place(boost_neon_readout_t *out, int slot_w, int dot_w,
+                               int sign_w, int sign_gap, int negative_shift,
+                               int font_px,
+                               const boost_neon_digit_metrics_t *metrics)
 {
-    if (out == NULL) return;
-    if (metrics == NULL) metrics = &boost_neon_sf_metrics;
-    if (decimals < 0) decimals = 0;
-    if (decimals > 3) decimals = 3;
-
-    /* Round once at the target precision so digit carries stay consistent. */
-    if (decimals == 0) {
-        value = roundf(value);
-    } else {
-        const float scale = (decimals == 1) ? 10.0f : (decimals == 2) ? 100.0f : 1000.0f;
-        value = roundf(value * scale) / scale;
-    }
-
-    char tmp[16];
-    snprintf(tmp, sizeof(tmp), "%.*f", decimals, (double)fabsf(value));
-
-    /* A value that rounds to zero is not negative, however it was measured. */
-    out->sign = (value < 0.0f) && (fabsf(value) > 0.0f);
-    out->count = 0;
-    for (int i = 0; tmp[i] != '\0' && out->count < BOOST_NEON_MAX_CELLS; ++i) {
-        out->cells[out->count].ch = tmp[i];
-        out->count++;
-    }
-
-    /* Centre the cell block on the face. Fixed cell widths mean nothing moves
-     * as the value changes within a digit count; the block re-centres only
-     * when the digit count changes. The sign is placed outside the block, so
-     * appearing at the zero crossing does not shift the digits either. */
     int total = 0;
     int width[BOOST_NEON_MAX_CELLS];
     for (uint8_t i = 0; i < out->count; ++i) {
@@ -111,17 +91,81 @@ void boost_neon_layout_readout_fmt(float value, int decimals, int slot_w, int do
     out->half_w = (int16_t)(left_edge > right_edge ? left_edge : right_edge);
 }
 
+void boost_neon_layout_readout_fmt(float value, int decimals, int slot_w, int dot_w,
+                                   int sign_w, int sign_gap, int negative_shift,
+                                   int font_px,
+                                   const boost_neon_digit_metrics_t *metrics,
+                                   boost_neon_readout_t *out)
+{
+    if (out == NULL) return;
+    if (metrics == NULL) metrics = &boost_neon_sf_metrics;
+    if (decimals < 0) decimals = 0;
+    if (decimals > 3) decimals = 3;
+
+    /* Round once at the target precision so digit carries stay consistent. */
+    if (decimals == 0) {
+        value = roundf(value);
+    } else {
+        const float scale = (decimals == 1) ? 10.0f : (decimals == 2) ? 100.0f : 1000.0f;
+        value = roundf(value * scale) / scale;
+    }
+
+    char tmp[16];
+    snprintf(tmp, sizeof(tmp), "%.*f", decimals, (double)fabsf(value));
+
+    /* A value that rounds to zero is not negative, however it was measured. */
+    out->sign = (value < 0.0f) && (fabsf(value) > 0.0f);
+    out->count = 0;
+    for (int i = 0; tmp[i] != '\0' && out->count < BOOST_NEON_MAX_CELLS; ++i) {
+        out->cells[out->count].ch = tmp[i];
+        out->count++;
+    }
+
+    neon_readout_place(out, slot_w, dot_w, sign_w, sign_gap, negative_shift,
+                       font_px, metrics);
+}
+
 void boost_neon_layout_readout(float psi, int slot_w, int dot_w,
                                int sign_w, int sign_gap, int negative_shift,
                                int font_px,
                                const boost_neon_digit_metrics_t *metrics,
                                boost_neon_readout_t *out)
 {
-    /* Legacy PSI entry point: fold the +-0.1 PSI dead zone, then lay out with
-     * one decimal. Callers rendering another unit convert first and call
-     * boost_neon_layout_readout_fmt() directly. */
-    boost_neon_layout_readout_fmt(boost_readout_display_psi(psi), 1, slot_w, dot_w,
-                                  sign_w, sign_gap, negative_shift, font_px, metrics, out);
+    if (out == NULL) return;
+    if (metrics == NULL) metrics = &boost_neon_sf_metrics;
+
+    /* Legacy PSI entry point: fold the +-0.1 PSI dead zone, then decompose with
+     * integer math only. Callers rendering another unit convert first and call
+     * boost_neon_layout_readout_fmt() directly (which needs the float printf
+     * for an arbitrary decimal count); the 60 FPS psi path stays free of float
+     * printf, as it was before the units change. */
+    psi = boost_readout_display_psi(psi);
+
+    /* Round once, then decompose. Rounding per-digit lets 8.95 print as
+     * "8.10" when the tenths carry but the whole part is taken from the
+     * unrounded value. */
+    const int tenths_total = (int)lroundf(fabsf(psi) * 10.0f);
+    const int whole = tenths_total / 10;
+    const int tenths = tenths_total % 10;
+    const int tens = (whole / 10) % 10;
+
+    /* A value that rounds to 0.0 is not negative, however it was measured. */
+    out->sign = (psi < 0.0f) && (tenths_total != 0);
+    out->count = 0;
+
+    if (whole >= 10) {
+        out->cells[out->count].ch = (char)('0' + tens);
+        out->count++;
+    }
+    out->cells[out->count].ch = (char)('0' + (whole % 10));
+    out->count++;
+    out->cells[out->count].ch = '.';
+    out->count++;
+    out->cells[out->count].ch = (char)('0' + tenths);
+    out->count++;
+
+    neon_readout_place(out, slot_w, dot_w, sign_w, sign_gap, negative_shift,
+                       font_px, metrics);
 }
 
 void boost_neon_sign_bars(int cx, int cy, int size, int width,

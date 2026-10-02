@@ -266,15 +266,13 @@ struct SettingsView: View {
                 unavailableRow("gauge", loading: vm.isLoading)
             } else {
             Picker("Pressure unit", selection: Binding(
-                get: { vm.pressureUnit },
+                get: { session.pressureUnit },
                 set: { unit in
-                    // Save-on-change, mirroring saveTpmsBle(). A plain
-                    // `.onChange` would also fire when the load echo applies
-                    // the unit, re-PUTting it on every refresh; the binding's
-                    // set only runs for a user selection.
-                    vm.pressureUnit = unit
-                    session.applyPressureUnit(unit)
-                    Task { await vm.saveUnit() }
+                    // The unit publishes only once the gauge confirms the
+                    // write (the PUT echo); a failed or superseded write leaves
+                    // the last confirmed unit in place. The view model
+                    // sequences rapid selections so the newest one wins.
+                    Task { await vm.selectPressureUnit(unit) }
                 }
             )) {
                 ForEach(PressureUnit.all, id: \.self) { unit in
@@ -329,15 +327,15 @@ struct SettingsView: View {
     /// to PSI at the input boundary, so `saveConfig` always PUTs PSI.
     private func psiDisplayBinding(_ source: Binding<Double>) -> Binding<Double> {
         Binding(
-            get: { PressureUnit.displayRounded(fromPsi: source.wrappedValue, unit: vm.pressureUnit) },
-            set: { source.wrappedValue = PressureUnit.psi(fromDisplay: $0, unit: vm.pressureUnit) }
+            get: { PressureUnit.displayRounded(fromPsi: source.wrappedValue, unit: session.pressureUnit) },
+            set: { source.wrappedValue = PressureUnit.psi(fromDisplay: $0, unit: session.pressureUnit) }
         )
     }
 
     /// Converted placeholder mirroring the default PSI hint (negative values
     /// keep the UI's U+2212 minus sign, matching today's `−15.0`).
     private func rangePlaceholder(_ psi: Double, psiDecimals: Int) -> String {
-        let text = Format.pressure(psi, unit: vm.pressureUnit, psiDecimals: psiDecimals)
+        let text = Format.pressure(psi, unit: session.pressureUnit, psiDecimals: psiDecimals)
         return text.hasPrefix("-") ? "−" + text.dropFirst() : text
     }
 
@@ -346,20 +344,20 @@ struct SettingsView: View {
     /// `lowPsi`).
     private var tpmsLowDisplayBinding: Binding<Double> {
         Binding(
-            get: { PressureUnit.displayRounded(fromPsi: vm.tpmsLowPsi, unit: vm.pressureUnit) },
-            set: { vm.tpmsLowPsi = PressureUnit.psi(fromDisplay: $0, unit: vm.pressureUnit) }
+            get: { PressureUnit.displayRounded(fromPsi: vm.tpmsLowPsi, unit: session.pressureUnit) },
+            set: { vm.tpmsLowPsi = PressureUnit.psi(fromDisplay: $0, unit: session.pressureUnit) }
         )
     }
 
     /// The existing 14.5...58 psi bounds expressed in the selected unit.
     private var tpmsLowDisplayRange: ClosedRange<Double> {
-        let lower = PressureUnit.displayRounded(fromPsi: 14.5, unit: vm.pressureUnit)
-        let upper = PressureUnit.displayRounded(fromPsi: 58.0, unit: vm.pressureUnit)
+        let lower = PressureUnit.displayRounded(fromPsi: 14.5, unit: session.pressureUnit)
+        let upper = PressureUnit.displayRounded(fromPsi: 58.0, unit: session.pressureUnit)
         return lower...upper
     }
 
     private var tpmsLowDisplayStep: Double {
-        switch PressureUnit.normalized(vm.pressureUnit) {
+        switch PressureUnit.normalized(session.pressureUnit) {
         case PressureUnit.bar: return 0.05
         case PressureUnit.kPa: return 5
         default: return 0.5
@@ -391,7 +389,7 @@ struct SettingsView: View {
             Section("TPMS") {
                 Toggle("BLE link", isOn: $vm.tpmsBle)
                     .onChange(of: vm.tpmsBle) { _ in Task { await vm.saveTpmsBle() } }
-                Stepper("Low pressure: \(Format.pressure(vm.tpmsLowPsi, unit: vm.pressureUnit, psiDecimals: 1)) \(PressureUnit.suffix(vm.pressureUnit))",
+                Stepper("Low pressure: \(Format.pressure(vm.tpmsLowPsi, unit: session.pressureUnit, psiDecimals: 1)) \(PressureUnit.suffix(session.pressureUnit))",
                         value: tpmsLowDisplayBinding,
                         in: tpmsLowDisplayRange,
                         step: tpmsLowDisplayStep)

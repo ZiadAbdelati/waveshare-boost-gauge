@@ -43,7 +43,8 @@ int boost_json_state(char *json, size_t len)
     boost_tpms_config_t tpms_cfg;
     boost_tpms_get_config(&tpms_cfg);
     return snprintf(json, len,
-                    "{\"psi\":%.2f,\"peakPsi\":%.2f,\"zone\":\"%s\",\"demo\":%s,"
+                    "{\"psi\":%.2f,\"peakPsi\":%.2f,\"pressureUnit\":\"%s\","
+                    "\"zone\":\"%s\",\"demo\":%s,"
                     "\"brightness\":%d,\"firmwareVersion\":\"%s\",\"uptimeMs\":%llu,"
                     "\"epochMs\":%lld,\"timezoneOffsetMinutes\":%d,\"activeThemeId\":\"%s\",\"activePage\":%d,"
                     "\"display\":{\"renderFps\":%lu,\"gaugeDemandPerSecond\":%lu,\"flushesPerSecond\":%lu,\"pixelsPerSecond\":%lu,"
@@ -61,7 +62,9 @@ int boost_json_state(char *json, size_t len)
                     "\"lastReply\":\"%s\",\"protocol\":\"%s\","
                     "\"rpm\":%.1f,\"speedKph\":%.1f,\"coolantC\":%.1f,\"mapKpa\":%.1f,\"iatC\":%.1f,"
                     "\"throttlePct\":%.1f,\"mafGps\":%.1f,\"fuelPct\":%.1f,\"batteryV\":%.1f}}",
-                    (double)st.psi, (double)st.peak_psi, st.zone, st.demo ? "true" : "false",
+                    (double)st.psi, (double)st.peak_psi,
+                    boost_units_name(boost_theme_pressure_unit()),
+                    st.zone, st.demo ? "true" : "false",
                     st.brightness, st.firmware_version, (unsigned long long)st.uptime_ms,
                     (long long)st.epoch_ms, st.timezone_offset_minutes, st.active_theme_id, st.active_page,
                     (unsigned long)st.display.render_fps,

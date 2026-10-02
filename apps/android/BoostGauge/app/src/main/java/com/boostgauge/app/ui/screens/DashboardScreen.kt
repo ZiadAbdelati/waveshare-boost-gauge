@@ -80,7 +80,7 @@ import com.boostgauge.app.ui.viewmodels.StatusViewModel
 fun DashboardScreen(container: AppContainer) {
     val viewModel: StatusViewModel = viewModel(
         factory = viewModelFactory {
-            initializer { StatusViewModel(container.repository, container.api) }
+            initializer { StatusViewModel(container.repository, container.api, container.pressureUnit) }
         },
     )
     val status by viewModel.status.collectAsState()
@@ -90,13 +90,11 @@ fun DashboardScreen(container: AppContainer) {
     val themeNames by viewModel.themeNames.collectAsState()
     val themes by viewModel.themes.collectAsState()
     val selection by container.transportController.selection.collectAsState()
-    val pressureUnit by container.pressureUnit.unit.collectAsState()
+    val pressureUnit by viewModel.pressureUnit.collectAsState()
     LaunchedEffect(Unit) { viewModel.refresh() }
-    // Device-authoritative unit; the dashboard is the default start route, so
-    // this also seeds the process-wide value on a cold start.
-    LaunchedEffect(themes?.pressureUnit) {
-        themes?.pressureUnit?.let { container.pressureUnit.apply(it) }
-    }
+    // The unit is adopted by StatusViewModel from EVERY /state sample the
+    // repository delivers, so neither this screen's initial /themes fetch nor
+    // its timing gates a panel UNITS change or a reconnect.
 
     Column(modifier = Modifier.fillMaxSize()) {
         Row(

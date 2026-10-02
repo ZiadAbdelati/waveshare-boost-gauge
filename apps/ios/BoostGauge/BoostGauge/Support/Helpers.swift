@@ -39,15 +39,13 @@ enum Format {
         String(format: "%.4f", locale: posix, value)
     }
 
-    /// Unit-aware pressure readout from a canonical PSI value. `psiDecimals`
-    /// preserves the call site's existing PSI precision, so the default unit
-    /// renders byte-identically to the pre-unit UI; converted units use the
-    /// contract precision (bar 2, kPa 0).
-    static func pressure(_ psi: Double, unit: String, psiDecimals: Int) -> String {
+    /// Unit-aware pressure readout from a canonical PSI value, always at the
+    /// contract precision (psi 1, bar 2, kPa 0). `psiDecimals` is retained only
+    /// for source compatibility with call sites outside this slice; it no
+    /// longer affects the output — no spec requires a PSI precision other
+    /// than the contract's 1 decimal.
+    static func pressure(_ psi: Double, unit: String, psiDecimals _: Int) -> String {
         let normalized = PressureUnit.normalized(unit)
-        if normalized == PressureUnit.psi {
-            return String(format: "%.\(psiDecimals)f", locale: posix, psi)
-        }
         return String(format: "%.\(PressureUnit.decimals(normalized))f", locale: posix,
                       PressureUnit.display(fromPsi: psi, unit: normalized))
     }

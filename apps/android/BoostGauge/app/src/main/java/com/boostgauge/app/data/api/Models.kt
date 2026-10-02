@@ -20,6 +20,12 @@ data class Status(
     val sensors: Sensors = Sensors(),
     val tpms: Tpms = Tpms(),
     val obd: Obd = Obd(),
+    /**
+     * Live presentation unit carried by every /state sample ("psi"/"bar"/"kPa",
+     * always present). Clients adopt it from each sample so a panel UNITS
+     * change or a missed /themes fetch can never leave a stale unit.
+     */
+    val pressureUnit: String = "psi",
 )
 
 @Serializable

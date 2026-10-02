@@ -99,9 +99,17 @@ final class StatusViewModel: ObservableObject {
     private func apply(statusData: Data) async {
         do {
             let decoded = try JSONDecoder().decode(GaugeState.self, from: statusData)
+            // The unit travels on every /state sample (units contract item 2):
+            // this is the live path when the physical panel's UNITS button
+            // changes the unit, and it recovers a client that missed the
+            // initial /themes fetch.
+            let stateUnit = Self.pressureUnit(from: statusData)
             await MainActor.run {
                 assertMainThread()
                 self.state = decoded
+                if let stateUnit {
+                    self.appSession?.applyPressureUnitFromState(stateUnit)
+                }
                 self.isLoading = false
                 self.errorMessage = nil
                 if let id = decoded.activeThemeId {
@@ -114,6 +122,13 @@ final class StatusViewModel: ObservableObject {
                 self.errorMessage = "Could not decode device state"
             }
         }
+    }
+
+    /// Reads `pressureUnit` from a raw `/state` payload without extending the
+    /// decoded `GaugeState` model (the field is presentation-only).
+    private static func pressureUnit(from data: Data) -> String? {
+        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
+        return object["pressureUnit"] as? String
     }
 
     func loadThemeNames(_ transport: GaugeTransport) async {

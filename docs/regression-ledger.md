@@ -692,3 +692,174 @@ helper aborts with `Fatal error: Incorrect actor executor assumption; Expected
 same executor as SimNative.FrameCapture` a few frames after start, so taps
 race the crash. iOS interaction was therefore driven with native XCUITest on
 the simulator instead.
+
+## 2026-10-02 — Pre-merge review round 2: units defects found and fixed
+
+PR #1 was reviewed before merge by a fan-out of six read-only reviewer slices.
+Four completed and returned structured findings; `GaugeRendering` exited 1 with a
+truncated report and `WebSurface` died with an empty payload (model quota), so the
+web surface was re-reviewed separately. Every finding below was reproduced against
+the source before being fixed, and each fix records the concrete wrong output.
+
+Firmware protocol (`main/boost_units.c`, `boost_web.c`, `boost_app_ble.c`, `boost_json.c`)
+
+- `boost_units_parse()` accepted the aliases `kpa`/`KPA` while the wire vocabulary is
+  exactly `psi|bar|kPa`; a `PUT {"pressureUnit":"kpa"}` was persisted and echoed as
+  `kPa` although the host mock rejected it. Now the exact three tokens only.
+- A present-but-non-string `pressureUnit` (`123`) was silently ignored and returned
+  200. Now 400 `invalid_pressure_unit` on both the HTTP and BLE routes.
+- The unit setter ran before later fields were validated, so
+  `{"pressureUnit":"bar","vaultFace":"not-a-color"}` returned 400 `invalid_color`
+  having ALREADY persisted bar. The setter is now deferred to the existing trailing
+  rebuild point, behind every early-return.
+- `pressureUnit` was absent from `/state`, so a unit changed on the panel's UNITS
+  button could never reach an open dashboard and a client that missed its initial
+  `/themes` fetch stayed wrong forever. `/state` now carries it as its third field
+  via the shared `boost_units_name()` accessor, and every client adopts it from
+  every sample — this also removes the Android cold-start race in one stroke.
+
+Gauge rendering (`main/boost_gauge.c`, `main/boost_tpms_ui.c`)
+
+- Big Digit dropped the sign in bar/kPa: the signed string went into `s_big_val`
+  (font cmap holds only `.` and digits) while `s_big_minus` was force-hidden, so
+  `-1.0` psi painted `0.07` bar — a reversed reading, not a cosmetic defect. The
+  magnitude now goes into the label and the existing custom minus is shown and
+  positioned 3 px left of the advances-centred string.
+- Night City ghosts stayed `LV_TEXT_ALIGN_RIGHT` in the old PSI box while the
+  bar/kPa primary is centred, detaching the two chromatic passes from the number.
+- TPMS showed a converted value with no unit mark (`32.0` psi → `221` in kPa). Each
+  capsule now carries a unit label, created but hidden under psi so that face is
+  unchanged; it is maintained on every tick because a unit change does not rebuild
+  the lazily-built TPMS page.
+- The 16 ms big-digit value path called `lv_label_set_text` (lv_malloc/lv_free per
+  value change — ~every 15 ms in bar at the 9.789 psi/s sweep) and formatted with
+  float `snprintf`. It now uses integer math into a static buffer published with
+  `lv_label_set_text_static`, and only when the string actually changed.
+
+Physical overlay (`main/boost_page.c`)
+
+- The documented "a swipe starting on a button flips pages" was false: the square
+  buttons registered only PRESSED/RELEASED/CLICKED, never `LV_EVENT_PRESSING`, and
+  `s_qr_swipe_suppress` was never assigned true, so a 48-100 px drag starting on a
+  button ended as CLICKED and toggled the button instead of flipping the page. All
+  three buttons now feed the shared classifier, and a classified drag suppresses the
+  trailing CLICKED in both the button tap callback and `qr_click_cb`.
+- Tapping UNITS while a GIF was loaded buried the overlay: the unit-cycle
+  `boost_gauge_apply_theme()` rebuild ends by moving `s_media_gif` to the foreground,
+  so the open overlay was replaced by the paused GIF while `s_qr_active` stayed true.
+  `qr_reassert_overlay()` now re-raises it after that rebuild.
+
+iOS (`Helpers.swift`, `AppSession.swift`, `SettingsViewModel.swift`, `StatusViewModel.swift`, `SettingsView.swift`)
+
+- `Format.pressure` preserved caller precision, so psi rendered 2 decimals
+  (`10.04 psi`) while bar/kPa were correct. Every unit now formats at the contract
+  precision; the only deliberate exceptions are the canonical `/logs.csv` columns and
+  integer psi chart ticks.
+- The picker published the unit app-wide before the PUT succeeded and launched
+  unsequenced writes, so a failed BLE write left the app showing bar while the gauge
+  stayed psi, and a late echo could overwrite a newer selection. Publishing now
+  happens only on a confirmed 200, with monotonic write sequencing (a stale echo is
+  dropped) and the session as the single source of truth.
+
+Android (`Models.kt`, `StatusViewModel.kt`, `SettingsViewModel.kt`, `DashboardScreen.kt`, `SettingsScreen.kt`)
+
+- The Range form stored only rounded display strings and reconstructed PSI on save:
+  an untouched `psiMax=10.0` became `10.0076` psi, and `psiMin=-30.0` became
+  `-30.0228`, which the firmware rejects (`psiMin < -30`) so saving an untouched form
+  returned 400. Each field now retains its canonical PSI and an untouched field sends
+  it back unchanged; only an edited field converts.
+- The unit was never adopted on a normal cold start: the one-shot `/themes` fetch in
+  `StatusViewModel.init` raced the async `container.initialize()` and swallowed its
+  failure, and reconnect refreshed only `/state`. Fixed by the `/state` adoption above.
+- The picker rendered lowercase `psi` instead of the contract's `PSI`.
+
+Web (`web/app.js`, `tools/mock_server.py`, `tools/tests/test_web_api_contract.py`)
+
+- `pressureText` had the same caller-precision bug as iOS (10 call sites), and the
+  TPMS no-data placeholder was a fixed `--.--`. Both now follow the contract, the
+  logs summary re-derives on a unit change without refetching, and the calibration
+  offset figure converts while the kPa diagnostic stays raw. Verified in a real
+  browser with the `/themes` request aborted: the dashboard still converged to the
+  unit from `/state` alone.
+
+Verification at this revision: host suite 12/12 PASS; `sim --qr-test` PASS; Android
+unit tests PASS; iOS build + `BoostGaugeTests` (2 pre-existing timezone failures) +
+the units UI test PASS; firmware `idf.py build` clean. Still no hardware run — the
+60 FPS cadence gate for converted readouts and the on-glass feel of the new overlay
+gestures remain unmeasured.
+
+### 2026-10-02 — Pre-merge review round 2b (web + gauge re-runs): findings and fixes
+
+The two review slices that failed in round 1 were re-run on a second model
+(`omni/opencode-go/deepseek-v4.1-flash`). Web returned REQUEST-CHANGES; gauge
+returned MERGE-WITH-NITS with all four round-1 fixes VERIFIED (vision on sim
+renders: big-digit bar vac `-0.83` / boost `0.34` with no stray minus, TPMS
+`bar`/`kPa` marks, Night City fringes registered to the digits). Both sets of
+findings are fixed below; every number here is a measurement, not a claim.
+
+Web surface (six findings, all reproduced live in headless Chromium against
+`tools/mock_server.py` before and after):
+
+- WRONG SIGN IN CONVERTED UNITS. `splitNum()` tested `neg = psi < -0.05`, a
+  PSI-domain threshold, on a value the arc/HUD/vault call sites passed through
+  `toDisplay()`. In bar that threshold is -0.73 psi, so `-0.5` psi painted
+  `+0.03` while the firmware prints `-0.03` (same for HUD and vault). The sign
+  is now derived from the PSI value (`displayIsNegative`), with the firmware's
+  rounds-to-zero rule so kPa cannot print `-0` at atmosphere.
+- RANGE SAVE DRIFT. `readRangeForm()` reconstructed PSI from the rounded
+  display strings, so an UNTOUCHED Save with unit bar PUT
+  `-14.938886993076444 / 10.007603907983249 / 7.977075578827228`. Fields now
+  retain `{psi, text}`; an untouched field emits its retained PSI and the
+  observed body is exactly `-15 / 10 / 8` (editing one field converts only it).
+- Vault kPa painted a stray `.` (`-48.`); the point is now skipped when the
+  fraction is empty.
+- The web TPMS face showed converted numbers with no unit; it now draws the
+  active unit mark under each capsule (psi unchanged).
+- The mock assigned `pressureUnit` before later fields validated, so a 400
+  still persisted it; it now stages and applies at the end, with a contract
+  assertion (`test_web_api_contract.py`: 223/223).
+- `refreshPressureUnitPresentation()` re-entered `renderConfig()`, which
+  re-asserted the timezone dropdown, brightness sliders, companion-BLE toggle
+  and all range fields from `psiRange()` fallbacks — i.e. the "unit changed
+  while the initial /themes fetch failed" path stamped in defaults. It now
+  refreshes only unit-derived presentation.
+
+Gauge slice (eight findings):
+
+- PERF: the big-digit bar/kPa readout was a single `DISP_SIZE`-wide label, so
+  every 0.01-bar step (~15 ms at 9.789 psi/s) invalidated the whole 466x120 box.
+  Measured non-flip flush: psi 21,243 px/cycle vs bar 75,687 / kPa 75,668
+  (3.56x). It is now one label cell per character sized to its glyph advance:
+  bar 38,366 (-49.3%, 1.81x psi), kPa 23,483 (-69.0%, 1.11x), p50 host cycle
+  bar 0.85 -> 0.75 ms, kPa 0.59 -> 0.46 ms. Big-digit psi/bar/kPa screenshots
+  (4 states + 24 anim frames each) are byte-identical before/after.
+- Vault readout centring: `(i - (n-1)/2) * 24` biased even-length strings 12 px
+  right (`0.34` ink centre 244.5 vs `-0.83` at 234.5). Now
+  `(2*i - (n-1)) * 12`: unsigned even/odd both centre at 233.0; psi byte-identical.
+- PEAK labels had started folding the +/-0.1 psi dead band, a silent psi-path
+  change (psi peak 0.05 rendered `0.0`, was `0.1`). All four peak sites now pass
+  `fold_deadband = false`; the fold belongs to the live readout only.
+- `boost_units_format_tick()` applied a psi-scaled epsilon after conversion, so
+  bar ticks under 0.05 bar printed `0` (`tick(BAR, 0.5 psi)` -> `0`, because
+  0.5/10^2 = 0.005 widened the integer branch 10x). Term removed: psi and kPa
+  tick output diff count 0 over psi in [-30, 40] step 0.01, bar 260 values
+  corrected.
+- `format_big_magnitude()` was a second implementation of the magnitude
+  contract; it moved to `main/boost_units.c` as `boost_units_format_scaled()`
+  and is now pinned by the new `tools/test_units_format.c` (`test_units_format`
+  CMake target, 14,002 compares) against `boost_units_format`.
+- The neon PSI layout had been routed through the float-`snprintf` `_fmt` path;
+  the integer decomposition is restored for psi (verified equivalent to `_fmt`
+  at 1 decimal over psi in [-30, 40] step 0.01 for both fonts, 0 field
+  mismatches) and `test_neon_geom` passes UNCHANGED.
+- `boost_units_to_psi()` had no caller in firmware or host tests; deleted.
+
+Stale-pixel audit after all of the above: 0 mismatches for dyno-cell,
+night-city, big-digit and neon in psi, bar and kPa; vault-tec 1 px, PROVEN
+pre-existing by rebuilding HEAD's `boost_gauge.c` (same AA needle seam at
+(185,224), identical in all three units, already recorded in this ledger).
+
+Verification: host suite 12/12; `sim --qr-test` PASS; `test_units_format` PASS;
+`test_neon_geom` PASS; `test_web_api_contract.py` 223/223; `test_mock_api.py`
+96/96; `idf.py build` clean. No hardware run — the big-digit cadence A/B and
+the live overlay unit-cycle rebuild remain unmeasured on glass.

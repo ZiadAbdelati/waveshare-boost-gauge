@@ -4,11 +4,13 @@ apps parse, exercised against the in-process host mock (tools/mock_server.py ->
 BoostMockServer) and cross-checked against the firmware source (boost_web.c).
 
 Covers the deliverable-2(a) list:
-  * /state schema incl. tpms / obd / display metrics blocks (types + key sets)
+  * /state schema incl. pressureUnit and the tpms / obd / display metrics
+    blocks (types + key sets)
   * /config schema incl. appBle; brightness clamps; range validation bounds
   * /themes order (Dyno Cell -> Vault-Tec -> Night City -> Big Digit -> Neon)
   * /themes/config validation bounds (colors, rotation, vignette, pixelshift,
-    neon layout/preset, demoMode vs demoFastSweep kept separate, tpmsBle)
+    neon layout/preset, demoMode vs demoFastSweep kept separate, tpmsBle,
+    pressureUnit psi|bar|kPa case-sensitive)
   * /tpms/config validation bounds (lowKpa 100-400, staleAfterMs 2000-120000)
   * /time: valid epoch, invalid_time/time_not_set, and the firmware 409
     clock_rejected rule (source-contract; the mock has no RTC model)
@@ -47,10 +49,11 @@ from mock_server import BoostMockServer  # noqa: E402
 
 # Exact schema the firmware state_json() renders (boost_web.c).
 STATE_TOP_KEYS = {
-    "psi", "peakPsi", "zone", "demo", "brightness", "firmwareVersion",
-    "uptimeMs", "epochMs", "timezoneOffsetMinutes", "activeThemeId",
-    "activePage", "display", "sensors", "tpms", "obd",
+    "psi", "peakPsi", "pressureUnit", "zone", "demo", "brightness",
+    "firmwareVersion", "uptimeMs", "epochMs", "timezoneOffsetMinutes",
+    "activeThemeId", "activePage", "display", "sensors", "tpms", "obd",
 }
+PRESSURE_UNITS = ("psi", "bar", "kPa")
 DISPLAY_KEYS = {
     "renderFps", "gaugeDemandPerSecond", "flushesPerSecond", "pixelsPerSecond",
     "worstRenderUs", "renderGapP50Us", "renderGapMaxUs", "framesOverBudget",
@@ -190,6 +193,9 @@ def main() -> int:
                          "/state psi/peakPsi are numbers")
             result.check(state["zone"] in ZONES, "/state zone token in VAC/ATMO/BOOST/OVER",
                          f"got {state['zone']!r}")
+            result.check(is_type(state, "pressureUnit", str) and state["pressureUnit"] in PRESSURE_UNITS,
+                         "/state pressureUnit is psi|bar|kPa",
+                         f"got {state.get('pressureUnit')!r}")
             result.check(is_type(state, "demo", bool) and is_type(state, "brightness", int),
                          "/state demo bool, brightness int")
             result.check(0 <= state["brightness"] <= 100, "/state brightness within 0..100")
@@ -311,6 +317,37 @@ def main() -> int:
         result.check(status == 400, "PUT themes/config neonLayout 9 -> 400 invalid_neon_layout")
         status, _ = put_json(base, "/api/v1/themes/config", {"neonPreset": 7})
         result.check(status == 400, "PUT themes/config neonPreset 7 -> 400 invalid_neon_preset")
+
+        # pressureUnit: exactly "psi"|"bar"|"kPa" (case-sensitive), string only.
+        for unit in PRESSURE_UNITS:
+            status, resp = put_json(base, "/api/v1/themes/config", {"pressureUnit": unit})
+            result.check(status == 200 and resp["pressureUnit"] == unit,
+                         f"PUT themes/config pressureUnit {unit!r} accepted")
+            status, state_now = get_json(base, "/api/v1/state")
+            result.check(status == 200 and state_now["pressureUnit"] == unit,
+                         f"/state reports the persisted unit {unit!r}")
+        for bad in ("kpa", "KPA", "PSI", "Bar", "bars", ""):
+            status, _ = put_json(base, "/api/v1/themes/config", {"pressureUnit": bad})
+            result.check(status == 400,
+                         f"PUT themes/config pressureUnit {bad!r} -> 400 invalid_pressure_unit")
+        for bad in (5, 1.0, True, None, ["psi"]):
+            status, _ = put_json(base, "/api/v1/themes/config", {"pressureUnit": bad})
+            result.check(status == 400,
+                         f"PUT themes/config pressureUnit non-string {bad!r} -> 400")
+        status, resp = put_json(base, "/api/v1/themes/config", {"pressureUnit": "psi"})
+        result.check(status == 200 and resp["pressureUnit"] == "psi",
+                     "pressureUnit restored to psi")
+
+        # The unit is staged and applied only after every other field validated
+        # (boost_web.c: pending_unit + trailing set). A 400 on a later field must
+        # leave the persisted unit untouched.
+        status, _ = put_json(base, "/api/v1/themes/config",
+                             {"pressureUnit": "kPa", "vaultVignette": 999})
+        result.check(status == 400,
+                     "PUT themes/config {kPa, vaultVignette 999} -> 400 invalid_vignette")
+        status, state_now = get_json(base, "/api/v1/state")
+        result.check(status == 200 and state_now["pressureUnit"] == "psi",
+                     "rejected body leaves pressureUnit unchanged")
 
         # demoMode and demoFastSweep are separate persisted flags.
         status, resp = put_json(base, "/api/v1/themes/config",

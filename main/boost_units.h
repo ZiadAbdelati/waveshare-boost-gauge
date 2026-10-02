@@ -37,13 +37,19 @@ int boost_units_decimals(boost_unit_t unit);
 bool boost_units_parse(const char *text, boost_unit_t *out);
 
 float boost_units_from_psi(boost_unit_t unit, float psi);
-float boost_units_to_psi(boost_unit_t unit, float value);
 
 /* Format a PSI value in the unit with the unit's exact decimal count, e.g.
  * "8.4" / "-1.03" / "69". `fold_deadband` applies the shared +-0.1 PSI fold
  * BEFORE conversion (the band is defined in PSI); vault-tec passes false. */
 void boost_units_format(boost_unit_t unit, float psi, bool fold_deadband,
                         char *out, size_t out_len);
+
+/* Format a non-negative scaled integer magnitude (display value x
+ * 10^decimals) with integer arithmetic only, e.g. (207, 2) -> "2.07",
+ * (221, 0) -> "221". The per-sample big-digit bar/kPa readout uses this so
+ * the 16 ms path calls no float printf and allocates nothing, while the
+ * magnitude shape it paints has exactly one owner. */
+void boost_units_format_scaled(char *buf, size_t cap, long scaled, int decimals);
 
 /* Format a dial scale numeral: integer when the unit-rounded value is whole,
  * otherwise the unit's decimals, e.g. "0" / "-15" / "0.69". */

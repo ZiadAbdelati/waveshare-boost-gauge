@@ -603,14 +603,19 @@ static int route_themes_config_put(const cJSON *body, char *out, size_t cap)
         boost_theme_set_tpms_ble(cJSON_IsTrue(tble));
         boost_obd_set_enabled(cJSON_IsTrue(tble));
     }
+    /* Validate here so a rejected body leaves the persisted unit untouched;
+     * applied after the remaining fields (mirrors themes_config_put()). A
+     * present non-string is a client bug: 400, not a silent ignore. */
     const cJSON *punit = cJSON_GetObjectItemCaseSensitive(body, "pressureUnit");
-    if (cJSON_IsString(punit)) {
-        boost_unit_t unit;
-        if (!boost_units_parse(punit->valuestring, &unit)) {
+    boost_unit_t pending_unit = BOOST_UNIT_DEFAULT;
+    bool have_unit = false;
+    if (punit != NULL) {
+        if (!cJSON_IsString(punit) ||
+            !boost_units_parse(punit->valuestring, &pending_unit)) {
             snprintf(out, cap, "{\"error\":\"invalid_pressure_unit\"}");
             return 400;
         }
-        boost_theme_set_pressure_unit(unit);
+        have_unit = true;
     }
     const cJSON *vface = cJSON_GetObjectItemCaseSensitive(body, "vaultFace");
     if (vface != NULL && app_parse_hex_color(vface, &rgb)) {
@@ -687,6 +692,9 @@ static int route_themes_config_put(const cJSON *body, char *out, size_t cap)
             }
             boost_theme_set_colors(tid->valuestring, &colors);
         }
+    }
+    if (have_unit) {
+        boost_theme_set_pressure_unit(pending_unit);
     }
     /* Mirror themes_config_put(): rebuild the scene after any change. */
     if (boost_display_lock(1000) == ESP_OK) {

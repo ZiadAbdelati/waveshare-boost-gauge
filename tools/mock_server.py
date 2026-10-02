@@ -713,6 +713,8 @@ def state_payload() -> dict:
     payload = {
         "psi": psi,
         "peakPsi": round(PEAK, 2),
+        # Presentation-only unit; key order mirrors boost_json_state().
+        "pressureUnit": str(THEME["pressureUnit"]),
         "zone": zone_for(psi),
         "demo": demo,
         "brightness": int(CONFIG["brightnessHigh"]),
@@ -1263,12 +1265,13 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_err(HTTPStatus.BAD_REQUEST, "invalid_rotation")
                 return
             THEME["rotation"] = int(deg)
+        pending_unit = None
         if "pressureUnit" in payload:
             unit = payload["pressureUnit"]
             if unit not in ("psi", "bar", "kPa"):
                 self.send_err(HTTPStatus.BAD_REQUEST, "invalid_pressure_unit")
                 return
-            THEME["pressureUnit"] = unit
+            pending_unit = unit
         if "demoMode" in payload and isinstance(payload["demoMode"], bool):
             THEME["demoMode"] = payload["demoMode"]
         if "demoFastSweep" in payload and isinstance(payload["demoFastSweep"], bool):
@@ -1337,6 +1340,11 @@ class Handler(BaseHTTPRequestHandler):
                                 return
                             parsed[key] = color
                     theme["colors"].update(parsed)
+        # Applied only after every other field has validated, mirroring
+        # boost_web.c:themes_config_put()'s staged pending_unit: a body that
+        # 400s on a later field must not leave the unit persisted.
+        if pending_unit is not None:
+            THEME["pressureUnit"] = pending_unit
         self.send_json(themes_payload())
 
     def handle_supply_put(self) -> None:
