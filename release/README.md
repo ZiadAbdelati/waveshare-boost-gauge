@@ -1,75 +1,90 @@
-# v0.9.9 — Neon engine-off flicker fix (firmware) + reset-button visibility (apps) — REPLACES v0.9.8
+# v1.0.0 — Selectable pressure units (psi / bar / kPa), everywhere
 
-Combined release. **This release replaces v0.9.8**, which it supersedes:
-everything v0.9.8 shipped (the companion-app Neon preset fixes) is included
-here, plus the firmware zone-flicker fix that landed afterwards. If you are
-coming from v0.9.7 or v0.9.8, this is a single update; the firmware binaries
-are NEW in this release (not a reuse of v0.9.7).
+Firmware 1.0.0 (ESP-IDF 5.5.1) · iOS 1.0.0 (8) · Android 1.0.0 (versionCode 10,
+Android 10+). The gauge, the dashboard and both companion apps can now show
+pressure in **psi**, **bar** or **kPa**, switched from the physical panel, the web
+Settings page, or either app.
 
-> **Verification honesty:** the firmware fix in this release is
-> **simulator-verified, not hardware-verified** — the owner explicitly
-> declined a hardware pass (gauge stays in the car). The zone-decision
-> logic measured in the host simulator is the same shared source the device
-> runs, and the fix is stateless (a fold, not a feedback loop), but the
-> physical-panel conditions — the ~40–100 ms hardware zone-flip recolor
-> floor, TE/tearing, and the real sensor noise spectrum — were not
-> measured. First flash to hardware should park engine-off on Neon
-> (marquee layout worst-case) and watch the rings for a minute.
+> **Verification honesty: the firmware in this release is host-built and
+> simulator-verified, NOT hardware-verified.** No board was attached when it was
+> cut. The unit logic is the same shared source the device runs and it is covered
+> by the host suite (13 tests), per-theme stale-pixel audits and simulator renders
+> in all three units, and both app artifacts were verified from their built
+> binaries - but the on-glass cadence A/B for the converted Big Digit readout and
+> the physical feel of the overlay's UNITS button were **not** measured.
+> **v0.9.7 remains the last hardware-verified baseline**; quote it (or a fresh
+> board run) for physical measurements, never this release. First flash to
+> hardware should exercise the UNITS button and soak a bar/kPa Big Digit face.
 
-## Firmware fixed (v0.9.9, ESP-IDF 5.5.1)
+## What this changes
 
-- **Neon engine-off zone flicker + marquee second-ring flashing.** With the
-  engine fully off, sensor noise (~±0.05 psi) straddled Neon's raw 0.05 psi
-  vacuum/boost threshold, so the zone color flipped every 16 ms sample — and
-  each flip re-fired the marquee's deferred run repaint (word-first,
-  arc-next-frame), visible as the second bulb ring flashing on/off. The
-  v0.9.7 readout dead zone deliberately covered only the displayed number;
-  this user-issued override (2026-09-09) extends the SAME ±0.1 psi fold
-  (`boost_readout_display_psi()`) to the Neon zone-color decision inside
-  `neon_zone_rgb()`/`neon_zone_id()` — one band definition, no hysteresis,
-  no second threshold. Inside ±0.1 psi the zone is constant (vacuum color);
-  outside the band, behavior is unchanged. Draw and flip detection share the
-  folded decision by construction (every consumer routes through those two
-  functions). Dyno-cell's arc/wedge and Vault-Tec keep raw psi (their
-  existing guards make them flicker-free). Web mirror updated
-  (`neonZoneDisplayPsi()` delegating to the same JS fold).
+**Firmware**
+- A single global display unit, persisted in the theme store (NVS key `unit`),
+  served by `GET /api/v1/themes` as `pressureUnit`, written by
+  `PUT /api/v1/themes/config`, and carried in `GET /api/v1/state` so an
+  already-open dashboard follows a change made on the panel.
+- **Presentation only.** Canonical values stay PSI (`/config`, `/state.psi`,
+  `peakPsi`, `/logs.csv`) or kPa (sensor and calibration diagnostics). Gauge
+  geometry, arc wedges and the zero marker are always PSI and are never rescaled -
+  every psi readout path is byte-for-byte the pre-units render.
+- Decimals: psi 1, bar 2, kPa 0. The ±0.1 psi readout dead zone is folded **before**
+  conversion; Vault-Tec deliberately stays raw in every unit, and the Neon
+  zone-colour decision folds through the same band so engine-off noise no longer
+  flips the ring colour between samples.
+- Converted readouts use separate advances-centred layouts, and Big Digit's
+  bar/kPa value is drawn as one label cell **per character** - a single
+  full-width label invalidated its whole 466×120 box on every 0.01-bar step
+  (3.56× the psi flush per cycle; now 1.81× bar, 1.11× kPa).
+- Converted Big Digit values keep the custom minus widget: `alvida_big` carries no
+  `-` glyph, so a literal sign in the string was painted as nothing and `-1.0` psi
+  rendered as `0.07` bar.
+- TPMS values and the low-pressure threshold follow the unit.
 
-  Host-simulator evidence (probe harness + raw data in the repo at
-  `preview/sim/zonefold_probe/`, sheets at `preview/sim/*/`):
-  - Engine-off noise, ±0.05 psi, 620 frames × 5 seeds: pre-fix 34–54 zone
-    flips per run → post-fix **0 flips, every run**.
-  - Band edges: vacuum through +0.10 (byte-identical frames at
-    -0.10/-0.09/0.0), boost from +0.11, overboost at +8.0 intact.
-  - Marquee ring regions: **0 pixel diffs across 10 consecutive captures**
-    (spin off); spin-on chase still animates (expected).
-  - Real motion: constant-slew 9.789 psi/s still flips at exactly the real
-    crossings on all three layouts (zone color is not frozen).
+**Physical panel** — the two-finger overlay's OBD2/App rows are replaced by a
+**2-up + 1-down cluster of three rounded buttons**: APP BLE, OBD BLE, UNITS. UNITS
+cycles psi → bar → kPa and persists. Button presses take part in the existing swipe
+classifier, so a drag that starts on a button is still a theme swipe, not a tap.
 
-## Companion apps fixed (iOS 0.9.7 (7) / Android 0.9.7 (9, Android 10+))
+**Dashboard** — a **Pressure unit** selector on the Settings page (Range section).
+The cockpit reads the unit from every `/state` sample.
 
-All v0.9.8 fixes carry over (Neon preset stale-color clobber, instant
-preset/layout/font apply, iOS reset-button hit area). New in this release:
+**Companion apps** — the units dropdown sits on the Range page on both platforms;
+the About/Cockpit readouts show the unit.
 
-- **"Reset to default colors" appears as soon as edits exist — before
-  Apply.** The button used to key solely on the board's `customized` flag,
-  which only flips once Apply commits the colors, so unsaved edits had no
-  reset affordance. Both apps now show it when there are unsaved local
-  edits OR the board reports customized; reset/apply echoes clear the edits
-  and re-hide it; a failed reset keeps your edits. Verified end-to-end in
-  the iOS simulator and Android emulator: edit a zone color → button
-  appears immediately → tap reset → color reverts and button disappears.
-- Unit tests added on both platforms (Android 109/109 green; iOS 108 passed
-  with only the two known pre-existing timezone failures).
+## Version hygiene (why this release exists as 1.0.0)
 
-## Firmware binaries — NEW in this release
+The release version now has exactly **one** source: `version.txt`. Previously the
+firmware derived its version from `git describe` at build time — which is how the
+v0.9.7 release shipped a binary reporting `v0.9.6-3-gee90519` — while the apps
+carried hand-edited literals that had already drifted apart (the iOS XcodeGen spec
+said 0.9.2 while its own generated project said 0.9.7, so regenerating would have
+silently *downgraded* the app).
 
-`boost_gauge.bin` (SHA-256 `84de48bc…335c37d`), `bootloader.bin`,
-`partition-table.bin`, `ota_data_initial.bin`, and `boost_gauge_merged.bin`
-are fresh v0.9.9 builds. This is an OTA-capable app-image release: web OTA
-uses `boost_gauge.bin`; `boost_gauge_merged.bin` is for a full-flash reset
-(`./flash.sh /dev/ttyACM0`). v0.9.7's hardware-verified baseline (cadence
-gates, media store, WebSocket pool) is unaffected by this change-set; the
-zone-fold touches only the Neon zone-decision and its web mirror.
+- ESP-IDF now reads `version.txt` into `PROJECT_VER` →
+  `esp_app_desc.version` → `/state.firmwareVersion`.
+- iOS takes it from `project.yml`/the generated pbxproj; Android from
+  `versionName`; the host simulator and the mock server read the same file.
+- `tools/tests/test_version_consistency.py` runs in the host suite and, with
+  `--release`, verifies the **shipped bytes**: the `esp_app_desc` inside
+  `boost_gauge.bin` and the merged image, the IPA's built `Info.plist`, the APK's
+  `versionName`/`versionCode` via `aapt2`, and every `SHA256SUMS` entry against
+  the file it names.
+
+**Note on the string format:** `/state.firmwareVersion` now reads `1.0.0`, without
+the leading `v` that `git describe` used to produce (`v0.9.9`). That is deliberate —
+the canonical file is bare `MAJOR.MINOR.PATCH`, matching the app version strings.
+
+## Firmware binaries — new in this release
+
+`boost_gauge.bin` (SHA-256 `b9758c37…89c2fb2d`), `bootloader.bin`,
+`partition-table.bin`, `ota_data_initial.bin` and `boost_gauge_merged.bin` are fresh
+1.0.0 builds (`0x28d710` bytes, 36% of the app partition free). This is an
+OTA-capable app-image release: web OTA uses `boost_gauge.bin` (offset `0x20000`);
+`boost_gauge_merged.bin` is for a full-flash reset.
+
+The display, cadence, media-store and WebSocket paths are unchanged from the
+v0.9.7 hardware-verified baseline; this change-set touches the readout/formatting
+paths and the two-finger overlay.
 
 ## Files
 
@@ -78,12 +93,19 @@ zone-fold touches only the Neon zone-decision and its web mirror.
 | `boost_gauge.bin` | app image for web OTA (offset 0x20000) |
 | `boost_gauge_merged.bin` | full-flash image (all four partitions, offset 0x0) |
 | `bootloader.bin`, `partition-table.bin`, `ota_data_initial.bin` | individual partitions |
-| `flash.sh` + `flash_args` | one-command full flash helper |
-| `BoostGauge-android-debug.apk` | Android 0.9.7 (versionCode 9, minSdk 29 — installs on Android 10+ head units), debug build |
-| `BoostGauge-0.9.7-ios.ipa` | iOS 0.9.7 (build 7), sideload IPA |
-| `BoostGauge-ios-app.zip` | same .app for devicectl install |
+| `flash.sh` + `flash_args` | one-command full flash helper (`./flash.sh /dev/ttyACM0`) |
+| `BoostGauge-android-debug.apk` | Android 1.0.0 (versionCode 10, minSdk 29 — installs on Android 10+ head units), debug build |
+| `BoostGauge-1.0.0-ios.ipa` | iOS 1.0.0 (build 8), unsigned sideload IPA (arm64 device build) |
+| `BoostGauge-ios-app.zip` | the same `.app` at the zip root, for `devicectl` install |
 | `SHA256SUMS` | checksums for every file above |
 
-Install the APK / sideload the IPA, or OTA the app image, then verify:
-`/api/v1/state` reports firmware version `v0.9.9` (git-describe derived at
-release tagging).
+The IPA is **unsigned** (no provisioning profile for this bundle id was available:
+the only profile on the build machine is an unrelated tvOS one). Sideloading tools
+re-sign it on install.
+
+## Verify
+
+- Gate: `python3 tools/tests/test_version_consistency.py --release` → every shipped
+  artifact reports 1.0.0 and `SHA256SUMS` matches the bytes.
+- On a board: `GET /api/v1/state` must report `"firmwareVersion":"1.0.0"`.
+- Apps: iOS About → `1.0.0 (8)`; Android About → `1.0.0 (10)`.
