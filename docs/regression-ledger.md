@@ -863,3 +863,15 @@ Verification: host suite 12/12; `sim --qr-test` PASS; `test_units_format` PASS;
 `test_neon_geom` PASS; `test_web_api_contract.py` 223/223; `test_mock_api.py`
 96/96; `idf.py build` clean. No hardware run — the big-digit cadence A/B and
 the live overlay unit-cycle rebuild remain unmeasured on glass.
+
+Residual, non-blocking (found by the round-2b confirmation pass; recorded here so
+they are not lost with the review session; both the web and the gauge reviewer
+returned FIXED for every reported finding):
+
+- The web range HINT still re-derives from `psiRange()` (`web/app.js:2484`), so in
+  the degenerate state where `/config` never landed the hint can disagree with the
+  fields (observed hint "Scale -103 → 69 kPa" beside a field of 80 kPa). The hint is
+  display-only and is never persisted; the fields themselves carry retained
+  canonical PSI, so no Save can be corrupted by it.
+- At an exact rounding tie (`|value| == 0.5/10^d`, e.g. -0.0725 psi in kPa) the web
+  prints `-1` where the firmware prints `-0`; measure-zero and both are one step.
