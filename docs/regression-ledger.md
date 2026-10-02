@@ -947,3 +947,61 @@ HARDWARE: not run - no board was attached. 1.0.0's firmware is host-built and
 simulator-verified only; the converted big-digit cadence A/B and the physical feel
 of the overlay UNITS button remain unmeasured on glass. v0.9.7 stays the last
 hardware-verified baseline.
+
+### 2026-10-02 — the version gate was itself reviewed (three rounds) before v1.0.0
+
+The guard is the deliverable the user asked for, so its holes mattered more than
+its green checks. It was adversarially reviewed (read-only subagents, on the model
+the user named) and hardened twice; every reported bypass was reproduced by the
+reviewer and then re-reproduced against the fix.
+
+Round 1 - 30 checks, five holes VERIFIED by execution:
+
+1. `release/BoostGauge-ios-app.zip` (the documented `devicectl` install path) was
+   never opened - only the IPA was. Forcing the zip to 0.9.9/build 3 and
+   regenerating SHA256SUMS still printed PASS. Both iOS packages are now read from
+   their built `Info.plist` and cross-checked against each other.
+2. The stale-literal sweep skipped every line starting with `#`. That is right for
+   Python and wrong for C, where `#` introduces a preprocessor directive:
+   `#define ... "0.9.9"` was invisible.
+3. No markdown surface was read, so an `AGENTS.md` claiming v0.9.7 - the exact
+   incident that motivated the guard - passed. `AGENTS.md`, `docs/release-notes.md`
+   and `apps/PARITY.md` are now version surfaces.
+4. The superseded-artifact check globbed only `BoostGauge-*-ios.ipa`, so a leftover
+   `BoostGauge-0.9.9-android.apk` passed - and the coverage check *required* it to
+   be hashed.
+5. The `PROJECT_VER` shadow check was a case-sensitive substring on the root
+   CMakeLists only; CMake command names are case-insensitive, so
+   `SET(PROJECT_VER "0.9.9")` passed. It now scans every CMakeLists in the tree,
+   plus `sdkconfig.defaults*` (including `.<target>`) and `$SDKCONFIG_DEFAULTS`.
+
+Round 2 - 41 checks, and the re-review found that round 1's fix was two-sided:
+
+6. Comment detection was a line-prefix test, so `*out = "0.9.9";` - C code that
+   merely STARTS with `*` - was skipped, while `static int x = 1; /* was 0.9.5 */`
+   and star-prefixed block-comment continuations were wrongly flagged (a false
+   POSITIVE that would have failed ordinary development). `code_lines()` now tracks
+   block comments and quoted strings and judges a literal on what the compiler sees.
+7. Build-number monotonicity was skipped whenever `version.txt` equalled the
+   highest tag - i.e. exactly in the tag-first ordering it exists to protect. The
+   reference is now the newest tag BELOW the current version.
+8. `release/flash.sh`'s write OFFSET was never checked: `0x0 -> 0x20000` stayed
+   green, which would flash the merged image over the running app partition.
+9. `release/` now has an exact expected set, so a second artifact for the same
+   version fails as an unexpected file instead of being silently hashed.
+10. Concatenated literals (`#define FW "1.0." "0"`) were invisible; the de-quoted
+    line is compared too.
+
+Final state: 45 checks (30 -> 41 -> 45), all falsified rather than assumed -
+bumping `version.txt` without rebuilding fails eight checks, and each of the ten
+findings above was reproduced against the fixed guard and then restored.
+
+Accepted residual risk (stated, not hidden; the PRIMARY defence is the `--release`
+app-descriptor check, this sweep is a secondary source-mode guard):
+- `code_lines()` does not model Python triple-quoted strings, so a version literal
+  inside a docstring is treated as code. That errs STRICT (a false positive), never
+  permissive, and no swept file contains one today.
+- A literal split across a line continuation (`"1.0." \` newline `"0"`) is a
+  per-line comparison and would not be matched.
+- A version with fewer than three components in a filename is not matched by
+  `VERSION_IN_NAME`; the exact-expected-set check covers the file either way.
