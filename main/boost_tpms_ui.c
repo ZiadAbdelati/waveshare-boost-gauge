@@ -7,6 +7,7 @@ static void boost_tpms_ui_delete(void);
 #include <string.h>
 
 #include "tpms_powertrain_rgb565.h"
+#include "boost_theme.h"
 
 /* This module owns its local declaration for the compiled Saira
  * SemiCondensed-Bold physical readout font. */
@@ -122,7 +123,10 @@ static lv_obj_t *make_psi_label(lv_obj_t *parent, int x, int y, bool right_align
 static void format_psi(char *out, size_t out_size, float psi)
 {
     if (out == NULL || out_size == 0) return;
-    snprintf(out, out_size, "%.1f", (double)psi);
+    /* Tire pressure follows the global display unit (canonical value is PSI;
+     * the low-pressure comparison above stays in kPa). No readout dead band -
+     * it is a psi-defined fold that does not apply to tire pressure. */
+    boost_units_format(boost_theme_pressure_unit(), psi, false, out, out_size);
 }
 
 void boost_tpms_ui_create(lv_obj_t *parent)

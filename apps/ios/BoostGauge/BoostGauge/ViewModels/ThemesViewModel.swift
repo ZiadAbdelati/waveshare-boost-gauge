@@ -7,6 +7,9 @@ final class ThemesViewModel: ObservableObject {
     @Published var activeThemeID: String?
     @Published var configuration: ThemeList?
     @Published private(set) var gaugeConfiguration: [String: Any] = [:]
+    /// Pressure-display unit from the last `/themes` payload; injected into the
+    /// web preview so the bundled renderer draws the selected unit.
+    @Published private(set) var pressureUnit = PressureUnit.psi
     @Published var isLoading = false
     @Published var errorMessage: String?
 
@@ -33,6 +36,8 @@ final class ThemesViewModel: ObservableObject {
     private var serverColorBaselines: [String: [String: String]] = [:]
 
     private weak var transport: GaugeTransport?
+    /// Shared session; the unit decoded from `/themes` is mirrored app-wide.
+    weak var appSession: AppSession?
     /// Monotonic activation sequence: bumped on every `select` request so a
     /// slow, older PUT echo can never clobber `activeThemeID` with a theme the
     /// user has already tapped away from (rapid taps over a serialized BLE
@@ -139,6 +144,7 @@ final class ThemesViewModel: ObservableObject {
             "theme": themeObject,
             "config": gaugeConfiguration,
             "settings": [
+                "pressureUnit": pressureUnit,
                 "arcGradient": arcGradient,
                 "hudGradient": hudGradient,
                 "hudTrueBlack": hudTrueBlack,
@@ -325,6 +331,10 @@ final class ThemesViewModel: ObservableObject {
         assertMainThread()
         configuration = list
         themes = list.themes ?? themes
+        if let unit = list.pressureUnit {
+            pressureUnit = PressureUnit.normalized(unit)
+            appSession?.applyPressureUnit(pressureUnit)
+        }
         if let seq {
             // Only the newest activation request may set `activeThemeID`: a
             // slow older PUT echo (stale `seq`) must not re-apply a theme the

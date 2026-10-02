@@ -798,6 +798,18 @@ static esp_err_t themes_config_put(httpd_req_t *req)
         boost_obd_set_enabled(cJSON_IsTrue(tble));
     }
 
+    /* Global pressure-display unit. Presentation-only: canonical values stay
+     * psi. The trailing rebuild re-rasterises the unit marks and readouts. */
+    const cJSON *punit = cJSON_GetObjectItemCaseSensitive(root, "pressureUnit");
+    if (cJSON_IsString(punit)) {
+        boost_unit_t unit;
+        if (!boost_units_parse(punit->valuestring, &unit)) {
+            cJSON_Delete(root);
+            return send_err(req, HTTPD_400, "invalid_pressure_unit");
+        }
+        boost_theme_set_pressure_unit(unit);
+    }
+
     const cJSON *vface = cJSON_GetObjectItemCaseSensitive(root, "vaultFace");
     if (vface != NULL) {
         uint32_t rgb = 0;

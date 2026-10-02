@@ -70,6 +70,7 @@ struct StatusView: View {
             }
             .onAppear {
                 session.refreshBLELinkState()
+                vm.appSession = session
                 if session.transport?.transportKind == "HTTP" {
                     vm.reset(transport: session.transport, statusStream: session.statusStream())
                 } else {
@@ -89,9 +90,9 @@ struct StatusView: View {
 
     private var placeholderCard: some View {
         VStack(spacing: 10) {
-            Text("--.-")
+            Text(PressureUnit.placeholder(session.pressureUnit))
                 .font(.system(size: 72, weight: .bold, design: .rounded).monospacedDigit())
-            Text("psi")
+            Text(PressureUnit.suffix(session.pressureUnit))
                 .font(.title3)
                 .foregroundColor(.secondary)
             if vm.isLoading {
@@ -108,9 +109,9 @@ struct StatusView: View {
     private func gaugeCard(_ state: GaugeState) -> some View {
         VStack(spacing: 12) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(Format.psi2(state.psi))
+                Text(Format.pressure(state.psi, unit: session.pressureUnit, psiDecimals: 2))
                     .font(.system(size: 72, weight: .bold, design: .rounded).monospacedDigit())
-                Text("psi")
+                Text(PressureUnit.suffix(session.pressureUnit))
                     .font(.title3)
                     .foregroundColor(.secondary)
             }
@@ -130,7 +131,7 @@ struct StatusView: View {
             }
             HStack(spacing: 6) {
                 Image(systemName: "arrow.up.right")
-                Text("Peak \(Format.psi(state.peakPsi)) psi")
+                Text("Peak \(Format.pressure(state.peakPsi, unit: session.pressureUnit, psiDecimals: 1)) \(PressureUnit.suffix(session.pressureUnit))")
             }
             .font(.subheadline)
             .foregroundColor(.secondary)
@@ -224,7 +225,7 @@ struct StatusView: View {
                         sectionTitle(title)
                         Spacer()
                         if let lowPsi = tpms.lowPsi {
-                            Text("low \(Format.psi(lowPsi))")
+                            Text("low \(Format.pressure(lowPsi, unit: session.pressureUnit, psiDecimals: 1))")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -248,7 +249,9 @@ struct StatusView: View {
         let stale = status == 1
         let low = !stale && wheel.valid && (lowPsi.map { wheel.psi <= $0 } ?? false)
         let tint: Color = stale ? Color(hex: "#FFB020") : (!wheel.valid ? .gray : (low ? .orange : .green))
-        let value = stale || wheel.valid ? Format.psi(wheel.psi) : "--.-"
+        let value = stale || wheel.valid
+            ? Format.pressure(wheel.psi, unit: session.pressureUnit, psiDecimals: 1)
+            : PressureUnit.placeholder(session.pressureUnit)
         return VStack(spacing: 5) {
             Text(label)
                 .font(.caption.weight(.semibold))
@@ -270,7 +273,7 @@ struct StatusView: View {
             RoundedRectangle(cornerRadius: 12).stroke(tint.opacity(0.35), lineWidth: 1)
         )
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(label) \(stale || wheel.valid ? "\(Format.psi(wheel.psi)) psi" : "no data")\(low ? ", low pressure" : "")")
+        .accessibilityLabel("\(label) \(stale || wheel.valid ? "\(Format.pressure(wheel.psi, unit: session.pressureUnit, psiDecimals: 1)) \(PressureUnit.suffix(session.pressureUnit))" : "no data")\(low ? ", low pressure" : "")")
     }
 
     private func obdCard(_ state: GaugeState) -> some View {

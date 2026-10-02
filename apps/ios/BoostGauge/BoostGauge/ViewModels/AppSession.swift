@@ -18,11 +18,26 @@ final class AppSession: ObservableObject {
     @Published private(set) var hardwareBleE2EStatus: String?
     @Published private(set) var hardwareBleE2ESteps: [String: String] = [:]
 
+    /// App-wide pressure-display unit from the last `/themes` payload (units
+    /// contract v1). Canonical wire values stay PSI; every screen converts at
+    /// display time so a change in Settings is reflected across tabs at once.
+    @Published private(set) var pressureUnit = PressureUnit.psi
+
     let hardwareBleE2ERequested: Bool
     let simBleRequested: Bool
 
     var transportID: ObjectIdentifier? {
         transport.map { ObjectIdentifier($0) }
+    }
+
+    /// Adopt the unit reported by any `/themes` payload. Views observe
+    /// `pressureUnit` so every tab re-renders immediately; unknown values
+    /// fall back to psi (contract default).
+    @MainActor
+    func applyPressureUnit(_ raw: String) {
+        let unit = PressureUnit.normalized(raw)
+        guard unit != pressureUnit else { return }
+        pressureUnit = unit
     }
 
     /// The HTTP host the app can reach the gauge's full HTTP API from. For

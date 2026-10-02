@@ -236,6 +236,7 @@ int boost_json_themes(char *json, size_t len)
                      "\"vaultFace\":\"#%06lx\",\"vaultVignette\":%u,\"vaultNeedleRed\":%s,"
                      "\"vaultNeedleTail\":%s,\"neonLayout\":%u,\"neonFont\":%u,\"neonPreset\":%u,\"demoMode\":%s,\"demoFastSweep\":%s,"
                      "\"tpmsBle\":%s,"
+                     "\"pressureUnit\":\"%s\","
                      "\"pixelShift\":%s,\"pixelShiftSec\":%u,\"themes\":[",
                      cfg.active_theme_id,
                      boost_theme_bigdigit_static_bg() ? "true" : "false",
@@ -260,6 +261,7 @@ int boost_json_themes(char *json, size_t len)
                      boost_theme_demo_mode() ? "true" : "false",
                      boost_sim_fast_sweep() ? "true" : "false",
                      boost_theme_tpms_ble() ? "true" : "false",
+                     boost_units_name(boost_theme_pressure_unit()),
                      boost_theme_pixel_shift() ? "true" : "false",
                      (unsigned)boost_theme_pixel_shift_sec());
     if (n < 0) {

@@ -103,6 +103,11 @@ const state = {
   activeThemeId: "dyno-cell",
   themeReady: false, // gauge canvas holds blank until the real theme payload lands (no dyno-cell flash)
   activePage: 0,
+  /* Global pressure-display unit. Canonical data on the wire is always PSI;
+   * this only affects numerals/labels and the settings inputs. Set by
+   * applyThemePayload() from /themes (and by host preview injections through
+   * renderConfig's config.pressureUnit). */
+  pressureUnit: "psi",
   tpms: { status: 2, wheels: [] },
   themes: [],
   config: null,
@@ -183,6 +188,7 @@ const el = {
   demoMode: document.getElementById("demoMode"),
   tpmsBle: document.getElementById("tpmsBle"),
   tpmsLowPsi: document.getElementById("tpmsLowPsi"),
+  tpmsLowLabel: document.getElementById("tpmsLowLabel"),
   tpmsStaleSec: document.getElementById("tpmsStaleSec"),
   companionBle: document.getElementById("companionBle"),
   obdStateText: document.getElementById("obdStateText"),
@@ -220,11 +226,14 @@ const el = {
   savedNetworksList: document.getElementById("savedNetworksList"),
   netHint: document.getElementById("netHint"),
   psiMin: document.getElementById("psiMin"),
+  psiMinLabel: document.getElementById("psiMinLabel"),
   psiMax: document.getElementById("psiMax"),
+  psiMaxLabel: document.getElementById("psiMaxLabel"),
   psiOverboost: document.getElementById("psiOverboost"),
   zeroAngle: document.getElementById("zeroAngle"),
   saveRangeBtn: document.getElementById("saveRangeBtn"),
   rangeHint: document.getElementById("rangeHint"),
+  pressureUnit: document.getElementById("pressureUnit"),
   supplyVolts: document.getElementById("supplyVolts"),
   calibrateBtn: document.getElementById("calibrateBtn"),
   calConfirm: document.getElementById("calConfirm"),
@@ -252,6 +261,78 @@ function on(node, event, handler) {
 function finiteOr(value, fallback) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
+}
+
+/* ── Global pressure-display unit ──────────────────────────────────────────
+ * Wire data (psiMin/psiMax/psiOverboost, psi/peakPsi, TPMS psi, logs psi) is
+ * ALWAYS PSI. The unit setting only converts at the presentation/input
+ * boundary: numerals, unit marks, tick labels and the settings fields. Gauge
+ * geometry (psiToAngle/psiToSweep, ranges, zones) and the sensor-domain kPa
+ * diagnostics never convert. */
+const PRESSURE_UNITS = {
+  psi: { factor: 1, decimals: 1, label: "PSI" },
+  bar: { factor: 0.0689475729, decimals: 2, label: "bar" },
+  kPa: { factor: 6.89475729, decimals: 0, label: "kPa" },
+};
+
+function normalizePressureUnit(value) {
+  return value === "bar" || value === "kPa" ? value : "psi";
+}
+
+function pressureUnitId() {
+  return normalizePressureUnit(state.pressureUnit);
+}
+
+function unitIsPsi() {
+  return pressureUnitId() === "psi";
+}
+
+function unitFactor() {
+  return PRESSURE_UNITS[pressureUnitId()].factor;
+}
+
+function unitDecimals() {
+  return PRESSURE_UNITS[pressureUnitId()].decimals;
+}
+
+function unitLabel() {
+  return PRESSURE_UNITS[pressureUnitId()].label;
+}
+
+/* psi -> active display unit. */
+function toDisplay(psi) {
+  return Number(psi) * unitFactor();
+}
+
+/* active display unit -> psi (input boundary). */
+function fromDisplay(value) {
+  return Number(value) / unitFactor();
+}
+
+/* Fixed-decimal pressure text at the active unit's precision. `psiDecimals`
+ * is the precision this site uses on the PSI path, so the default unit stays
+ * byte-identical to the pre-units renderer. */
+function pressureText(psi, psiDecimals) {
+  const n = Number(psi);
+  if (!Number.isFinite(n)) return "--";
+  return unitIsPsi() ? n.toFixed(psiDecimals) : toDisplay(n).toFixed(unitDecimals());
+}
+
+/* Signed range text for the logs summary: PSI keeps the legacy one-decimal
+ * "+x.x" form; other units print at their own precision. */
+function signedPressure(psi) {
+  const n = Number(psi);
+  if (!Number.isFinite(n)) return "--";
+  const value = unitIsPsi() ? n : toDisplay(n);
+  const digits = unitIsPsi() ? 1 : unitDecimals();
+  return `${value >= 0 ? "+" : ""}${value.toFixed(digits)}`;
+}
+
+/* Dial tick numeral. PSI keeps the existing integer-or-one-decimal formatter
+ * (byte-identical default); other units print at their own precision. */
+function pressureTickLabel(psi) {
+  if (unitIsPsi()) return formatTickLabel(psi);
+  return toDisplay(psi).toFixed(unitDecimals());
 }
 
 function psiRange() {
@@ -449,11 +530,6 @@ function degToRad(deg) {
   return (deg * Math.PI) / 180;
 }
 
-function signed(psi) {
-  const n = Number(psi);
-  return `${n >= 0 ? "+" : ""}${n.toFixed(1)}`;
-}
-
 /* Readout dead zone (mirrors boost_readout_display_psi in boost_neon_geom.h):
  * a real MAP sensor idling at atmosphere hovers around +-0.1 psi and the
  * readout flapped between "0.0" and "-0.1". Values inside the band fold to
@@ -498,6 +574,22 @@ function drawFixedPsi(psi, decimalX, baselineY, scale) {
   ctx.textAlign = "left";
   ctx.fillText(String(tenth), decimalX + fractionalGap, baselineY);
   ctx.textAlign = "center";
+}
+
+/* Unit-aware counterpart to drawFixedPsi for the non-PSI units. Folds through
+ * the shared dead zone exactly like the PSI path, converts once, then renders
+ * at the unit's own precision with the same pinned-decimal layout (an integer
+ * unit with no fractional digits draws centred on the decimal slot). */
+function drawFixedPressure(psi, decimalX, baselineY) {
+  const shown = toDisplay(arcReadoutDisplayPsi(Number(psi)));
+  const { neg, intPart, fracPart } = splitNum(shown, unitDecimals());
+  const intStr = `${neg ? "−" : ""}${intPart}`;
+  if (!fracPart.length) {
+    ctx.fillText(intStr, decimalX, baselineY);
+    ctx.textAlign = "center";
+    return;
+  }
+  drawFixedDecimal(intStr, fracPart, decimalX, baselineY);
 }
 /**
  * Match firmware boost_gauge.c: fill from zero notch toward current PSI.
@@ -618,7 +710,7 @@ function drawArcGauge(sample, psi, g) {
     let r = 160 * scale;
     if (Math.abs(value) < 0.01) r = 142 * scale;
     const a = degToRad(psiToAngle(value));
-    ctx.fillText(formatTickLabel(value), cx + r * Math.cos(a), cy + r * Math.sin(a));
+    ctx.fillText(pressureTickLabel(value), cx + r * Math.cos(a), cy + r * Math.sin(a));
   }
 
   /* Center stack — zone / PSI / unit / peak / mode (matches physical UI) */
@@ -630,15 +722,16 @@ function drawArcGauge(sample, psi, g) {
 
   ctx.fillStyle = psi >= range.psiOverboost ? state.palette.overboost : state.palette.text;
   ctx.font = `400 ${Math.max(40, 56 * scale)}px "Archivo Black", sans-serif`;
-  drawFixedPsi(psi, cx + 8 * scale, cy - 6 * scale, scale);
+  if (unitIsPsi()) drawFixedPsi(psi, cx + 8 * scale, cy - 6 * scale, scale);
+  else drawFixedPressure(psi, cx + 8 * scale, cy - 6 * scale);
 
   ctx.fillStyle = state.palette.muted;
   ctx.font = `700 ${Math.max(13, 17 * scale)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
-  ctx.fillText("PSI", cx, cy + 85 * scale);
+  ctx.fillText(unitLabel(), cx, cy + 85 * scale);
 
   ctx.fillStyle = peak >= range.psiOverboost ? state.palette.overboost : state.palette.boost;
   ctx.font = `700 ${Math.max(13, 16 * scale)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
-  ctx.fillText(`PEAK  ${peak.toFixed(1)}`, cx, cy + 113 * scale);
+  ctx.fillText(`PEAK  ${pressureText(peak, 1)}`, cx, cy + 113 * scale);
 
   /* DEMO only in demo. The panel sets this label to "" on the real-sensor path
    * (boost_gauge.c), so drawing "LIVE" here made the mirror disagree with the
@@ -879,9 +972,20 @@ function drawNeonGauge(sample, psi, g) {
   /* Readout digits fold through the shared dead zone (all themes except
    * vault-tec); the ring run above keeps the raw psi. */
   const readoutPsi = arcReadoutDisplayPsi(psi);
-  const tenthsTotal = Math.round(Math.abs(readoutPsi) * 10);
-  const whole = Math.floor(tenthsTotal / 10);
-  const chars = `${whole >= 10 ? Math.floor(whole / 10) : ""}${whole % 10}.${tenthsTotal % 10}`;
+  let tenthsTotal;
+  let chars;
+  if (unitIsPsi()) {
+    tenthsTotal = Math.round(Math.abs(readoutPsi) * 10);
+    const whole = Math.floor(tenthsTotal / 10);
+    chars = `${whole >= 10 ? Math.floor(whole / 10) : ""}${whole % 10}.${tenthsTotal % 10}`;
+  } else {
+    /* Non-PSI: format once at the unit's precision. The digit run keeps the
+     * same per-character slot metrics, so 2-decimal bar and integer kPa both
+     * lay out through the existing draw loop below. */
+    const shown = toDisplay(readoutPsi);
+    tenthsTotal = Math.round(Math.abs(shown) * 10 ** unitDecimals());
+    chars = Math.abs(shown).toFixed(unitDecimals());
+  }
   /* NEON_SLOT_W / NEON_DOT_W, verbatim, on every layout now - marquee lost
    * its own wider metrics when the readout was unified. They had drifted
    * badly once (64/33 against the panel's 88/34), which made the mirror draw
@@ -1013,12 +1117,12 @@ function drawNeonGauge(sample, psi, g) {
   /* NEON_UNIT_Y / NEON_RULE_Y / NEON_PEAK_Y, which moved down 40 as a unit.
    * The unit mark's y is UNIT_Y + 2 because neon_label has base_line 0 and an
    * alphabetic baseline IS the ink bottom - see the note above. */
-  ctx.fillStyle = p.muted; ctx.fillText("P S I", 0, Math.round(128 * mq) + 2 + stackDy);
+  ctx.fillStyle = p.muted; ctx.fillText(unitLabel().split("").join(" "), 0, Math.round(128 * mq) + 2 + stackDy);
   ctx.strokeStyle = p.muted; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(-62 * mq, Math.round(138 * mq) + stackDy); ctx.lineTo(62 * mq, Math.round(138 * mq) + stackDy); ctx.stroke();
   /* Peak is clamped at zero on the panel, as on every other face here. */
   ctx.textBaseline = "middle";
   ctx.font = `700 ${16 * mq}px monospace`;
-  ctx.fillText(`PEAK ${Math.max(0, Number(sample.peakPsi) || 0).toFixed(1)}`, 0, Math.round(158 * mq) + stackDy);
+  ctx.fillText(`PEAK ${pressureText(Math.max(0, Number(sample.peakPsi) || 0), 1)}`, 0, Math.round(158 * mq) + stackDy);
   ctx.restore();
 }
 
@@ -1169,6 +1273,13 @@ function drawFixedDecimal(intStr, fracStr, decimalX, y) {
   ctx.textAlign = prevAlign;
 }
 
+/* Vault-Tec keeps the RAW psi (no dead-band fold, deliberate exception) but
+ * still converts units. PSI preserves the legacy two-decimal readout. */
+function vaultReadoutParts(psi) {
+  if (unitIsPsi()) return splitNum(psi, 2);
+  return splitNum(toDisplay(psi), unitDecimals());
+}
+
 /* ── Style: vault — Vault-Tec phosphor dial + needle + CRT scanlines ─────── */
 function drawVaultGauge(sample, psi, g) {
   const range = psiRange();
@@ -1224,7 +1335,7 @@ function drawVaultGauge(sample, psi, g) {
     const [x, y] = AP(152, psiToAngle(v, range));
     ctx.fillStyle = v >= range.psiOverboost ? warn : green;
     ctx.font = `700 24px Consolas, "SF Mono", monospace`;
-    ctx.fillText(formatTickLabel(v), x, y);
+    ctx.fillText(pressureTickLabel(v), x, y);
   }
 
   /* zero notch — thick radial phosphor tick at the configured zero angle */
@@ -1284,17 +1395,17 @@ function drawVaultGauge(sample, psi, g) {
   ctx.lineWidth = 1.5;
   roundRectPath(-74, 96, 148, 46, 4);
   ctx.stroke();
-  const { neg, intPart, fracPart } = splitNum(psi, 2);
+  const { neg, intPart, fracPart } = vaultReadoutParts(psi);
   ctx.fillStyle = over ? warn : green;
   ctx.font = `700 32px Consolas, "SF Mono", monospace`;
   drawFixedDecimal(`${neg ? "−" : "+"}${intPart}`, fracPart, 0, 120);
   ctx.fillStyle = dim;
   ctx.font = `600 11px "Bahnschrift", system-ui, sans-serif`;
-  ctx.fillText("MANIFOLD  PSI", 0, 158);
+  ctx.fillText(`MANIFOLD  ${unitLabel()}`, 0, 158);
   ctx.fillStyle = warn;
   ctx.globalAlpha = 0.85;
   ctx.font = `700 13px Consolas, monospace`;
-  ctx.fillText(`PEAK  ${peak.toFixed(1)}`, 0, 178);
+  ctx.fillText(`PEAK  ${pressureText(peak, 1)}`, 0, 178);
   ctx.globalAlpha = 1;
 
   /* needle at the mapped angle (0° = east; up-pointing art rotated by a+90) */
@@ -1437,13 +1548,26 @@ function drawHudGauge(sample, psi, g) {
 
   /* Readout geometry: one decimal, decimal pinned (offset from center so
    * left-heavy negatives stay balanced) and sized once from the range so the
-   * value never shifts. */
+   * value never shifts. Non-PSI units size against their own converted
+   * extremes and fractional width. */
   ctx.font = `700 italic 88px "Bahnschrift", "DIN Alternate", system-ui, sans-serif`;
   const nHalf = ctx.measureText(".").width * 0.5;
-  const worstNegInt = range.psiMin < 0 ? "−" + String(Math.floor(Math.abs(range.psiMin))) : "";
-  const worstPosInt = String(Math.floor(Math.abs(range.psiMax)));
+  let worstNegInt;
+  let worstPosInt;
+  let fracDigits;
+  if (unitIsPsi()) {
+    fracDigits = 1;
+    worstNegInt = range.psiMin < 0 ? "−" + String(Math.floor(Math.abs(range.psiMin))) : "";
+    worstPosInt = String(Math.floor(Math.abs(range.psiMax)));
+  } else {
+    fracDigits = unitDecimals();
+    const loDisp = toDisplay(range.psiMin);
+    const hiDisp = toDisplay(range.psiMax);
+    worstNegInt = range.psiMin < 0 ? "−" + String(Math.floor(Math.abs(loDisp))) : "";
+    worstPosInt = String(Math.floor(Math.abs(hiDisp)));
+  }
   const Lmax = nHalf + Math.max(ctx.measureText(worstNegInt).width, ctx.measureText(worstPosInt).width);
-  const Rmax = nHalf + ctx.measureText("0").width;
+  const Rmax = nHalf + ctx.measureText("0".repeat(Math.max(1, fracDigits))).width;
   const numDecimalX = (Lmax - Rmax) / 2;
   const bx = Math.min(152, (Lmax + Rmax) / 2 + 18);
 
@@ -1469,23 +1593,42 @@ function drawHudGauge(sample, psi, g) {
   /* big italic value with a glitch shear on fast spikes.
    * The readout folds through the shared dead zone (all themes except
    * vault-tec); the track fill above keeps the raw psi. */
-  const { neg, intPart, fracPart } = splitNum(arcReadoutDisplayPsi(psi), 1);
-  const intStr = `${neg ? "−" : ""}${intPart}`;
+  let readoutInt;
+  let readoutFrac;
+  if (unitIsPsi()) {
+    const { neg, intPart, fracPart } = splitNum(arcReadoutDisplayPsi(psi), 1);
+    readoutInt = `${neg ? "−" : ""}${intPart}`;
+    readoutFrac = fracPart;
+  } else {
+    const { neg, intPart, fracPart } = splitNum(toDisplay(arcReadoutDisplayPsi(psi)), unitDecimals());
+    readoutInt = `${neg ? "−" : ""}${intPart}`;
+    readoutFrac = fracPart;
+  }
+  const drawReadout = (x, y) => {
+    if (readoutFrac.length) {
+      drawFixedDecimal(readoutInt, readoutFrac, x, y);
+    } else {
+      const prevAlign = ctx.textAlign;
+      ctx.textAlign = "center";
+      ctx.fillText(readoutInt, x, y);
+      ctx.textAlign = prevAlign;
+    }
+  };
   ctx.font = `700 italic 88px "Bahnschrift", "DIN Alternate", system-ui, sans-serif`;
   /* Match the physical face's visible chromatic ghost passes. Keep the offset
    * layers opaque at their pre-blended strength so the effect is not lost
    * beneath the main glyph pass. */
   ctx.globalAlpha = 0.7;
   ctx.fillStyle = R;
-  drawFixedDecimal(intStr, fracPart, numDecimalX - 6, -4);
+  drawReadout(numDecimalX - 6, -4);
   ctx.fillStyle = C;
-  drawFixedDecimal(intStr, fracPart, numDecimalX + 6, -4);
+  drawReadout(numDecimalX + 6, -4);
   ctx.globalAlpha = 1;
   ctx.fillStyle = over ? R : Y;
-  drawFixedDecimal(intStr, fracPart, numDecimalX, 2);
+  drawReadout(numDecimalX, 2);
   ctx.fillStyle = p.muted;
   ctx.font = `600 16px Consolas, monospace`;
-  ctx.fillText("PSI // FORCED INDUCTION", 0, 74);
+  ctx.fillText(`${unitLabel()} // FORCED INDUCTION`, 0, 74);
 
   /* corner telemetry — measured atmosphere and real peak hold.
    * This used to render `MAP 101 + psi * 6.895` kPa, which was arithmetic on the
@@ -1497,7 +1640,7 @@ function drawHudGauge(sample, psi, g) {
   ctx.font = `600 15px Consolas, monospace`;
   ctx.fillText(ambientAtmText(), -138, 128);
   ctx.textAlign = "right";
-  ctx.fillText(`PK ${peak.toFixed(1)}`, 138, 128);
+  ctx.fillText(`PK ${pressureText(peak, 1)}`, 138, 128);
   ctx.fillStyle = p.muted;
   ctx.textAlign = "left";
   ctx.font = `600 12px Consolas, monospace`;
@@ -1555,11 +1698,20 @@ function drawBigDigitGauge(sample, psi, g) {
   const dot100 = ctx.measureText(".").width;
   const barW100 = refFs * 0.32;
   const gap100 = refFs * 0.08;
-  const maxInt = String(Math.floor(Math.max(Math.abs(range.psiMin), Math.abs(range.psiMax), 1))).length;
+  /* Non-PSI units size the widest reading from their own converted range. */
+  const dispDecimals = unitIsPsi() ? 1 : unitDecimals();
+  const dispMin = unitIsPsi() ? range.psiMin : toDisplay(range.psiMin);
+  const dispMax = unitIsPsi() ? range.psiMax : toDisplay(range.psiMax);
+  const maxInt = String(Math.floor(Math.max(Math.abs(dispMin), Math.abs(dispMax), 1))).length;
   /* Extents from the centered ones digit: integers + sign grow left, the
-   * decimal + tenths sit right. Size so the widest reading stays in the face. */
-  const leftExtent100 = (slot100 + dot100) / 4 + (maxInt - 0.5) * slot100 + (range.psiMin < 0 ? gap100 + barW100 : 0);
-  const rightExtent100 = (3 * (slot100 + dot100)) / 4 + slot100 / 2;
+   * decimal + fractional digits sit right. Size so the widest reading stays in
+   * the face. */
+  const leftExtent100 = dispDecimals > 0
+    ? (slot100 + dot100) / 4 + (maxInt - 0.5) * slot100 + (dispMin < 0 ? gap100 + barW100 : 0)
+    : (dispMin < 0 ? refFs * 0.46 + refFs * 0.08 : 0) / 2 + (maxInt * slot100) / 2;
+  const rightExtent100 = dispDecimals > 0
+    ? (3 * (slot100 + dot100)) / 4 + (dispDecimals - 0.5) * slot100
+    : (dispMin < 0 ? refFs * 0.46 + refFs * 0.08 : 0) / 2 + (maxInt * slot100) / 2;
   const fs = clamp((204 / Math.max(leftExtent100, rightExtent100)) * refFs, 96, 172);
 
   ctx.font = `400 ${fs}px "Alvida Fatface", Georgia, "Times New Roman", serif`;
@@ -1569,15 +1721,19 @@ function drawBigDigitGauge(sample, psi, g) {
   const numY = -8;
   const onesCenter = -(slotW + dotW) / 4;
   const decimalX = (slotW + dotW) / 4;
-  const tenthsCenter = (3 * (slotW + dotW)) / 4;
+  const fracStart = (3 * (slotW + dotW)) / 4;
 
   /* Readout digits fold through the shared dead zone (all themes except
    * vault-tec); the ground colour above keeps the raw psi. */
   const readoutPsi = arcReadoutDisplayPsi(psi);
-  const absTenths = Math.round(Math.abs(readoutPsi) * 10);
-  const whole = Math.floor(absTenths / 10);
-  const tenth = absTenths % 10;
+  const dispValue = unitIsPsi() ? readoutPsi : toDisplay(readoutPsi);
+  const fracScale = 10 ** dispDecimals;
+  const absTenths = Math.round(Math.abs(dispValue) * fracScale);
+  const whole = Math.floor(absTenths / fracScale);
+  const fracDigits = [];
+  for (let i = dispDecimals - 1; i >= 0; i--) fracDigits.push(Math.floor(absTenths / 10 ** i) % 10);
   const isNeg = readoutPsi < -0.05;
+  const negative = unitIsPsi() ? isNeg : (dispValue < 0 && absTenths !== 0);
   const intStr = String(whole);
 
   ctx.shadowColor = "rgba(0,0,0,0.30)";
@@ -1588,14 +1744,25 @@ function drawBigDigitGauge(sample, psi, g) {
     : (state.bigDigitTextColor || p.text || "#ffffff");
   ctx.fillStyle = readoutColor;
   ctx.textAlign = "center";
-  ctx.fillText(".", decimalX, numY);
-  ctx.fillText(String(tenth), tenthsCenter, numY);
-  for (let i = 0; i < intStr.length; i++) {
-    ctx.fillText(intStr[intStr.length - 1 - i], onesCenter - i * slotW, numY);
+  if (dispDecimals > 0) {
+    ctx.fillText(".", decimalX, numY);
+    for (let i = 0; i < dispDecimals; i++) {
+      ctx.fillText(String(fracDigits[i]), fracStart + i * slotW, numY);
+    }
   }
-  if (isNeg) {
+  /* Integer-only units have no decimal to hold the number off centre, so the
+   * whole sign+digit block is centred instead of just the ones digit. */
+  const signSpan = negative ? fs * 0.46 + fs * 0.08 : 0;
+  const blockLeft = -(signSpan + intStr.length * slotW) / 2;
+  const onesX = dispDecimals > 0
+    ? onesCenter
+    : blockLeft + signSpan + (intStr.length - 1) * slotW + slotW / 2;
+  for (let i = 0; i < intStr.length; i++) {
+    ctx.fillText(intStr[intStr.length - 1 - i], onesX - i * slotW, numY);
+  }
+  if (negative) {
     /* Fat, gently convex dash left of the leftmost integer cell. */
-    const leftmostCenter = onesCenter - (intStr.length - 1) * slotW;
+    const leftmostCenter = onesX - (intStr.length - 1) * slotW;
     const barW = fs * 0.46;
     const barH = fs * 0.135;
     const bcx = leftmostCenter - slotW / 2 - fs * 0.08 - barW / 2;
@@ -1622,14 +1789,14 @@ function drawBigDigitGauge(sample, psi, g) {
   ctx.globalAlpha = 0.9;
   ctx.fillStyle = p.text || "#ffffff";
   ctx.font = `700 30px "Bahnschrift", system-ui, sans-serif`;
-  ctx.fillText("PSI", 0, 118);
+  ctx.fillText(unitLabel(), 0, 118);
   ctx.globalAlpha = 0.72;
   ctx.fillStyle = p.text || "#ffffff";
   ctx.font = `600 18px Consolas, monospace`;
   /* Matches the panel's `PEAK %.1f` exactly in live mode - no suffix, no
    * trailing separator. The DEMO marker returns only in demo. */
-  ctx.fillText(sample.demo ? `PEAK ${peak.toFixed(1)}   DEMO`
-                           : `PEAK ${peak.toFixed(1)}`, 0, 168);
+  ctx.fillText(sample.demo ? `PEAK ${pressureText(peak, 1)}   DEMO`
+                           : `PEAK ${pressureText(peak, 1)}`, 0, 168);
   ctx.globalAlpha = 1;
   ctx.restore();
 }
@@ -1658,9 +1825,9 @@ function drawTpmsFace(sample, g) {
     if (status === 1) {
       color = "#FFB020";
       /* Stale data retains the last received PSI, matching the physical face. */
-      value = Number.isFinite(psi) ? psi.toFixed(1) : "--.-";
+      value = Number.isFinite(psi) ? pressureText(psi, 1) : "--.-";
     } else if (status === 0 && valid) {
-      value = psi.toFixed(1);
+      value = pressureText(psi, 1);
       const lowPsi = Number(state.tpms?.lowPsi ?? 31.9);
       color = psi < lowPsi ? "#E8362E" : "#62D6A5";
     }
@@ -2188,8 +2355,39 @@ function renderObd(obd) {
   }
 }
 
+function pressureInputValue(psi) {
+  return unitIsPsi() ? String(psi) : toDisplay(psi).toFixed(unitDecimals());
+}
+
+/* Convert the PSI-bound settings chrome to the active unit: the unit dropdown
+ * selection, the TPMS threshold label, and the numeric input min/max/step
+ * attributes. Values themselves are written by renderConfig/syncDisplayToggles.
+ * For psi every generated attribute string equals the literal it replaces. */
+function applyPressureUnitControls() {
+  if (el.pressureUnit) el.pressureUnit.value = pressureUnitId();
+  if (el.psiMinLabel) el.psiMinLabel.textContent = `Min ${unitLabel()} (vacuum)`;
+  if (el.psiMaxLabel) el.psiMaxLabel.textContent = `Max ${unitLabel()} (boost)`;
+  if (el.tpmsLowLabel) el.tpmsLowLabel.textContent = `Low-pressure alert (${unitLabel()})`;
+  const bound = (x) => String(Number((x * unitFactor()).toFixed(unitDecimals())));
+  const attr = (node, min, max, step) => {
+    if (!node) return;
+    node.min = bound(min);
+    node.max = bound(max);
+    node.step = bound(step);
+  };
+  attr(el.psiMin, -30, -1, 1);
+  attr(el.psiMax, 5, 40, 1);
+  attr(el.psiOverboost, 0.1, 39, 0.1);
+  attr(el.tpmsLowPsi, 15, 55, 0.5);
+}
+
 function renderConfig(config) {
   state.config = config;
+  /* Host preview injections carry the unit on the config body; the device
+   * serves it on /themes (applyThemePayload). Tolerate both. */
+  if (config && config.pressureUnit !== undefined) {
+    state.pressureUnit = normalizePressureUnit(config.pressureUnit);
+  }
   if (IS_COCKPIT) {
     if (el.tzOffset) setTzOffsetSelect(el.tzOffset, config.timezoneOffsetMinutes ?? 0);
     if (el.scheduleEnabled) el.scheduleEnabled.checked = Boolean(config.dimSchedule?.enabled);
@@ -2205,14 +2403,15 @@ function renderConfig(config) {
    * default (unchecked) even when the device had BLE advertising ON. */
   if (el.companionBle) el.companionBle.checked = !!config.appBle;
   const range = psiRange();
-  if (el.psiMin && document.activeElement !== el.psiMin) el.psiMin.value = String(range.psiMin);
-  if (el.psiMax && document.activeElement !== el.psiMax) el.psiMax.value = String(range.psiMax);
-  if (el.psiOverboost && document.activeElement !== el.psiOverboost) el.psiOverboost.value = String(range.psiOverboost);
+  if (el.psiMin && document.activeElement !== el.psiMin) el.psiMin.value = pressureInputValue(range.psiMin);
+  if (el.psiMax && document.activeElement !== el.psiMax) el.psiMax.value = pressureInputValue(range.psiMax);
+  if (el.psiOverboost && document.activeElement !== el.psiOverboost) el.psiOverboost.value = pressureInputValue(range.psiOverboost);
   if (el.zeroAngle && document.activeElement !== el.zeroAngle) el.zeroAngle.value = String(range.zeroAngle);
   if (el.rangeHint) {
     el.rangeHint.textContent =
-      `Scale ${formatTickLabel(range.psiMin)} → ${formatTickLabel(range.psiMax)} PSI · zero ${range.zeroAngle.toFixed(2)}° · midpoint shown only when clear of overboost.`;
+      `Scale ${pressureTickLabel(range.psiMin)} → ${pressureTickLabel(range.psiMax)} ${unitLabel()} · zero ${range.zeroAngle.toFixed(2)}° · midpoint shown only when clear of overboost.`;
   }
+  applyPressureUnitControls();
   if (IS_COCKPIT) {
     scheduleGaugeRender();
     scheduleSparklineRender();
@@ -2340,6 +2539,11 @@ function applyThemePayload(payload, fallback = {}) {
 
   if (payload.themes !== undefined) state.themes = payload.themes;
   else if (fallback.themes !== undefined) state.themes = fallback.themes;
+
+  /* Global pressure-display unit (contract: psi | bar | kPa). A missing field
+   * leaves the current unit untouched; anything unrecognised falls back psi. */
+  const unitValue = pick("pressureUnit");
+  if (unitValue !== undefined) state.pressureUnit = normalizePressureUnit(unitValue);
 
   set("bigDigitStaticBg", bool("bigDigitStaticBg"));
   set("bigDigitColorText", bool("bigDigitColorText"));
@@ -2762,11 +2966,13 @@ function syncDisplayToggles() {
   }
   if (el.tpmsBle) el.tpmsBle.checked = !!state.tpmsBle;
   if (el.tpmsLowPsi && state.tpmsConfig?.lowPsi != null) {
-    el.tpmsLowPsi.value = Number(state.tpmsConfig.lowPsi).toFixed(1);
+    const lowPsi = Number(state.tpmsConfig.lowPsi);
+    el.tpmsLowPsi.value = unitIsPsi() ? lowPsi.toFixed(1) : toDisplay(lowPsi).toFixed(unitDecimals());
   }
   if (el.tpmsStaleSec && state.tpmsConfig?.staleAfterMs != null) {
     el.tpmsStaleSec.value = String(Math.round(state.tpmsConfig.staleAfterMs / 1000));
   }
+  applyPressureUnitControls();
 }
 
 function wireDisplayToggles() {
@@ -2786,6 +2992,32 @@ function wireDisplayToggles() {
       showError(error.message);
     }
   };
+  if (el.pressureUnit) {
+    /* Pattern A dropdown: save immediately, then re-derive every converted
+     * field and repaint both cockpit canvases. */
+    el.pressureUnit.addEventListener("change", async () => {
+      const unit = normalizePressureUnit(el.pressureUnit.value);
+      try {
+        clearError(ERR_USER);
+        const payload = await api("/themes/config", {
+          method: "PUT",
+          body: JSON.stringify({ pressureUnit: unit }),
+        });
+        applyThemePayload(payload);
+        syncDisplayToggles();
+        /* Keep a host preview's injected config in step, then re-convert the
+         * range fields and hint to the new unit. */
+        if (state.config) state.config.pressureUnit = unit;
+        if (state.config) renderConfig(state.config);
+        showOk(`Pressure unit ${unitLabel()}`);
+        scheduleGaugeRender();
+        scheduleSparklineRender();
+      } catch (error) {
+        syncDisplayToggles();
+        showError(error.message);
+      }
+    });
+  }
   if (el.teSync) {
     el.teSync.addEventListener("change", () =>
       send({ teSync: el.teSync.checked },
@@ -2867,11 +3099,26 @@ function wireDisplayToggles() {
   if (el.tpmsLowPsi) {
     el.tpmsLowPsi.addEventListener("change", () => {
       const v = Number(el.tpmsLowPsi.value);
-      if (!Number.isFinite(v) || v < 15 || v > 55) {
-        showError("TPMS alert must be between 15 and 55 PSI", ERR_USER);
+      if (unitIsPsi()) {
+        if (!Number.isFinite(v) || v < 15 || v > 55) {
+          showError("TPMS alert must be between 15 and 55 PSI", ERR_USER);
+          return;
+        }
+        saveTpmsField({ lowPsi: v }, `TPMS alert ${v.toFixed(1)} PSI`);
         return;
       }
-      saveTpmsField({ lowPsi: v }, `TPMS alert ${v.toFixed(1)} PSI`);
+      /* Non-PSI: the field is in the display unit. Bound in PSI with half the
+       * smallest display increment of slack, then clamp. */
+      const label = unitLabel();
+      const tol = 0.5 / (10 ** unitDecimals()) / unitFactor();
+      const shownLo = toDisplay(15);
+      const shownHi = toDisplay(55);
+      if (!Number.isFinite(v) || v < shownLo - tol * unitFactor() || v > shownHi + tol * unitFactor()) {
+        showError(`TPMS alert must be between ${pressureText(15, 1)} and ${pressureText(55, 1)} ${label}`, ERR_USER);
+        return;
+      }
+      const psi = clamp(fromDisplay(v), 15, 55);
+      saveTpmsField({ lowPsi: psi }, `TPMS alert ${pressureText(psi, 1)} ${label}`);
     });
   }
   if (el.tpmsStaleSec) {
@@ -3514,18 +3761,45 @@ async function saveConfig() {
 }
 
 function readRangeForm() {
-  const psiMin = Number(el.psiMin.value);
-  const psiMax = Number(el.psiMax.value);
-  const psiOverboost = Number(el.psiOverboost.value);
   const zeroAngle = Number(el.zeroAngle.value);
-  if (!Number.isFinite(psiMin) || !Number.isFinite(psiMax) || !Number.isFinite(psiOverboost) || !Number.isFinite(zeroAngle)) {
+  const rawMin = Number(el.psiMin.value);
+  const rawMax = Number(el.psiMax.value);
+  const rawOverboost = Number(el.psiOverboost.value);
+  if (!Number.isFinite(rawMin) || !Number.isFinite(rawMax) || !Number.isFinite(rawOverboost) || !Number.isFinite(zeroAngle)) {
     throw new Error("Gauge range values must be numbers");
   }
-  if (!(psiMin >= -30 && psiMin <= -1)) throw new Error("Min PSI must be between −30 and −1");
-  if (!(psiMax >= 5 && psiMax <= 40)) throw new Error("Max PSI must be between 5 and 40");
-  if (!(psiOverboost > 0 && psiOverboost < psiMax)) {
-    throw new Error("Overboost must be greater than 0 and less than max PSI");
+  if (unitIsPsi()) {
+    if (!(rawMin >= -30 && rawMin <= -1)) throw new Error("Min PSI must be between −30 and −1");
+    if (!(rawMax >= 5 && rawMax <= 40)) throw new Error("Max PSI must be between 5 and 40");
+    if (!(rawOverboost > 0 && rawOverboost < rawMax)) {
+      throw new Error("Overboost must be greater than 0 and less than max PSI");
+    }
+    if (!(zeroAngle >= 180 && zeroAngle <= 315)) {
+      throw new Error("Zero position must be between 180° and 315°");
+    }
+    return { psiMin: rawMin, psiMax: rawMax, psiOverboost: rawOverboost, zeroAngle };
   }
+  /* Non-PSI: the fields are in the display unit. Round-trip through PSI, allow
+   * half the smallest display increment of slack, then clamp to the PSI bounds
+   * the device accepts - rounding at the displayed precision can nudge a
+   * boundary reading just past its PSI limit. */
+  const label = unitLabel();
+  const tol = 0.5 / (10 ** unitDecimals()) / unitFactor();
+  let psiMin = fromDisplay(rawMin);
+  let psiMax = fromDisplay(rawMax);
+  let psiOverboost = fromDisplay(rawOverboost);
+  if (!(psiMin >= -30 - tol && psiMin <= -1 + tol)) {
+    throw new Error(`Min ${label} must be between ${pressureTickLabel(-30)} and ${pressureTickLabel(-1)}`);
+  }
+  if (!(psiMax >= 5 - tol && psiMax <= 40 + tol)) {
+    throw new Error(`Max ${label} must be between ${pressureTickLabel(5)} and ${pressureTickLabel(40)}`);
+  }
+  psiMin = clamp(psiMin, -30, -1);
+  psiMax = clamp(psiMax, 5, 40);
+  if (!(psiOverboost > 0 && psiOverboost < psiMax + tol)) {
+    throw new Error(`Overboost must be greater than 0 and less than max ${label}`);
+  }
+  psiOverboost = clamp(psiOverboost, 0.01, Math.max(0.02, psiMax - 0.01));
   if (!(zeroAngle >= 180 && zeroAngle <= 315)) {
     throw new Error("Zero position must be between 180° and 315°");
   }
@@ -3537,7 +3811,7 @@ async function saveRange() {
   const payload = { ...range };
   renderConfig(await api("/config", { method: "PUT", body: JSON.stringify(payload) }));
   showOk(
-    `Gauge range saved · ${formatTickLabel(range.psiMin)} / ${formatTickLabel(range.psiMax)} · zero ${range.zeroAngle.toFixed(2)}°`,
+    `Gauge range saved · ${pressureTickLabel(range.psiMin)} / ${pressureTickLabel(range.psiMax)} ${unitLabel()} · zero ${range.zeroAngle.toFixed(2)}°`,
   );
 }
 
@@ -3580,7 +3854,7 @@ async function loadLogs() {
   }
   const peak = Math.max(...samples.map((sample) => sample.psi));
   const low = Math.min(...samples.map((sample) => sample.psi));
-  el.logSummary.textContent = `${samples.length} samples loaded. Range ${signed(low)} to ${signed(peak)} PSI.`;
+  el.logSummary.textContent = `${samples.length} samples loaded. Range ${signedPressure(low)} to ${signedPressure(peak)} ${unitLabel()}.`;
   showOk(`Loaded ${samples.length} log samples`);
 }
 

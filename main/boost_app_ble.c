@@ -603,6 +603,15 @@ static int route_themes_config_put(const cJSON *body, char *out, size_t cap)
         boost_theme_set_tpms_ble(cJSON_IsTrue(tble));
         boost_obd_set_enabled(cJSON_IsTrue(tble));
     }
+    const cJSON *punit = cJSON_GetObjectItemCaseSensitive(body, "pressureUnit");
+    if (cJSON_IsString(punit)) {
+        boost_unit_t unit;
+        if (!boost_units_parse(punit->valuestring, &unit)) {
+            snprintf(out, cap, "{\"error\":\"invalid_pressure_unit\"}");
+            return 400;
+        }
+        boost_theme_set_pressure_unit(unit);
+    }
     const cJSON *vface = cJSON_GetObjectItemCaseSensitive(body, "vaultFace");
     if (vface != NULL && app_parse_hex_color(vface, &rgb)) {
         boost_theme_set_vault_face(rgb);

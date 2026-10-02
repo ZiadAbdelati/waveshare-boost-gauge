@@ -42,6 +42,11 @@ final class SettingsViewModel: ObservableObject {
     @Published var zeroAngle = 236.25
     @Published var appBle = false
 
+    /// Global pressure-display unit from `GET /themes` ("psi" | "bar" | "kPa").
+    /// The canonical config values stay PSI; the Range page converts only for
+    /// display/input and `saveConfig` always sends PSI.
+    @Published var pressureUnit = PressureUnit.psi
+
     @Published var demoMode = false
     @Published var demoFastSweep = false
     @Published var tpmsBle = false
@@ -69,6 +74,9 @@ final class SettingsViewModel: ObservableObject {
     @Published var isForgettingOBDPeer = false
 
     private weak var transport: GaugeTransport?
+    /// Shared session so a unit change/load reaches every tab that renders
+    /// pressure (Status/Logs/Themes). Weak: the session owns the app lifetime.
+    weak var appSession: AppSession?
     private var obdPollTask: Task<Void, Never>?
 
     func reset(transport: GaugeTransport?) {
@@ -470,6 +478,21 @@ final class SettingsViewModel: ObservableObject {
         await saveDemoMode()
     }
 
+    /// Range ▸ Pressure unit: persists immediately on picker change, mirroring
+    /// `saveTpmsBle()`. The firmware echoes the full `/themes` payload, which
+    /// `applyThemeFlags` folds back (unit + all other theme flags).
+    func saveUnit() async {
+        guard let transport else {
+            await MainActor.run { errorMessage = "No gauge connection — reconnect, then retry." }
+            return
+        }
+        let body: [String: Any] = ["pressureUnit": PressureUnit.normalized(pressureUnit)]
+        await save(transport, method: "PUT", path: "themes/config", body: body) { [weak self] data in
+            let decoded = try JSONDecoder().decode(ThemeList.self, from: data)
+            self?.applyThemeFlags(decoded)
+        }
+    }
+
     func saveTPMSConfig() async {
         guard let transport else { return }
         savedMessage = nil
@@ -665,6 +688,10 @@ final class SettingsViewModel: ObservableObject {
     private func applyThemeFlags(_ flags: ThemeList) {
         assertMainThread()
         themeFlags = flags
+        if let value = flags.pressureUnit {
+            pressureUnit = PressureUnit.normalized(value)
+            appSession?.applyPressureUnit(pressureUnit)
+        }
         if let value = flags.demoMode { demoMode = value }
         if let value = flags.demoFastSweep { demoFastSweep = value }
         if let value = flags.tpmsBle { tpmsBle = value }

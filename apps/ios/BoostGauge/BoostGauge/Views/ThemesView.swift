@@ -52,6 +52,7 @@ struct ThemesView: View {
                 }
             }
             .onAppear {
+                vm.appSession = session
                 vm.reset(transport: session.transport)
                 Task { await vm.resyncActiveTheme() }
             }

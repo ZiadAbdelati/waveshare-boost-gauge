@@ -80,6 +80,7 @@ import com.boostgauge.app.ui.BoostMetric
 import com.boostgauge.app.ui.BoostMetricValue
 import com.boostgauge.app.ui.BoostNavTitle
 import com.boostgauge.app.ui.BoostSubheadline
+import com.boostgauge.app.ui.PressureUnit
 import com.boostgauge.app.ui.Timezones
 import com.boostgauge.app.ui.components.CaptionText
 import com.boostgauge.app.ui.components.GroupedSection
@@ -128,6 +129,11 @@ fun SettingsScreen(container: AppContainer) {
     LaunchedEffect(Unit) { viewModel.refreshAll() }
     LaunchedEffect(connectionStatus) {
         if (connectionStatus == ConnectionStatus.Connected) viewModel.refreshAll()
+    }
+    // Mirror the device's unit process-wide so the dashboard/logs/calibration
+    // readouts follow the same selection.
+    LaunchedEffect(state.themes?.pressureUnit) {
+        state.themes?.pressureUnit?.let { container.pressureUnit.apply(it) }
     }
     var page by rememberSaveable {
         mutableStateOf<SettingsPage?>(
@@ -214,6 +220,7 @@ fun SettingsScreen(container: AppContainer) {
                     fields = fields,
                     saving = state.saving,
                     onFieldChange = viewModel::updateFields,
+                    onUnitSave = viewModel::savePressureUnit,
                     onSave = viewModel::saveRange,
                 )
             }
@@ -695,14 +702,69 @@ private fun DisplaySection(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun RangeSection(
     fields: SettingsViewModel.FieldState,
     saving: Boolean,
     onFieldChange: ((SettingsViewModel.FieldState) -> SettingsViewModel.FieldState) -> Unit,
+    onUnitSave: (PressureUnit) -> Unit,
     onSave: () -> Unit,
 ) {
     GroupedSection {
+        var unitExpanded by remember { mutableStateOf(false) }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Pressure unit", style = BoostMetric, color = MaterialTheme.colorScheme.onSurface)
+            ExposedDropdownMenuBox(
+                expanded = unitExpanded,
+                onExpandedChange = { unitExpanded = it },
+            ) {
+                Surface(
+                    onClick = { unitExpanded = true },
+                    enabled = !saving,
+                    modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable),
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text(
+                            text = fields.pressureUnit.suffix,
+                            style = BoostSubheadline,
+                            color = if (!saving) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                        ExposedDropdownMenuDefaults.TrailingIcon(expanded = unitExpanded)
+                    }
+                }
+                ExposedDropdownMenu(
+                    expanded = unitExpanded,
+                    onDismissRequest = { unitExpanded = false },
+                ) {
+                    PressureUnit.entries.forEach { unit ->
+                        DropdownMenuItem(
+                            text = { Text(unit.suffix) },
+                            onClick = {
+                                unitExpanded = false
+                                // Saves immediately; the echoed payload sets
+                                // the field and re-formats the psi values.
+                                if (unit != fields.pressureUnit) onUnitSave(unit)
+                            },
+                        )
+                    }
+                }
+            }
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             NumberField("psiMin", fields.psiMin, Modifier.weight(1f)) { value ->
                 onFieldChange { it.copy(psiMin = value) }
@@ -935,7 +997,7 @@ private fun ObdScannerSection(
             onFieldChange { it.copy(tpmsBle = value) }
             onBleSave()
         }
-        NumberField("Low pressure (psi)", fields.lowPsi) { value ->
+        NumberField("Low pressure (${fields.pressureUnit.suffix})", fields.lowPsi) { value ->
             onFieldChange { it.copy(lowPsi = value) }
         }
         NumberField("Stale after (ms)", fields.staleAfterMs) { value ->

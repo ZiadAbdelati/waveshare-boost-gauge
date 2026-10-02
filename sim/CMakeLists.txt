@@ -35,6 +35,7 @@ add_executable(boost_gauge_sim
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_gauge.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_theme.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_neon_geom.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_units.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/alvida_big.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/font_mono_16.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/font_mono_40.c
@@ -100,6 +101,7 @@ add_executable(test_neon_geom
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_neon_geom.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_theme.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_sim.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_units.c
 )
 target_include_directories(test_neon_geom PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../main

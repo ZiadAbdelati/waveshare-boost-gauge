@@ -66,6 +66,7 @@ import com.boostgauge.app.ui.BoostSectionTitle
 import com.boostgauge.app.ui.BoostTileValue
 import com.boostgauge.app.ui.BoostUnit
 import com.boostgauge.app.ui.Format
+import com.boostgauge.app.ui.PressureUnit
 import com.boostgauge.app.ui.components.BoostCard
 import com.boostgauge.app.ui.components.BoostSectionTitleText
 import com.boostgauge.app.ui.components.MetricRow
@@ -89,7 +90,13 @@ fun DashboardScreen(container: AppContainer) {
     val themeNames by viewModel.themeNames.collectAsState()
     val themes by viewModel.themes.collectAsState()
     val selection by container.transportController.selection.collectAsState()
+    val pressureUnit by container.pressureUnit.unit.collectAsState()
     LaunchedEffect(Unit) { viewModel.refresh() }
+    // Device-authoritative unit; the dashboard is the default start route, so
+    // this also seeds the process-wide value on a cold start.
+    LaunchedEffect(themes?.pressureUnit) {
+        themes?.pressureUnit?.let { container.pressureUnit.apply(it) }
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
@@ -114,9 +121,9 @@ fun DashboardScreen(container: AppContainer) {
         }
 
         val cards: List<@Composable () -> Unit> = buildList {
-            add { BoostHeroCard(status, status == null, themeNames[status?.activeThemeId] ?: status?.activeThemeId ?: "—") }
+            add { BoostHeroCard(status, status == null, themeNames[status?.activeThemeId] ?: status?.activeThemeId ?: "—", pressureUnit) }
             add { SensorsCard(status?.sensors) }
-            add { TpmsCard(status) }
+            add { TpmsCard(status, pressureUnit) }
             add { ObdCard(status?.obd, themes?.tpmsBle == true) }
             // While reconnecting, the status is "Reconnecting… (attempt N)", not an error banner.
             if (lastError != null && reconnectAttempt == null) add { ErrorBanner(lastError!!) }
@@ -155,7 +162,7 @@ private fun DashboardPane(cards: List<@Composable () -> Unit>, modifier: Modifie
 }
 
 @Composable
-private fun BoostHeroCard(status: Status?, loading: Boolean, themeName: String) {
+private fun BoostHeroCard(status: Status?, loading: Boolean, themeName: String, unit: PressureUnit) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
@@ -174,13 +181,13 @@ private fun BoostHeroCard(status: Status?, loading: Boolean, themeName: String) 
                 verticalAlignment = Alignment.Bottom,
             ) {
                 Text(
-                    text = status?.let { Format.fmt(it.psi) } ?: "--.-",
+                    text = status?.let { unit.format(it.psi, 2) } ?: unit.placeholder,
                     style = BoostHeroValue,
                     color = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.alignByBaseline(),
                 )
                 Text(
-                    text = "psi",
+                    text = unit.suffix,
                     style = BoostUnit,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier
@@ -216,7 +223,7 @@ private fun BoostHeroCard(status: Status?, loading: Boolean, themeName: String) 
                         modifier = Modifier.size(16.dp),
                     )
                     Text(
-                        text = "Peak ${Format.fmt(status.peakPsi)} psi",
+                        text = "Peak ${unit.format(status.peakPsi, 2)} ${unit.suffix}",
                         style = BoostMetric,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -343,7 +350,7 @@ private fun SensorsCard(sensors: Sensors?) {
 }
 
 @Composable
-private fun TpmsCard(status: Status?) {
+private fun TpmsCard(status: Status?, unit: PressureUnit) {
     val tpms = status?.tpms
     BoostCard {
         Row(
@@ -354,7 +361,7 @@ private fun TpmsCard(status: Status?) {
             BoostSectionTitleText("TPMS")
             if ((tpms?.lowPsi ?: 0.0) > 0.0) {
                 Text(
-                    text = "low ${Format.fmt(tpms!!.lowPsi, 1)}",
+                    text = "low ${unit.format(tpms!!.lowPsi, 1)}",
                     style = BoostCaption,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -375,6 +382,7 @@ private fun TpmsCard(status: Status?) {
                             label = labels[index],
                             lowPsi = tpms.lowPsi,
                             status = tpms.status,
+                            unit = unit,
                             modifier = Modifier.weight(1f),
                         )
                     }
@@ -386,7 +394,15 @@ private fun TpmsCard(status: Status?) {
 
 /** Native tire capsule mirroring the iOS 2x2 TPMS card. */
 @Composable
-private fun TireCapsule(wheel: Wheel, label: String, lowPsi: Double, status: Int, modifier: Modifier = Modifier) {
+private fun TireCapsule(
+    wheel: Wheel,
+    label: String,
+    lowPsi: Double,
+    status: Int,
+    unit: PressureUnit,
+    modifier: Modifier = Modifier,
+) {
+    // Threshold compare stays canonical PSI; only the number renders converted.
     val low = wheel.valid && lowPsi > 0.0 && wheel.psi <= lowPsi
     val tint = when {
         status == 1 -> BoostColors.amber
@@ -408,7 +424,7 @@ private fun TireCapsule(wheel: Wheel, label: String, lowPsi: Double, status: Int
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Text(
-            text = if (status == 1 || wheel.valid) Format.fmt(wheel.psi, 1) else "--.-",
+            text = if (status == 1 || wheel.valid) unit.format(wheel.psi, 1) else unit.placeholder,
             style = BoostTileValue,
             color = tint,
         )

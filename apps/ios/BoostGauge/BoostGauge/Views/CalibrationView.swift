@@ -49,7 +49,7 @@ struct CalibrationView: View {
                     Section("Saved calibration") {
                         if cal.valid == true {
                             if let offset = cal.offsetPsi {
-                                row("Offset", "\(Format.psi2(offset)) psi")
+                                row("Offset", "\(Format.pressure(offset, unit: session.pressureUnit, psiDecimals: 2)) \(PressureUnit.suffix(session.pressureUnit))")
                             }
                             if let offset = cal.offsetKpa {
                                 row("Offset kPa", Format.kpa(offset))

@@ -560,3 +560,135 @@ fallback in `main/boost_page.c`). The requested `0.9.9` bump therefore
 lands with the release commit + `v0.9.9` tag for this change-set, at which
 point `/api/v1/state` reports `v0.9.9(-n-gXXXXXX)`. Left to the coordinator
 because tagging is a release action; no source edit can make it sooner.
+
+## 2026-10-02 — Selectable pressure units (PSI / bar / kPa), all surfaces
+
+Feature: a single global display unit, selectable on the physical panel, the
+web dashboard, and both companion apps. This is a PRESENTATION change only —
+no canonical value, gauge geometry, or threshold changed units.
+
+Contract (frozen; `'/Users/chaotic/.omp/agent/sessions/-.paseo-worktrees-1kv8y7jv-unique-walrus/2026-10-02T19-00-12-197Z_01a0fdfd-0325-7712-9777-c1e1da6696be/local/units-contract.md'` during dev):
+
+- Setting key `pressureUnit` (`"psi"|"bar"|"kPa"`, default `"psi"`), persisted
+  in the theme store (NVS `unit`, `main/boost_theme.c`) and served in
+  `GET /api/v1/themes`; written by `PUT /api/v1/themes/config`.
+- Canonical values are unchanged: `/config` `psiMin/psiMax/psiOverboost` (PSI),
+  `/state` `psi/peakPsi/tpms.*` (PSI), `/logs` columns (PSI), sensor/calibration
+  kPa diagnostics (kPa, never relabelled).
+- Factors bar = psi x 0.0689475729, kPa = psi x 6.89475729 (reciprocal of the
+  existing 0.145037738 psi/kPa). Decimals: psi 1, bar 2, kPa 0.
+
+Firmware:
+
+- New `main/boost_units.[ch]` is the single conversion/format definition
+  (`boost_units_from_psi`/`to_psi`/`format`/`format_tick`/`label`/`parse`).
+- Every face converts ONLY at the numeral/unit-mark boundary; `psiToAngle`/
+  `psiToSweep`, ranges, and the zero marker stay in PSI. The HUD/arc gradient
+  and zone thresholds still consume PSI (with the existing ±0.1 fold).
+- The dyno-cell arc, vault, HUD, big-digit and neon readouts each gained a
+  non-PSI layout (arc/vault: advances/mono-centred cells; HUD/big-digit: one
+  centred string; neon: `boost_neon_layout_readout_fmt()`). The PSI readout
+  path is BYTE-FOR-BYTE unchanged — proven by rendering with the pre-change
+  `main/boost_gauge.c` and diffing: 0 differing pixels (>8/255) across all
+  four dyno-cell states.
+- Unit marks per theme: arc `PSI`/`bar`/`kPa`, vault `MANIFOLD <unit>`,
+  HUD `<unit> // FORCED INDUCTION`, big-digit `<unit>`, neon `P S I`/`B A R`/
+  `K P A` (the neon label face has no lowercase — a plain `bar`/`kPa` rendered
+  as tofu; caught in the sim).
+- TPMS panel wheel values convert; the low-pressure comparison stays kPa.
+- Physical two-finger overlay's connections page reworked from two toggle rows
+  to three square buttons (OBD BLE / APP BLE / UNITS; 2 up + 1 down). Tap
+  toggles/cycles; on-state is a glow + status LED + `ON`; the UNITS button's
+  second line is the current unit. A unit change persists and rebuilds the
+  gauge scene.
+
+Web / apps:
+
+- `web/app.js` reads `state.pressureUnit`; every face readout, peak, unit mark,
+  tick numeral, TPMS value/threshold, logs label and range input converts;
+  a `<select id="pressureUnit">` sits in the Range panel. The default-PSI
+  canvas draw commands are identical to `git HEAD` (recorded fillText
+  comparison over all five faces + TPMS).
+- iOS (`apps/ios/BoostGauge`) and Android (`apps/android/BoostGauge`) add the
+  unit at the top of the Range page, save it immediately via
+  `PUT /themes/config {"pressureUnit"}`, convert all readouts/inputs, and pass
+  `pressureUnit` into the theme-preview payload.
+- `main/generated_web_assets.c/.h` regenerated after the web edits.
+
+Verification (host only — NO hardware run; no board attached in this
+environment, so this row is not hardware evidence):
+
+- `idf.py build` — app image builds clean (pre-existing cJSON `-Wdiscarded-
+  qualifiers` warnings only); `build/boost_gauge.bin` generated.
+- `python3 tools/test_suite.py` — 12/12 PASS.
+- `tools/test_neon_geom.c` — all assertions pass (the psi wrapper output is
+  unchanged by the `_fmt` generalisation).
+- Host sim `--qr-test` — PASS, 0 failures (overlay buttons, persistence path),
+  and the three-button page renders correctly (glow/LED/ON-OFF/unit line).
+- Host sim screenshots at `--unit bar` / `--unit kPa` for all five faces render
+  correct converted readouts, peaks, tick numerals and unit marks with no
+  clipping.
+- Mock-server browser check: Range `PSI -> bar` shows `psiMax 10 -> 0.69`, and
+  converts the hint/labels/TPMS threshold.
+- iOS `xcodebuild build` SUCCEEDS; Android `:app:compileDebugKotlin` SUCCEEDS
+  with 35 existing regression tests passing.
+
+NOT verified on hardware: the physical cadence guard at bar/kPa (the psi path
+is proven unchanged, and only the readout region differs, but the 60 FPS gate
+was not re-run on a board), and the on-glass overlay layout/feel. First flash
+should re-run the demo-mode dyno-cell cadence guard and eyeball each face in
+bar/kPa before trusting it.
+
+### 2026-10-02 — units: simulator verification (iOS + Android) and a found iOS bug
+
+Once the simulators were actually exercised (not just builds), the Android
+emulator and an iOS UI test both surfaced real end-to-end behaviour; the iOS
+one exposed a bug the host suite could not see.
+
+Android emulator (`test31`, `emulator-5556`, 1080x2340 @440dpi):
+
+- Installed the debug APK and launched with `--es screenshotState connected`
+  (the debug sim transport, `app/src/debug/.../SimBleTransport.kt`) so the app
+  has a live fixture gauge — without a transport the unit PUT fails with the
+  "no transport selected" snackbar and the field returns to psi.
+- `Settings ▸ Range` renders `Pressure unit` = `psi`, and after selecting
+  `bar` from the dropdown the field dump reads `-1.03 / 0.69 / 0.55` with
+  `zeroAngle` still `220` — the psi fields converted at the contract precision
+  and the non-pressure field stayed raw.
+
+iOS simulator (iPhone 17 Pro Max, iOS 26.3):
+
+- New UI test `SimAcceptanceUITests.testRangePressureUnitPickerConvertsFields`
+  (runs in the `BoostGaugeE2E` scheme with `-e2eSimBle -e2eTab settings`):
+  navigates Settings ▸ Range, asserts the fixture fields render raw in psi
+  (`-15 / 10 / 8 / 220`), selects `bar` and asserts `-1.03 / 0.69 / 0.55 / 220`.
+- The test FAILED on first run: the bar fields rendered `-1.034214 / 0.689476 /
+  0.551581`. Root cause: `PressureUnit.display(fromPsi:unit:)` returns the raw
+  product and the Range `TextField(value:format:.number)` prints the full
+  double. Fix: `PressureUnit.displayRounded(fromPsi:unit:)` (rounds to the
+  unit's contract decimals) used by the Range psi fields, the TPMS low-stepper
+  binding and its 14.5…58 psi bounds. No wire change — the model stays PSI.
+  Test then passed (0 failures), with `Saved` toast confirming the
+  `PUT /themes/config` round-trip through the sim transport.
+- `SimAcceptanceUITests.testSettingsSubPagesAndTimezonePicker` still fails, at
+  its FIRST assertion ("root row Theme & demo"): the app's Settings root rows
+  are the PARITY.md set (`… Demo mode, Clock & timezone, TPMS & OBD2, Wi-Fi,
+  About`), so that test's hard-coded row list is stale. PRE-EXISTING and
+  unrelated — this change-set's SettingsView diff contains no row-title edits.
+
+Full-suite results at this revision:
+
+- iOS `BoostGaugeTests`: 110 executed, 2 failures — both in
+  `ViewModelTests` timezone paths (`SyncTimezoneSendsNoEpoch`,
+  `ApplyTimezoneOptionPostsTimeThenSavesConfig`) which assert a timezone-only
+  sync must NOT send `epochMs` while `SettingsViewModel` sends it. The test
+  file is untouched by this change-set and the ViewModel diff is additive only.
+  PRE-EXISTING.
+- Android `:app:testDebugUnitTest`: 109 tests, 0 failures, 0 errors.
+- Host `python3 tools/test_suite.py`: 12/12.
+
+Tooling note: `npx serve-sim` cannot drive input on this host — its Swift
+helper aborts with `Fatal error: Incorrect actor executor assumption; Expected
+same executor as SimNative.FrameCapture` a few frames after start, so taps
+race the crash. iOS interaction was therefore driven with native XCUITest on
+the simulator instead.

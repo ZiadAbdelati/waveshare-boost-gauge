@@ -76,6 +76,12 @@ static bool s_qr_toggles_shown;
 static int32_t s_qr_press_x;
 static bool s_qr_press_tracking;
 
+/* Connections page: three square buttons (2 up, 1 down). Order matches the
+ * sim tap hook: 0 = OBD BLE, 1 = APP BLE, 2 = UNITS. */
+#define QR_BTN_SIZE 130
+static lv_obj_t *s_qr_btn[3];
+static lv_obj_t *s_qr_btn_unit_label;
+
 static bool media_active(void);
 
 static int32_t abs_i32(int32_t x) { return x < 0 ? -x : x; }
@@ -92,8 +98,9 @@ static void qr_pressing_cb(lv_event_t *event);
 static void qr_flip_to(bool toggles);
 static void qr_swipe_press_cb(lv_event_t *event);
 static void qr_swipe_release_cb(lv_event_t *event);
-static void qr_toggle_obd_cb(lv_event_t *event);
-static void qr_toggle_app_cb(lv_event_t *event);
+static void qr_tap_obd_cb(lv_event_t *event);
+static void qr_tap_app_cb(lv_event_t *event);
+static void qr_tap_units_cb(lv_event_t *event);
 typedef struct {
     char ap_ssid[33];
     bool sta_connected;
@@ -118,6 +125,62 @@ static void qr_ap_info(qr_ap_info_t *out)
     out->sta_connected = getenv("QR_NO_IP") == NULL;
     if (out->sta_connected) strlcpy(out->sta_ip, "192.168.4.2", sizeof(out->sta_ip));
 #endif
+}
+
+/* One square toggle button: rounded corners, thin border, and a glow + status
+ * LED when on. `accent` is the on colour (green for links, cyan for units). */
+static lv_obj_t *qr_make_square(lv_obj_t *parent, int x, int y, bool active, uint32_t accent)
+{
+    lv_obj_t *b = lv_obj_create(parent);
+    lv_obj_remove_style_all(b);
+    lv_obj_set_size(b, QR_BTN_SIZE, QR_BTN_SIZE);
+    lv_obj_set_pos(b, x, y);
+    lv_obj_set_style_radius(b, 22, 0);
+    lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(b, 2, 0);
+    lv_obj_clear_flag(b, LV_OBJ_FLAG_SCROLLABLE);
+    if (active) {
+        lv_obj_set_style_bg_color(b, lv_color_hex(0x14201C), 0);
+        lv_obj_set_style_border_color(b, lv_color_hex(accent), 0);
+        lv_obj_set_style_shadow_color(b, lv_color_hex(accent), 0);
+        lv_obj_set_style_shadow_width(b, 22, 0);
+        lv_obj_set_style_shadow_opa(b, 130, 0);
+    } else {
+        lv_obj_set_style_bg_color(b, lv_color_hex(0x14161a), 0);
+        lv_obj_set_style_border_color(b, lv_color_hex(0x3a4048), 0);
+    }
+    /* Status LED, top-right: a second on/off cue beyond the glow. */
+    lv_obj_t *dot = lv_obj_create(b);
+    lv_obj_remove_style_all(dot);
+    lv_obj_set_size(dot, 12, 12);
+    lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(dot, lv_color_hex(active ? accent : 0x3a4048), 0);
+    lv_obj_align(dot, LV_ALIGN_TOP_RIGHT, -12, 12);
+    lv_obj_clear_flag(dot, LV_OBJ_FLAG_CLICKABLE);
+    return b;
+}
+
+static void qr_square_set_text(lv_obj_t *b, const char *primary, const char *secondary)
+{
+    lv_obj_t *p = lv_label_create(b);
+    lv_obj_remove_flag(p, LV_OBJ_FLAG_CLICKABLE);
+    lv_label_set_text(p, primary);
+    lv_obj_set_style_text_color(p, lv_color_white(), 0);
+    lv_obj_set_style_text_font(p, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_align(p, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(p, QR_BTN_SIZE - 12);
+    lv_obj_align(p, LV_ALIGN_CENTER, 0, secondary != NULL ? -16 : 0);
+    if (secondary != NULL) {
+        lv_obj_t *s = lv_label_create(b);
+        lv_obj_remove_flag(s, LV_OBJ_FLAG_CLICKABLE);
+        lv_label_set_text(s, secondary);
+        lv_obj_set_style_text_color(s, lv_color_hex(0xB6C0CC), 0);
+        lv_obj_set_style_text_font(s, &lv_font_montserrat_20, 0);
+        lv_obj_set_style_text_align(s, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_width(s, QR_BTN_SIZE - 12);
+        lv_obj_align(s, LV_ALIGN_CENTER, 0, 22);
+    }
 }
 
 /* Full-screen QR overlay for joining the SoftAP. Dismissed by any fresh tap
@@ -152,78 +215,49 @@ static void show_qr(void)
      * page's dot is lit. Pure indicators - not clickable, a tap on one falls
      * through to the overlay's dismiss. */
 
+    for (int i = 0; i < 3; ++i) s_qr_btn[i] = NULL;
+    s_qr_btn_unit_label = NULL;
+
     if (s_qr_toggles_shown) {
         lv_obj_t *title = lv_label_create(s_qr_overlay);
         lv_label_set_text(title, "Connections");
         lv_obj_set_style_text_color(title, lv_color_white(), 0);
         lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
-        lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 48);
+        lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 40);
 
-        /* Each toggle row is one big tappable card: the WHOLE row flips the
-         * switch, so a mistap on the label cannot fall through to the overlay
-         * and dismiss the screen. */
-        lv_obj_t *obd_row = lv_obj_create(s_qr_overlay);
-        lv_obj_remove_style_all(obd_row);
-        lv_obj_set_size(obd_row, PAGE_SIZE - 96, 96);
-        lv_obj_align(obd_row, LV_ALIGN_TOP_MID, 0, 150);
-        lv_obj_remove_flag(obd_row, LV_OBJ_FLAG_CLICKABLE);
-        /* lv_obj_create() sets CLICKABLE by default (lv_obj.c constructor), so
-         * the flag must be REMOVED explicitly: a clickable card would own every
-         * press on it and swallow swipes. Non-clickable -> hit-test falls
-         * through to the overlay's gesture tracker. Only the switch is
-         * interactive. */
-        lv_obj_set_style_bg_color(obd_row, lv_color_hex(0x14161a), 0);
-        lv_obj_set_style_bg_opa(obd_row, LV_OPA_COVER, 0);
-        lv_obj_set_style_radius(obd_row, 16, 0);
+        /* Three square buttons, 2 up + 1 down. Each is one big tappable square
+         * so a mistap on the label cannot fall through to the overlay and
+         * dismiss the screen; the shared swipe press/release trackers let a
+         * drag that starts on a button still flip pages. */
+        s_qr_btn[0] = qr_make_square(s_qr_overlay, 52, 100, boost_obd_enabled(), 0x62D6A5);
+        qr_square_set_text(s_qr_btn[0], "OBD BLE", boost_obd_enabled() ? "ON" : "OFF");
+        lv_obj_add_event_cb(s_qr_btn[0], qr_swipe_press_cb, LV_EVENT_PRESSED, NULL);
+        lv_obj_add_event_cb(s_qr_btn[0], qr_swipe_release_cb, LV_EVENT_RELEASED, NULL);
+        lv_obj_add_event_cb(s_qr_btn[0], qr_tap_obd_cb, LV_EVENT_CLICKED, NULL);
 
-        lv_obj_t *obd_label = lv_label_create(obd_row);
-        lv_obj_remove_flag(obd_label, LV_OBJ_FLAG_CLICKABLE);
-        lv_label_set_text(obd_label, "OBD2 link");
-        lv_obj_set_style_text_color(obd_label, lv_color_white(), 0);
-        lv_obj_set_style_text_font(obd_label, &lv_font_montserrat_24, 0);
-        lv_obj_align(obd_label, LV_ALIGN_LEFT_MID, 24, 0);
+        s_qr_btn[1] = qr_make_square(s_qr_overlay, PAGE_SIZE - 52 - QR_BTN_SIZE, 100,
+                                     boost_app_ble_enabled(), 0x62D6A5);
+        qr_square_set_text(s_qr_btn[1], "APP BLE", boost_app_ble_enabled() ? "ON" : "OFF");
+        lv_obj_add_event_cb(s_qr_btn[1], qr_swipe_press_cb, LV_EVENT_PRESSED, NULL);
+        lv_obj_add_event_cb(s_qr_btn[1], qr_swipe_release_cb, LV_EVENT_RELEASED, NULL);
+        lv_obj_add_event_cb(s_qr_btn[1], qr_tap_app_cb, LV_EVENT_CLICKED, NULL);
 
-        lv_obj_t *obd_sw = lv_switch_create(obd_row);
-        lv_obj_set_size(obd_sw, 88, 44);
-        lv_obj_align(obd_sw, LV_ALIGN_RIGHT_MID, -24, 0);
-        /* Bigger finger target via an INVISIBLE halo only - styling pad_* on
-         * LV_PART_MAIN shrinks the indicator track (the skinny-line bug). */
-        lv_obj_set_ext_click_area(obd_sw, 16);
-        if (boost_obd_enabled()) lv_obj_add_state(obd_sw, LV_STATE_CHECKED);
-        lv_obj_add_event_cb(obd_sw, qr_swipe_press_cb, LV_EVENT_PRESSED, NULL);
-        lv_obj_add_event_cb(obd_sw, qr_swipe_release_cb, LV_EVENT_RELEASED, NULL);
-        lv_obj_add_event_cb(obd_sw, qr_toggle_obd_cb, LV_EVENT_VALUE_CHANGED, NULL);
-
-        lv_obj_t *app_row = lv_obj_create(s_qr_overlay);
-        lv_obj_remove_style_all(app_row);
-        lv_obj_set_size(app_row, PAGE_SIZE - 96, 96);
-        lv_obj_align(app_row, LV_ALIGN_TOP_MID, 0, 266);
-        lv_obj_remove_flag(app_row, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_set_style_bg_color(app_row, lv_color_hex(0x14161a), 0);
-        lv_obj_set_style_bg_opa(app_row, LV_OPA_COVER, 0);
-        lv_obj_set_style_radius(app_row, 16, 0);
-
-        lv_obj_t *app_label = lv_label_create(app_row);
-        lv_obj_remove_flag(app_label, LV_OBJ_FLAG_CLICKABLE);
-        lv_label_set_text(app_label, "App link");
-        lv_obj_set_style_text_color(app_label, lv_color_white(), 0);
-        lv_obj_set_style_text_font(app_label, &lv_font_montserrat_24, 0);
-        lv_obj_align(app_label, LV_ALIGN_LEFT_MID, 24, 0);
-
-        lv_obj_t *app_sw = lv_switch_create(app_row);
-        lv_obj_set_size(app_sw, 88, 44);
-        lv_obj_align(app_sw, LV_ALIGN_RIGHT_MID, -24, 0);
-        lv_obj_set_ext_click_area(app_sw, 16);
-        if (boost_app_ble_enabled()) lv_obj_add_state(app_sw, LV_STATE_CHECKED);
-        lv_obj_add_event_cb(app_sw, qr_swipe_press_cb, LV_EVENT_PRESSED, NULL);
-        lv_obj_add_event_cb(app_sw, qr_swipe_release_cb, LV_EVENT_RELEASED, NULL);
-        lv_obj_add_event_cb(app_sw, qr_toggle_app_cb, LV_EVENT_VALUE_CHANGED, NULL);
+        /* The units button's second line is the current selection; tapping it
+         * cycles PSI -> bar -> kPa. */
+        s_qr_btn[2] = qr_make_square(s_qr_overlay, (PAGE_SIZE - QR_BTN_SIZE) / 2, 256,
+                                     true, 0x4DD2FF);
+        qr_square_set_text(s_qr_btn[2], "UNITS", boost_units_label(boost_theme_pressure_unit()));
+        s_qr_btn_unit_label =
+            lv_obj_get_child(s_qr_btn[2], lv_obj_get_child_count(s_qr_btn[2]) - 1);
+        lv_obj_add_event_cb(s_qr_btn[2], qr_swipe_press_cb, LV_EVENT_PRESSED, NULL);
+        lv_obj_add_event_cb(s_qr_btn[2], qr_swipe_release_cb, LV_EVENT_RELEASED, NULL);
+        lv_obj_add_event_cb(s_qr_btn[2], qr_tap_units_cb, LV_EVENT_CLICKED, NULL);
 
         /* Firmware version readout, bottom-anchored above the swipe hint -
          * the same slot pattern the QR page uses for the SSID/IP lines. The
          * version comes from the app description (git describe at build
          * time), so what is on glass is what is actually running. Muted so
-         * it reads as metadata, not as a third toggle. */
+         * it reads as metadata, not as a fourth button. */
         lv_obj_t *fw = lv_label_create(s_qr_overlay);
 #ifdef ESP_PLATFORM
         const esp_app_desc_t *app_desc = esp_app_get_description();
@@ -234,7 +268,6 @@ static void show_qr(void)
         lv_obj_set_style_text_color(fw, lv_color_hex(0x9a9a9a), 0);
         lv_obj_set_style_text_font(fw, &lv_font_montserrat_24, 0);
         lv_obj_align(fw, LV_ALIGN_BOTTOM_MID, 0, -48);
-        (void)app_sw;
     } else {
         lv_obj_t *qr = lv_qrcode_create(s_qr_overlay);
         lv_qrcode_set_size(qr, 320);
@@ -317,6 +350,8 @@ static void hide_qr(void)
     s_qr_active = false;
     s_qr_toggles_shown = false;
     s_qr_press_tracking = false;
+    for (int i = 0; i < 3; ++i) s_qr_btn[i] = NULL;
+    s_qr_btn_unit_label = NULL;
     /* Resume GIF playback (direct panel push) now that the overlay is gone. */
     boost_gauge_media_resume();
 }
@@ -333,7 +368,7 @@ static void qr_click_cb(lv_event_t *event)
  * enough to black the panel and drop the gesture (observed on hardware), so
  * the callback only records the request; a one-shot lv_timer applies it after
  * the current LVGL cycle finishes rendering. */
-static int32_t s_qr_toggle_req = -1;   /* 0=app off 1=app on 2=obd off 3=obd on */
+static int32_t s_qr_toggle_req = -1;   /* 0=app off 1=app on 2=obd off 3=obd on 4=cycle unit */
 
 static void qr_toggle_apply_cb(lv_timer_t *timer)
 {
@@ -341,6 +376,23 @@ static void qr_toggle_apply_cb(lv_timer_t *timer)
     s_qr_toggle_req = -1;
     lv_timer_del(timer);
     if (req < 0) return;
+    if (req == 4) {
+        const boost_unit_t cur = boost_theme_pressure_unit();
+        const boost_unit_t next = (cur == BOOST_UNIT_PSI) ? BOOST_UNIT_BAR
+                                : (cur == BOOST_UNIT_BAR) ? BOOST_UNIT_KPA
+                                                          : BOOST_UNIT_PSI;
+        boost_theme_set_pressure_unit(next);
+        if (s_qr_btn_unit_label != NULL) {
+            lv_label_set_text(s_qr_btn_unit_label, boost_units_label(next));
+        }
+        /* Unit marks/readouts are baked at scene build, so rebuild the face. */
+#ifdef ESP_PLATFORM
+        boost_gauge_apply_theme(boost_model_active_theme());
+#else
+        boost_gauge_apply_theme(boost_theme_default());
+#endif
+        return;
+    }
     if (req <= 1) {
         boost_app_ble_set_enabled(req == 1);
     } else {
@@ -392,18 +444,25 @@ static void qr_swipe_release_cb(lv_event_t *event)
     s_qr_swipe_suppress = false;
 }
 
-static void qr_toggle_obd_cb(lv_event_t *event)
+static void qr_tap_obd_cb(lv_event_t *event)
 {
+    (void)event;
     if (s_qr_swipe_suppress) { s_qr_swipe_suppress = false; return; }
-    lv_obj_t *sw = lv_event_get_target(event);
-    qr_toggle_request(lv_obj_has_state(sw, LV_STATE_CHECKED) ? 3 : 2);
+    qr_toggle_request(boost_obd_enabled() ? 2 : 3);
 }
 
-static void qr_toggle_app_cb(lv_event_t *event)
+static void qr_tap_app_cb(lv_event_t *event)
 {
+    (void)event;
     if (s_qr_swipe_suppress) { s_qr_swipe_suppress = false; return; }
-    lv_obj_t *sw = lv_event_get_target(event);
-    qr_toggle_request(lv_obj_has_state(sw, LV_STATE_CHECKED) ? 1 : 0);
+    qr_toggle_request(boost_app_ble_enabled() ? 0 : 1);
+}
+
+static void qr_tap_units_cb(lv_event_t *event)
+{
+    (void)event;
+    if (s_qr_swipe_suppress) { s_qr_swipe_suppress = false; return; }
+    qr_toggle_request(4);
 }
 
 /* Two-page overlay carousel with WRAPAROUND: a swipe of at least SWIPE_MIN_PX
@@ -609,6 +668,8 @@ void boost_page_create(void)
     s_qr_hold_start_ms = 0;
     s_qr_toggles_shown = false;
     s_qr_press_tracking = false;
+    for (int i = 0; i < 3; ++i) s_qr_btn[i] = NULL;
+    s_qr_btn_unit_label = NULL;
     s_screen = lv_screen_active();
     lv_obj_remove_style_all(s_screen);
     lv_obj_set_size(s_screen, PAGE_SIZE, PAGE_SIZE);
@@ -696,27 +757,8 @@ void boost_page_qr_dismiss(void) { hide_qr(); }
 void boost_page_qr_tap_switch(int row)
 {
     if (!s_qr_active || !s_qr_toggles_shown || s_qr_overlay == NULL) return;
-    /* Find the Nth switch (class check) anywhere under the overlay: rows are
-     * inert cards; only lv_switch objects toggle. */
-    int seen = 0;
-    uint32_t n = lv_obj_get_child_count(s_qr_overlay);
-    for (uint32_t i = 0; i < n; ++i) {
-        lv_obj_t *ch = lv_obj_get_child(s_qr_overlay, i);
-        if (ch == NULL || !lv_obj_is_valid(ch)) continue;
-        if (lv_obj_check_type(ch, &lv_switch_class)) {
-            if (seen == row) { lv_obj_send_event(ch, LV_EVENT_VALUE_CHANGED, NULL); return; }
-            seen++;
-        }
-        /* switches live inside row cards - descend one level */
-        uint32_t m = lv_obj_get_child_count(ch);
-        for (uint32_t j = 0; j < m; ++j) {
-            lv_obj_t *g = lv_obj_get_child(ch, j);
-            if (g != NULL && lv_obj_is_valid(g) && lv_obj_check_type(g, &lv_switch_class)) {
-                if (seen == row) { lv_obj_send_event(g, LV_EVENT_VALUE_CHANGED, NULL); return; }
-                seen++;
-            }
-        }
-    }
+    if (row < 0 || row >= 3 || s_qr_btn[row] == NULL) return;
+    lv_obj_send_event(s_qr_btn[row], LV_EVENT_CLICKED, NULL);
 }
 
 int boost_page_qr_pending_toggle(void) { return (int)s_qr_toggle_req; }

@@ -827,12 +827,10 @@ static int run_qr_test(const char *out_dir)
         }
     }
 
-    /* 2c. Toggle interaction: only the SWITCH toggles. A tap on the row card
-     * (label area) must do NOTHING (falls through as overlay tap-dismiss is
-     * suppressed by the row being CLICKABLE? No - row is inert now; the tap
-     * hits the overlay and dismisses. So the sim asserts:
-     *  - switch tap -> deferred toggle applied
-     *  - row tap (label area) -> overlay dismisses (inert card) */
+    /* 2c. Square-button interaction: tapping the OBD square toggles the link.
+     * The panel toggle must persist through the theme store, not just flip
+     * RAM (reboot-lost regression, 2026-08-28): assert ON reaches BOTH the
+     * store and the link, then tap again for OFF. */
     boost_page_qr_dismiss();
     pump_lvgl(30);
     boost_page_qr_show();
@@ -842,49 +840,46 @@ static int run_qr_test(const char *out_dir)
     if (!boost_page_qr_toggles()) { fprintf(stderr, "FAIL toggles page for toggle test\n"); failures++; }
     {
         extern int g_sim_obd_set_calls;
+        extern bool g_sim_obd_state;
+        g_sim_obd_state = false;
         const int calls_before = g_sim_obd_set_calls;
-        boost_page_qr_tap_switch(0);   /* the OBD switch itself */
+        boost_page_qr_tap_switch(0);   /* OBD BLE square */
         for (int i = 0; i < 10; ++i) { lv_tick_inc(16); lv_timer_handler(); usleep(16000); }
         const int calls_after = g_sim_obd_set_calls;
         if (calls_after != calls_before + 1) {
-            fprintf(stderr, "FAIL switch tap did not apply the OBD toggle (%d -> %d)\n",
+            fprintf(stderr, "FAIL OBD square tap did not apply the toggle (%d -> %d)\n",
                     calls_before, calls_after);
             failures++;
         } else {
-            printf("switch tap applied OBD toggle: OK\n");
+            printf("OBD square tap applied toggle: OK\n");
         }
         if (boost_page_qr_pending_toggle() != -1) {
             fprintf(stderr, "FAIL toggle request left pending\n");
             failures++;
         }
-        /* The panel toggle must persist through the theme store, not just
-         * flip RAM (reboot-lost regression, 2026-08-28). A synthetic
-         * VALUE_CHANGED does not flip the switch state, so the unchecked tap
-         * above requests OFF; assert that OFF reached BOTH the store and the
-         * link, then seed the link ON, rebuild the overlay (the switch
-         * renders CHECKED from boost_obd_enabled()), and tap for ON. */
-        if (boost_theme_tpms_ble()) {
-            fprintf(stderr, "FAIL unchecked tap persisted tpmsBle ON\n");
+        if (!boost_theme_tpms_ble()) {
+            fprintf(stderr, "FAIL OBD toggle did not persist via theme store\n");
             failures++;
         }
-        {
-            extern bool g_sim_obd_state;
-            g_sim_obd_state = true;
-            boost_page_qr_dismiss();
-            pump_lvgl(30);
-            boost_page_qr_show();
-            boost_page_qr_swipe_left();
-            pump_lvgl(50);
-            boost_page_qr_tap_switch(0);
-            for (int i = 0; i < 10; ++i) { lv_tick_inc(16); lv_timer_handler(); usleep(16000); }
-            if (!boost_theme_tpms_ble()) {
-                fprintf(stderr, "FAIL OBD toggle did not persist via theme store\n");
-                failures++;
-            }
-            if (!g_sim_obd_state) {
-                fprintf(stderr, "FAIL persisted ON did not reach the live link\n");
-                failures++;
-            }
+        if (!g_sim_obd_state) {
+            fprintf(stderr, "FAIL persisted ON did not reach the live link\n");
+            failures++;
+        }
+        /* Rebuild with the square now showing ON; a second tap turns it OFF. */
+        boost_page_qr_dismiss();
+        pump_lvgl(30);
+        boost_page_qr_show();
+        boost_page_qr_swipe_left();
+        pump_lvgl(50);
+        boost_page_qr_tap_switch(0);
+        for (int i = 0; i < 10; ++i) { lv_tick_inc(16); lv_timer_handler(); usleep(16000); }
+        if (boost_theme_tpms_ble()) {
+            fprintf(stderr, "FAIL second OBD tap did not clear tpmsBle\n");
+            failures++;
+        }
+        if (g_sim_obd_state) {
+            fprintf(stderr, "FAIL second OBD tap did not clear the live link\n");
+            failures++;
         }
     }
 
@@ -1027,6 +1022,19 @@ int main(int argc, char **argv)
              * through all 6 phase states. Requires --neon-layout marquee. */
             chase = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') chase_dir = argv[++i];
+        } else if (strcmp(argv[i], "--unit") == 0) {
+            /* Global pressure-display unit. Persisted on device; on the host
+             * boost_theme_set_pressure_unit just sets the working value, so a
+             * single build can render psi/bar/kPa faces for verification. */
+            if (i + 1 < argc) {
+                const char *v = argv[++i];
+                boost_unit_t u;
+                if (!boost_units_parse(v, &u)) {
+                    fprintf(stderr, "unknown unit: %s (psi|bar|kPa)\n", v);
+                    return 1;
+                }
+                boost_theme_set_pressure_unit(u);
+            }
         } else if (strcmp(argv[i], "--qr-test") == 0) {
             qr_test = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') shot_dir = argv[++i];

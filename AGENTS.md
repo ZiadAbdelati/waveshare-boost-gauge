@@ -172,6 +172,18 @@ These are the currently-actionable invariants distilled from the regression ledg
 | Doto readout glyphs/sign are raw A8 coverage with no baked glow; SF Alien retains the two-pass halo. Keep the established aligned sprite crop for both fonts; shrinking Doto's crop to ink exposed unaligned marquee descriptors | 2026-08-20 |
 | Marquee spin and zone-flip invalidation wrap every complete bulb index by `NEON_BULB_N(z)`; wrapping only the residue or leaving `base+1` unbounded strands outer-ring bulb 0 at 12 o'clock for several cycles | 2026-08-20 |
 
+### Units (PSI / bar / kPa)
+
+|Guard|Since|
+|---|---|
+|A single global display unit (`psi`/`bar`/`kPa`) is persisted in the theme store (NVS key `unit`), served by `GET /api/v1/themes` as `pressureUnit`, and written by `PUT /api/v1/themes/config {"pressureUnit":...}`. It is PRESENTATION ONLY: every canonical value stays PSI (`/config` psiMin/psiMax/psiOverboost, `/state` psi/peakPsi/tpms.*, `/logs`) or kPa (sensor/calibration diagnostics); clients convert at display/input boundaries (`main/boost_units.[ch]` is the firmware's one definition)|2026-10-02|
+|Factors: bar = psi x 0.0689475729, kPa = psi x 6.89475729 (the reciprocal of the firmware's 0.145037738 psi/kPa). Decimals: psi 1, bar 2, kPa 0. Gauge geometry (range, `psiToAngle`/`psiToSweep`, zero marker) is ALWAYS in PSI and never rescaled|2026-10-02|
+|Readout dead-band fold is defined in PSI and applied BEFORE conversion; vault-tec stays raw in every unit. Sensor/calibration kPa diagnostics are never converted or relabelled|2026-10-02|
+|Every face's psi readout path is byte-for-byte the pre-units path (fixed slots, per-glyph ink invalidation); bar/kPa use a separate advances-centred layout (arc/vault cells; hud/big-digit single string; neon `boost_neon_layout_readout_fmt`). Never route psi through the new layout|2026-10-02|
+|TPMS panel values + app/web TPMS thresholds follow the unit; the low-pressure comparison stays in kPa. A unit change rebuilds the gauge scene (baked unit marks/numerals) and persists|2026-10-02|
+| Physical two-finger overlay: the connections page is three square buttons (OBD BLE, APP BLE, UNITS; 2 up + 1 down). Tap toggles/cycles; on-state is a glow + status LED + ON label; the UNITS button's second line is the current unit. Swipes starting on a button still flip pages (shared swipe tracker)|2026-10-02|
+| App input controls convert to the unit AND round to its contract decimals — an unformatted SwiftUI `TextField(value:format:.number)` renders the raw binary tail (10 psi → `0.689476` bar). iOS uses `PressureUnit.displayRounded(fromPsi:unit:)` for the Range psi fields, the TPMS low stepper binding and its 14.5…58 psi bounds; web `readRangeForm` and Android's field formatting do the same. Rounding is display-only — the model keeps PSI and `PUT /config` always sends PSI|2026-10-02|
+
 ### Media / GIF
 
 | Guard | Since |

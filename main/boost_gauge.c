@@ -113,16 +113,6 @@ static inline void boost_display_gauge_update_end(void) {}
 #define VALUE_DECIMAL_X    9
 #define VALUE_TENTHS_X     45
 #define VALUE_READOUT_Y    6      /* readout slot centre (moved up 10 px from 16) */
-/* Arc readout cells. s_arc_slot_text[] indexes these; the sign's x is dynamic
- * (it hugs the tens digit when the tens cell is occupied). */
-enum {
-    ARC_SLOT_SIGN = 0,
-    ARC_SLOT_TENS,
-    ARC_SLOT_ONES,
-    ARC_SLOT_DEC,
-    ARC_SLOT_TENTHS,
-    ARC_SLOT_COUNT,
-};
 /* Top of the readout's line box, face-local: the old label objects were
  * VALUE_SLOT_HEIGHT-tall boxes centred at VALUE_READOUT_Y, and label ink
  * starts at the box top. Kept so the custom-draw readout lands byte-identically. */
@@ -378,36 +368,27 @@ static lv_obj_t *s_arc_bg;
 static uint8_t *s_arc_bg_buf;
 static lv_obj_t *s_arc_value_canvas;
 static lv_obj_t *s_zero_notch;
-/* One styleless draw object owns the five value cells (sign, tens, ones,
- * decimal, tenths). Tight per-glyph ink-box invalidation replaces five
- * fixed-size label objects whose 47x58 boxes flushed more pixels than the
- * glyph ink every time a digit changed. */
+/* One styleless draw object owns the value cells (psi: sign, tens, ones,
+ * decimal, tenths at fixed slots; bar/kPa: advances-centred cells). Tight
+ * per-glyph ink-box invalidation replaces fixed-size label objects whose boxes
+ * flushed more pixels than the glyph ink every time a digit changed. */
+#define ARC_MAX_CELLS 6
 static lv_obj_t *s_arc_readout;
-static char s_arc_slot_text[ARC_SLOT_COUNT][2];
+static char s_arc_cell_ch[ARC_MAX_CELLS][2];
+static int16_t s_arc_cell_x[ARC_MAX_CELLS];
+static uint8_t s_arc_cell_n;
 static lv_color_t s_arc_readout_color;
 static bool s_arc_readout_color_valid;
 static lv_obj_t *s_peak_label;
 static lv_obj_t *s_mode_label;
 static lv_obj_t *s_zone_label;
-static int16_t s_arc_sign_x;
 
 /* ---- vault style --------------------------------------------------------- */
-/* Fixed readout slots (montserrat_40: digit advance ~23 px, '.' ~11, '-' ~15)
- * so the value never slides horizontally as digits change. */
-enum {
-    VAULT_SLOT_SIGN = 0,
-    VAULT_SLOT_TENS,
-    VAULT_SLOT_ONES,
-    VAULT_SLOT_DOT,
-    VAULT_SLOT_TENTHS,
-    VAULT_SLOT_HUNDREDTHS,
-    VAULT_SLOT_COUNT,
-};
-/* Share Tech Mono advances a uniform 21.6 px at 40 px. */
-/* IBM Plex Mono advances a uniform 24 px at 40 px. Every slot is always
- * filled (sign + 2 integer digits + 2 decimals), so the readout is centred
- * by construction and can never shift as the value changes. */
-static const int k_vault_slot_x[VAULT_SLOT_COUNT] = { -60, -36, -12, 12, 36, 60 };
+/* Fixed readout slots (IBM Plex Mono advances a uniform 24 px at 40 px). PSI
+ * fills every slot (sign + 2 integer digits + 2 decimals) so the readout is
+ * centred by construction; bar/kPa lay out on the same 24 px pitch. */
+#define VAULT_MAX_CELLS 6
+static const int k_vault_slot_x[VAULT_MAX_CELLS] = { -60, -36, -12, 12, 36, 60 };
 
 static lv_obj_t *s_vault_bg;
 static uint8_t *s_vault_bg_buf;
@@ -421,6 +402,7 @@ typedef struct {
     uint32_t muted;
     uint32_t overboost;
     uint8_t vignette_pct;
+    uint8_t unit;
     bool valid;
 } vault_bg_key_t;
 static vault_bg_key_t s_vault_bg_key;
@@ -433,7 +415,9 @@ static lv_obj_t *s_vault_window;
  * walking six independent label objects on every needle dirty region while
  * retaining each slot's exact area and text alignment. */
 static lv_obj_t *s_vault_readout;
-static char s_vault_slot_text[VAULT_SLOT_COUNT][2];
+static char s_vault_cell_ch[VAULT_MAX_CELLS][2];
+static int16_t s_vault_cell_x[VAULT_MAX_CELLS];
+static uint8_t s_vault_cell_n;
 static lv_color_t s_vault_readout_color;
 static bool s_vault_readout_color_valid;
 static lv_obj_t *s_vault_peak;
@@ -511,6 +495,7 @@ static lv_obj_t *s_big_tens;
 static lv_obj_t *s_big_ones;
 static lv_obj_t *s_big_dot;
 static lv_obj_t *s_big_tenths;
+static lv_obj_t *s_big_val;    /* bar/kPa: one advances-centred string */
 static lv_obj_t *s_big_unit;
 static lv_obj_t *s_big_zone;
 static lv_obj_t *s_big_peak;
@@ -3240,6 +3225,25 @@ static void neon_draw_dot_sign(lv_layer_t *layer, int cx, int cy, int width,
     }
 }
 
+/* Layout the neon readout in the active unit: PSI keeps the legacy fold +
+ * one-decimal path; bar/kPa fold the dead zone in PSI, convert, and lay out
+ * with the unit's decimal count. */
+static void neon_layout_readout_units(float psi, int slot_w, int dot_w, int sign_w,
+                                      int sign_gap, int negative_shift, int font_px,
+                                      const boost_neon_digit_metrics_t *metrics,
+                                      boost_neon_readout_t *out)
+{
+    const boost_unit_t unit = boost_theme_pressure_unit();
+    if (unit == BOOST_UNIT_PSI) {
+        boost_neon_layout_readout(psi, slot_w, dot_w, sign_w, sign_gap,
+                                  negative_shift, font_px, metrics, out);
+        return;
+    }
+    const float value = boost_units_from_psi(unit, boost_readout_display_psi(psi));
+    boost_neon_layout_readout_fmt(value, boost_units_decimals(unit), slot_w, dot_w,
+                                  sign_w, sign_gap, negative_shift, font_px, metrics, out);
+}
+
 static void draw_neon_live(lv_event_t *e)
 {
     NEON_STAT_CB();
@@ -3629,7 +3633,7 @@ static void draw_neon_live(lv_event_t *e)
     const int sign_gap = neon_mq(nfs->sign_gap);
     const int font_px = neon_mq(nfs->font_px);
     boost_neon_readout_t r;
-    boost_neon_layout_readout(psi, slot_w, dot_w, sign_w, sign_gap,
+    neon_layout_readout_units(psi, slot_w, dot_w, sign_w, sign_gap,
                               neon_mq(nfs->negative_shift), font_px,
                               nfs->metrics, &r);
     const uint32_t ink = neon_lit(accent_rgb);
@@ -3845,7 +3849,14 @@ static void build_neon(lv_obj_t *scr)
         lv_obj_align(s_neon_zone, LV_ALIGN_CENTER, 0, NEON_WORD_Y);
     }
     s_neon_unit = lv_label_create(scr);
-    lv_label_set_text(s_neon_unit, "P S I");
+    /* The neon label face carries the display alphabet only, so the mark uses
+     * its letter-spaced uppercase style ("P S I" / "B A R" / "K P A"). */
+    switch (boost_theme_pressure_unit()) {
+        case BOOST_UNIT_BAR: lv_label_set_text(s_neon_unit, "B A R"); break;
+        case BOOST_UNIT_KPA: lv_label_set_text(s_neon_unit, "K P A"); break;
+        case BOOST_UNIT_PSI:
+        default:             lv_label_set_text(s_neon_unit, "P S I"); break;
+    }
     lv_obj_set_style_text_font(s_neon_unit, NEON_LABEL, 0);
     lv_obj_set_style_text_letter_space(s_neon_unit, 3, 0);
     lv_obj_set_style_text_color(s_neon_unit, c(theme->muted), 0);
@@ -4173,7 +4184,10 @@ static void update_neon(const boost_sample_t *sample, const boost_theme_t *theme
             s_neon_word_drawn = wi;
         }
     }
-    char buf[32]; snprintf(buf, sizeof(buf), "PEAK %.1f", (double)s_neon_peak_value);
+    char buf[32];
+    char peak_buf[16];
+    boost_units_format(boost_theme_pressure_unit(), s_neon_peak_value, true, peak_buf, sizeof(peak_buf));
+    snprintf(buf, sizeof(buf), "PEAK %s", peak_buf);
     if (strcmp(lv_label_get_text(s_neon_peak), buf) != 0) lv_label_set_text(s_neon_peak, buf);
     const float a_zero = psi_to_sweep(0.0f, (float)ARC_START, (float)(ARC_START + ARC_RANGE));
     const float a_old = psi_to_sweep(old_psi, (float)ARC_START, (float)(ARC_START + ARC_RANGE));
@@ -4335,7 +4349,7 @@ static void update_neon(const boost_sample_t *sample, const boost_theme_t *theme
      * while the halo was an inflated solid pass; the baked blur reaches
      * further, so the pad has to follow it up rather than stay behind. */
     const int inv_sign_pad = inv_sign + NEON_SPR_GLOW_MARGIN;
-    boost_neon_layout_readout(psi, inv_slot,
+    neon_layout_readout_units(psi, inv_slot,
                               neon_mq(nfs->dot_w),
                               inv_sign,
                               neon_mq(nfs->sign_gap),
@@ -4790,16 +4804,7 @@ static void compute_tick_psis(void)
 
 static void format_tick_text(char *buf, size_t len, float psi)
 {
-    if (fabsf(psi) < 0.05f) {
-        snprintf(buf, len, "0");
-        return;
-    }
-    const float rounded = roundf(psi);
-    if (fabsf(psi - rounded) < 0.05f) {
-        snprintf(buf, len, "%d", (int)rounded);
-    } else {
-        snprintf(buf, len, "%.1f", (double)psi);
-    }
+    boost_units_format_tick(boost_theme_pressure_unit(), psi, buf, len);
 }
 
 /* Arc face mapping: vacuum [min,0] -> [135, zero], boost [0,max] -> [zero,405]. */
@@ -5372,7 +5377,7 @@ static void paint_arc_background(lv_obj_t *canvas, const boost_theme_t *theme)
      * a DISP_SIZE-sized parent centred at (cx, cy); reproduce that placement
      * from measured text size. */
     {
-        static const char *const unit_text = "PSI";
+        const char *const unit_text = boost_units_label(boost_theme_pressure_unit());
         lv_point_t size;
         lv_text_get_size(&size, unit_text, &lv_font_montserrat_18, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
         const float x = cx - (float)size.x * 0.5f;
@@ -5394,24 +5399,64 @@ static void paint_arc_background(lv_obj_t *canvas, const boost_theme_t *theme)
     lv_canvas_finish_layer(canvas, &layer);
 }
 
-/* Face-local x of a cell's slot centre (the sign hugs the leftmost digit). */
-static int arc_readout_slot_x(int slot)
+/* Readout cells. PSI keeps the hand-tuned fixed slots of the 60 FPS reference
+ * path; bar/kPa layout from the font's own advances, centred on the psi
+ * decimal slot, because their digit counts and decimal lengths differ. The
+ * cell array is rebuilt whenever the value changes (and on a scene rebuild
+ * when the unit changes), so draw and invalidation share one geometry. */
+static int arc_glyph_advance(char ch)
 {
-    switch (slot) {
-        case ARC_SLOT_SIGN: return s_arc_sign_x;
-        case ARC_SLOT_TENS: return VALUE_TENS_X;
-        case ARC_SLOT_ONES: return VALUE_ONES_X;
-        case ARC_SLOT_DEC:  return VALUE_DECIMAL_X;
-        default:            return VALUE_TENTHS_X;
+    lv_font_glyph_dsc_t g;
+    if (!lv_font_get_glyph_dsc(&archivo_black_65, &g, (uint32_t)(unsigned char)ch, 0)) {
+        return 0;
     }
+    return (int)g.adv_w;
 }
 
-/* Exact ink footprint (screen coords, +1 px AA margin) of `glyph` in `slot`
- * whose centre is at face-local `slot_x`. Mirrors lv_draw_label()'s own
- * letter_coords math (lv_draw_label.c:610-613) with the pen centred on the
- * slot by the glyph advance, so the invalidation can never be smaller than
- * what the draw paints. Blank (' ') and unsupported glyphs have no ink. */
-static void arc_readout_ink_box(int slot, int slot_x, char glyph, lv_area_t *a)
+static void arc_build_cells(float psi)
+{
+    if (boost_theme_pressure_unit() == BOOST_UNIT_PSI) {
+        char sign[2] = {0}, tens[2] = {0}, ones[2] = {0}, tenths[2] = {0};
+        format_value_slots(sign, tens, ones, tenths, psi);
+        const char chars[5] = { sign[0], tens[0], ones[0], '.', tenths[0] };
+        const int xs[5] = {
+            (tens[0] != ' ') ? VALUE_SIGN_X_TWO : VALUE_SIGN_X_ONE,
+            VALUE_TENS_X, VALUE_ONES_X, VALUE_DECIMAL_X, VALUE_TENTHS_X,
+        };
+        for (int i = 0; i < 5; ++i) {
+            s_arc_cell_ch[i][0] = chars[i];
+            s_arc_cell_ch[i][1] = '\0';
+            s_arc_cell_x[i] = (int16_t)xs[i];
+        }
+        s_arc_cell_n = 5;
+        return;
+    }
+    char buf[16];
+    boost_units_format(boost_theme_pressure_unit(), psi, true, buf, sizeof(buf));
+    int n = (int)strlen(buf);
+    if (n > ARC_MAX_CELLS) n = ARC_MAX_CELLS;
+    int total = 0;
+    int adv[ARC_MAX_CELLS] = {0};
+    for (int i = 0; i < n; ++i) {
+        adv[i] = arc_glyph_advance(buf[i]);
+        total += adv[i];
+    }
+    int x = VALUE_DECIMAL_X - total / 2;
+    for (int i = 0; i < n; ++i) {
+        s_arc_cell_ch[i][0] = buf[i];
+        s_arc_cell_ch[i][1] = '\0';
+        s_arc_cell_x[i] = (int16_t)(x + adv[i] / 2);
+        x += adv[i];
+    }
+    s_arc_cell_n = (uint8_t)n;
+}
+
+/* Exact ink footprint (screen coords, +1 px AA margin) of `glyph` whose centre
+ * is at face-local `slot_x`. Mirrors lv_draw_label()'s own letter_coords math
+ * (lv_draw_label.c:610-613) with the pen centred on the slot by the glyph
+ * advance, so the invalidation can never be smaller than what the draw paints.
+ * Blank (' ') and unsupported glyphs have no ink. */
+static void arc_readout_ink_box(int slot_x, char glyph, lv_area_t *a)
 {
     a->x1 = a->y1 = a->x2 = a->y2 = 0;
     if (glyph == ' ' || glyph == '\0') return;
@@ -5434,9 +5479,14 @@ static void arc_readout_union(lv_area_t *dst, const lv_area_t *a)
     if (dst->y2 < a->y2) dst->y2 = a->y2;
 }
 
-/* Draw every cell whose ink box reaches the dirty region, each at its fixed
- * slot centre. A skipped cell's ink is inside its own tight box, so it cannot
- * reach this dirty region (same clip-rejection the vault readout uses). */
+static bool arc_cell_visible(const char *ch)
+{
+    return ch[0] != ' ' && ch[0] != '\0';
+}
+
+/* Draw every cell whose ink box reaches the dirty region, each at its slot
+ * centre. A skipped cell's ink is inside its own tight box, so it cannot reach
+ * this dirty region (same clip-rejection the vault readout uses). */
 static void draw_arc_readout(lv_event_t *e)
 {
     if (s_arc_readout == NULL) return;
@@ -5448,12 +5498,12 @@ static void draw_arc_readout(lv_event_t *e)
     d.align = LV_TEXT_ALIGN_LEFT;
     d.text_local = 1;
     const int32_t line_top = px_icy() + ARC_READOUT_LINE_TOP;
-    for (int i = 0; i < ARC_SLOT_COUNT; ++i) {
-        const char c = s_arc_slot_text[i][0];
+    for (int i = 0; i < s_arc_cell_n; ++i) {
+        const char c = s_arc_cell_ch[i][0];
         if (c == ' ' || c == '\0') continue;
-        const int slot_x = arc_readout_slot_x(i);
+        const int slot_x = s_arc_cell_x[i];
         lv_area_t ink;
-        arc_readout_ink_box(i, slot_x, c, &ink);
+        arc_readout_ink_box(slot_x, c, &ink);
         if (!neon_area_overlaps(&ink, &layer->_clip_area)) continue;
         lv_font_glyph_dsc_t g;
         if (!lv_font_get_glyph_dsc(&archivo_black_65, &g, (uint32_t)c, 0)) continue;
@@ -5470,45 +5520,51 @@ static void draw_arc_readout(lv_event_t *e)
 
 static void update_arc_readout(float psi, bool over, const boost_theme_t *theme)
 {
-    char sign[2] = {0}, tens[2] = {0}, ones[2] = {0}, tenths[2] = {0};
-    format_value_slots(sign, tens, ones, tenths, psi);
+    char old_ch[ARC_MAX_CELLS][2];
+    int16_t old_x[ARC_MAX_CELLS];
+    const uint8_t old_n = s_arc_cell_n;
+    memcpy(old_ch, s_arc_cell_ch, sizeof(old_ch));
+    memcpy(old_x, s_arc_cell_x, sizeof(old_x));
 
-    const int sign_x = tens[0] != ' ' ? VALUE_SIGN_X_TWO : VALUE_SIGN_X_ONE;
-    const char *slot_txt[ARC_SLOT_COUNT] = { sign, tens, ones, ".", tenths };
+    arc_build_cells(psi);
 
-    /* Union the old and new ink of every changed cell, so a glyph swap or the
-     * sign's x move never strands pixels; blank (' ') cells contribute none. */
+    /* Union the old and new ink of every changed cell, so a glyph swap, a
+     * recentre or the sign's x move never strands pixels. */
     lv_area_t dirty = { INT32_MAX, INT32_MAX, INT32_MIN, INT32_MIN };
     bool have_dirty = false;
-    for (int i = 0; i < ARC_SLOT_COUNT; ++i) {
-        const int old_x = (i == ARC_SLOT_SIGN) ? s_arc_sign_x : arc_readout_slot_x(i);
-        const int new_x = (i == ARC_SLOT_SIGN) ? sign_x : arc_readout_slot_x(i);
-        if (s_arc_slot_text[i][0] == slot_txt[i][0] && old_x == new_x) continue;
+    for (int i = 0; i < ARC_MAX_CELLS; ++i) {
+        const bool old_vis = i < old_n && arc_cell_visible(old_ch[i]);
+        const bool new_vis = i < (int)s_arc_cell_n && arc_cell_visible(s_arc_cell_ch[i]);
+        if (old_vis && new_vis && old_ch[i][0] == s_arc_cell_ch[i][0] &&
+            old_x[i] == s_arc_cell_x[i]) {
+            continue;
+        }
         lv_area_t a;
-        arc_readout_ink_box(i, old_x, s_arc_slot_text[i][0], &a);
-        if (a.x1 <= a.x2 && a.y1 <= a.y2) {
-            if (!have_dirty) { dirty = a; have_dirty = true; }
-            else arc_readout_union(&dirty, &a);
+        if (old_vis) {
+            arc_readout_ink_box(old_x[i], old_ch[i][0], &a);
+            if (a.x1 <= a.x2 && a.y1 <= a.y2) {
+                if (!have_dirty) { dirty = a; have_dirty = true; }
+                else arc_readout_union(&dirty, &a);
+            }
         }
-        arc_readout_ink_box(i, new_x, slot_txt[i][0], &a);
-        if (a.x1 <= a.x2 && a.y1 <= a.y2) {
-            if (!have_dirty) { dirty = a; have_dirty = true; }
-            else arc_readout_union(&dirty, &a);
+        if (new_vis) {
+            arc_readout_ink_box(s_arc_cell_x[i], s_arc_cell_ch[i][0], &a);
+            if (a.x1 <= a.x2 && a.y1 <= a.y2) {
+                if (!have_dirty) { dirty = a; have_dirty = true; }
+                else arc_readout_union(&dirty, &a);
+            }
         }
-        memcpy(s_arc_slot_text[i], slot_txt[i], 2);
     }
-    s_arc_sign_x = (int16_t)sign_x;
 
     /* Zone-colour flip (overboost boundary) repaints every visible cell. */
     const lv_color_t vc = over ? c(theme->overboost) : c(theme->text);
     if (!s_arc_readout_color_valid || !lv_color_eq(s_arc_readout_color, vc)) {
         s_arc_readout_color = vc;
         s_arc_readout_color_valid = true;
-        for (int i = 0; i < ARC_SLOT_COUNT; ++i) {
-            const char c = s_arc_slot_text[i][0];
-            if (c == ' ' || c == '\0') continue;
+        for (int i = 0; i < s_arc_cell_n; ++i) {
+            if (!arc_cell_visible(s_arc_cell_ch[i])) continue;
             lv_area_t a;
-            arc_readout_ink_box(i, arc_readout_slot_x(i), c, &a);
+            arc_readout_ink_box(s_arc_cell_x[i], s_arc_cell_ch[i][0], &a);
             if (!have_dirty) { dirty = a; have_dirty = true; }
             else arc_readout_union(&dirty, &a);
         }
@@ -5585,16 +5641,15 @@ static void build_arc(lv_obj_t *scr)
     lv_obj_align(s_arc_readout, LV_ALIGN_CENTER, 0, VALUE_READOUT_Y);
     lv_obj_clear_flag(s_arc_readout, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(s_arc_readout, draw_arc_readout, LV_EVENT_DRAW_MAIN, NULL);
-    /* Initialise like the old labels did (" 0.0") so the first update only
-     * repaints what actually changes. */
-    memset(s_arc_slot_text, 0, sizeof(s_arc_slot_text));
-    s_arc_slot_text[ARC_SLOT_SIGN][0] = ' ';
-    s_arc_slot_text[ARC_SLOT_TENS][0] = ' ';
-    s_arc_slot_text[ARC_SLOT_ONES][0] = '0';
-    s_arc_slot_text[ARC_SLOT_DEC][0] = '.';
-    s_arc_slot_text[ARC_SLOT_TENTHS][0] = '0';
-    s_arc_sign_x = VALUE_SIGN_X_TWO;
+    /* Seed the cells with the live value in the active unit so the first draw
+     * is already correct; the first update only repaints what changes. */
+    memset(s_arc_cell_ch, 0, sizeof(s_arc_cell_ch));
+    memset(s_arc_cell_x, 0, sizeof(s_arc_cell_x));
+    s_arc_cell_n = 0;
+    arc_build_cells(isfinite(s_display_psi) ? s_display_psi : 0.0f);
     s_arc_readout_color_valid = false;
+    /* Force the cached "PEAK x.x" text to reformat after a unit change. */
+    s_arc_peak_text_psi = NAN;
 
     s_peak_label = lv_label_create(scr);
     lv_label_set_text(s_peak_label, "PEAK  0.0");
@@ -5630,8 +5685,9 @@ static void update_arc(const boost_sample_t *sample, const boost_theme_t *theme)
      * moves; the soft-float double conversion in `%.1f` is otherwise wasted
      * on every tick while the peak sits at the sweep's maximum. */
     if (s_peak_psi != s_arc_peak_text_psi) {
-        snprintf(s_arc_peak_text, sizeof(s_arc_peak_text), "PEAK  %.1f",
-                 (double)s_peak_psi);
+        char peak_buf[16];
+        boost_units_format(boost_theme_pressure_unit(), s_peak_psi, true, peak_buf, sizeof(peak_buf));
+        snprintf(s_arc_peak_text, sizeof(s_arc_peak_text), "PEAK  %s", peak_buf);
         s_arc_peak_text_psi = s_peak_psi;
     }
     if (strcmp(lv_label_get_text(s_peak_label), s_arc_peak_text) != 0) {
@@ -6188,15 +6244,57 @@ static void draw_vault_alert_marks(lv_event_t *e)
     }
 }
 
-static void vault_readout_area(int index, lv_area_t *area)
+static void vault_cell_area(int32_t face_x, lv_area_t *area)
 {
-    if (area == NULL || index < 0 || index >= VAULT_SLOT_COUNT) return;
-    const int32_t x = px_icx() + k_vault_slot_x[index];
+    const int32_t x = px_icx() + face_x;
     const int32_t y = px_icy() + 130;
     area->x1 = x - 13;
     area->y1 = y - 17;
     area->x2 = x + 12;
     area->y2 = y + 16;
+}
+
+static void vault_readout_area(int index, lv_area_t *area)
+{
+    if (area == NULL || index < 0 || index >= VAULT_MAX_CELLS) return;
+    vault_cell_area(s_vault_cell_x[index], area);
+}
+
+/* Fill the vault cells for `psi`: PSI keeps the historic fixed six-slot field
+ * (always sign + two integer digits + two decimals); bar/kPa lay the formatted
+ * string out on the same uniform 24 px mono pitch, centred. */
+static void vault_build_cells(float psi)
+{
+    if (boost_theme_pressure_unit() == BOOST_UNIT_PSI) {
+        const int hundredths_total = (int)lroundf(fabsf(psi) * 100.0f);
+        const int whole = hundredths_total / 100;
+        const int frac = hundredths_total % 100;
+        const char chars[VAULT_MAX_CELLS] = {
+            psi < -0.005f ? '-' : '+',
+            (char)('0' + (whole / 10) % 10),
+            (char)('0' + whole % 10),
+            '.',
+            (char)('0' + frac / 10),
+            (char)('0' + frac % 10),
+        };
+        for (int i = 0; i < VAULT_MAX_CELLS; ++i) {
+            s_vault_cell_ch[i][0] = chars[i];
+            s_vault_cell_ch[i][1] = '\0';
+            s_vault_cell_x[i] = (int16_t)k_vault_slot_x[i];
+        }
+        s_vault_cell_n = VAULT_MAX_CELLS;
+        return;
+    }
+    char buf[16];
+    boost_units_format(boost_theme_pressure_unit(), psi, false, buf, sizeof(buf));
+    int n = (int)strlen(buf);
+    if (n > VAULT_MAX_CELLS) n = VAULT_MAX_CELLS;
+    for (int i = 0; i < n; ++i) {
+        s_vault_cell_ch[i][0] = buf[i];
+        s_vault_cell_ch[i][1] = '\0';
+        s_vault_cell_x[i] = (int16_t)((i - (n - 1) / 2) * 24);
+    }
+    s_vault_cell_n = (uint8_t)n;
 }
 
 static void draw_vault_readout(lv_event_t *e)
@@ -6209,8 +6307,8 @@ static void draw_vault_readout(lv_event_t *e)
     d.color = s_vault_readout_color_valid ? s_vault_readout_color : c(active_theme()->text);
     d.align = LV_TEXT_ALIGN_CENTER;
     d.text_local = 1;
-    for (int i = 0; i < VAULT_SLOT_COUNT; ++i) {
-        if (s_vault_slot_text[i][0] == '\0') continue;
+    for (int i = 0; i < s_vault_cell_n; ++i) {
+        if (s_vault_cell_ch[i][0] == '\0') continue;
         lv_area_t area;
         vault_readout_area(i, &area);
         /* A digit change dirties one 26x34 slot; without this, LVGL allocates
@@ -6218,7 +6316,7 @@ static void draw_vault_readout(lv_event_t *e)
          * repaint. A skipped slot's ink is inside its own box, and non-adjacent
          * slot boxes are 23 px apart, so it cannot reach this dirty region. */
         if (!neon_area_overlaps(&area, &layer->_clip_area)) continue;
-        d.text = s_vault_slot_text[i];
+        d.text = s_vault_cell_ch[i];
         lv_draw_label(layer, &d, &area);
     }
 }
@@ -6247,6 +6345,7 @@ static void build_vault(lv_obj_t *scr)
             .muted = theme->muted,
             .overboost = theme->overboost,
             .vignette_pct = boost_theme_vault_vignette_pct(),
+            .unit = (uint8_t)boost_theme_pressure_unit(),
             .valid = true,
         };
         if (!s_vault_bg_key.valid ||
@@ -6258,7 +6357,8 @@ static void build_vault(lv_obj_t *scr)
             s_vault_bg_key.text != key.text ||
             s_vault_bg_key.muted != key.muted ||
             s_vault_bg_key.overboost != key.overboost ||
-            s_vault_bg_key.vignette_pct != key.vignette_pct) {
+            s_vault_bg_key.vignette_pct != key.vignette_pct ||
+            s_vault_bg_key.unit != key.unit) {
             if (paint_vault_background(s_vault_bg, theme)) s_vault_bg_key = key;
         }
         /* The cached face is exactly screen-sized, so the burn-in shift slides
@@ -6357,14 +6457,19 @@ static void build_vault(lv_obj_t *scr)
     lv_obj_align(s_vault_readout, LV_ALIGN_CENTER, 0, 130);
     lv_obj_clear_flag(s_vault_readout, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(s_vault_readout, draw_vault_readout, LV_EVENT_DRAW_MAIN, NULL);
-    memset(s_vault_slot_text, 0, sizeof(s_vault_slot_text));
-    s_vault_slot_text[VAULT_SLOT_DOT][0] = '.';
+    memset(s_vault_cell_ch, 0, sizeof(s_vault_cell_ch));
+    memset(s_vault_cell_x, 0, sizeof(s_vault_cell_x));
+    s_vault_cell_n = 0;
+    vault_build_cells(isfinite(s_display_psi) ? s_display_psi : 0.0f);
     s_vault_readout_color = c(theme->text);
     s_vault_readout_color_valid = true;
 
     /* Restored: this label was dropped in the slot rework. */
     lv_obj_t *manifold = lv_label_create(scr);
-    lv_label_set_text(manifold, "MANIFOLD  PSI");
+    char manifold_txt[32];
+    snprintf(manifold_txt, sizeof(manifold_txt), "MANIFOLD  %s",
+             boost_units_label(boost_theme_pressure_unit()));
+    lv_label_set_text(manifold, manifold_txt);
     lv_obj_set_style_text_font(manifold, F_COND14, 0);
     lv_obj_set_style_text_color(manifold, c(theme->muted), 0);
     lv_obj_set_style_text_letter_space(manifold, 2, 0);
@@ -6434,26 +6539,35 @@ static void update_vault(const boost_sample_t *sample, const boost_theme_t *them
 
     const bool over = sample->psi >= s_psi_overboost;
 
-    /* Per-slot digits: each stays put, only its glyph changes. */
-    const int hundredths_total = (int)lroundf(fabsf(sample->psi) * 100.0f);
-    const int whole = hundredths_total / 100;
-    const int frac = hundredths_total % 100;
-    char slot_txt[VAULT_SLOT_COUNT][2] = {
-        { sample->psi < -0.005f ? '-' : '+', 0 },
-        { (char)('0' + (whole / 10) % 10), 0 },
-        { (char)('0' + whole % 10), 0 },
-        { '.', 0 },
-        { (char)('0' + frac / 10), 0 },
-        { (char)('0' + frac % 10), 0 },
-    };
+    /* Cells: psi fills the historic fixed six-slot field; bar/kPa lay the
+     * formatted string out on the same mono pitch. */
+    char old_ch[VAULT_MAX_CELLS][2];
+    int16_t old_x[VAULT_MAX_CELLS];
+    const uint8_t old_n = s_vault_cell_n;
+    memcpy(old_ch, s_vault_cell_ch, sizeof(old_ch));
+    memcpy(old_x, s_vault_cell_x, sizeof(old_x));
+    vault_build_cells(sample->psi);
+
     const lv_color_t vc = over ? c(theme->overboost) : c(theme->text);
-    int dirty_lo = VAULT_SLOT_COUNT;
-    int dirty_hi = -1;
-    for (int i = 0; i < VAULT_SLOT_COUNT; ++i) {
-        if (memcmp(s_vault_slot_text[i], slot_txt[i], sizeof(slot_txt[i])) != 0) {
-            memcpy(s_vault_slot_text[i], slot_txt[i], sizeof(s_vault_slot_text[i]));
-            if (i < dirty_lo) dirty_lo = i;
-            if (i > dirty_hi) dirty_hi = i;
+    lv_area_t dirty = { INT32_MAX, INT32_MAX, INT32_MIN, INT32_MIN };
+    bool have_dirty = false;
+    for (int i = 0; i < VAULT_MAX_CELLS; ++i) {
+        const bool old_vis = i < old_n && old_ch[i][0] != '\0';
+        const bool new_vis = i < (int)s_vault_cell_n && s_vault_cell_ch[i][0] != '\0';
+        if (old_vis && new_vis && old_ch[i][0] == s_vault_cell_ch[i][0] &&
+            old_x[i] == s_vault_cell_x[i]) {
+            continue;
+        }
+        lv_area_t a;
+        if (old_vis) {
+            vault_cell_area(old_x[i], &a);
+            if (!have_dirty) { dirty = a; have_dirty = true; }
+            else arc_readout_union(&dirty, &a);
+        }
+        if (new_vis) {
+            vault_cell_area(s_vault_cell_x[i], &a);
+            if (!have_dirty) { dirty = a; have_dirty = true; }
+            else arc_readout_union(&dirty, &a);
         }
     }
     const bool readout_color_changed = !s_vault_readout_color_valid ||
@@ -6461,18 +6575,19 @@ static void update_vault(const boost_sample_t *sample, const boost_theme_t *them
     if (readout_color_changed) {
         s_vault_readout_color = vc;
         s_vault_readout_color_valid = true;
-        dirty_lo = 0;
-        dirty_hi = VAULT_SLOT_COUNT - 1;
+        for (int i = 0; i < s_vault_cell_n; ++i) {
+            if (s_vault_cell_ch[i][0] == '\0') continue;
+            lv_area_t a;
+            vault_cell_area(s_vault_cell_x[i], &a);
+            if (!have_dirty) { dirty = a; have_dirty = true; }
+            else arc_readout_union(&dirty, &a);
+        }
     }
-    if (dirty_hi >= 0 && s_vault_readout != NULL) {
-        lv_area_t dirty;
-        vault_readout_area(dirty_lo, &dirty);
-        lv_area_t last = { 0 };
-        vault_readout_area(dirty_hi, &last);
+    if (have_dirty && s_vault_readout != NULL) {
         dirty.x1 -= 2;
         dirty.y1 -= 2;
-        dirty.x2 = last.x2 + 2;
-        dirty.y2 = last.y2 + 2;
+        dirty.x2 += 2;
+        dirty.y2 += 2;
         lv_obj_invalidate_area(s_vault_readout, &dirty);
     }
     if (!lv_color_eq(lv_obj_get_style_border_color(s_vault_window, 0),
@@ -6481,7 +6596,9 @@ static void update_vault(const boost_sample_t *sample, const boost_theme_t *them
     }
 
     char buf[24];
-    snprintf(buf, sizeof(buf), "PEAK  %.1f", (double)s_peak_psi);
+    char peak_buf[16];
+    boost_units_format(boost_theme_pressure_unit(), s_peak_psi, false, peak_buf, sizeof(peak_buf));
+    snprintf(buf, sizeof(buf), "PEAK  %s", peak_buf);
     if (strcmp(lv_label_get_text(s_vault_peak), buf) != 0) lv_label_set_text(s_vault_peak, buf);
 
     /* Steady popup while in overboost: blinking meant a repaint every 320 ms. */
@@ -6696,6 +6813,18 @@ static void draw_hud_readout(lv_event_t *e)
     /* Match the former label objects' fixed boxes and centred text exactly. */
     d.align = LV_TEXT_ALIGN_CENTER;
     d.color = s_hud_readout_color_valid ? s_hud_readout_color : c(active_theme()->boost);
+    if (boost_theme_pressure_unit() != BOOST_UNIT_PSI) {
+        /* bar/kPa: one advances-centred string in place of the fixed slots. */
+        d.text = s_hud_val_str;
+        lv_area_t a = {
+            px_icx() - 156,
+            px_icy() + HUD_VALUE_Y - 42,
+            px_icx() + 105,
+            px_icy() + HUD_VALUE_Y + 42,
+        };
+        lv_draw_label(layer, &d, &a);
+        return;
+    }
     for (int i = 0; i < HUD_SLOT_COUNT; ++i) {
         d.text = s_hud_slot_text[i];
         lv_area_t a = {
@@ -6857,7 +6986,10 @@ static void build_hud(lv_obj_t *scr)
 
 
     lv_obj_t *unit = lv_label_create(scr);
-    lv_label_set_text(unit, "PSI // FORCED INDUCTION");
+    char unit_txt[40];
+    snprintf(unit_txt, sizeof(unit_txt), "%s // FORCED INDUCTION",
+             boost_units_label(boost_theme_pressure_unit()));
+    lv_label_set_text(unit, unit_txt);
     lv_obj_set_style_text_font(unit, F_COND18, 0);
     lv_obj_set_style_text_color(unit, c(theme->muted), 0);
     /* Clear of the lower reticle brackets, which end at +52. */
@@ -6947,31 +7079,59 @@ static void update_hud(const boost_sample_t *sample, const boost_theme_t *theme)
      * previous raw sample, never against delayed geometry. */
     s_hud_fill_color_psi = raw_color_psi;
 
-    /* One decimal, fixed slots: decimal + tenths pinned, integer grows left.
-     * The readout folds through the shared dead zone (all themes except
-     * vault-tec); the arc fill and colours above keep the raw sample. */
-    const float readout_psi = boost_readout_display_psi(sample->psi);
-    const int tenths_total = (int)lroundf(fabsf(readout_psi) * 10.0f);
-    const int whole = tenths_total / 10;
-    const bool has_tens = whole >= 10;
-    char slot_txt[HUD_SLOT_COUNT][2] = {
-        { has_tens ? (char)('0' + (whole / 10) % 10) : '\0', 0 },
-        { (char)('0' + whole % 10), 0 },
-        { '.', 0 },
-        { (char)('0' + tenths_total % 10), 0 },
-    };
+    /* Readout. PSI keeps the fixed slots (decimal + tenths pinned, integer
+     * grows left); bar/kPa use one advances-centred string, because their
+     * digit counts and decimal lengths differ. The readout folds through the
+     * shared dead zone (all themes except vault-tec); the arc fill and colours
+     * above keep the raw sample. */
+    const bool unit_is_psi = boost_theme_pressure_unit() == BOOST_UNIT_PSI;
     const lv_color_t vc = sample->psi >= s_psi_overboost ? c(theme->overboost) : c(theme->boost);
     /* Track which slots actually moved so the common tenths-only update keeps
      * both the primary and ghost dirty union narrow. */
     int dirty_lo = HUD_SLOT_COUNT;
     int dirty_hi = -1;
-    for (int i = 0; i < HUD_SLOT_COUNT; ++i) {
-        bool changed = strcmp(s_hud_slot_text[i], slot_txt[i]) != 0;
-        if (changed) {
-            memcpy(s_hud_slot_text[i], slot_txt[i], sizeof(s_hud_slot_text[i]));
-            if (i < dirty_lo) dirty_lo = i;
-            if (i > dirty_hi) dirty_hi = i;
+    bool sign_changed = false;
+    char prev_val[sizeof(s_hud_val_str)];
+    snprintf(prev_val, sizeof(prev_val), "%s", s_hud_val_str);
+    if (unit_is_psi) {
+        const float readout_psi = boost_readout_display_psi(sample->psi);
+        const int tenths_total = (int)lroundf(fabsf(readout_psi) * 10.0f);
+        const int whole = tenths_total / 10;
+        const bool has_tens = whole >= 10;
+        char slot_txt[HUD_SLOT_COUNT][2] = {
+            { has_tens ? (char)('0' + (whole / 10) % 10) : '\0', 0 },
+            { (char)('0' + whole % 10), 0 },
+            { '.', 0 },
+            { (char)('0' + tenths_total % 10), 0 },
+        };
+        for (int i = 0; i < HUD_SLOT_COUNT; ++i) {
+            bool changed = strcmp(s_hud_slot_text[i], slot_txt[i]) != 0;
+            if (changed) {
+                memcpy(s_hud_slot_text[i], slot_txt[i], sizeof(s_hud_slot_text[i]));
+                if (i < dirty_lo) dirty_lo = i;
+                if (i > dirty_hi) dirty_hi = i;
+            }
         }
+        /* Keep the flat string used by both chromatic ghost passes. */
+        snprintf(s_hud_val_str, sizeof(s_hud_val_str), "%s%d.%d",
+                 readout_psi < -0.05f ? "-" : "", whole, tenths_total % 10);
+        /* Sign is resolved before the ghost invalidation so a sign flip or a
+         * slide between the ones/tens anchors can widen the dirty box. */
+        const char *sign = readout_psi < -0.05f ? "-" : "";
+        if (strcmp(s_hud_sign_text, sign) != 0) {
+            snprintf(s_hud_sign_text, sizeof(s_hud_sign_text), "%s", sign);
+            sign_changed = true;
+        }
+        const int sign_x = has_tens ? HUD_SIGN_TENS_X : HUD_SIGN_ONES_X;
+        if (sign_x != s_hud_sign_x) {
+            s_hud_sign_x = sign_x;
+            sign_changed = true;
+        }
+    } else {
+        boost_units_format(boost_theme_pressure_unit(), sample->psi, true,
+                           s_hud_val_str, sizeof(s_hud_val_str));
+        for (int i = 0; i < HUD_SLOT_COUNT; ++i) s_hud_slot_text[i][0] = '\0';
+        s_hud_sign_text[0] = '\0';
     }
     bool readout_color_changed = false;
     if (!s_hud_readout_color_valid || !lv_color_eq(s_hud_readout_color, vc)) {
@@ -6981,44 +7141,29 @@ static void update_hud(const boost_sample_t *sample, const boost_theme_t *theme)
         if (dirty_lo > 0) dirty_lo = 0;
         if (dirty_hi < HUD_SLOT_COUNT - 1) dirty_hi = HUD_SLOT_COUNT - 1;
     }
-    /* Keep the flat string used by both chromatic ghost passes. */
-    char prev_val[sizeof(s_hud_val_str)];
-    snprintf(prev_val, sizeof(prev_val), "%s", s_hud_val_str);
-    snprintf(s_hud_val_str, sizeof(s_hud_val_str), "%s%d.%d",
-             readout_psi < -0.05f ? "-" : "", whole, tenths_total % 10);
     const bool value_changed = strcmp(prev_val, s_hud_val_str) != 0;
-    /* Sign is resolved before the ghost invalidation so a sign flip or a slide
-     * between the ones/tens anchors can widen the dirty box. Folded value,
-     * same threshold as the digits above. */
-    const char *sign = readout_psi < -0.05f ? "-" : "";
-    bool sign_changed = false;
-    if (strcmp(s_hud_sign_text, sign) != 0) {
-        snprintf(s_hud_sign_text, sizeof(s_hud_sign_text), "%s", sign);
-        sign_changed = true;
-    }
-    const int sign_x = has_tens ? HUD_SIGN_TENS_X : HUD_SIGN_ONES_X;
-    if (sign_x != s_hud_sign_x) {
-        s_hud_sign_x = sign_x;
-        sign_changed = true;
-    }
 
     const bool first_sample = prev_val[0] == '\0';
     if (first_sample) {
         invalidate_hud_readout_full();
     } else if ((value_changed || readout_color_changed) && s_hud_readout != NULL) {
-        /* Preserve the old exact dirty union: changed primary slots/sign, grown
-         * by the shared ghost offset and AA margin. */
-        const int grow = HUD_GLITCH_DX + 1;
-        int lo = dirty_lo, hi = dirty_hi;
-        if (sign_changed) lo = 0;
-        if (hi < 0) { lo = 0; hi = HUD_SLOT_COUNT - 1; }
-        lv_area_t ga;
-        ga.x1 = px_icx() + k_hud_slot_x[lo] - 28 - grow;
-        ga.x2 = px_icx() + k_hud_slot_x[hi] + 28 + grow;
-        ga.y1 = px_icy() + HUD_VALUE_Y - 42;
-        ga.y2 = px_icy() + HUD_VALUE_Y + 42;
-        if (sign_changed) ga.x1 = px_icx() + HUD_SIGN_TENS_X - 24 - grow;
-        invalidate_hud_readout(&ga);
+        if (!unit_is_psi) {
+            invalidate_hud_readout_full();
+        } else {
+            /* Preserve the old exact dirty union: changed primary slots/sign,
+             * grown by the shared ghost offset and AA margin. */
+            const int grow = HUD_GLITCH_DX + 1;
+            int lo = dirty_lo, hi = dirty_hi;
+            if (sign_changed) lo = 0;
+            if (hi < 0) { lo = 0; hi = HUD_SLOT_COUNT - 1; }
+            lv_area_t ga;
+            ga.x1 = px_icx() + k_hud_slot_x[lo] - 28 - grow;
+            ga.x2 = px_icx() + k_hud_slot_x[hi] + 28 + grow;
+            ga.y1 = px_icy() + HUD_VALUE_Y - 42;
+            ga.y2 = px_icy() + HUD_VALUE_Y + 42;
+            if (sign_changed) ga.x1 = px_icx() + HUD_SIGN_TENS_X - 24 - grow;
+            invalidate_hud_readout(&ga);
+        }
     } else if (sign_changed) {
         invalidate_hud_readout_full();
     }
@@ -7038,7 +7183,9 @@ static void update_hud(const boost_sample_t *sample, const boost_theme_t *theme)
         snprintf(buf, sizeof(buf), "ATM --kPa");
     }
     if (strcmp(lv_label_get_text(s_hud_map), buf) != 0) lv_label_set_text(s_hud_map, buf);
-    snprintf(buf, sizeof(buf), "PK %.1f", (double)s_peak_psi);
+    char pk_buf[16];
+    boost_units_format(boost_theme_pressure_unit(), s_peak_psi, true, pk_buf, sizeof(pk_buf));
+    snprintf(buf, sizeof(buf), "PK %s", pk_buf);
     if (strcmp(lv_label_get_text(s_hud_pk), buf) != 0) lv_label_set_text(s_hud_pk, buf);
     /* This one is a positive status indicator, not a demo watermark: LIVE means
      * the reading came from the MAP sensor, DEMO means the synthetic sweep. */
@@ -7255,6 +7402,17 @@ static void build_bigdigit(lv_obj_t *scr)
     lv_obj_set_style_text_align(s_big_tenths, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(s_big_tenths, LV_ALIGN_CENTER, tenths_x, -8);
 
+    /* bar/kPa readout: one advances-centred string in place of the odometer
+     * slots, hidden while the unit is PSI. */
+    s_big_val = lv_label_create(scr);
+    lv_label_set_text(s_big_val, "");
+    lv_obj_set_style_text_font(s_big_val, BIGDIGIT_FONT, 0);
+    lv_obj_set_style_text_color(s_big_val, c(boost_theme_bigdigit_text_color()), 0);
+    lv_obj_set_size(s_big_val, DISP_SIZE, 120);
+    lv_obj_set_style_text_align(s_big_val, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(s_big_val, LV_ALIGN_CENTER, 0, -8);
+    lv_obj_add_flag(s_big_val, LV_OBJ_FLAG_HIDDEN);
+
     /* Fat stylised minus: a chunky bar, not the font's hairline hyphen. */
     s_big_minus = lv_obj_create(scr);
     lv_obj_remove_style_all(s_big_minus);
@@ -7266,7 +7424,7 @@ static void build_bigdigit(lv_obj_t *scr)
     lv_obj_add_flag(s_big_minus, LV_OBJ_FLAG_HIDDEN);
 
     s_big_unit = lv_label_create(scr);
-    lv_label_set_text(s_big_unit, "PSI");
+    lv_label_set_text(s_big_unit, boost_units_label(boost_theme_pressure_unit()));
     lv_obj_set_style_text_font(s_big_unit, F_WIDE32, 0);
     lv_obj_set_style_text_letter_space(s_big_unit, 4, 0);
     lv_obj_set_style_text_color(s_big_unit, c(boost_theme_bigdigit_text_color()), 0);
@@ -7323,8 +7481,8 @@ static void update_bigdigit(const boost_sample_t *sample, const boost_theme_t *t
             const lv_color_t tc = c(next_color);
             if (!lv_color_eq(c(s_big_text_color), tc)) {
                 s_big_text_color = next_color;
-                lv_obj_t *const slots[4] = { s_big_tens, s_big_ones, s_big_dot, s_big_tenths };
-                for (int i = 0; i < 4; ++i) {
+                lv_obj_t *const slots[5] = { s_big_tens, s_big_ones, s_big_dot, s_big_tenths, s_big_val };
+                for (int i = 0; i < 5; ++i) {
                     if (slots[i] != NULL &&
                         !lv_color_eq(lv_obj_get_style_text_color(slots[i], 0), tc)) {
                         lv_obj_set_style_text_color(slots[i], tc, 0);
@@ -7337,47 +7495,73 @@ static void update_bigdigit(const boost_sample_t *sample, const boost_theme_t *t
     }
 
     /* Readout digits fold through the shared dead zone (all themes except
-     * vault-tec); the ground colour above keeps the raw sample. */
-    const float readout_psi = boost_readout_display_psi(sample->psi);
-    const int tenths_total = (int)lroundf(fabsf(readout_psi) * 10.0f);
-    const int whole = tenths_total / 10;
-    const int tenth = tenths_total % 10;
-    char d[2] = {0};
+     * vault-tec); the ground colour above keeps the raw sample. PSI keeps the
+     * four fixed odometer slots; bar/kPa draw one advances-centred string. */
+    if (boost_theme_pressure_unit() != BOOST_UNIT_PSI) {
+        char vbuf[16];
+        boost_units_format(boost_theme_pressure_unit(), sample->psi, true, vbuf, sizeof(vbuf));
+        if (strcmp(lv_label_get_text(s_big_val), vbuf) != 0) lv_label_set_text(s_big_val, vbuf);
+        lv_obj_remove_flag(s_big_val, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_t *const digits[4] = { s_big_tens, s_big_ones, s_big_dot, s_big_tenths };
+        for (int i = 0; i < 4; ++i) {
+            if (digits[i] != NULL && !lv_obj_has_flag(digits[i], LV_OBJ_FLAG_HIDDEN)) {
+                lv_obj_add_flag(digits[i], LV_OBJ_FLAG_HIDDEN);
+            }
+        }
+        if (!lv_obj_has_flag(s_big_minus, LV_OBJ_FLAG_HIDDEN)) {
+            lv_obj_add_flag(s_big_minus, LV_OBJ_FLAG_HIDDEN);
+        }
+    } else {
+        if (!lv_obj_has_flag(s_big_val, LV_OBJ_FLAG_HIDDEN)) {
+            lv_obj_add_flag(s_big_val, LV_OBJ_FLAG_HIDDEN);
+        }
+        lv_obj_t *const digits[4] = { s_big_tens, s_big_ones, s_big_dot, s_big_tenths };
+        for (int i = 0; i < 4; ++i) {
+            if (digits[i] != NULL) lv_obj_remove_flag(digits[i], LV_OBJ_FLAG_HIDDEN);
+        }
+        const float readout_psi = boost_readout_display_psi(sample->psi);
+        const int tenths_total = (int)lroundf(fabsf(readout_psi) * 10.0f);
+        const int whole = tenths_total / 10;
+        const int tenth = tenths_total % 10;
+        char d[2] = {0};
 
-    d[0] = (char)('0' + (whole % 10));
-    if (strcmp(lv_label_get_text(s_big_ones), d) != 0) lv_label_set_text(s_big_ones, d);
-    d[0] = (char)('0' + tenth);
-    if (strcmp(lv_label_get_text(s_big_tenths), d) != 0) lv_label_set_text(s_big_tenths, d);
+        d[0] = (char)('0' + (whole % 10));
+        if (strcmp(lv_label_get_text(s_big_ones), d) != 0) lv_label_set_text(s_big_ones, d);
+        d[0] = (char)('0' + tenth);
+        if (strcmp(lv_label_get_text(s_big_tenths), d) != 0) lv_label_set_text(s_big_tenths, d);
 
-    const bool has_tens = whole >= 10;
-    if (has_tens) {
-        d[0] = (char)('0' + (whole / 10));
-        if (strcmp(lv_label_get_text(s_big_tens), d) != 0) lv_label_set_text(s_big_tens, d);
-    } else if (lv_label_get_text(s_big_tens)[0] != '\0') {
-        lv_label_set_text(s_big_tens, "");
+        const bool has_tens = whole >= 10;
+        if (has_tens) {
+            d[0] = (char)('0' + (whole / 10));
+            if (strcmp(lv_label_get_text(s_big_tens), d) != 0) lv_label_set_text(s_big_tens, d);
+        } else if (lv_label_get_text(s_big_tens)[0] != '\0') {
+            lv_label_set_text(s_big_tens, "");
+        }
+
+        /* Sign sits beside whichever integer digit is leftmost. */
+        const int minus_x = has_tens ? BIG_MINUS_TENS_X : BIG_MINUS_ONES_X;
+        if (minus_x != s_big_minus_x) {
+            s_big_minus_x = minus_x;
+            lv_obj_align(s_big_minus, LV_ALIGN_CENTER, minus_x, BIG_MINUS_Y);
+        }
+
+        const bool neg = readout_psi < -0.05f;
+        const bool hidden = lv_obj_has_flag(s_big_minus, LV_OBJ_FLAG_HIDDEN);
+        if (neg && hidden) lv_obj_remove_flag(s_big_minus, LV_OBJ_FLAG_HIDDEN);
+        else if (!neg && !hidden) lv_obj_add_flag(s_big_minus, LV_OBJ_FLAG_HIDDEN);
     }
-
-    /* Sign sits beside whichever integer digit is leftmost. */
-    const int minus_x = has_tens ? BIG_MINUS_TENS_X : BIG_MINUS_ONES_X;
-    if (minus_x != s_big_minus_x) {
-        s_big_minus_x = minus_x;
-        lv_obj_align(s_big_minus, LV_ALIGN_CENTER, minus_x, BIG_MINUS_Y);
-    }
-
-    const bool neg = readout_psi < -0.05f;
-    const bool hidden = lv_obj_has_flag(s_big_minus, LV_OBJ_FLAG_HIDDEN);
-    if (neg && hidden) lv_obj_remove_flag(s_big_minus, LV_OBJ_FLAG_HIDDEN);
-    else if (!neg && !hidden) lv_obj_add_flag(s_big_minus, LV_OBJ_FLAG_HIDDEN);
 
     const char *zone = zone_for_psi(sample->psi);
     if (strcmp(lv_label_get_text(s_big_zone), zone) != 0) lv_label_set_text(s_big_zone, zone);
 
     char buf[32];
+    char peak_buf[16];
+    boost_units_format(boost_theme_pressure_unit(), s_peak_psi, true, peak_buf, sizeof(peak_buf));
     /* Real-sensor mode drops the DEMO suffix and shows just the peak. */
     if (sample->demo) {
-        snprintf(buf, sizeof(buf), "PEAK %.1f  DEMO", (double)s_peak_psi);
+        snprintf(buf, sizeof(buf), "PEAK %s  DEMO", peak_buf);
     } else {
-        snprintf(buf, sizeof(buf), "PEAK %.1f", (double)s_peak_psi);
+        snprintf(buf, sizeof(buf), "PEAK %s", peak_buf);
     }
     if (strcmp(lv_label_get_text(s_big_peak), buf) != 0) lv_label_set_text(s_big_peak, buf);
 }
@@ -7416,7 +7600,9 @@ static void destroy_scene(void)
     s_arc_value_canvas = NULL;
     s_zero_notch = NULL;
     s_arc_readout = NULL;
-    memset(s_arc_slot_text, 0, sizeof(s_arc_slot_text));
+    memset(s_arc_cell_ch, 0, sizeof(s_arc_cell_ch));
+    memset(s_arc_cell_x, 0, sizeof(s_arc_cell_x));
+    s_arc_cell_n = 0;
     s_arc_readout_color_valid = false;
     s_peak_label = s_mode_label = s_zone_label = NULL;
 
@@ -7431,7 +7617,9 @@ static void destroy_scene(void)
     s_vault_bg = s_vault_peak_mark = s_vault_crt = NULL;
     s_vault_needle = s_vault_window = s_vault_readout = NULL;
     s_vault_peak = s_vault_alert = s_vault_alert_marks = NULL;
-    memset(s_vault_slot_text, 0, sizeof(s_vault_slot_text));
+    memset(s_vault_cell_ch, 0, sizeof(s_vault_cell_ch));
+    memset(s_vault_cell_x, 0, sizeof(s_vault_cell_x));
+    s_vault_cell_n = 0;
     s_vault_readout_color_valid = false;
 
     if (s_hud_bg_buf != NULL) {
@@ -7454,7 +7642,7 @@ static void destroy_scene(void)
     destroy_hud_readout_font();
 
     s_big_bg = s_big_minus = s_big_tens = s_big_ones = NULL;
-    s_big_dot = s_big_tenths = s_big_unit = s_big_zone = s_big_peak = NULL;
+    s_big_dot = s_big_tenths = s_big_val = s_big_unit = s_big_zone = s_big_peak = NULL;
     /* s_neon_bg_buf and the baked sprite tiles are memoized static art, kept
      * across scene switches for the same reason s_vault_bg_buf is: rebuilding
      * them made every return to neon pause. Measured on the board before this,

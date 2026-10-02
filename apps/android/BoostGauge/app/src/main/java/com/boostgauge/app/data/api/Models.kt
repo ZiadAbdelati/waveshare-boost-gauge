@@ -1,5 +1,7 @@
 package com.boostgauge.app.data.api
 
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 
 /** /api/v1/state payload (boost_web.c state_json()). */
@@ -82,6 +84,7 @@ data class DimSchedule(
 )
 
 /** /api/v1/themes payload (boost_web.c themes_get()). */
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class ThemesPayload(
     val activeThemeId: String = "",
@@ -110,6 +113,13 @@ data class ThemesPayload(
     val pixelShift: Boolean = false,
     val pixelShiftSec: Int = 90,
     val themes: List<ThemeInfo> = emptyList(),
+    /**
+     * Presentation unit for pressure readouts ("psi"/"bar"/"kPa"). Always
+     * encoded, even at the psi default, so /themes echoes it and the WebView
+     * preview injection always carries the selected unit.
+     */
+    @EncodeDefault
+    val pressureUnit: String = "psi",
 )
 
 @Serializable

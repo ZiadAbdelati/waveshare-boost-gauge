@@ -186,6 +186,7 @@ THEME = {
     "regionDBuf": False,
     "teScanline": False,
     "rotation": 0,
+    "pressureUnit": "psi",
     "vaultFace": "#05281a",
     "vaultVignette": 60,
     "vaultNeedleRed": False,
@@ -350,6 +351,7 @@ def reset_mock_state(seed: int | None = None) -> None:
         "regionDBuf": False,
         "teScanline": False,
         "rotation": 0,
+        "pressureUnit": "psi",
         "vaultFace": "#05281a",
         "vaultVignette": 60,
         "vaultNeedleRed": False,
@@ -878,6 +880,7 @@ def themes_payload() -> dict:
         "tpmsBle": bool(THEME["tpmsBle"]),
         "pixelShift": bool(THEME["pixelShift"]),
         "pixelShiftSec": int(THEME["pixelShiftSec"]),
+        "pressureUnit": str(THEME["pressureUnit"]),
         "themes": out,
     }
 
@@ -1260,6 +1263,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_err(HTTPStatus.BAD_REQUEST, "invalid_rotation")
                 return
             THEME["rotation"] = int(deg)
+        if "pressureUnit" in payload:
+            unit = payload["pressureUnit"]
+            if unit not in ("psi", "bar", "kPa"):
+                self.send_err(HTTPStatus.BAD_REQUEST, "invalid_pressure_unit")
+                return
+            THEME["pressureUnit"] = unit
         if "demoMode" in payload and isinstance(payload["demoMode"], bool):
             THEME["demoMode"] = payload["demoMode"]
         if "demoFastSweep" in payload and isinstance(payload["demoFastSweep"], bool):

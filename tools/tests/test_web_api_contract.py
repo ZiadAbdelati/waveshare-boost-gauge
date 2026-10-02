@@ -76,6 +76,7 @@ THEMES_FLAG_KEYS = {
     "neonMarqueeSpin", "teSync", "regionDBuf", "teScanline", "rotation",
     "vaultFace", "vaultVignette", "vaultNeedleRed", "vaultNeedleTail",
     "neonLayout", "neonPreset", "demoMode", "demoFastSweep", "tpmsBle",
+    "pressureUnit",
     "pixelShift", "pixelShiftSec",
 }
 THEME_KEYS = {"id", "name", "style", "colors", "customized"}

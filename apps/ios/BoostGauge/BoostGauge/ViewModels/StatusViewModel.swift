@@ -11,6 +11,9 @@ final class StatusViewModel: ObservableObject {
     @Published private(set) var tpmsBleEnabled: Bool?
 
     private weak var transport: GaugeTransport?
+    /// Shared session: the `/themes` probe already run for theme names also
+    /// carries `pressureUnit`, which must reach the other tabs.
+    weak var appSession: AppSession?
     private var statusStream: AsyncStream<Result<Data, Error>>?
     private var updateTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
@@ -120,6 +123,7 @@ final class StatusViewModel: ObservableObject {
             return
         }
         let tpmsBle = object["tpmsBle"] as? Bool
+        let pressureUnit = object["pressureUnit"] as? String
         var names: [String: String] = [:]
         for row in rows {
             if let id = row["id"] as? String {
@@ -128,6 +132,9 @@ final class StatusViewModel: ObservableObject {
         }
         await MainActor.run {
             self.tpmsBleEnabled = tpmsBle
+            if let pressureUnit {
+                self.appSession?.applyPressureUnit(pressureUnit)
+            }
             if let id = self.state?.activeThemeId {
                 self.themeName = names[id] ?? id
             }

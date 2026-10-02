@@ -18,6 +18,7 @@ More rendered previews live in [`preview/`](preview/).
 
 - **Live gauge at 60 Hz** - a single filled arc that changes climate at zero: teal vacuum, lime boost, red overboost, with a big signed PSI readout and peak hold.
 - **Five full gauge faces** (themes), each a distinct layout, not just a palette swap: Dyno Cell, Vault-Tec, Night City, Big Digit, and Neon.
+- **Selectable pressure units** (PSI / bar / kPa) across every face, the web dashboard, and both companion apps; the panel also cycles units from the two-finger overlay's UNITS button.
 - **Neon variants** - three layouts, four color presets, and SF Alien or Doto readout fonts.
 - **Touch gestures** - tap to reset peak, swipe up/down to change themes, swipe left/right for TPMS, hold to dim, and two-finger hold for the AP QR code.
 - **Web dashboard** - live cockpit, sparkline, settings, Wi-Fi setup, theme editor, and OTA updates over HTTP/WebSocket.
