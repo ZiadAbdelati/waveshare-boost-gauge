@@ -93,20 +93,62 @@ STALE_LITERAL = re.compile(r"(?<![\d.])0\.9\.\d+(?![\d.])")
 # A version embedded in a released filename, e.g. BoostGauge-0.9.9-android.apk.
 VERSION_IN_NAME = re.compile(r"(?<![\d.])(\d+\.\d+\.\d+)(?![\d.])")
 
-# Comment syntax per extension. The '#' entry is Python/YAML-ONLY: in C a leading
-# '#' introduces a preprocessor directive, so treating it as a comment would hide
-# a `#define BOOST_FW_VERSION "0.9.9"` from the sweep (it did).
-COMMENT_PREFIXES = {
-    ".py": ("#",),
-    ".yml": ("#",),
-    ".yaml": ("#",),
-    ".c": ("//", "/*", "*"),
-    ".h": ("//", "/*", "*"),
-    ".cpp": ("//", "/*", "*"),
-    ".kt": ("//", "/*", "*"),
-    ".kts": ("//", "/*", "*"),
-    ".swift": ("//", "/*", "*"),
-}
+# '#' starts a comment only in these languages. In C a leading '#' introduces a
+# preprocessor directive, so treating it as a comment hides a `#define ... "0.9.9"`.
+HASH_COMMENT_SUFFIXES = {".py", ".yml", ".yaml"}
+
+
+def code_lines(path: pathlib.Path, text: str):
+    """Yield (lineno, code-only text) with comments removed.
+
+    A line-prefix test is wrong in BOTH directions: `*out = "0.9.9";` is C code
+    that merely starts with '*', while `static int x = 1; /* was 0.9.5 */` is code
+    whose literal sits inside a comment. This tracks block comments and quoted
+    strings so a version literal is judged on what the compiler actually sees.
+    """
+    hash_comments = path.suffix in HASH_COMMENT_SUFFIXES
+    in_block = False
+    for lineno, line in enumerate(text.splitlines(), 1):
+        code: list[str] = []
+        quote: str | None = None
+        i = 0
+        while i < len(line):
+            ch = line[i]
+            nxt = line[i + 1] if i + 1 < len(line) else ""
+            if in_block:
+                if ch == "*" and nxt == "/":
+                    in_block = False
+                    i += 2
+                    continue
+                i += 1
+                continue
+            if quote is not None:
+                code.append(ch)
+                if ch == "\\":
+                    if nxt:
+                        code.append(nxt)
+                        i += 2
+                        continue
+                elif ch == quote:
+                    quote = None
+                i += 1
+                continue
+            if ch in "\"'":
+                quote = ch
+                code.append(ch)
+                i += 1
+                continue
+            if hash_comments and ch == "#":
+                break
+            if ch == "/" and nxt == "/":
+                break
+            if ch == "/" and nxt == "*":
+                in_block = True
+                i += 2
+                continue
+            code.append(ch)
+            i += 1
+        yield lineno, "".join(code)
 # Version literals are legitimate ONLY inside build settings; a literal in ordinary
 # code is drift waiting to happen.
 VERSION_LITERAL_ALLOWED = {"build.gradle.kts", "project.yml"}
@@ -270,11 +312,6 @@ def sweep_targets() -> list[pathlib.Path]:
     return out
 
 
-def is_comment(path: pathlib.Path, line: str) -> bool:
-    prefixes = COMMENT_PREFIXES.get(path.suffix, ("//", "/*", "*", "#"))
-    return line.strip().startswith(prefixes)
-
-
 def check_sources(result: Result, version: str) -> None:
     # 1 - the canonical file itself
     result.check(VERSION_FILE.is_file(), "version.txt exists at the repo root")
@@ -395,14 +432,22 @@ def check_sources(result: Result, version: str) -> None:
     for path in sweep_targets():
         if path.resolve() == self_path:
             continue
-        for lineno, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
-            if is_comment(path, line):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for lineno, line in code_lines(path, text):
+            if not line.strip():
                 continue
             where = f"{path.relative_to(REPO_ROOT)}:{lineno}: {line.strip()[:90]}"
             if STALE_LITERAL.search(line):
                 stale.append(where)
-            if path.name not in VERSION_LITERAL_ALLOWED and literal_pattern.search(line):
+            if path.name in VERSION_LITERAL_ALLOWED:
+                continue
+            if literal_pattern.search(line):
                 hardcoded.append(where)
+                continue
+            # Adjacent literals concatenate at compile time: `"1.0." "0"` is the
+            # same version to the compiler, so compare the de-quoted line too.
+            if version in re.sub(r"[\s\"']", "", line):
+                hardcoded.append(where + " (split or concatenated)")
     result.check(not stale, "no superseded release literal left in code",
                  "; ".join(stale[:4]) + (" ..." if len(stale) > 4 else ""))
     result.check(not hardcoded,
@@ -454,6 +499,14 @@ def check_release(result: Result, version: str, ios_build: str | None) -> None:
     ]
     missing = [n for n in required if not (RELEASE_DIR / n).is_file()]
     result.check(not missing, "release/ contains every required artifact", f"missing: {missing}")
+
+    # Nothing else may sit in release/. An unexpected file (a second APK, a stale
+    # .bin) is a download trap, and the checksum coverage check would happily
+    # hash it - so the expected set has to be exact.
+    unexpected = sorted(p.name for p in RELEASE_DIR.iterdir()
+                        if p.is_file() and p.name not in set(required))
+    result.check(not unexpected, "release/ contains no unexpected file",
+                 f"unexpected: {unexpected}")
 
     # 8 - ANY artifact named for another version is a download trap, not just the
     # IPA (a leftover BoostGauge-0.9.9-android.apk used to pass silently).
@@ -558,28 +611,36 @@ def check_release(result: Result, version: str, ios_build: str | None) -> None:
         result.check(False, "git tags are visible to the release gate",
                      "the gate cannot verify monotonicity without them (shallow clone?)")
     else:
-        highest = max(tags)
-        highest_str = ".".join(str(p) for p in highest)
-        if tuple(int(p) for p in version.split(".")) > highest:
-            previous_gradle = tagged_file(highest, str(ANDROID_GRADLE.relative_to(REPO_ROOT)))
-            previous_yml = tagged_file(highest, str(IOS_PROJECT_YML.relative_to(REPO_ROOT)))
+        current = tuple(int(p) for p in version.split("."))
+        # The reference is the newest release BEFORE this one. Comparing against
+        # max(tags) skipped the check entirely in the tag-first ordering, where
+        # version.txt already equals its own tag.
+        earlier = sorted(t for t in tags if t < current)
+        if not earlier:
+            result.note(f"no release earlier than {version} is tagged; "
+                        "build-number monotonicity not checked")
+        else:
+            reference = earlier[-1]
+            reference_str = ".".join(str(p) for p in reference)
+            previous_gradle = tagged_file(reference, str(ANDROID_GRADLE.relative_to(REPO_ROOT)))
+            previous_yml = tagged_file(reference, str(IOS_PROJECT_YML.relative_to(REPO_ROOT)))
             if previous_gradle and gradle_code:
                 prev = re.search(r"versionCode\s*=\s*(\d+)", previous_gradle)
                 result.check(prev is not None and int(gradle_code) > int(prev.group(1)),
-                             f"android versionCode moved past v{highest_str}",
-                             f"now={gradle_code} at v{highest_str}={prev.group(1) if prev else '?'}")
+                             f"android versionCode moved past v{reference_str}",
+                             f"now={gradle_code} at v{reference_str}="
+                             f"{prev.group(1) if prev else '?'}")
             else:
-                result.note(f"versionCode monotonicity not checked (no v{highest_str} gradle)")
+                result.note(f"versionCode monotonicity not checked (no v{reference_str} gradle)")
             if previous_yml and ios_build:
                 prev = re.search(r"CURRENT_PROJECT_VERSION:\s*(\d+)", previous_yml)
                 result.check(prev is not None and int(ios_build) > int(prev.group(1)),
-                             f"iOS build number moved past v{highest_str}",
-                             f"now={ios_build} at v{highest_str}={prev.group(1) if prev else '?'}")
+                             f"iOS build number moved past v{reference_str}",
+                             f"now={ios_build} at v{reference_str}="
+                             f"{prev.group(1) if prev else '?'}")
             else:
-                result.note(f"iOS build monotonicity not checked (no v{highest_str} project.yml)")
-        else:
-            result.note(f"version {version} is not newer than v{highest_str}; "
-                        "build-number monotonicity not required")
+                result.note(f"iOS build monotonicity not checked "
+                            f"(no v{reference_str} project.yml)")
 
     # 13 - flash geometry: the shipped offsets must match the partition table, or
     # the flasher writes the app over the wrong region.
@@ -599,12 +660,23 @@ def check_release(result: Result, version: str, ios_build: str | None) -> None:
         flash_sh = RELEASE_DIR / "flash.sh"
         if flash_sh.is_file() and params:
             text = flash_sh.read_text(encoding="utf-8")
-            size = re.search(r"--flash_size\s+(\S+)", params)
             result.check("boost_gauge_merged.bin" in text,
                          "release/flash.sh flashes the merged image")
-            result.check(size is None or f"--flash_size {size.group(1)}" in text,
-                         "release/flash.sh uses the same flash size as flash_args",
-                         f"flash_args={size.group(1) if size else '?'}")
+            # The write offset matters as much as the file name: 0x20000 would
+            # flash the merged image over the running app partition.
+            offset_m = re.search(
+                r"(0x[0-9a-fA-F]+)\s+\"?\$?\{?DIR\}?/?boost_gauge_merged\.bin", text)
+            result.check(offset_m is not None and int(offset_m.group(1), 16) == 0x0,
+                         "release/flash.sh writes the merged image at offset 0x0",
+                         f"found {offset_m.group(1) if offset_m else 'no offset'}")
+            for flag in ("flash_mode", "flash_freq", "flash_size"):
+                want = re.search(rf"--{flag}\s+(\S+)", params)
+                got = re.search(rf"--{flag}\s+(\S+)", text)
+                result.check(want is not None and got is not None
+                             and want.group(1) == got.group(1),
+                             f"release/flash.sh matches flash_args --{flag}",
+                             f"flash_args={want.group(1) if want else '?'} "
+                             f"flash.sh={got.group(1) if got else '?'}")
 
     # 14 - checksums must describe the bytes actually in the directory
     sums = RELEASE_DIR / "SHA256SUMS"
