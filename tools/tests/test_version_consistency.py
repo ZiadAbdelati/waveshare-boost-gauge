@@ -28,8 +28,10 @@ SOURCE MODE (runs in tools/test_suite.py on every commit)
   3  android: versionName == version.txt, versionCode a positive integer
   4  ios: project.yml AND every occurrence in the generated pbxproj agree
   5  the mock server derives its firmwareVersion from version.txt
-  6  no stale release literal survives in code, and the canonical version is never
-     hardcoded in code (only in build settings)
+  6  no stale release literal survives in code, and the canonical version is never a
+     contiguous literal in ordinary code (only in build settings). Literals split
+     ACROSS lines are not reassembled - a stated residual, since this sweep is a
+     secondary guard and the primary is the --release descriptor check
   7  every document that states the current release names this version
 
 RELEASE MODE (--release - the release gate, run before publishing)
@@ -445,13 +447,14 @@ def check_sources(result: Result, version: str) -> None:
                 hardcoded.append(where)
                 continue
             # Adjacent literals concatenate at compile time: `"1.0." "0"` is the
-            # same version to the compiler, so compare the de-quoted line too.
-            if version in re.sub(r"[\s\"']", "", line):
+            # same version to the compiler, so compare the de-quoted line too -
+            # but with the SAME boundaries, or `31.0.0` matches as a substring.
+            if literal_pattern.search(re.sub(r"[\s\"']", "", line)):
                 hardcoded.append(where + " (split or concatenated)")
     result.check(not stale, "no superseded release literal left in code",
                  "; ".join(stale[:4]) + (" ..." if len(stale) > 4 else ""))
     result.check(not hardcoded,
-                 "the canonical version is never hardcoded in ordinary code",
+                 "the canonical version is never a contiguous literal in ordinary code",
                  "; ".join(hardcoded[:4]) + (" ..." if len(hardcoded) > 4 else ""))
 
     # The simulator test doubles may carry a default, but it must announce itself.
