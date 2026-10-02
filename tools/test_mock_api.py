@@ -29,6 +29,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mock_server import BoostMockServer  # noqa: E402
 
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Canonical release version (repo-root version.txt, bare "1.0.0"). Read here so
+# the assertion pins the served identity to the release, not a copied literal.
+with open(os.path.join(ROOT, "version.txt"), encoding="utf-8") as _version_file:
+    CANONICAL_VERSION = _version_file.read().strip()
+
+
 class Result:
     """Collects check outcomes; prints PASS/FAIL rows as they run."""
 
@@ -131,8 +138,9 @@ def run_tests(base: str, result: Result) -> None:
         and state["zone"] in {"VAC", "ATMO", "BOOST", "OVER"},
         "GET /state scalar types (psi/peakPsi/zone/demo/uptimeMs)",
     )
-    result.check(state["firmwareVersion"] == "v0.8.0",
-                 "firmwareVersion preserves the verified release identity")
+    result.check(state["firmwareVersion"] == CANONICAL_VERSION,
+                 "firmwareVersion equals the canonical version.txt release identity",
+                 detail=f"served={state['firmwareVersion']!r} version.txt={CANONICAL_VERSION!r}")
     result.check(
         {"state", "lastError", "peer", "peerAddr", "uptimeMs", "ageMs", "valid",
          "lastReply", "protocol", "rpm", "speedKph", "coolantC", "mapKpa", "iatC",

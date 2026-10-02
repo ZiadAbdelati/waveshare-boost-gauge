@@ -57,6 +57,7 @@ def build_registry() -> list[TestSpec]:
         "test_rtc_epoch.py",
     ]
     new = [
+        "test_version_consistency.py",
         "test_web_api_contract.py",
         "test_gatt_contract.py",
         "test_theme_store_invariants.py",

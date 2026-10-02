@@ -2,6 +2,58 @@
 
 The latest release notes also ship in `release/` (see `release/README.md`). Prebuilt firmware is on the [releases page](https://github.com/ZiadAbdelati/waveshare-boost-gauge/releases/latest).
 
+> Notes for v0.9.x live in `release/README.md` and `docs/regression-ledger.md`;
+> this file resumes at v1.0.0.
+
+## v1.0.0
+
+The headline of v1.0.0 is a **global pressure unit**: the gauge, the dashboard and
+both companion apps can now show pressure in **psi**, **bar** or **kPa**, switched
+from the physical panel, the web Range page, or either app.
+
+- **One unit, every surface.** The unit is persisted in the theme store (NVS key
+  `unit`), served by `GET /api/v1/themes` as `pressureUnit`, written by
+  `PUT /api/v1/themes/config`, and — because the panel's UNITS button has no other
+  way to reach an already-open dashboard — carried in **`GET /api/v1/state`**, from
+  which every client adopts it on every sample.
+- **Presentation only.** All canonical values stay PSI (`/config`,
+  `/state.psi`/`peakPsi`, `/logs`) or kPa (sensor and calibration diagnostics).
+  Clients convert at the display and input boundaries. Gauge geometry, the arc
+  wedges and the zero marker are always PSI and are never rescaled, so every psi
+  readout path remains byte-for-byte the pre-units render.
+- **Decimals**: psi 1, bar 2, kPa 0. The ±0.1 psi readout dead zone is defined in
+  PSI and folded **before** conversion; Vault-Tec deliberately stays raw in every
+  unit. The Neon zone-colour decision folds through the same band, so engine-off
+  noise can no longer flip the ring colour between samples.
+- **Firmware**: converted readouts use separate advances-centred layouts, and Big
+  Digit's bar/kPa value is drawn as one label cell **per character** — a single
+  full-width label invalidated its whole 466×120 box on every 0.01-bar step and
+  measured 3.56× the psi flush per cycle (now 1.81× bar, 1.11× kPa). Converted Big
+  Digit values keep the custom minus widget (`alvida_big` has no `-` glyph, so a
+  literal sign in the string was painted as nothing — `-1.0` psi rendered as `0.07`
+  bar). TPMS values and the low-pressure threshold follow the unit.
+- **Physical panel**: the two-finger overlay's OBD2/App rows are replaced by a
+  **2-up + 1-down cluster of three rounded buttons** — APP BLE, OBD BLE, UNITS.
+  UNITS cycles psi → bar → kPa and persists. Button presses participate in the
+  existing swipe classifier, so a drag that starts on a button is still a theme
+  swipe, not a tap.
+- **Dashboard**: a **Pressure unit** selector on the Settings page (Range section).
+- **Version hygiene**: the release version now has exactly one source,
+  `version.txt`. ESP-IDF bakes it into the app descriptor instead of deriving it
+  from `git describe` (which is how a v0.9.7 release shipped a binary reporting
+  `v0.9.6-3-gee90519`), and a new host test plus release gate
+  (`tools/tests/test_version_consistency.py [--release]`) fails on any drift
+  between the firmware image, both apps, the mock and `SHA256SUMS`.
+
+> **Verification honesty:** the firmware in this release is **host-built and
+> simulator-verified, not hardware-verified** — no board was attached. The units
+> work is host-tested (12 host tests, geometry assertions, stale-pixel audits at
+> 0 mismatches, simulator renders per theme × unit) and the app builds are
+> verified from their artifacts, but the on-glass cadence A/B for the converted
+> Big Digit readout and the physical feel of the overlay's UNITS button were not
+> measured. **v0.9.7 remains the last hardware-verified baseline**; first flash
+> should exercise the UNITS button and a bar/kPa Big Digit soak.
+
 ## v0.8.1
 
 v0.8.1 adds **Doto** as the second Neon readout face and fixes two rendering regressions found while validating the new font.
