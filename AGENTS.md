@@ -6,6 +6,8 @@ Current release is **`v1.0.0`** (ESP-IDF 5.5.1, app image ~2.5 MB in `release/`,
 
 Regression tooling: run `python3 tools/test_suite.py` (host suite, before every commit), `python3 tools/tests/test_version_consistency.py --release` (version gate, before publishing any release) and `python3 tools/check_hardware_gates.py` (hardware release gates, before every release/flash-to-car); see `tools/tests/README.md`.
 
+Gauge UI verification, before flashing anything that touches layout: `./sim/build/boost_gauge_sim --stream` + `python3 tools/sim_panel.py` (http://127.0.0.1:8787/) is the live interactive simulator — theme, pressure unit, neon layout/font/preset, pressure slider and the organic/fast-sweep demo waveforms, all driving the REAL firmware renderer (no SDL2 required). For a still, `./sim/build/boost_gauge_sim --screenshot DIR --theme <id> --unit <unit>` + `python3 sim/raw_to_png.py DIR`. **Render the whole theme x unit matrix, not just psi** — the pressure-unit feature shipped with bar/kPa numerals overlapping the dyno arc, the neon rings and the Night City right edge, none of which psi showed.
+
 ## Working agreements
 
 - For every non-trivial change, the coordinator MUST use `Task` subagents heavily: delegate independent research, implementation slices, and verification/testing slices in parallel where possible. The coordinator owns the top-level contract, integration, and final acceptance; do not delegate away the architecture decision.
