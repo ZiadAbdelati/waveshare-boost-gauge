@@ -101,6 +101,14 @@ static inline void boost_display_gauge_update_end(void) {}
 #define ZERO_GAP_BOOST_DEG 3.60f
 #define TICK_FONT     (&lv_font_montserrat_24)
 #define TICK_RADIUS   160.0f
+/* A dial numeral must not reach the arc band. The band's inner edge is
+ * ARC_DIAMETER/2 - ARC_WIDTH = 177 px, and a numeral whose far corner crosses
+ * it paints over the arc - which is exactly what the wider bar and kPa
+ * numerals did once the unit stopped being psi (measured on the sim render:
+ * bar numerals reach r=183.4, i.e. 6.4 px into the band; kPa 178.0). Two px of
+ * slack keeps anti-aliased edges clear. The arc dial uses this; the vault dial
+ * uses the same rule against its own tick ring (VAULT_TICK_MAJOR_IN - 2). */
+#define DIAL_NUM_LIMIT (ARC_DIAMETER / 2.0f - (float)ARC_WIDTH - 2.0f)
 #define VALUE_SLOT_HEIGHT  58
 /* Archivo Black (Google Fonts, single weight) is a wide heavy display face,
  * so the readout needs no size hack to stop looking skinny. At 65 px its digit
@@ -4820,6 +4828,51 @@ static void format_tick_text(char *buf, size_t len, float psi)
     boost_units_format_tick(boost_theme_pressure_unit(), psi, buf, len);
 }
 
+/* Place a `w`x`h` label centred on the dial ray at `deg` and radius `r`, then
+ * pull it toward the centre until its farthest corner is within `limit` of the
+ * dial centre. A label that already fits does not move a single pixel; only a
+ * label wide enough to reach into the dial band - the bar/kPa numerals - slides
+ * inward instead of painting over the arc.
+ *
+ * This is NOT psi-byte-identical, and the audit that checked the claim was
+ * right to reject it: psi's own "-15" (advance-box far corner 180.9) and "10"
+ * (178.4) exceed the 175 limit and move ~5.9 px and ~2.9 px respectively, which
+ * is a pre-existing 0.3 px graze on "-15" being fixed along with the rest.
+ * psi's "0", "5" and "8" do not move. The change is scene-build only (the
+ * numerals bake into the cached background), so the 16 ms per-frame path and
+ * the arc/wedge geometry the 60 FPS guard was measured against are untouched.
+ *
+ * The corner test, not the centre, is what matters: the label is axis-aligned
+ * while the ray is not, so a wide label centred at r can have a corner well
+ * beyond r + width/2. The fixpoint loop converges in 2-3 passes; the bound is
+ * only a guard against a pathological case. */
+static void place_radial_label(int32_t cx, int32_t cy, float deg, float r, float limit,
+                               int w, int h, int32_t *out_x, int32_t *out_y)
+{
+    const float rad = deg * (float)M_PI / 180.0f;
+    const float ux = cosf(rad);
+    const float uy = sinf(rad);
+    float x = (float)cx + r * ux - (float)w * 0.5f;
+    float y = (float)cy + r * uy - (float)h * 0.5f;
+    for (int pass = 0; pass < 8; ++pass) {
+        float far = 0.0f;
+        for (int ex = 0; ex < 2; ++ex) {
+            for (int ey = 0; ey < 2; ++ey) {
+                const float px = x + (float)(ex ? w : 0) - (float)cx;
+                const float py = y + (float)(ey ? h : 0) - (float)cy;
+                const float d = sqrtf(px * px + py * py);
+                if (d > far) far = d;
+            }
+        }
+        const float excess = far - limit;
+        if (excess <= 0.5f) break;
+        x -= excess * ux;
+        y -= excess * uy;
+    }
+    *out_x = (int32_t)lroundf(x);
+    *out_y = (int32_t)lroundf(y);
+}
+
 /* Arc face mapping: vacuum [min,0] -> [135, zero], boost [0,max] -> [zero,405]. */
 static float psi_to_angle(float psi)
 {
@@ -5358,14 +5411,16 @@ static void paint_arc_background(lv_obj_t *canvas, const boost_theme_t *theme)
         format_tick_text(text, sizeof(text), s_tick_psi[i]);
 
         const float deg = psi_to_angle(s_tick_psi[i]);
-        const float rad = deg * (float)M_PI / 180.0f;
         float r = TICK_RADIUS;
         if (fabsf(s_tick_psi[i]) < 0.01f) r = TICK_RADIUS - 18.0f;
 
         lv_point_t size;
         lv_text_get_size(&size, text, TICK_FONT, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
-        const float x = cx + r * cosf(rad) - (float)size.x * 0.5f;
-        const float y = cy + r * sinf(rad) - (float)size.y * 0.5f;
+        /* Bounded against the arc band: a wide bar/kPa numeral slides inward
+         * instead of painting over the arc (see place_radial_label). */
+        int32_t lx, ly;
+        place_radial_label((int32_t)lroundf(cx), (int32_t)lroundf(cy), deg, r,
+                           DIAL_NUM_LIMIT, size.x, size.y, &lx, &ly);
 
         lv_draw_label_dsc_t d;
         lv_draw_label_dsc_init(&d);
@@ -5379,8 +5434,8 @@ static void paint_arc_background(lv_obj_t *canvas, const boost_theme_t *theme)
         d.color = c(theme->muted);
         d.align = LV_TEXT_ALIGN_LEFT;
         lv_area_t a = {
-            (int32_t)lroundf(x), (int32_t)lroundf(y),
-            (int32_t)lroundf(x) + size.x - 1, (int32_t)lroundf(y) + size.y - 1,
+            lx, ly,
+            lx + size.x - 1, ly + size.y - 1,
         };
         lv_draw_label(&layer, &d, &a);
     }
@@ -6410,10 +6465,14 @@ static void build_vault(lv_obj_t *scr)
         lv_obj_set_style_text_font(lab, F_COND22, 0);
         lv_obj_set_style_text_color(lab, marks[i] >= s_psi_overboost ? c(theme->overboost) : c(theme->text), 0);
         lv_obj_update_layout(lab);
-        const float rad = psi_to_sweep(marks[i], VAULT_A0, VAULT_A1) * (float)M_PI / 180.0f;
-        const float x = DISP_SIZE * 0.5f + VAULT_NUM_R * cosf(rad) - lv_obj_get_width(lab) * 0.5f;
-        const float y = DISP_SIZE * 0.5f + VAULT_NUM_R * sinf(rad) - lv_obj_get_height(lab) * 0.5f;
-        lv_obj_set_pos(lab, (lv_coord_t)lroundf(x), (lv_coord_t)lroundf(y));
+        /* Same collision bound as the arc dial: a wide bar/kPa numeral slides
+         * inward rather than crossing the tick ring (VAULT_TICK_MAJOR_IN). */
+        const float deg = psi_to_sweep(marks[i], VAULT_A0, VAULT_A1);
+        int32_t lx, ly;
+        place_radial_label(DISP_SIZE / 2, DISP_SIZE / 2, deg, VAULT_NUM_R,
+                           (float)VAULT_TICK_MAJOR_IN - 2.0f,
+                           lv_obj_get_width(lab), lv_obj_get_height(lab), &lx, &ly);
+        lv_obj_set_pos(lab, (lv_coord_t)lx, (lv_coord_t)ly);
         lv_obj_clear_flag(lab, LV_OBJ_FLAG_CLICKABLE);
     }
 
@@ -6784,15 +6843,16 @@ static void draw_hud_readout(lv_event_t *e)
 {
     if (s_hud_val_str[0] == '\0') return;
     lv_layer_t *layer = lv_event_get_layer(e);
-    /* PSI keeps the fixed-slot ghost box (right-aligned against the odometer
-     * slots); bar/kPa centre both ghosts on the same advances-centred area as
-     * the primary, so the chromatic passes stay registered to the converted
-     * string instead of the old fixed PSI anchor. */
+    /* Primary and both chromatic ghosts share ONE anchor for every unit:
+     * right-aligned to the edge the psi odometer grows left from (the tenths
+     * slot's ink edge, +109). bar/kPa used to be centred in this box, which is
+     * asymmetric ([-156,+105]) - parking them ~40-65 px left of where the psi
+     * number sits, so the value visibly jumped sideways when the unit changed. */
     const bool unit_is_psi = boost_theme_pressure_unit() == BOOST_UNIT_PSI;
     lv_area_t ghost_area = {
         px_icx() - 156,
         px_icy() + HUD_VALUE_Y - (unit_is_psi ? 39 : 42),
-        px_icx() + 105,
+        px_icx() + (unit_is_psi ? 105 : 109),
         px_icy() + HUD_VALUE_Y + (unit_is_psi ? 39 : 42),
     };
     lv_area_t readout_area = {
@@ -6813,9 +6873,9 @@ static void draw_hud_readout(lv_event_t *e)
     lv_draw_label_dsc_init(&d);
     d.font = font;
     d.text = s_hud_val_str;
-    /* The primary uses fixed slots (right-aligned ghosts) in PSI and one
-     * centred string otherwise; the ghosts mirror that choice. */
-    d.align = unit_is_psi ? LV_TEXT_ALIGN_RIGHT : LV_TEXT_ALIGN_CENTER;
+    /* Primary and ghosts share one anchor: right-aligned, matching the psi
+     * odometer, for every unit (see ghost_area above). */
+    d.align = LV_TEXT_ALIGN_RIGHT;
     d.text_local = 1;
     /* Ghost colours are pre-blended against the known true-black/dark face. */
     d.opa = LV_OPA_COVER;
@@ -6834,12 +6894,14 @@ static void draw_hud_readout(lv_event_t *e)
     d.align = LV_TEXT_ALIGN_CENTER;
     d.color = s_hud_readout_color_valid ? s_hud_readout_color : c(active_theme()->boost);
     if (boost_theme_pressure_unit() != BOOST_UNIT_PSI) {
-        /* bar/kPa: one advances-centred string in place of the fixed slots. */
+        /* bar/kPa: one advances-wide string in place of the fixed slots,
+         * right-aligned to the same edge the slots grow from (see above). */
         d.text = s_hud_val_str;
+        d.align = LV_TEXT_ALIGN_RIGHT;
         lv_area_t a = {
             px_icx() - 156,
             px_icy() + HUD_VALUE_Y - 42,
-            px_icx() + 105,
+            px_icx() + 109,
             px_icy() + HUD_VALUE_Y + 42,
         };
         lv_draw_label(layer, &d, &a);
@@ -6872,10 +6934,16 @@ static void invalidate_hud_readout(lv_area_t *area)
 
 static void invalidate_hud_readout_full(void)
 {
+    /* Non-PSI ink and its ghosts now reach +109, so the full box must cover
+     * it or the right-aligned glyphs strand a trail; PSI keeps +105 exactly
+     * as before (its slots stop at 109-4). Both stay inside the readout
+     * object, whose right edge is HUD_READOUT_OBJ_X2 = 117. */
+    const int32_t right = px_icx() +
+        (boost_theme_pressure_unit() == BOOST_UNIT_PSI ? 105 : 109);
     lv_area_t area = {
         px_icx() - 156 - HUD_GLITCH_DX,
         px_icy() + HUD_VALUE_Y - 42,
-        px_icx() + 105 + HUD_GLITCH_DX,
+        right + HUD_GLITCH_DX,
         px_icy() + HUD_VALUE_Y + 42,
     };
     invalidate_hud_readout(&area);
@@ -7228,6 +7296,13 @@ static void update_hud(const boost_sample_t *sample, const boost_theme_t *theme)
 #define BIG_DOT_X       29
 #define BIG_TENTHS_X    86
 #define BIG_TENS_X      (-110)
+/* The psi odometer's tenths slot is always filled, so its right INK edge is
+ * the one stable anchor on this face: measured at x = 356 on a 466 px face
+ * (face centre 233), i.e. BIG_TENTHS_X + 37. The bar/kPa string is
+ * right-aligned to it so the value does not slide sideways when the unit
+ * changes; LVGL centres each glyph in its slot, so this holds across the
+ * tenths digits 0..9. */
+#define BIG_DIGIT_INK_HALF 37
 #define BIG_MINUS_W     52
 #define BIG_MINUS_H     15
 #define BIG_MINUS_Y     (-14)
@@ -7577,10 +7652,15 @@ static void update_bigdigit(const boost_sample_t *sample, const boost_theme_t *t
                                                       (uint32_t)(unsigned char)vbuf[i], 0);
                 total += adv[i];
             }
-            /* The old single label centred the string in a DISP_SIZE-wide box;
-             * `pen` is the same first-glyph pen expressed as a face-centre
-             * offset. */
-            int pen = (DISP_SIZE - total) / 2 - DISP_SIZE / 2;
+            /* PSI pins its slots (ones -29, dot +29, tenths +86), so the
+             * number is anchored on its RIGHT ink edge and the integer part
+             * grows left. Centring the bar/kPa string on the face (x=0, what
+             * this used to do) put it ~29 px left of a one-digit psi reading
+             * and ~74 px left of psi's decimal point, so the value jumped
+             * sideways on a unit change. Right-align it to the same edge the
+             * psi tenths slot ends at. */
+            const int right_edge = BIG_TENTHS_X + BIG_DIGIT_INK_HALF;
+            int pen = right_edge - total;
             for (int i = 0; i < n; ++i) {
                 /* Box left is the glyph's advance pen, so the glyph draws
                  * where the advances-centred layout puts it; the width is the
@@ -7605,8 +7685,11 @@ static void update_bigdigit(const boost_sample_t *sample, const boost_theme_t *t
                 }
             }
             s_big_val_n = (uint8_t)n;
-            /* Sign sits just left of the string's own advances-centred edge. */
-            const int minus_x = -(total / 2) - BIG_MINUS_EDGE_GAP - BIG_MINUS_W / 2;
+            /* Sign sits just left of the string's own left edge - which is now
+             * the right-anchored pen, not the centred one. Both are face-centre
+             * offsets, so no DISP_SIZE/2 term belongs here. */
+            const int minus_x = (right_edge - total) -
+                                BIG_MINUS_EDGE_GAP - BIG_MINUS_W / 2;
             if (minus_x != s_big_minus_x) {
                 s_big_minus_x = minus_x;
                 lv_obj_align(s_big_minus, LV_ALIGN_CENTER, minus_x, BIG_MINUS_Y);
