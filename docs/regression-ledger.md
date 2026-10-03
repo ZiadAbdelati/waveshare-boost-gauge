@@ -1005,3 +1005,70 @@ app-descriptor check, this sweep is a secondary source-mode guard):
   per-line comparison and would not be matched.
 - A version with fewer than three components in a filename is not matched by
   `VERSION_IN_NAME`; the exact-expected-set check covers the file either way.
+
+## 2026-10-03 — unit-dependent layout: bounds and anchors
+
+Reported from a flashed board (phone + gauge): bar digits running onto the neon
+rings, bar tick numerals over the dyno arc, Night City no longer right-aligned
+in kPa. The sim rendered all five themes x three units at the time, so the
+breakage was already visible here — it had simply never been looked at across
+units. Root cause is one pattern repeated per theme: the psi face is a set of
+fixed slots, and each theme bolted on a bespoke "centre the string" fallback for
+bar/kPa with no collision test and no shared anchor.
+
+Measured with `boost_gauge_sim --screenshot` + Pillow, on the real renders:
+
+| defect | measured BEFORE | AFTER |
+|---|---|---|
+| dyno-cell bar dial numerals vs the arc band (inner edge r=177) | ink to **r=183.4**, 6.4 px into the band | **r=172.0**, 5.0 px clear |
+| dyno-cell kPa dial numerals | r=178.0 | r=171.4, 5.6 px clear |
+| night-city readout right edge, psi/bar/kPa | **339 / 295 / 256** — a 44-83 px jump on unit change | **339 / 339 / 339** |
+| night-city psi render | — | byte-identical (211..339 unchanged) |
+| big-digit bar/kPa readout | centred on x=0, composition centre ~29 px left of psi's | right-aligned; union right edge matches psi's 356 exactly |
+| vault-tec psi render | — | byte-identical (0 px changed) |
+| vault-tec bar dial numerals | r=190.1 vs tick ring inner 194 (tight) | ~4.7 px clear |
+
+Fixes: (a) `place_radial_label()` bounds a dial numeral by its far CORNER
+against `DIAL_NUM_LIMIT`, used by both `paint_arc_background` and `build_vault`
+— a label that already fits does not move; (b) night-city `draw_hud_readout`
+and big-digit `update_bigdigit` right-align the bar/kPa string to the same edge
+the psi odometer grows left from (`+109`, and `BIG_TENTHS_X +
+BIG_DIGIT_INK_HALF` = the tenths slot's measured right ink edge).
+
+Honest notes:
+- psi is NOT byte-identical on dyno-cell: its own `-15` and `10` numerals were
+  already grazing the band (r=176.7 and 173.4 against 177) and move 5.9/2.9 px
+  inward. The audit subagent rejected the "psi is byte-identical" claim in the
+  first draft of the comment; the measurement (704 changed px, confined to
+  y=333..355) agrees with its derivation. That is a fix to a latent overlap, not
+  a regression, and it is scene-build only — the cached background bake, not the
+  16 ms per-frame path or the arc/wedge geometry the 60 FPS guard covers.
+- vault-tec's bar numerals were TIGHT, not overlapping; the bound moved them
+  ~4 px further out of the tick ring.
+
+### Neon: root-caused, measured, deliberately NOT changed
+
+`neon_readout_place()` hangs the sign off the LEADING GLYPH's ink edge, so a
+value starting with a wide digit (`0` — which is every bar reading below 1.00,
+e.g. `-0.83` in vacuum) is ~22 px wider than one starting with `1` (the psi
+`-12.0` the rings were sized against). Measured as extra unit-dependent ink
+inside the ring annulus, bar vs psi: segments **+161 px**, tube **+73 px**,
+marquee **+0** (marquee was and is clean; psi is clean in all three).
+
+A "clamp the composition half-width" fix was implemented and REVERTED: it traded
+left-side intrusion for right-side (segments +161 -> +75, but tube +73 -> +205),
+i.e. it moved the problem rather than removing it, and left the block visibly
+off-centre. The honest fix is a design decision (a narrower readout for the ring
+layouts, or ring radii that clear the widest composition), and it needs eyes on
+the glass — the new panel is the tool for that. Do not re-land the clamp.
+
+### New harness: interactive sim panel
+
+`./sim/build/boost_gauge_sim --stream` (host-only; frames on stdout, commands on
+stdin) + `python3 tools/sim_panel.py` -> http://127.0.0.1:8787/ : live gauge
+image, theme/unit/layout/font/preset, pressure slider + number, organic and
+fast-sweep demo waveforms, TPMS scenario, and a Save-screenshot button. It drives
+the same `boost_theme_set_*`/`boost_page_*` entry points the settings UI does, so
+it cannot render a lie. `tools/tests/test_sim_panel.py` covers it in the host
+suite (skips when the sim is not built). This is the class of bug it exists to
+catch: batch screenshots existed, but nobody rendered the unit matrix.
