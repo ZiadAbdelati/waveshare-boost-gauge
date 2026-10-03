@@ -4,15 +4,19 @@
  * Modes:
  *   --screenshot DIR   render fixed PSI states to DIR/*.raw + convert helper
  *   --window           open SDL window (needs display / xvfb)
+ *   --stream           BGFR frames on stdout + line commands on stdin (panel)
  *   default            headless screenshot into ../preview/sim
  */
 
+#include <errno.h>
+#include <fcntl.h>
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/select.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -631,10 +635,12 @@ static void usage(const char *argv0)
             "  %s --audit [--seconds N] partial-refresh trail + cost audit\n"
             "  %s --tpms [normal|stale|disconnected]\n"
             "                          snapshot the TPMS page under a mock scenario\n"
+            "  %s --stream             BGFR frames on stdout, commands on stdin\n"
+            "                          (host panel: python3 tools/sim_panel.py)\n"
             "  (all modes accept --theme ID, --neon-layout tube|segments|marquee,\n"
             "   --neon-font 0|1 (0=SF Alien 1=Doto), and --neon-spin to enable\n"
             "   the marquee chase for screenshots)\n",
-            argv0, argv0, argv0, argv0);
+            argv0, argv0, argv0, argv0, argv0);
 }
 
 /* Standalone TPMS-page mode: build the pages, force page 1, drive the mock
@@ -928,6 +934,323 @@ static int run_qr_test(const char *out_dir)
     return failures == 0 ? 0 : 5;
 }
 
+/*
+ * --stream: host-only control-panel backend.
+ *
+ * Writes one BGFR frame per render cycle to `frame_fd` (the process's real
+ * stdout, dup'd before everything else was redirected to stderr) and reads
+ * one command per line from stdin without ever blocking the render loop.
+ * Every command dispatches to the SAME firmware entry point the settings UI
+ * (web/BLE/QR panel) drives, so the panel can only show what the device would.
+ *
+ * Framing (little-endian):
+ *   "BGFR" | uint32 width | uint32 height | uint32 seq | RGBA pixels
+ * RGBA is the ARGB8888 byte order measured by raw_to_png.py (B,G,R,A on LE).
+ */
+
+#define STREAM_DEFAULT_PSI 5.0f
+#define STREAM_FRAME_PERIOD_MS 16
+
+static char s_stream_theme[BOOST_THEME_ID_MAX] = "dyno-cell";
+static const char *s_stream_start_theme;
+static float s_stream_psi = STREAM_DEFAULT_PSI;
+static float s_stream_peak;
+static char s_stream_cmd[4096];
+static size_t s_stream_cmd_len;
+static bool s_stream_stdin_open = true;
+static bool s_stream_quit;
+
+static bool stream_write_all(int fd, const void *data, size_t len)
+{
+    const uint8_t *p = (const uint8_t *)data;
+    while (len > 0) {
+        const ssize_t n = write(fd, p, len);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return false;
+        }
+        p += (size_t)n;
+        len -= (size_t)n;
+    }
+    return true;
+}
+
+static bool stream_emit_frame(int fd, uint32_t seq)
+{
+    lv_draw_buf_t *buf = lv_snapshot_take(lv_screen_active(), LV_COLOR_FORMAT_ARGB8888);
+    if (buf == NULL) {
+        fprintf(stderr, "[stream] snapshot failed\n");
+        return false;
+    }
+    const uint32_t w = (uint32_t)buf->header.w;
+    const uint32_t h = (uint32_t)buf->header.h;
+    uint8_t hdr[16];
+    memcpy(hdr, "BGFR", 4);
+    memcpy(hdr + 4, &w, 4);
+    memcpy(hdr + 8, &h, 4);
+    memcpy(hdr + 12, &seq, 4);
+    const bool ok = stream_write_all(fd, hdr, sizeof(hdr)) &&
+                    stream_write_all(fd, buf->data, (size_t)w * (size_t)h * 4);
+    lv_draw_buf_destroy(buf);
+    return ok;
+}
+
+/* Rebuild the active face, the way the settings UI does after a unit/layout/
+ * font/preset/needle change (unit marks and tick numerals are baked at build). */
+static void stream_rebuild(void)
+{
+    const boost_theme_t *t = boost_theme_find(s_stream_theme);
+    if (t != NULL) {
+        boost_gauge_apply_theme(t);
+    }
+}
+
+static void stream_apply_theme(const char *id)
+{
+    const boost_theme_t *t = boost_theme_find(id);
+    if (t == NULL) {
+        fprintf(stderr, "[stream] unknown theme: %s\n", id);
+        return;
+    }
+    snprintf(s_stream_theme, sizeof(s_stream_theme), "%s", t->id);
+    boost_gauge_apply_theme(t);
+}
+
+static boost_sample_t stream_fixed_sample(void)
+{
+    if (s_stream_psi > s_stream_peak) s_stream_peak = s_stream_psi;
+    boost_sample_t s = {
+        .psi = s_stream_psi,
+        .peak_psi = s_stream_peak,
+        .demo = false,
+    };
+    return s;
+}
+
+static void stream_exec(char *line)
+{
+    while (*line == ' ' || *line == '\t') line++;
+    char *end = line + strlen(line);
+    while (end > line && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r')) {
+        *--end = '\0';
+    }
+    if (*line == '\0') return;
+
+    char *arg = line;
+    while (*arg != '\0' && *arg != ' ' && *arg != '\t') arg++;
+    if (*arg != '\0') {
+        *arg++ = '\0';
+        while (*arg == ' ' || *arg == '\t') arg++;
+    }
+
+    if (strcmp(line, "theme") == 0) {
+        stream_apply_theme(arg);
+    } else if (strcmp(line, "unit") == 0) {
+        boost_unit_t u;
+        if (boost_units_parse(arg, &u)) {
+            boost_theme_set_pressure_unit(u);
+            stream_rebuild();
+        } else {
+            fprintf(stderr, "[stream] unknown unit: %s\n", arg);
+        }
+    } else if (strcmp(line, "psi") == 0) {
+        char *stop = NULL;
+        const float v = strtof(arg, &stop);
+        if (stop != arg) {
+            s_stream_psi = v;
+            if (v > s_stream_peak) s_stream_peak = v;
+            /* A fixed reading means the sweep is frozen. */
+            boost_theme_set_demo_mode(false);
+        }
+    } else if (strcmp(line, "demo") == 0) {
+        if (strcmp(arg, "on") == 0) {
+            boost_theme_set_demo_mode(true);
+        } else if (strcmp(arg, "off") == 0) {
+            boost_theme_set_demo_mode(false);
+        }
+    } else if (strcmp(line, "sweep") == 0) {
+        if (strcmp(arg, "organic") == 0) {
+            boost_theme_set_demo_fast_sweep(false);
+        } else if (strcmp(arg, "fast") == 0) {
+            boost_theme_set_demo_fast_sweep(true);
+        }
+    } else if (strcmp(line, "layout") == 0) {
+        if (strcmp(arg, "tube") == 0) {
+            boost_theme_set_neon_layout(BOOST_NEON_TUBE);
+        } else if (strcmp(arg, "segments") == 0) {
+            boost_theme_set_neon_layout(BOOST_NEON_SEGMENTS);
+        } else if (strcmp(arg, "marquee") == 0) {
+            boost_theme_set_neon_layout(BOOST_NEON_MARQUEE);
+        } else {
+            fprintf(stderr, "[stream] unknown layout: %s\n", arg);
+            return;
+        }
+        stream_rebuild();
+    } else if (strcmp(line, "neonfont") == 0) {
+        const int n = atoi(arg);
+        if (n >= 0 && n <= 1) {
+            boost_theme_set_neon_font((boost_neon_font_t)n);
+            stream_rebuild();
+        }
+    } else if (strcmp(line, "preset") == 0) {
+        const int n = atoi(arg);
+        if (n >= 0 && n <= 3) {
+            boost_theme_set_neon_preset((boost_neon_preset_t)n);
+            stream_rebuild();
+        }
+    } else if (strcmp(line, "page") == 0) {
+        if (strcmp(arg, "boost") == 0) {
+            boost_page_show(BOOST_PAGE_BOOST);
+        } else if (strcmp(arg, "tpms") == 0) {
+            boost_page_show(BOOST_PAGE_TPMS);
+        }
+    } else if (strcmp(line, "tpms") == 0) {
+        if (strcmp(arg, "normal") == 0) {
+            boost_tpms_mock_set_scenario(BOOST_TPMS_MOCK_NORMAL);
+        } else if (strcmp(arg, "stale") == 0) {
+            boost_tpms_mock_set_scenario(BOOST_TPMS_MOCK_STALE);
+        } else if (strcmp(arg, "disconnected") == 0) {
+            boost_tpms_mock_set_scenario(BOOST_TPMS_MOCK_DISCONNECTED);
+        }
+    } else if (strcmp(line, "needle") == 0) {
+        if (strcmp(arg, "red") == 0) {
+            boost_theme_set_vault_needle_red(true);
+            stream_rebuild();
+        } else if (strcmp(arg, "green") == 0) {
+            boost_theme_set_vault_needle_red(false);
+            stream_rebuild();
+        }
+    } else if (strcmp(line, "tail") == 0) {
+        if (strcmp(arg, "on") == 0) {
+            boost_theme_set_vault_needle_tail(true);
+            stream_rebuild();
+        } else if (strcmp(arg, "off") == 0) {
+            boost_theme_set_vault_needle_tail(false);
+            stream_rebuild();
+        }
+    } else if (strcmp(line, "quit") == 0) {
+        s_stream_quit = true;
+    } else {
+        fprintf(stderr, "[stream] unknown command: %s\n", line);
+    }
+}
+
+static void stream_read_stdin(void)
+{
+    if (!s_stream_stdin_open) return;
+    char tmp[512];
+    for (;;) {
+        const ssize_t n = read(STDIN_FILENO, tmp, sizeof(tmp));
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            break;   /* EAGAIN: no more input right now */
+        }
+        if (n == 0) {
+            s_stream_stdin_open = false;
+            break;
+        }
+        size_t room = sizeof(s_stream_cmd) - 1 - s_stream_cmd_len;
+        size_t take = (size_t)n < room ? (size_t)n : room;
+        memcpy(s_stream_cmd + s_stream_cmd_len, tmp, take);
+        s_stream_cmd_len += take;
+    }
+}
+
+static bool stream_drain_lines(void)
+{
+    bool handled = false;
+    size_t start = 0;
+    for (size_t i = 0; i < s_stream_cmd_len; i++) {
+        if (s_stream_cmd[i] != '\n') continue;
+        s_stream_cmd[i] = '\0';
+        stream_exec(s_stream_cmd + start);
+        handled = true;
+        start = i + 1;
+    }
+    if (start > 0) {
+        memmove(s_stream_cmd, s_stream_cmd + start, s_stream_cmd_len - start);
+        s_stream_cmd_len -= start;
+    }
+    return handled;
+}
+
+static int run_stream(int frame_fd)
+{
+    /* stdin must never block the render loop. */
+    const int fl = fcntl(STDIN_FILENO, F_GETFL, 0);
+    if (fl >= 0) fcntl(STDIN_FILENO, F_SETFL, fl | O_NONBLOCK);
+
+    boost_sim_init();
+    boost_tpms_init();
+    boost_page_create();
+    snprintf(s_stream_theme, sizeof(s_stream_theme), "%s", boost_theme_default()->id);
+    if (s_stream_start_theme != NULL) {
+        stream_apply_theme(s_stream_start_theme);
+    }
+    pump_lvgl(50);
+
+    uint32_t seq = 0;
+    uint32_t now_ms = 0;
+    uint32_t last_tpms = 0;
+    double last_status = 0.0;
+    bool ok = true;
+
+    while (!s_stream_quit && ok) {
+        stream_read_stdin();
+        const bool handled = stream_drain_lines();
+
+        const boost_sample_t sample = boost_theme_demo_mode()
+            ? boost_sim_tick()
+            : stream_fixed_sample();
+        boost_page_update(&sample);
+
+        /* Host sim has no BLE transport, so the mock is the only TPMS source
+         * (same as --tpms/--screenshot), ticked on the firmware's 250 ms cadence. */
+        if (now_ms - last_tpms >= 250u) {
+            boost_tpms_mock_tick(now_ms);
+            boost_tpms_snapshot_t snapshot;
+            boost_tpms_get_snapshot(&snapshot);
+            boost_page_update_tpms(&snapshot);
+            last_tpms = now_ms;
+        }
+
+        lv_tick_inc(STREAM_FRAME_PERIOD_MS);
+        lv_timer_handler();
+        now_ms += STREAM_FRAME_PERIOD_MS;
+
+        /* Machine-readable status on stderr, where the panel's stderr reader
+         * picks it up: the exact reading on screen, which the panel cannot
+         * decode from pixels. Written BEFORE the frame it describes so the
+         * panel's /shot names the file from the same state it captures, and
+         * forced (not just throttled) after a command so the new state is
+         * known before the next frame lands. */
+        const double t = sim_now_ms();
+        if (handled || t - last_status >= 100.0) {
+            printf("[PANEL] psi=%.2f demo=%d\n", (double)sample.psi, sample.demo ? 1 : 0);
+            fflush(stdout);
+            last_status = t;
+        }
+
+        ok = stream_emit_frame(frame_fd, seq++);
+
+        if (!s_stream_stdin_open) {
+            usleep(STREAM_FRAME_PERIOD_MS * 1000);
+            continue;
+        }
+        /* Wait for a command or the next frame deadline, whichever is first. */
+        struct timeval tv = { 0, STREAM_FRAME_PERIOD_MS * 1000 };
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(STDIN_FILENO, &rfds);
+        select(STDIN_FILENO + 1, &rfds, NULL, NULL, &tv);
+    }
+
+    close(frame_fd);
+    /* A failed frame write means the reader went away; the process exiting is
+     * the correct signal for the panel's supervisor. */
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     bool window = false;
@@ -935,11 +1258,28 @@ int main(int argc, char **argv)
     bool tpms = false;
     bool chase = false;
     bool qr_test = false;
+    bool stream = false;
     int audit_seconds = 20;
     const char *shot_dir = "preview/sim";
     const char *theme_id = NULL;
     const char *tpms_scenario = NULL;
     const char *chase_dir = NULL;
+
+    /* --stream reserves fd 1 for binary BGFR frames and pushes EVERYTHING the
+     * firmware prints (its host ESP_LOG shim is a plain printf) to stderr, so
+     * no log line can ever corrupt the byte stream. This must happen before
+     * boost_theme_init() logs anything, hence the pre-scan. */
+    int stream_fd = -1;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--stream") == 0) stream = true;
+    }
+    if (stream) {
+        stream_fd = dup(STDOUT_FILENO);
+        if (stream_fd < 0 || dup2(STDERR_FILENO, STDOUT_FILENO) < 0) {
+            perror("stream: redirect stdout");
+            return 1;
+        }
+    }
 
     /* Run the same theme initialisation the firmware does, BEFORE parsing the
      * options that set layout/preset. Without this the sim only ever saw
@@ -1038,6 +1378,8 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "--qr-test") == 0) {
             qr_test = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') shot_dir = argv[++i];
+        } else if (strcmp(argv[i], "--stream") == 0) {
+            stream = true;   /* already pre-scanned above */
         } else if (strcmp(argv[i], "--screenshot") == 0) {
             if (i + 1 < argc) {
                 shot_dir = argv[++i];
@@ -1064,6 +1406,10 @@ int main(int argc, char **argv)
     }
 
     setup_headless_display();
+    if (stream) {
+        s_stream_start_theme = theme_id;
+        return run_stream(stream_fd);
+    }
     if (audit) {
         return run_audit(theme_id, audit_seconds);
     }
