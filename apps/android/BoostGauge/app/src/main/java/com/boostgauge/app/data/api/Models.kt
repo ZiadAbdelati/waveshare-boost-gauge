@@ -101,6 +101,7 @@ data class ThemesPayload(
     val arcGradient: Boolean = false,
     val hudGradient: Boolean = false,
     val hudTrueBlack: Boolean = false,
+    val dynoTrueBlack: Boolean = false,
     val neonMarqueeSpin: Boolean = false,
     val teSync: Boolean = false,
     val regionDBuf: Boolean = false,

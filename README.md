@@ -82,7 +82,7 @@ Swipe vertically or use Settings:
 Dyno Cell -> Vault-Tec -> Night City -> Big Digit -> Neon -> Dyno Cell ...
 ```
 
-Zone colors, arc range, zero angle, and theme-specific settings such as Neon layout, preset, and font persist in NVS.
+Zone colors, arc range, zero angle, and theme-specific settings such as Neon layout, preset, and font persist in NVS. Dyno Cell and Night City each offer a persisted **True black background** toggle that drives unused AMOLED pixels fully off.
 
 ## Project layout
 

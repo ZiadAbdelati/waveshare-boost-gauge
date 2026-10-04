@@ -233,7 +233,7 @@ int boost_json_themes(char *json, size_t len)
                      "{\"activeThemeId\":\"%s\",\"bigDigitStaticBg\":%s,"
                      "\"bigDigitColorText\":%s,\"bigDigitStaticColor\":\"#%06lx\","
                      "\"bigDigitTextColor\":\"#%06lx\","
-                     "\"arcGradient\":%s,\"hudGradient\":%s,\"hudTrueBlack\":%s,\"neonMarqueeSpin\":%s,"
+                     "\"arcGradient\":%s,\"hudGradient\":%s,\"hudTrueBlack\":%s,\"dynoTrueBlack\":%s,\"neonMarqueeSpin\":%s,"
                      "\"teSync\":%s,\"regionDBuf\":%s,\"teScanline\":%s,"
                      "\"rotation\":%u,"
                      "\"vaultFace\":\"#%06lx\",\"vaultVignette\":%u,\"vaultNeedleRed\":%s,"
@@ -249,6 +249,7 @@ int boost_json_themes(char *json, size_t len)
                      boost_theme_arc_gradient() ? "true" : "false",
                      boost_theme_hud_gradient() ? "true" : "false",
                      boost_theme_hud_true_black() ? "true" : "false",
+                     boost_theme_dyno_true_black() ? "true" : "false",
                      boost_theme_neon_marquee_spin() ? "true" : "false",
                      boost_theme_te_sync() ? "true" : "false",
                      boost_theme_region_dbuf() ? "true" : "false",

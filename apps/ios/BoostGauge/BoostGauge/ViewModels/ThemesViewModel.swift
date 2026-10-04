@@ -16,6 +16,7 @@ final class ThemesViewModel: ObservableObject {
     @Published var arcGradient = false
     @Published var hudGradient = false
     @Published var hudTrueBlack = false
+    @Published var dynoTrueBlack = false
     @Published var bigDigitStaticBg = false
     @Published var bigDigitColorText = false
     @Published var bigDigitStaticColor = "#000000"
@@ -148,6 +149,7 @@ final class ThemesViewModel: ObservableObject {
                 "arcGradient": arcGradient,
                 "hudGradient": hudGradient,
                 "hudTrueBlack": hudTrueBlack,
+                "dynoTrueBlack": dynoTrueBlack,
                 "bigDigitStaticBg": bigDigitStaticBg,
                 "bigDigitColorText": bigDigitColorText,
                 "bigDigitStaticColor": bigDigitStaticColor,
@@ -174,7 +176,7 @@ final class ThemesViewModel: ObservableObject {
         var body: [String: Any]
         switch themeID {
         case "dyno-cell":
-            body = ["arcGradient": arcGradient]
+            body = ["arcGradient": arcGradient, "dynoTrueBlack": dynoTrueBlack]
         case "vault-tec":
             body = [
                 "vaultFace": vaultFace,
@@ -351,6 +353,7 @@ final class ThemesViewModel: ObservableObject {
         if let value = list.arcGradient { arcGradient = value }
         if let value = list.hudGradient { hudGradient = value }
         if let value = list.hudTrueBlack { hudTrueBlack = value }
+        if let value = list.dynoTrueBlack { dynoTrueBlack = value }
         if let value = list.bigDigitStaticBg { bigDigitStaticBg = value }
         if let value = list.bigDigitColorText { bigDigitColorText = value }
         if let value = list.bigDigitStaticColor { bigDigitStaticColor = value }

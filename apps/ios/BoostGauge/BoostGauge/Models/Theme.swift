@@ -31,6 +31,7 @@ struct ThemeList: Codable {
     let arcGradient: Bool?
     let hudGradient: Bool?
     let hudTrueBlack: Bool?
+    let dynoTrueBlack: Bool?
     let neonMarqueeSpin: Bool?
     let teSync: Bool?
     let regionDBuf: Bool?

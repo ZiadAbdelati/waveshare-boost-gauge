@@ -60,6 +60,7 @@ object ApiFixtures {
           "bigDigitStaticBg": true, "bigDigitColorText": true,
           "bigDigitStaticColor": "#16181c", "bigDigitTextColor": "#ffffff",
           "arcGradient": false, "hudGradient": false, "hudTrueBlack": false,
+          "dynoTrueBlack": false,
           "neonMarqueeSpin": false, "teSync": false, "regionDBuf": true,
           "teScanline": false, "rotation": 0, "vaultFace": "#05281a",
           "vaultVignette": 22, "vaultNeedleRed": false, "vaultNeedleTail": false,

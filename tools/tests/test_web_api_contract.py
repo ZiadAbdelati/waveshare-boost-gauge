@@ -76,6 +76,7 @@ DIM_KEYS = {"enabled", "startMinutes", "endMinutes"}
 THEMES_FLAG_KEYS = {
     "bigDigitStaticBg", "bigDigitColorText", "bigDigitStaticColor",
     "bigDigitTextColor", "arcGradient", "hudGradient", "hudTrueBlack",
+    "dynoTrueBlack",
     "neonMarqueeSpin", "teSync", "regionDBuf", "teScanline", "rotation",
     "vaultFace", "vaultVignette", "vaultNeedleRed", "vaultNeedleTail",
     "neonLayout", "neonPreset", "demoMode", "demoFastSweep", "tpmsBle",

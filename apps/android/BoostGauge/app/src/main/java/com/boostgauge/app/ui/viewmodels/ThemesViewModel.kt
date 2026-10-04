@@ -43,6 +43,7 @@ class ThemesViewModel(
         val arcGradient: Boolean = false,
         val hudGradient: Boolean = false,
         val hudTrueBlack: Boolean = false,
+        val dynoTrueBlack: Boolean = false,
         val bigDigitStaticBg: Boolean = false,
         val bigDigitColorText: Boolean = false,
         val bigDigitStaticColor: String = "#000000",
@@ -233,6 +234,7 @@ class ThemesViewModel(
                 arcGradient = payload.arcGradient,
                 hudGradient = payload.hudGradient,
                 hudTrueBlack = payload.hudTrueBlack,
+                dynoTrueBlack = payload.dynoTrueBlack,
                 bigDigitStaticBg = payload.bigDigitStaticBg,
                 bigDigitColorText = payload.bigDigitColorText,
                 bigDigitStaticColor = payload.bigDigitStaticColor.ifBlank { "#000000" },
@@ -388,6 +390,7 @@ class ThemesViewModel(
     fun updateArcGradient(value: Boolean) { _state.update { it.copy(arcGradient = value) } }
     fun updateHudGradient(value: Boolean) { _state.update { it.copy(hudGradient = value) } }
     fun updateHudTrueBlack(value: Boolean) { _state.update { it.copy(hudTrueBlack = value) } }
+    fun updateDynoTrueBlack(value: Boolean) { _state.update { it.copy(dynoTrueBlack = value) } }
     fun updateBigDigitStaticBg(value: Boolean) { _state.update { it.copy(bigDigitStaticBg = value) } }
     fun updateBigDigitColorText(value: Boolean) { _state.update { it.copy(bigDigitColorText = value) } }
     fun updateBigDigitStaticColor(value: String) { _state.update { it.copy(bigDigitStaticColor = value) } }
@@ -428,6 +431,7 @@ class ThemesViewModel(
                             arcGradient = payload.arcGradient,
                             hudGradient = payload.hudGradient,
                             hudTrueBlack = payload.hudTrueBlack,
+                            dynoTrueBlack = payload.dynoTrueBlack,
                             bigDigitStaticBg = payload.bigDigitStaticBg,
                             bigDigitColorText = payload.bigDigitColorText,
                             bigDigitStaticColor = payload.bigDigitStaticColor.ifBlank { "#000000" },
@@ -492,6 +496,7 @@ class ThemesViewModel(
                 when (themeId) {
                     "dyno-cell" -> {
                         put("arcGradient", cur.arcGradient)
+                        put("dynoTrueBlack", cur.dynoTrueBlack)
                     }
                     "vault-tec" -> {
                         put("vaultFace", cur.vaultFace)
@@ -547,6 +552,7 @@ class ThemesViewModel(
                             arcGradient = payload.arcGradient,
                             hudGradient = payload.hudGradient,
                             hudTrueBlack = payload.hudTrueBlack,
+                            dynoTrueBlack = payload.dynoTrueBlack,
                             bigDigitStaticBg = payload.bigDigitStaticBg,
                             bigDigitColorText = payload.bigDigitColorText,
                             bigDigitStaticColor = payload.bigDigitStaticColor.ifBlank { "#000000" },

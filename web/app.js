@@ -152,6 +152,7 @@ const state = {
   neonFont: 0,
   neonPreset: 0,
   hudTrueBlack: false,
+  dynoTrueBlack: false,
   /* Whole GET /sensors/calibration body, folded back in from every response so
    * the settings render never reads a half-updated mirror. Null until the first
    * poll lands. */
@@ -2678,6 +2679,7 @@ function applyThemePayload(payload, fallback = {}) {
   set("arcGradient", bool("arcGradient"));
   set("hudGradient", bool("hudGradient"));
   set("hudTrueBlack", bool("hudTrueBlack"));
+  set("dynoTrueBlack", bool("dynoTrueBlack"));
   set("teSync", bool("teSync"));
   set("regionDBuf", bool("regionDBuf"));
   set("teScanline", bool("teScanline"));
@@ -2923,6 +2925,8 @@ function themeEditor(theme) {
   if (theme.style === "arc") {
     addToggle("arcGradient", "Gradient fill (smooth color transition)",
               "Gradient fill", "Zone colors");
+    addToggle("dynoTrueBlack", "True black background (AMOLED pixels off)",
+              "True black background", "Dyno Cell background");
   }
   if (theme.style === "hud") {
     addToggle("hudGradient", "Gradient fill (smooth color transition)",
