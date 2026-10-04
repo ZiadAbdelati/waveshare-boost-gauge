@@ -59,7 +59,18 @@
               <option value="kPa">kPa</option>
             </select>
           </label>
+          <label class="field">
+            <span>Pressure reference</span>
+            <select id="pressureAbsolute">
+              <option value="false">Atmospheric</option>
+              <option value="true">Absolute</option>
+            </select>
+          </label>
         </div>
+        <p class="hint-text">Atmospheric shows boost above ambient (gauge pressure);
+          Absolute adds the measured atmosphere so the cockpit shows the MAP sensor&rsquo;s
+          absolute pressure. Affects the displayed numerals only &mdash; ranges, alerts,
+          zone colours and TPMS stay gauge.</p>
         <p class="hint-text" id="rangeHint">Defaults −15 / 10 / 8 PSI and 236.25°. Zero position controls the notch; the optional midpoint label disappears if it would overlap overboost.</p>
       </section>
 

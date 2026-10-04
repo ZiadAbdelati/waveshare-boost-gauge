@@ -12,7 +12,7 @@ has not finished.
 |---|-----------|----------|
 | 1 | Connection | BLE device picker, current selection, connection state; **Saved gauge row** shows the remembered peer identity at ALL times when a peer is known — Connected (name+address, "Connected" tag, no button), Reconnecting (identity, no button), Disconnected (identity + Connect button). "No gauge found" only after an empty user-initiated scan |
 | 2 | Display | 3 grouped sections: **Brightness** (high/low steppers), **Dim schedule** (toggle + start/end), **Display** (rotation dropdown, regionDBuf, teSync, teScanline, pixelShift + interval); single **Save display settings** button. `appBle` is NOT exposed in the app (firmware `PUT /api/v1/config {"appBle":bool}` only; web UI also hidden — toggling via BLE would trap the app disconnected with no UI to re-enable) |
-| 3 | Range | psiMin, psiMax, psiOverboost, zeroAngle fields; **Pressure unit** dropdown (PSI / bar / kPa, saves immediately via `PUT /themes/config {"pressureUnit"}`); Save button. Range field values are shown/entered in the selected unit and converted back to PSI before the `PUT /config` |
+| 3 | Range | psiMin, psiMax, psiOverboost, zeroAngle fields; **Pressure unit** dropdown (PSI / bar / kPa, saves immediately via `PUT /themes/config {"pressureUnit"}`); **Pressure reference** dropdown directly beneath it (Atmospheric / Absolute, saves immediately via `PUT /themes/config {"pressureAbsolute"}`, default Atmospheric); Save button. Range field values are shown/entered in the selected unit and converted back to PSI before the `PUT /config` |
 | 4 | Demo mode | **Demo mode** toggle + when ON, **Demo waveform** dropdown: `Organic swell` (= `demoFastSweep` false) / `Linear sweep (9.789 psi/s)` (= true); **Save demo settings** button. THEME-SPECIFIC settings (vaultNeedleRed, vaultNeedleTail, bigDigitStaticBg) NEVER appear here — they live exclusively in the Themes tab inside the matching theme's editor dropdown |
 | 5 | Clock & timezone | Timezone dropdown (curated list + Custom), one full-width primary button labelled exactly **"Sync timezone to gauge"** |
 | 6 | TPMS & OBD2 (merged page) | TPMS BLE link toggle (instant `PUT /themes/config tpmsBle`), lowPsi threshold, staleness (staleAfterMs; iOS picker auto-includes a saved custom value so the real state always shows), Save button, then the OBD link status: pill (`Scanning` / `Connecting to <name>` / `Connected` / `Idle` + lastError), peer rows (name + address) + **Forget** (clears `obd_peer` NVS). No scan trigger needed (gauge auto-scans when `tpmsBle` is on). Standalone TPMS page removed on both apps |
@@ -183,6 +183,30 @@ converts; sensor/calibration kPa rows and the TPMS low-threshold comparison stay
 canonical (kPa / PSI). The theme-preview payload must include `pressureUnit` so
 the bundled canonical `web/app.js` renders the selected unit. The physical
 panel cycles the same unit from the two-finger overlay's UNITS button.
+
+## Pressure display reference (Atmospheric / Absolute) (2026-10-04)
+
+A second global display setting rides beside the unit: `pressureAbsolute`
+(`GET /themes`, default `false` = Atmospheric/gauge), written by
+`PUT /themes/config {"pressureAbsolute": bool}`. `Absolute = gauge + the BMP280
+ambient`, so an engine-off 0.0 psi reads ~14.7 psi / ~1.01 bar / ~101 kPa. The
+baseline comes from the `/state` field both apps already parse
+(`sensors.ambientKpa`), falling back to 101.325 kPa when it is missing or <= 0;
+no new sensor field was added. The flag itself also ships in `/state` beside
+`pressureUnit`, and both apps adopt it from EVERY state sample (not only
+`/themes`) so a mode flipped on the physical panel reaches an already-open app —
+the same live-path rule the unit has.
+
+Both apps surface a **Reference** row directly beneath **Pressure unit** on the
+Range page, same control type as the unit row, saving immediately (no Save
+button, no text entry, so the keyboard-dismissal contract is not involved).
+Every boost-side numeral converts — the dashboard hero, peak, the logs chart
+axis labels, crosshair pill and min/max rows, and the theme previews — while
+TPMS values/thresholds, calibration diagnostics, the live gauge canvas geometry
+and everything derived from raw psi stay on the gauge value. The zone word and
+colour stay gauge-relative too: a positive absolute reading in vacuum still
+reads VAC. The physical panel toggles the same mode from the two-finger
+overlay's third page (the `ATM/ABS` button).
 
 ## Status badge layout (2026-08-30)
 

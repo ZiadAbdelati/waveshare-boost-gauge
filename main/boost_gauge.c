@@ -33,6 +33,7 @@ static double neon_now_ms(void)
 #include "lvgl.h"
 #include "boost_brightness.h"
 #include "boost_neon_geom.h"
+#include "boost_pressure_ref.h"
 #ifdef ESP_PLATFORM
 #include "boost_model.h"
 #include "boost_display.h"
@@ -3309,11 +3310,17 @@ static void neon_layout_readout_units(float psi, int slot_w, int dot_w, int sign
 {
     const boost_unit_t unit = boost_theme_pressure_unit();
     if (unit == BOOST_UNIT_PSI) {
-        boost_neon_layout_readout(psi, slot_w, dot_w, sign_w, sign_gap,
-                                  negative_shift, font_px, metrics, out);
+        /* The reference-adjusted value goes in UNFOLDED-again on purpose:
+         * boost_pressure_ref_display() already applied the gauge fold, and
+         * boost_neon_layout_readout() folds whatever it is handed. That second
+         * fold is a no-op (the absolute value is far outside the +-0.1 band, and
+         * the fold is idempotent), so the net result is fold-then-reference -
+         * the required order. Do NOT "simplify" this by folding afterwards. */
+        boost_neon_layout_readout(boost_pressure_ref_display(psi, true), slot_w, dot_w,
+                                  sign_w, sign_gap, negative_shift, font_px, metrics, out);
         return;
     }
-    const float value = boost_units_from_psi(unit, boost_readout_display_psi(psi));
+    const float value = boost_pressure_ref_from_psi(unit, psi, true);
     boost_neon_layout_readout_fmt(value, boost_units_decimals(unit), slot_w, dot_w,
                                   sign_w, sign_gap, negative_shift, font_px, metrics, out);
 }
@@ -4260,7 +4267,7 @@ static void update_neon(const boost_sample_t *sample, const boost_theme_t *theme
     }
     char buf[32];
     char peak_buf[16];
-    boost_units_format(boost_theme_pressure_unit(), s_neon_peak_value, false, peak_buf, sizeof(peak_buf));
+    boost_pressure_ref_format(boost_theme_pressure_unit(), s_neon_peak_value, false, peak_buf, sizeof(peak_buf));
     snprintf(buf, sizeof(buf), "PEAK %s", peak_buf);
     if (strcmp(lv_label_get_text(s_neon_peak), buf) != 0) lv_label_set_text(s_neon_peak, buf);
     const float a_zero = psi_to_sweep(0.0f, (float)ARC_START, (float)(ARC_START + ARC_RANGE));
@@ -4878,7 +4885,9 @@ static void compute_tick_psis(void)
 
 static void format_tick_text(char *buf, size_t len, float psi)
 {
-    boost_units_format_tick(boost_theme_pressure_unit(), psi, buf, len);
+    /* Dial numerals carry the reference too: in absolute mode the whole scale
+     * is relabelled, so atmosphere reads 14.7 where the gauge reads 0. */
+    boost_pressure_ref_format_tick(boost_theme_pressure_unit(), psi, buf, len);
 }
 
 /* Place a `w`x`h` label centred on the dial ray at `deg` and radius `r`, then
@@ -5014,7 +5023,10 @@ static lv_color_t zone_color_for_psi(const boost_theme_t *theme, float psi)
  * hides sub-gap motion. */
 static float arc_readout_display_psi(float psi)
 {
-    return boost_readout_display_psi(psi);
+    /* The arc readout's display value: the shared fold, then the pressure
+     * reference (absolute mode adds the BMP280 baseline). The wedge and the
+     * zone colours are gauge-relative and never come through here. */
+    return boost_pressure_ref_display(psi, true);
 }
 
 static void format_value_slots(char *sign, char *tens, char *ones, char *tenths, float psi)
@@ -5559,7 +5571,7 @@ static void arc_build_cells(float psi)
      * function of the character's PLACE IN THE NUMBER (which integer digit,
      * which fraction digit), so the layout is stable across every value. */
     char buf[16];
-    boost_units_format(boost_theme_pressure_unit(), psi, true, buf, sizeof(buf));
+    boost_pressure_ref_format(boost_theme_pressure_unit(), psi, true, buf, sizeof(buf));
     const char *digits = buf;
     const bool neg = (*digits == '-');
     if (neg) ++digits;
@@ -5831,7 +5843,7 @@ static void update_arc(const boost_sample_t *sample, const boost_theme_t *theme)
      * on every tick while the peak sits at the sweep's maximum. */
     if (s_peak_psi != s_arc_peak_text_psi) {
         char peak_buf[16];
-        boost_units_format(boost_theme_pressure_unit(), s_peak_psi, false, peak_buf, sizeof(peak_buf));
+        boost_pressure_ref_format(boost_theme_pressure_unit(), s_peak_psi, false, peak_buf, sizeof(peak_buf));
         snprintf(s_arc_peak_text, sizeof(s_arc_peak_text), "PEAK  %s", peak_buf);
         s_arc_peak_text_psi = s_peak_psi;
     }
@@ -6411,6 +6423,11 @@ static void vault_readout_area(int index, lv_area_t *area)
  * as the value changes. */
 static void vault_build_cells(float psi)
 {
+    /* Vault-Tec keeps the RAW psi - no +-0.1 fold, the two-decimal phosphor
+     * readout is part of the retro-fiction - but the display reference still
+     * applies. Transforming ONCE here means both branches below format the same
+     * value and the reference can never be applied twice. */
+    psi = boost_pressure_ref_display(psi, false);
     if (boost_theme_pressure_unit() == BOOST_UNIT_PSI) {
         const int hundredths_total = (int)lroundf(fabsf(psi) * 100.0f);
         const int whole = hundredths_total / 100;
@@ -6775,7 +6792,7 @@ static void update_vault(const boost_sample_t *sample, const boost_theme_t *them
 
     char buf[24];
     char peak_buf[16];
-    boost_units_format(boost_theme_pressure_unit(), s_peak_psi, false, peak_buf, sizeof(peak_buf));
+    boost_pressure_ref_format(boost_theme_pressure_unit(), s_peak_psi, false, peak_buf, sizeof(peak_buf));
     snprintf(buf, sizeof(buf), "PEAK  %s", peak_buf);
     if (strcmp(lv_label_get_text(s_vault_peak), buf) != 0) lv_label_set_text(s_vault_peak, buf);
 
@@ -7288,7 +7305,7 @@ static void update_hud(const boost_sample_t *sample, const boost_theme_t *theme)
     char prev_val[sizeof(s_hud_val_str)];
     snprintf(prev_val, sizeof(prev_val), "%s", s_hud_val_str);
     if (unit_is_psi) {
-        const float readout_psi = boost_readout_display_psi(sample->psi);
+        const float readout_psi = boost_pressure_ref_display(sample->psi, true);
         const int tenths_total = (int)lroundf(fabsf(readout_psi) * 10.0f);
         const int whole = tenths_total / 10;
         const bool has_tens = whole >= 10;
@@ -7322,8 +7339,8 @@ static void update_hud(const boost_sample_t *sample, const boost_theme_t *theme)
             sign_changed = true;
         }
     } else {
-        boost_units_format(boost_theme_pressure_unit(), sample->psi, true,
-                           s_hud_val_str, sizeof(s_hud_val_str));
+        boost_pressure_ref_format(boost_theme_pressure_unit(), sample->psi, true,
+                                  s_hud_val_str, sizeof(s_hud_val_str));
         for (int i = 0; i < HUD_SLOT_COUNT; ++i) s_hud_slot_text[i][0] = '\0';
         s_hud_sign_text[0] = '\0';
     }
@@ -7378,7 +7395,7 @@ static void update_hud(const boost_sample_t *sample, const boost_theme_t *theme)
     }
     if (strcmp(lv_label_get_text(s_hud_map), buf) != 0) lv_label_set_text(s_hud_map, buf);
     char pk_buf[16];
-    boost_units_format(boost_theme_pressure_unit(), s_peak_psi, false, pk_buf, sizeof(pk_buf));
+    boost_pressure_ref_format(boost_theme_pressure_unit(), s_peak_psi, false, pk_buf, sizeof(pk_buf));
     snprintf(buf, sizeof(buf), "PK %s", pk_buf);
     if (strcmp(lv_label_get_text(s_hud_pk), buf) != 0) lv_label_set_text(s_hud_pk, buf);
     /* This one is a positive status indicator, not a demo watermark: LIVE means
@@ -7760,7 +7777,7 @@ static void update_bigdigit(const boost_sample_t *sample, const boost_theme_t *t
          * Integer-only formatting plus a static label buffer keeps the 16 ms
          * path free of float printf and per-sample heap churn. */
         const boost_unit_t unit = boost_theme_pressure_unit();
-        const float readout_psi = boost_readout_display_psi(sample->psi);
+        const float readout_psi = boost_pressure_ref_display(sample->psi, true);
         const float value = boost_units_from_psi(unit, readout_psi);
         const int decimals = boost_units_decimals(unit);
         int scale = 1;
@@ -7846,7 +7863,7 @@ static void update_bigdigit(const boost_sample_t *sample, const boost_theme_t *t
         for (int i = 0; i < 4; ++i) {
             if (digits[i] != NULL) lv_obj_remove_flag(digits[i], LV_OBJ_FLAG_HIDDEN);
         }
-        const float readout_psi = boost_readout_display_psi(sample->psi);
+        const float readout_psi = boost_pressure_ref_display(sample->psi, true);
         const int tenths_total = (int)lroundf(fabsf(readout_psi) * 10.0f);
         const int whole = tenths_total / 10;
         const int tenth = tenths_total % 10;
@@ -7883,7 +7900,7 @@ static void update_bigdigit(const boost_sample_t *sample, const boost_theme_t *t
 
     char buf[32];
     char peak_buf[16];
-    boost_units_format(boost_theme_pressure_unit(), s_peak_psi, false, peak_buf, sizeof(peak_buf));
+    boost_pressure_ref_format(boost_theme_pressure_unit(), s_peak_psi, false, peak_buf, sizeof(peak_buf));
     /* Real-sensor mode drops the DEMO suffix and shows just the peak. */
     if (sample->demo) {
         snprintf(buf, sizeof(buf), "PEAK %s  DEMO", peak_buf);
@@ -8220,6 +8237,10 @@ void boost_gauge_update(const boost_sample_t *sample)
 {
     if (!s_ui_ready || sample == NULL) return;
     const boost_theme_t *theme = active_theme();
+    /* Publish the atmospheric baseline before anything formats a numeral, so
+     * the live readout and the rebuild-baked dial numerals agree within the
+     * same frame. The canonical wire value stays gauge psi. */
+    boost_pressure_ref_update(sample->ambient_kpa, sample->ambient_is_fallback);
     s_peak_psi = fmaxf(s_peak_psi, fmaxf(sample->peak_psi, 0.0f));
 
     boost_display_gauge_update_begin();

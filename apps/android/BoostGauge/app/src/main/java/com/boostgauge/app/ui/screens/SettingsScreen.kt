@@ -136,6 +136,11 @@ fun SettingsScreen(container: AppContainer) {
     LaunchedEffect(state.themes?.pressureUnit) {
         state.themes?.pressureUnit?.let { container.pressureUnit.apply(it) }
     }
+    // The reference has no /state source, so an adopted /themes payload is the
+    // only mirror path (initial load and every reference/theme write echo).
+    LaunchedEffect(state.themes?.pressureAbsolute) {
+        state.themes?.pressureAbsolute?.let { container.pressureReference.apply(it) }
+    }
     var page by rememberSaveable {
         mutableStateOf<SettingsPage?>(
             com.boostgauge.app.MainActivity.debugInitialSettingsPage?.let { name ->
@@ -222,6 +227,7 @@ fun SettingsScreen(container: AppContainer) {
                     saving = state.saving,
                     onFieldChange = viewModel::updateFields,
                     onUnitSave = viewModel::savePressureUnit,
+                    onReferenceSave = viewModel::savePressureReference,
                     onSave = viewModel::saveRange,
                 )
             }
@@ -711,6 +717,74 @@ private fun DisplaySection(
 private val PressureUnit.choiceLabel: String
     get() = if (this == PressureUnit.PSI) "PSI" else wire
 
+/**
+ * Labelled single-choice dropdown shared by the Range page's control rows
+ * (Pressure unit, Reference): same control type and styling for both.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun <T> SettingsDropdownRow(
+    label: String,
+    selected: T,
+    options: List<T>,
+    optionLabel: (T) -> String,
+    enabled: Boolean,
+    onSelect: (T) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, style = BoostMetric, color = MaterialTheme.colorScheme.onSurface)
+        ExposedDropdownMenuBox(
+            expanded = expanded,
+            onExpandedChange = { expanded = it },
+        ) {
+            Surface(
+                onClick = { expanded = true },
+                enabled = enabled,
+                modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable),
+                shape = RoundedCornerShape(8.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHighest,
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text(
+                        text = optionLabel(selected),
+                        style = BoostSubheadline,
+                        color = if (enabled) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                    ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded)
+                }
+            }
+            ExposedDropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false },
+            ) {
+                options.forEach { option ->
+                    DropdownMenuItem(
+                        text = { Text(optionLabel(option)) },
+                        onClick = {
+                            expanded = false
+                            // Saves immediately; the echoed payload sets the field.
+                            if (option != selected) onSelect(option)
+                        },
+                    )
+                }
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun RangeSection(
@@ -718,62 +792,26 @@ private fun RangeSection(
     saving: Boolean,
     onFieldChange: ((SettingsViewModel.FieldState) -> SettingsViewModel.FieldState) -> Unit,
     onUnitSave: (PressureUnit) -> Unit,
+    onReferenceSave: (Boolean) -> Unit,
     onSave: () -> Unit,
 ) {
     GroupedSection {
-        var unitExpanded by remember { mutableStateOf(false) }
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text("Pressure unit", style = BoostMetric, color = MaterialTheme.colorScheme.onSurface)
-            ExposedDropdownMenuBox(
-                expanded = unitExpanded,
-                onExpandedChange = { unitExpanded = it },
-            ) {
-                Surface(
-                    onClick = { unitExpanded = true },
-                    enabled = !saving,
-                    modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable),
-                    shape = RoundedCornerShape(8.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerHighest,
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        Text(
-                            text = fields.pressureUnit.choiceLabel,
-                            style = BoostSubheadline,
-                            color = if (!saving) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            },
-                        )
-                        ExposedDropdownMenuDefaults.TrailingIcon(expanded = unitExpanded)
-                    }
-                }
-                ExposedDropdownMenu(
-                    expanded = unitExpanded,
-                    onDismissRequest = { unitExpanded = false },
-                ) {
-                    PressureUnit.entries.forEach { unit ->
-                        DropdownMenuItem(
-                            text = { Text(unit.choiceLabel) },
-                            onClick = {
-                                unitExpanded = false
-                                // Saves immediately; the echoed payload sets
-                                // the field and re-formats the psi values.
-                                if (unit != fields.pressureUnit) onUnitSave(unit)
-                            },
-                        )
-                    }
-                }
-            }
-        }
+        SettingsDropdownRow(
+            label = "Pressure unit",
+            selected = fields.pressureUnit,
+            options = PressureUnit.entries,
+            optionLabel = { it.choiceLabel },
+            enabled = !saving,
+            onSelect = onUnitSave,
+        )
+        SettingsDropdownRow(
+            label = "Pressure reference",
+            selected = fields.pressureAbsolute,
+            options = listOf(false, true),
+            optionLabel = { if (it) "Absolute" else "Atmospheric" },
+            enabled = !saving,
+            onSelect = onReferenceSave,
+        )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             NumberField("psiMin", fields.psiMin, Modifier.weight(1f)) { value ->
                 onFieldChange { it.copy(psiMin = value) }

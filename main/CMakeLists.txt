@@ -28,6 +28,7 @@ idf_component_register(
         "boost_theme.c"
         "boost_neon_geom.c"
         "boost_units.c"
+        "boost_pressure_ref.c"
         "boost_web.c"
         "boost_media_store.c"
         "boost_network.c"

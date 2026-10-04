@@ -9,6 +9,7 @@
 #include "boost_gauge.h"
 #include "boost_page.h"
 #include "boost_model.h"
+#include "boost_pressure_ref.h"
 #include "boost_theme.h"
 #include "boost_sim.h"
 #include "boost_sensors.h"
@@ -158,9 +159,18 @@ void app_main(void)
     /* The physical gauge receives samples directly in its LVGL timer. */
 
     if (boost_display_lock(-1) == ESP_OK) {
-        boost_page_create();
-
+        /* Seed the atmospheric display reference BEFORE the scene bakes its
+         * dial numerals. Those numerals are baked once and never re-derived per
+         * sample, so in absolute mode a scene built with the standard-atmosphere
+         * default would label the scale 14.7 while the readout on the very next
+         * frame shows the measured ambient - a real BMP280 sits at 98-103 kPa,
+         * i.e. 0.2-0.5 psi away, comfortably above the display resolution. The
+         * sample is a pure read of the cached sensor value, so taking it one
+         * call earlier changes nothing else. */
         const boost_sample_t initial = next_sample();
+        boost_pressure_ref_update(initial.ambient_kpa, initial.ambient_is_fallback);
+
+        boost_page_create();
         boost_page_update(&initial);
         lv_timer_t *gauge_timer = lv_timer_create(gauge_timer_cb, 16, NULL);
         if (gauge_timer == NULL) {

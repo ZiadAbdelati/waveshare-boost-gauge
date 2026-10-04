@@ -565,6 +565,10 @@ static int route_themes_config_put(const cJSON *body, char *out, size_t cap)
     if (cJSON_IsBool(dtb)) {
         boost_theme_set_dyno_true_black(cJSON_IsTrue(dtb));
     }
+    const cJSON *pabs = cJSON_GetObjectItemCaseSensitive(body, "pressureAbsolute");
+    if (cJSON_IsBool(pabs)) {
+        boost_theme_set_pressure_absolute(cJSON_IsTrue(pabs));
+    }
     const cJSON *nsp = cJSON_GetObjectItemCaseSensitive(body, "neonMarqueeSpin");
     if (cJSON_IsBool(nsp)) {
         boost_theme_set_neon_marquee_spin(cJSON_IsTrue(nsp));

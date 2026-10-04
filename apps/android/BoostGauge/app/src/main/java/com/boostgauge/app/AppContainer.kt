@@ -5,6 +5,7 @@ import com.boostgauge.app.data.GaugeRepository
 import com.boostgauge.app.data.api.GaugeApi
 import com.boostgauge.app.data.settings.SettingsStore
 import com.boostgauge.app.data.transport.TransportController
+import com.boostgauge.app.ui.PressureReferenceState
 import com.boostgauge.app.ui.PressureUnitState
 
 /** Manual dependency container; one active transport at a time. */
@@ -20,6 +21,13 @@ class AppContainer(appContext: Context) {
      * (dashboard refresh / settings load-save); display-only.
      */
     val pressureUnit = PressureUnitState()
+
+    /**
+     * The device's /themes `pressureAbsolute`, mirrored process-wide so every
+     * screen renders the same pressure reference. `/state` does not carry it,
+     * so an adopted /themes payload is the only source; display-only.
+     */
+    val pressureReference = PressureReferenceState()
 
     /**
      * Restores the persisted transport selection before the live loop starts.

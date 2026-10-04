@@ -79,10 +79,13 @@ final class SettingsViewModel: ObservableObject {
     /// While `unitWriteSeq != unitConfirmedSeq` a unit-carrying `/themes`
     /// payload predates the in-flight write and must not publish.
     private var unitConfirmedSeq = 0
+    /// Same monotonic sequencing for the pressure-reference writes.
+    private var refWriteSeq = 0
+    private var refConfirmedSeq = 0
     private var obdPollTask: Task<Void, Never>?
 
-    /// Which authority a decoded `/themes` unit came from.
-    private enum UnitSource { case remote, local }
+    /// Which authority a decoded `/themes` unit/reference came from.
+    private enum WriteSource { case remote, local }
 
     func reset(transport: GaugeTransport?) {
         assertMainThread()
@@ -511,7 +514,7 @@ final class SettingsViewModel: ObservableObject {
                 }
                 if let decoded = try? JSONDecoder().decode(ThemeList.self, from: response.body),
                    decoded.pressureUnit != nil {
-                    self.applyThemeFlags(decoded, unitSource: .local)
+                    self.applyThemeFlags(decoded, source: .local)
                 } else {
                     // Echo without the field (older firmware): confirm the
                     // value we just wrote so the UI still adopts it.
@@ -523,6 +526,50 @@ final class SettingsViewModel: ObservableObject {
             await MainActor.run {
                 guard seq == self.unitWriteSeq else { return }
                 self.unitConfirmedSeq = seq
+                self.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    /// Range ▸ Reference: persist the picker's selection (Atmospheric/Absolute).
+    ///
+    /// Mirrors `selectPressureUnit`: the reference does NOT publish until the
+    /// gauge confirms it (the PUT echo), and the monotonic `refWriteSeq`
+    /// guarantees a late echo from an older selection can never overwrite a
+    /// newer one. The firmware echoes the full `/themes` payload, which
+    /// `applyThemeFlags` folds back.
+    func selectPressureReference(_ absolute: Bool) async {
+        guard let transport else {
+            await MainActor.run { errorMessage = "No gauge connection — reconnect, then retry." }
+            return
+        }
+        savedMessage = nil
+        refWriteSeq += 1
+        let seq = refWriteSeq
+        do {
+            let response = try await transport.send("PUT", path: "themes/config", body: ["pressureAbsolute": absolute])
+            await MainActor.run {
+                // A newer selection superseded this write: drop the stale echo.
+                guard seq == self.refWriteSeq else { return }
+                self.refConfirmedSeq = seq
+                guard response.status == 200 else {
+                    self.errorMessage = APIErrorText.from(response)
+                    return
+                }
+                if let decoded = try? JSONDecoder().decode(ThemeList.self, from: response.body),
+                   decoded.pressureAbsolute != nil {
+                    self.applyThemeFlags(decoded, source: .local)
+                } else {
+                    // Echo without the field (older firmware): confirm the
+                    // value we just wrote so the UI still adopts it.
+                    self.appSession?.confirmLocalPressureAbsolute(absolute)
+                }
+                self.savedMessage = "Saved"
+            }
+        } catch {
+            await MainActor.run {
+                guard seq == self.refWriteSeq else { return }
+                self.refConfirmedSeq = seq
                 self.errorMessage = error.localizedDescription
             }
         }
@@ -720,12 +767,12 @@ final class SettingsViewModel: ObservableObject {
             .map { $0.id } ?? SettingsViewModel.customTimezoneID
     }
 
-    private func applyThemeFlags(_ flags: ThemeList, unitSource: UnitSource = .remote) {
+    private func applyThemeFlags(_ flags: ThemeList, source: WriteSource = .remote) {
         assertMainThread()
         themeFlags = flags
         if let value = flags.pressureUnit {
             let unit = PressureUnit.normalized(value)
-            switch unitSource {
+            switch source {
             case .local:
                 // Our own PUT echo: publish and hold against stale /state.
                 appSession?.confirmLocalPressureUnit(unit)
@@ -734,6 +781,19 @@ final class SettingsViewModel: ObservableObject {
                 // only publish once no unit write is pending.
                 if unitWriteSeq == unitConfirmedSeq {
                     appSession?.applyPressureUnit(unit)
+                }
+            }
+        }
+        if let value = flags.pressureAbsolute {
+            switch source {
+            case .local:
+                // Our own PUT echo: publish and hold against stale /state.
+                appSession?.confirmLocalPressureAbsolute(value)
+            case .remote:
+                // A GET or a non-reference echo may predate an in-flight
+                // reference write; only publish once none is pending.
+                if refWriteSeq == refConfirmedSeq {
+                    appSession?.applyPressureAbsolute(value)
                 }
             }
         }

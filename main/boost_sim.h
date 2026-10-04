@@ -58,6 +58,16 @@ boost_sample_t boost_sim_tick(void);
 void boost_sim_set_fast_sweep(bool enabled);
 bool boost_sim_fast_sweep(void);
 
+/**
+ * Simulated BMP280 atmospheric baseline, in kPa. The demo waveform has no
+ * sensors behind it, so every sim-built sample publishes this value with
+ * bmp_present=true and ambient_is_fallback=false - otherwise the absolute
+ * pressure reference would render identically to the gauge one and the host
+ * could never exercise the difference. Defaults to the standard atmosphere.
+ */
+void boost_sim_set_atmosphere_kpa(float kpa);
+float boost_sim_atmosphere_kpa(void);
+
 #ifdef __cplusplus
 }
 #endif

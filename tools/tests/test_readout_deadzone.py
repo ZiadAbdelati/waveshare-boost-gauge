@@ -125,15 +125,15 @@ def main() -> int:
     # definition of the band - one convention beside an existing one is the
     # thing AGENTS.md forbids).
     arc_helper = function_body(gauge_c, "static float arc_readout_display_psi(float psi)")
-    result.check("boost_readout_display_psi(psi)" in arc_helper
+    result.check("boost_pressure_ref_display(psi, true)" in arc_helper
                  and "#define" not in arc_helper,
-                 "arc_readout_display_psi delegates to the shared fold helper",
-                 "arc helper redefines the band locally")
+                 "arc_readout_display_psi uses the shared display transform (fold, then reference)",
+                 "arc helper redefines the band or bypasses the shared transform")
 
     # --- every folding theme routes through the shared helper ---------------
     hud_body = function_body(gauge_c, "static void update_hud(const boost_sample_t *sample, const boost_theme_t *theme)")
-    result.check("boost_readout_display_psi(" in hud_body,
-                 "night-city HUD readout folds through the shared dead zone",
+    result.check("boost_pressure_ref_display(" in hud_body,
+                 "night-city HUD readout folds through the shared display transform",
                  "update_hud uses raw psi for its digit slots")
     hud_sign = re.search(r"const char \*sign = (\w+) < -0\.05f \? \"-\" : \"\";", hud_body)
     result.check(hud_sign is not None and hud_sign.group(1) == "readout_psi",
@@ -141,8 +141,8 @@ def main() -> int:
                  "HUD sign still reads the raw sample")
 
     big_body = function_body(gauge_c, "static void update_bigdigit(const boost_sample_t *sample, const boost_theme_t *theme)")
-    result.check("boost_readout_display_psi(" in big_body,
-                 "big-digit readout folds through the shared dead zone",
+    result.check("boost_pressure_ref_display(" in big_body,
+                 "big-digit readout folds through the shared display transform",
                  "update_bigdigit uses raw psi for its digit slots")
     big_neg = re.search(r"const bool neg = (\w+) < -0\.05f;", big_body)
     result.check(big_neg is not None and big_neg.group(1) == "readout_psi",
@@ -179,6 +179,16 @@ def main() -> int:
                  "thresholds must test the folded value, not raw psi")
 
     # --- vault-tec is the deliberate exception ------------------------------
+    result.check("boost_pressure_ref_display" not in zone_rgb_body
+                 and "boost_pressure_ref_display" not in zone_id_body,
+                 "zone colour/id stay gauge-relative (no display reference)",
+                 "a zone decision must not shift with the display reference")
+
+    vault_cells = function_body(gauge_c, "static void vault_build_cells(float psi)")
+    result.check("boost_pressure_ref_display(psi, false)" in vault_cells,
+                 "vault takes the display reference but still skips the fold",
+                 "vault must stay unfoliated yet reference-aware")
+
     vault_body = function_body(gauge_c, "static void update_vault(const boost_sample_t *sample, const boost_theme_t *theme)")
     result.check("boost_readout_display_psi" not in vault_body
                  and "readout_psi" not in vault_body,
@@ -201,13 +211,13 @@ def main() -> int:
                  "expected fold shape in arcReadoutDisplayPsi")
 
     result.check(re.search(
-        r"function drawFixedPsi\(psi, decimalX, baselineY, scale\)\s*\{\s*const value = arcReadoutDisplayPsi\(Number\(psi\)\);",
+        r"function drawFixedPsi\(psi, decimalX, baselineY, scale\)\s*\{\s*const value = boostDisplayPsi\(psi\);",
         app_js) is not None,
-        "drawFixedPsi routes through arcReadoutDisplayPsi",
-        "web dyno readout not using the dead zone")
+        "drawFixedPsi routes through boostDisplayPsi (fold, then reference)",
+        "web dyno readout bypasses the shared display transform")
 
-    result.check("splitNum(arcReadoutDisplayPsi(psi), 1)" in app_js,
-                 "web HUD readout folds through arcReadoutDisplayPsi",
+    result.check("splitNum(boostDisplayPsi(psi), 1)" in app_js,
+                 "web HUD readout folds through boostDisplayPsi",
                  "web HUD still splits the raw psi")
     result.check("splitNum(psi, 2)" in app_js,
                  "web vault readout keeps the raw psi (deliberate exception)",
@@ -219,13 +229,13 @@ def main() -> int:
                  "vault web mirror must stay raw")
 
     bigdigit_js = function_body(app_js, "function drawBigDigitGauge(sample, psi, g)")
-    result.check("arcReadoutDisplayPsi(psi)" in bigdigit_js
+    result.check("boostDisplayPsi(psi)" in bigdigit_js
                  and "isNeg = readoutPsi < -0.05" in bigdigit_js,
                  "web big-digit readout + minus fold",
                  "web big-digit still uses raw psi")
 
     neon_js = function_body(app_js, "function drawNeonGauge(sample, psi, g)")
-    result.check("const readoutPsi = arcReadoutDisplayPsi(psi);" in neon_js
+    result.check("const readoutPsi = boostDisplayPsi(psi);" in neon_js
                  and "if (readoutPsi < 0 && tenthsTotal !== 0)" in neon_js,
                  "web neon readout + sign fold",
                  "web neon still uses raw psi for the digit composition")
@@ -239,6 +249,16 @@ def main() -> int:
     result.check(neon_js.count("neonZoneDisplayPsi(psi)") >= 2,
                  "web neon zone colour AND zone id consume the folded value",
                  "drawNeonGauge must route both zone sites through neonZoneDisplayPsi")
+    result.check("boostDisplayPsi" not in neon_zone_js
+                 and "refAdjustedPsi" not in neon_zone_js,
+                 "web zone helper stays gauge-relative (no display reference)",
+                 "neonZoneDisplayPsi must not apply the reference")
+    result.check("function boostDisplayPsi(psi) {\n  return refAdjustedPsi(arcReadoutDisplayPsi(Number(psi)));" in app_js,
+                 "web display transform folds BEFORE the reference",
+                 "boostDisplayPsi must compose refAdjustedPsi(arcReadoutDisplayPsi(psi))")
+    result.check("refAdjustedPsi" in vault_js and "arcReadoutDisplayPsi" not in vault_js,
+                 "web vault takes the reference but still does not fold",
+                 "vault must stay unfolded yet reference-aware")
     result.check("psi > 0.05 ? p.boost : p.vacuum" not in neon_js
                  and "? 2 : psi > 0.05" not in neon_js,
                  "no raw-psi zone threshold remains at the web neon zone sites",

@@ -10,6 +10,10 @@ final class ThemesViewModel: ObservableObject {
     /// Pressure-display unit from the last `/themes` payload; injected into the
     /// web preview so the bundled renderer draws the selected unit.
     @Published private(set) var pressureUnit = PressureUnit.psi
+    /// Pressure reference from the last `/themes` payload; injected into the
+    /// web preview so the bundled renderer draws the selected reference
+    /// (reference contract). `false` = atmospheric (gauge), `true` = absolute.
+    @Published private(set) var pressureAbsolute = false
     @Published var isLoading = false
     @Published var errorMessage: String?
 
@@ -146,6 +150,7 @@ final class ThemesViewModel: ObservableObject {
             "config": gaugeConfiguration,
             "settings": [
                 "pressureUnit": pressureUnit,
+                "pressureAbsolute": pressureAbsolute,
                 "arcGradient": arcGradient,
                 "hudGradient": hudGradient,
                 "hudTrueBlack": hudTrueBlack,
@@ -336,6 +341,10 @@ final class ThemesViewModel: ObservableObject {
         if let unit = list.pressureUnit {
             pressureUnit = PressureUnit.normalized(unit)
             appSession?.applyPressureUnit(pressureUnit)
+        }
+        if let absolute = list.pressureAbsolute {
+            pressureAbsolute = absolute
+            appSession?.applyPressureAbsolute(absolute)
         }
         if let seq {
             // Only the newest activation request may set `activeThemeID`: a

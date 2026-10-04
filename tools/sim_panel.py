@@ -10,7 +10,7 @@ Endpoints
     GET  /stream  multipart/x-mixed-replace stream of PNG frames
     POST /cmd     body is one command line, forwarded to the sim's stdin
     GET  /shot    write the current frame to <shot-dir>/<theme>-<unit>-<psi>.png
-    GET  /state   JSON status (theme/unit/psi/demo/page/sim health)
+    GET  /state   JSON status (theme/unit/psi/demo/page/overlay/ref/sim health)
 
 Only the standard library and Pillow (already required by sim/raw_to_png.py)
 are used.  The sim's command grammar and BGFR frame protocol are documented in
@@ -38,7 +38,9 @@ from PIL import Image
 
 MAGIC = b"BGFR"
 FRAME_HEADER = struct.Struct("<4sIII")  # magic, width, height, seq
-STATUS_RE = re.compile(rb"^\[PANEL\] psi=(-?\d+(?:\.\d+)?) demo=([01])")
+STATUS_RE = re.compile(
+    rb"^\[PANEL\] psi=(-?\d+(?:\.\d+)?) demo=([01]) overlay=(-?\d+) ref=([01])"
+)
 
 THEMES = [
     ("dyno-cell", "Dyno Cell"),
@@ -61,13 +63,25 @@ class PanelState:
     """The state the panel believes the sim is in (the sim has no query path).
 
     Updated from the commands the panel itself sends, plus the ``[PANEL]``
-    status lines the sim writes to stderr for the actual reading."""
+    status lines the sim writes to stderr for the actual reading. The overlay
+    page and reference come only from that report: the panel sees encoded
+    frames, not the overlay's widget state."""
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.theme = "dyno-cell"
         self.unit = "psi"
         self.page = "boost"
+        # Reported by the sim's [PANEL] status line, never guessed: -1 = the
+        # physical settings overlay is closed, else the open page
+        # (0 QR, 1 Connections, 2 Units).
+        self.overlay = -1
+        # "atm" | "abs", reported by the sim.
+        self.ref = "atm"
+        # The atmosphere the panel last sent, kPa. Re-sent after a restart,
+        # which is a fresh process whose override is back at 101.325; this is
+        # user intent, not a report, so reset() preserves it.
+        self.atmosphere = 101.325
         # Count of frames the sim had emitted when the last command was sent.
         # /shot waits for frames strictly after this so it never captures a
         # frame rendered before the command took effect.
@@ -78,6 +92,8 @@ class PanelState:
             self.theme = "dyno-cell"
             self.unit = "psi"
             self.page = "boost"
+            self.overlay = -1
+            self.ref = "atm"
             self.cmd_marker = 0
 
     def apply_command(self, cmd: str) -> None:
@@ -97,6 +113,15 @@ class PanelState:
             elif parts[0] == "page" and len(parts) > 1:
                 if parts[1] in ("boost", "tpms"):
                     self.page = parts[1]
+            elif parts[0] == "atmosphere" and len(parts) > 1:
+                # The sim clamps to 50..120; only remember what it accepts so a
+                # restart cannot re-send a rejected value.
+                try:
+                    v = float(parts[1])
+                except ValueError:
+                    return
+                if 50.0 <= v <= 120.0:
+                    self.atmosphere = v
 
 
 class SimProcess:
@@ -216,6 +241,9 @@ class SimProcess:
                     except (subprocess.TimeoutExpired, OSError):
                         pass
                 break
+            with self.state.lock:
+                restore_ref = self.state.ref
+                restore_atmosphere = self.state.atmosphere
             self.state.reset()
             readers = [
                 threading.Thread(target=self._read_frames, args=(proc,), daemon=True),
@@ -223,6 +251,13 @@ class SimProcess:
             ]
             for r in readers:
                 r.start()
+            # A restart is a NEW process: the atmosphere override is back at
+            # 101.325 and the store may be back at atmospheric. Re-assert the
+            # user's reference and atmosphere so the panel cannot keep showing
+            # a value the fresh sim is not in; the next [PANEL] report then
+            # confirms it (or corrects the panel).
+            self.send(f"ref {restore_ref}")
+            self.send(f"atmosphere {restore_atmosphere:.3f}")
             rc, rebuilt = self._wait(proc)
             for r in readers:
                 r.join(timeout=2)
@@ -321,6 +356,12 @@ class SimProcess:
                     with self.lock:
                         self.psi = float(m.group(1))
                         self.demo = m.group(2) == b"1"
+                    # The overlay page and reference are taken from the sim's
+                    # own report, so the panel can never disagree with what is
+                    # actually rendered (frames carry pixels, not widget state).
+                    with self.state.lock:
+                        self.state.overlay = int(m.group(3))
+                        self.state.ref = "abs" if m.group(4) == b"1" else "atm"
 
     # ---- frames ----------------------------------------------------------
     def get_frame(self, after: int, timeout: float) -> tuple[int, int, int, bytes] | None:
@@ -503,6 +544,7 @@ class PanelHandler(BaseHTTPRequestHandler):
         assert SIM is not None
         with STATE.lock:
             theme, unit, page = STATE.theme, STATE.unit, STATE.page
+            overlay, ref, atmosphere = STATE.overlay, STATE.ref, STATE.atmosphere
         with SIM.lock:
             psi, demo, count = SIM.psi, SIM.demo, SIM.count
         return {
@@ -511,6 +553,9 @@ class PanelHandler(BaseHTTPRequestHandler):
             "page": page,
             "psi": psi,
             "demo": demo,
+            "overlay": overlay,
+            "ref": ref,
+            "atmosphere": atmosphere,
             "frames": count,
             "running": SIM.running(),
             "restarts": SIM.restarts,
@@ -622,6 +667,27 @@ PAGE_HTML = """<!doctype html>
         <select id="tpms">__SCENARIOS__</select></div>
     </fieldset>
 
+    <fieldset><legend>Settings overlay</legend>
+      <div class="row"><label>overlay</label>
+        <button id="overlayOpen">open</button>
+        <button id="overlayClose">close</button></div>
+      <div class="row"><label>page</label>
+        <button id="overlayPage0">QR</button>
+        <button id="overlayPage1">Connections</button>
+        <button id="overlayPage2">Units</button></div>
+      <div class="row"><label>step</label>
+        <button id="overlayPrev">prev</button>
+        <button id="overlayNext">next</button></div>
+      <div class="row"><label>reference</label>
+        <label><input type="radio" name="ref" value="atm"> Atmospheric</label>
+        <label><input type="radio" name="ref" value="abs"> Absolute</label></div>
+      <div class="row"><label for="atmosphere">atmosphere</label>
+        <input type="number" id="atmosphere" min="50" max="120" step="0.1" value="101.325">
+        <span class="hint">kPa</span></div>
+      <div class="hint">next walks the overlay pages forward (0&rarr;1&rarr;2&rarr;0);
+        prev walks back.</div>
+    </fieldset>
+
     <button class="primary" id="shot">Save screenshot</button>
     <div class="shot" id="shotPath"></div>
     <div class="hint">Files land in __SHOTDIR__/ named
@@ -631,6 +697,7 @@ PAGE_HTML = """<!doctype html>
 </div>
 <script>
 const $ = (id) => document.getElementById(id);
+const OVERLAY_NAMES = { '-1': 'closed', '0': 'QR', '1': 'Connections', '2': 'Units' };
 async function cmd(line) {
   try {
     const r = await fetch('/cmd', { method: 'POST', body: line });
@@ -649,6 +716,19 @@ on('tail', 'change', (t) => cmd('tail ' + t.value));
 on('dynoblack', 'change', (t) => cmd('dynoblack ' + t.value));
 on('page', 'change', (t) => cmd('page ' + t.value));
 on('tpms', 'change', (t) => cmd('tpms ' + t.value));
+
+on('overlayOpen', 'click', () => cmd('overlay show'));
+on('overlayClose', 'click', () => cmd('overlay hide'));
+on('overlayPage0', 'click', () => cmd('overlay page 0'));
+on('overlayPage1', 'click', () => cmd('overlay page 1'));
+on('overlayPage2', 'click', () => cmd('overlay page 2'));
+on('overlayPrev', 'click', () => cmd('overlay prev'));
+on('overlayNext', 'click', () => cmd('overlay next'));
+
+document.querySelectorAll('input[name="ref"]').forEach((r) => {
+  r.addEventListener('change', () => { if (r.checked) cmd('ref ' + r.value); });
+});
+on('atmosphere', 'change', (t) => cmd('atmosphere ' + t.value));
 
 document.querySelectorAll('input[name="unit"]').forEach((r) => {
   r.addEventListener('change', () => { if (r.checked) cmd('unit ' + r.value); });
@@ -695,8 +775,11 @@ async function poll() {
       lastFrames = s.frames;
     }
     const psi = (s.psi === null || s.psi === undefined) ? '?' : Number(s.psi).toFixed(2);
+    const overlay = OVERLAY_NAMES[String(s.overlay)] ?? String(s.overlay);
     let text = `theme ${s.theme}   unit ${s.unit}   psi ${psi}   `
              + `source ${s.demo ? 'demo waveform' : 'fixed'}   page ${s.page}\n`
+             + `overlay ${overlay}   ref ${s.ref}   `
+             + `atmosphere ${Number(s.atmosphere).toFixed(1)} kPa\n`
              + `sim ${s.running ? 'running' : 'RESTARTING'}   frames ${s.frames}`
              + (s.simBuiltAt ? `   built ${s.simBuiltAt}` : '   built ?')
              + (s.restarts ? `   restarts ${s.restarts}` : '')
@@ -710,11 +793,22 @@ async function poll() {
       });
       $('page').value = s.page;
       $('follow').checked = !!s.demo;
+      document.querySelectorAll('input[name="ref"]').forEach((r) => {
+        r.checked = (r.value === s.ref);
+      });
+      if (s.atmosphere !== null && s.atmosphere !== undefined) {
+        $('atmosphere').value = Number(s.atmosphere).toFixed(3);
+      }
       if (s.psi !== null && s.psi !== undefined) setPsi(Number(s.psi).toFixed(1), false);
     } else if (s.demo && s.psi !== null && s.psi !== undefined) {
       // While following the waveform, track the live reading on the slider.
       $('psiRange').value = s.psi; $('psiNum').value = Number(s.psi).toFixed(1);
     }
+    // The reference is report-driven: keep the radios on what the sim reports,
+    // so a restart that re-asserts (or fails to) shows up here immediately.
+    document.querySelectorAll('input[name="ref"]').forEach((r) => {
+      r.checked = (r.value === s.ref);
+    });
   } catch (e) { /* server briefly unavailable */ }
 }
 poll();

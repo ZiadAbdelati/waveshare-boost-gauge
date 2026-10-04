@@ -26,6 +26,12 @@ data class Status(
      * change or a missed /themes fetch can never leave a stale unit.
      */
     val pressureUnit: String = "psi",
+    /**
+     * Live pressure reference carried by every /state sample. Adopted from
+     * each sample so a physical-panel reference flip is reflected without a
+     * /themes refresh (mirrors [pressureUnit]). Presentation-only.
+     */
+    val pressureAbsolute: Boolean = false,
 )
 
 @Serializable
@@ -127,6 +133,14 @@ data class ThemesPayload(
      */
     @EncodeDefault
     val pressureUnit: String = "psi",
+    /**
+     * Global pressure reference: `false` = atmospheric/gauge (default),
+     * `true` = absolute (display = gauge + the ambient reference). Wire values
+     * stay gauge PSI; the reference is presentation-only. Always encoded so
+     * /themes echoes it, mirroring [pressureUnit].
+     */
+    @EncodeDefault
+    val pressureAbsolute: Boolean = false,
 )
 
 @Serializable

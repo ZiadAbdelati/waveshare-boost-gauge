@@ -67,6 +67,7 @@ import com.boostgauge.app.ui.BoostTileValue
 import com.boostgauge.app.ui.BoostUnit
 import com.boostgauge.app.ui.Format
 import com.boostgauge.app.ui.PressureUnit
+import com.boostgauge.app.ui.boostDisplayPsi
 import com.boostgauge.app.ui.components.BoostCard
 import com.boostgauge.app.ui.components.BoostSectionTitleText
 import com.boostgauge.app.ui.components.MetricRow
@@ -80,7 +81,7 @@ import com.boostgauge.app.ui.viewmodels.StatusViewModel
 fun DashboardScreen(container: AppContainer) {
     val viewModel: StatusViewModel = viewModel(
         factory = viewModelFactory {
-            initializer { StatusViewModel(container.repository, container.api, container.pressureUnit) }
+            initializer { StatusViewModel(container.repository, container.api, container.pressureUnit, container.pressureReference) }
         },
     )
     val status by viewModel.status.collectAsState()
@@ -91,6 +92,7 @@ fun DashboardScreen(container: AppContainer) {
     val themes by viewModel.themes.collectAsState()
     val selection by container.transportController.selection.collectAsState()
     val pressureUnit by viewModel.pressureUnit.collectAsState()
+    val pressureAbsolute by viewModel.pressureAbsolute.collectAsState()
     LaunchedEffect(Unit) { viewModel.refresh() }
     // The unit is adopted by StatusViewModel from EVERY /state sample the
     // repository delivers, so neither this screen's initial /themes fetch nor
@@ -119,7 +121,7 @@ fun DashboardScreen(container: AppContainer) {
         }
 
         val cards: List<@Composable () -> Unit> = buildList {
-            add { BoostHeroCard(status, status == null, themeNames[status?.activeThemeId] ?: status?.activeThemeId ?: "—", pressureUnit) }
+            add { BoostHeroCard(status, status == null, themeNames[status?.activeThemeId] ?: status?.activeThemeId ?: "—", pressureUnit, pressureAbsolute) }
             add { SensorsCard(status?.sensors) }
             add { TpmsCard(status, pressureUnit) }
             add { ObdCard(status?.obd, themes?.tpmsBle == true) }
@@ -160,7 +162,7 @@ private fun DashboardPane(cards: List<@Composable () -> Unit>, modifier: Modifie
 }
 
 @Composable
-private fun BoostHeroCard(status: Status?, loading: Boolean, themeName: String, unit: PressureUnit) {
+private fun BoostHeroCard(status: Status?, loading: Boolean, themeName: String, unit: PressureUnit, absolute: Boolean) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
@@ -179,7 +181,9 @@ private fun BoostHeroCard(status: Status?, loading: Boolean, themeName: String, 
                 verticalAlignment = Alignment.Bottom,
             ) {
                 Text(
-                    text = status?.let { unit.format(it.psi, 2) } ?: unit.placeholder,
+                    text = status?.let {
+                        unit.format(boostDisplayPsi(it.psi, it.sensors.ambientKpa, absolute), 2)
+                    } ?: unit.placeholder,
                     style = BoostHeroValue,
                     color = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.alignByBaseline(),
@@ -221,7 +225,7 @@ private fun BoostHeroCard(status: Status?, loading: Boolean, themeName: String, 
                         modifier = Modifier.size(16.dp),
                     )
                     Text(
-                        text = "Peak ${unit.format(status.peakPsi, 2)} ${unit.suffix}",
+                        text = "Peak ${unit.format(boostDisplayPsi(status.peakPsi, status.sensors.ambientKpa, absolute), 2)} ${unit.suffix}",
                         style = BoostMetric,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

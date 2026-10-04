@@ -42,6 +42,7 @@
 #define NVS_KEY_FASTS   "demo_fast_sweep"
 #define NVS_KEY_TPMSBLE "tpms_ble"
 #define NVS_KEY_UNIT    "unit"
+#define NVS_KEY_PRESSABS "press_abs"
 
 /* Palettes/styles here MUST match tools/mock_server.py and the web renderers so
  * the physical panel and the dashboard mirror agree. */
@@ -249,6 +250,10 @@ static bool s_demo_mode = false;
 static bool s_tpms_ble = false;
 /* Global pressure-display unit; see boost_units.h. Canonical values stay PSI. */
 static uint8_t s_pressure_unit = (uint8_t)BOOST_UNIT_DEFAULT;
+/* GLOBAL pressure reference: false = atmospheric/gauge (today's behaviour),
+ * true = absolute. Presentation-only; canonical stored values stay gauge PSI.
+ * Global, like s_pressure_unit - NOT per-theme. */
+static bool s_pressure_absolute;
 
 /* Persisted as one blob keyed by id rather than per-theme NVS keys: ids run to
  * 24 chars and NVS keys cap at 15, and a single blob keeps the whole set
@@ -321,6 +326,7 @@ static void persist(void)
     nvs_set_u8(h, NVS_KEY_FASTS, boost_sim_fast_sweep() ? 1 : 0);
     nvs_set_u8(h, NVS_KEY_TPMSBLE, s_tpms_ble ? 1 : 0);
     nvs_set_u8(h, NVS_KEY_UNIT, s_pressure_unit);
+    nvs_set_u8(h, NVS_KEY_PRESSABS, s_pressure_absolute ? 1 : 0);
     nvs_commit(h);
     nvs_close(h);
 #endif
@@ -473,6 +479,13 @@ void boost_theme_init(void)
     uint8_t pu = 0;
     if (nvs_get_u8(h, NVS_KEY_UNIT, &pu) == ESP_OK) {
         s_pressure_unit = (uint8_t)boost_units_clamp(pu);
+    }
+
+    /* Absent key leaves the global default (false = atmospheric/gauge), so a
+     * panel that predates this setting keeps today's behaviour. */
+    uint8_t pa = 0;
+    if (nvs_get_u8(h, NVS_KEY_PRESSABS, &pa) == ESP_OK) {
+        s_pressure_absolute = (pa != 0);
     }
 
     size_t len = 0;
@@ -795,6 +808,18 @@ void boost_theme_set_pressure_unit(boost_unit_t unit)
 {
     ensure_loaded();
     s_pressure_unit = (uint8_t)boost_units_clamp((int)unit);
+    persist();
+}
+
+bool boost_theme_pressure_absolute(void)
+{
+    return s_pressure_absolute;
+}
+
+void boost_theme_set_pressure_absolute(bool absolute)
+{
+    ensure_loaded();
+    s_pressure_absolute = absolute;
     persist();
 }
 

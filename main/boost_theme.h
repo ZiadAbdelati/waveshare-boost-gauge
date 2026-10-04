@@ -206,6 +206,16 @@ void boost_theme_set_tpms_ble(bool enabled);
 boost_unit_t boost_theme_pressure_unit(void);
 void boost_theme_set_pressure_unit(boost_unit_t unit);
 
+/*
+ * Global pressure-display reference: false (default) = ATMOSPHERIC/gauge,
+ * true = ABSOLUTE. GLOBAL, not per-theme - the same scope as pressure_unit.
+ * Presentation-only: canonical stored psi (state, logs, CSV, TPMS, calibration,
+ * needle/arc geometry) stays GAUGE psi; this only selects what the numerals
+ * show. Persisted under NVS "press_abs".
+ */
+bool boost_theme_pressure_absolute(void);
+void boost_theme_set_pressure_absolute(bool absolute);
+
 /* Vault-Tec dial glow: the face colour the dial fills with and the vignette
  * darkens from, plus the vignette depth as a percentage (0 = flat, higher =
  * darker edges). Both re-bake the cached face on change. Defaults are the

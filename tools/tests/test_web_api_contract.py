@@ -49,7 +49,7 @@ from mock_server import BoostMockServer  # noqa: E402
 
 # Exact schema the firmware state_json() renders (boost_web.c).
 STATE_TOP_KEYS = {
-    "psi", "peakPsi", "pressureUnit", "zone", "demo", "brightness",
+    "psi", "peakPsi", "pressureUnit", "pressureAbsolute", "zone", "demo", "brightness",
     "firmwareVersion", "uptimeMs", "epochMs", "timezoneOffsetMinutes",
     "activeThemeId", "activePage", "display", "sensors", "tpms", "obd",
 }
@@ -77,6 +77,7 @@ THEMES_FLAG_KEYS = {
     "bigDigitStaticBg", "bigDigitColorText", "bigDigitStaticColor",
     "bigDigitTextColor", "arcGradient", "hudGradient", "hudTrueBlack",
     "dynoTrueBlack",
+    "pressureAbsolute",
     "neonMarqueeSpin", "teSync", "regionDBuf", "teScanline", "rotation",
     "vaultFace", "vaultVignette", "vaultNeedleRed", "vaultNeedleTail",
     "neonLayout", "neonPreset", "demoMode", "demoFastSweep", "tpmsBle",
@@ -197,6 +198,9 @@ def main() -> int:
             result.check(is_type(state, "pressureUnit", str) and state["pressureUnit"] in PRESSURE_UNITS,
                          "/state pressureUnit is psi|bar|kPa",
                          f"got {state.get('pressureUnit')!r}")
+            result.check(is_type(state, "pressureAbsolute", bool),
+                         "/state pressureAbsolute is a bool (the live path a panel toggle reaches)",
+                         f"got {state.get('pressureAbsolute')!r}")
             result.check(is_type(state, "demo", bool) and is_type(state, "brightness", int),
                          "/state demo bool, brightness int")
             result.check(0 <= state["brightness"] <= 100, "/state brightness within 0..100")
@@ -349,6 +353,24 @@ def main() -> int:
         status, state_now = get_json(base, "/api/v1/state")
         result.check(status == 200 and state_now["pressureUnit"] == "psi",
                      "rejected body leaves pressureUnit unchanged")
+
+        # pressureAbsolute: the display reference rides beside the unit and MUST
+        # be visible on /state, because the physical panel can flip it live while
+        # a dashboard is already open (the same rule pressureUnit has).
+        status, resp = put_json(base, "/api/v1/themes/config", {"pressureAbsolute": True})
+        result.check(status == 200 and resp["pressureAbsolute"] is True,
+                     "PUT themes/config pressureAbsolute true accepted and echoed")
+        status, state_now = get_json(base, "/api/v1/state")
+        result.check(status == 200 and state_now["pressureAbsolute"] is True,
+                     "/state reports the absolute reference (the live path a panel toggle reaches)")
+        status, _ = put_json(base, "/api/v1/themes/config", {"pressureAbsolute": "yes"})
+        status, state_now = get_json(base, "/api/v1/state")
+        result.check(state_now["pressureAbsolute"] is True,
+                     "a non-bool pressureAbsolute is ignored rather than coerced "
+                     "(the dynoTrueBlack convention for booleans)")
+        status, resp = put_json(base, "/api/v1/themes/config", {"pressureAbsolute": False})
+        result.check(status == 200 and resp["pressureAbsolute"] is False,
+                     "pressureAbsolute restored to atmospheric")
 
         # demoMode and demoFastSweep are separate persisted flags.
         status, resp = put_json(base, "/api/v1/themes/config",
