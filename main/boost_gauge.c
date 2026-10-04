@@ -7413,6 +7413,16 @@ static void update_hud(const boost_sample_t *sample, const boost_theme_t *theme)
  * or the minus is added to the LEFT of the cells that were already there. */
 #define BIG_VAL_DIGIT_CELL BIG_SLOT   /* 81 */
 #define BIG_VAL_DOT_CELL   50
+/* A fractionless format (kPa) is right-anchored on this instead of psi's tenths
+ * ink edge: with a fixed pitch its block is only as wide as its digits, so the
+ * psi edge leaves 1- and 2-digit values far right of the dial centre (measured
+ * on the sim renders: a lone '0' sat +82 px, and the mean +22.8, against psi's
+ * own mean +2.1). Derived as the psi edge minus the difference between those
+ * means, so the block's mean optical centre lands on psi's, exactly as
+ * VALUE_KPA_ONES_X does for the arc. bar keeps the psi edge - it has a decimal
+ * point and shares psi's point/tenths geometry. */
+#define BIG_VAL_PSI_RIGHT_X (BIG_TENTHS_X + BIG_DIGIT_INK_HALF)   /* 123 */
+#define BIG_VAL_KPA_RIGHT_X (BIG_VAL_PSI_RIGHT_X - 21)            /* 102 */
 
 static int s_big_minus_x = BIG_MINUS_ONES_X;
 
@@ -7749,9 +7759,10 @@ static void update_bigdigit(const boost_sample_t *sample, const boost_theme_t *t
             /* The cells are fixed-pitch and right-anchored, so the digits keep
              * their positions: only a new integer digit or the sign is added,
              * and it is added outside the cells already on screen. The right
-             * edge is psi's tenths ink edge, the same edge the psi odometer
-             * grows left from. */
-            const int right_edge = BIG_TENTHS_X + BIG_DIGIT_INK_HALF;
+             * edge is psi's tenths ink edge for a format with a decimal point
+             * and BIG_VAL_KPA_RIGHT_X for a fractionless one (see above). */
+            const bool has_dot = (strchr(vbuf, '.') != NULL);
+            const int right_edge = has_dot ? BIG_VAL_PSI_RIGHT_X : BIG_VAL_KPA_RIGHT_X;
             int pen = right_edge - total;
             for (int i = 0; i < n; ++i) {
                 /* One fixed cell per character; the glyph draws centred in it,

@@ -1236,3 +1236,17 @@ inherent, and the same reason psi's own number moves between `5.0` and `-12.0`;
 what matters is that the MEAN is now on the dial centre instead of 48 px left.
 The lesson for the guard rails: stability and centring are two separate
 requirements, and satisfying one does not imply the other.
+
+big-digit had the same defect MIRRORED, found by measuring rather than by
+report (the board report named only dyno-cell and vault-tec): it is right-anchored
+on psi's tenths ink edge, so a fractionless block that is only as wide as its
+digits sat far RIGHT — a lone `0` measured +82 px and the mean +22.8 against psi's
+own +2.1. It now uses `BIG_VAL_KPA_RIGHT_X` (psi's edge - 21) for a fractionless
+format and keeps psi's edge for one with a decimal point, exactly like the arc and
+vault. After: `-83` -12.5, `0` +61.0, `34` +20.0, `134` -19.0, mean +12.4.
+
+Scope check: bar is BYTE-IDENTICAL on every theme (0 changed pixels over 4 states
+on dyno-cell, vault-tec and big-digit) because the new anchors are selected only
+when the formatted string has no decimal point, and psi is byte-identical on all
+five themes. The kPa change is confined to the fractionless path by construction,
+not by luck.
