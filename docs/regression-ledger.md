@@ -1072,3 +1072,106 @@ the same `boost_theme_set_*`/`boost_page_*` entry points the settings UI does, s
 it cannot render a lie. `tools/tests/test_sim_panel.py` covers it in the host
 suite (skips when the sim is not built). This is the class of bug it exists to
 catch: batch screenshots existed, but nobody rendered the unit matrix.
+
+## 2026-10-03 (second round) — converted-unit readouts are odometers
+
+Reported from the flashed board: on several themes the bar/kPa number "shifts
+around depending on how many digits are displayed and whether there's a negative
+sign", worst on Big Digit, where even the width of an individual digit moved it.
+
+The first round (above) right-aligned/centred the string per theme. That fixed
+the cross-unit placement and introduced this: the string was laid out from the
+font's per-glyph ADVANCES, so adding an integer digit, adding the sign, or (on
+Alvida's proportional digits, 45 px for '1' against 81 px for '0') changing any
+single digit moved every glyph in the number.
+
+Root cause, stated plainly: **PSI is stable because its slot positions are a
+function of a character's PLACE IN THE NUMBER, not of the string's width.** The
+converted formats were laid out as strings with a shared anchor. Fixed by giving
+each affected theme a derived slot grid whose anchor is one of its own psi slots,
+so the converted face inherits the odometer property and reuses psi geometry
+wherever psi has a slot.
+
+|theme|anchored on|digit pitch|point|fraction pitch|sign|
+|---|---|---|---|---|---|
+|dyno-cell (arc)|`VALUE_ONES_X` -27|43 (`VALUE_DIGIT_PITCH`, = `VALUE_ONES_X - VALUE_TENS_X`)|`VALUE_DECIMAL_X` 9|36 (`VALUE_FRAC_PITCH`)|leading digit - 32 (psi's own -59/-102)|
+|vault-tec|`VAULT_ONES_X` -12|24 (`VAULT_PITCH`, the mono advance)|`VAULT_DOT_X` +12 = ones + pitch|24|leading digit - 24 (psi slot 0/1/2)|
+|big-digit|right `BIG_TENTHS_X + BIG_DIGIT_INK_HALF` = +123|81 (`BIG_VAL_DIGIT_CELL` = `BIG_SLOT`)|`BIG_VAL_DOT_CELL` 50|50|leading cell - `BIG_MINUS_EDGE_GAP` - `BIG_MINUS_W`/2|
+
+Big Digit is the exception on anchoring, forced by geometry: psi's own worst case
+is "-15.0", whose minus ink already reaches face x -205 of a 466 px face. A kPa
+"-103" at psi's 81 px pitch needs sign + three integer digits and lands at -286,
+off-screen, so its cells stay fixed-pitch but the block is anchored on its right
+edge instead. Big Digit's cells also had to be changed from `LV_TEXT_ALIGN_LEFT`
+to `LV_TEXT_ALIGN_CENTER`: with a fixed cell width a left-aligned narrow glyph
+sits at the left of its cell (the '1' in "1.34" measured 14.5 px out of place).
+
+Measured stability: seven pressures (-12, -3, 0, 3, 5, 9, 19.5 psi) per theme per
+unit, reading the ink-run centres in the readout band of real sim renders. Every
+slot is stationary; only the ink CENTRE of a slot wobbles by up to 2.5 px as the
+digit changes, which is glyph asymmetry inside an advance-centred slot and is
+exactly what PSI already does. Screen-x slots:
+
+|theme|unit|hundreds|tens|ones|point|tenths|hundredths|
+|---|---|---|---|---|---|---|---|
+|dyno-cell|kPa|120|163|206|-|-|-|
+|dyno-cell|bar|-|-|206|241.5|278|314|
+|vault-tec|kPa|-|196.5|220.5|-|-|-|
+|vault-tec|bar|-|-|220.5|244.5|268.5|293|
+|big-digit|kPa|-|234.5|315.5|-|-|-|
+|big-digit|bar|-|-|103.5|169|234.5|315.5|
+
+(`dyno-cell bar`'s tenths and hundredths merge into one 75 px ink run centred at
+296 in every render; `kPa 34` merges its tens and ones likewise. The slot
+positions above are read off the cases where they separate.)
+
+**PSI is byte-identical.** The committed HEAD binary and the new one were built
+side by side and all 5 themes x 4 sim states rendered with each: **0 differing
+pixels** in all 20 renders. The arc change is a pure refactor of the psi branch
+(the cell writes moved into `arc_set_cell()`) plus a new non-psi branch; vault and
+big-digit psi paths are untouched. This matters because psi is the 60 FPS
+reference path.
+
+Deliberately NOT changed, with the reason:
+
+- **night-city** — its psi slots are 52 px digit-to-digit and 40 px around the
+  point, so bar's hundredths would land at +122. The readout object's right edge
+  is `HUD_READOUT_OBJ_X2` 117 (LVGL clips a widget's draw to its coords) and the
+  reticle bracket sits at `HUD_BRACKET_X` 126, so pinning the point clashes with
+  the bracket; the only clash-free alternative is right-anchoring, which moves
+  the whole number 52 px on a unit change. Its current defect is small — the '.'
+  (advance 435) and '-' (551) against a digit's 829 shift the run by ~8.6 px —
+  and the cure costs more than the disease. Open, needs a design decision.
+- **neon** — its readout is a centred uniform-pitch block by design, so it
+  re-centres when the digit count changes. Same class as above, and it is also
+  the theme with the unfixed ring-annulus intrusion; both want one design pass
+  with the panel open.
+
+## 2026-10-03 — TPMS unit marks are content-sized
+
+The TPMS page's unit mark (`main/boost_tpms_ui.c:make_unit_label()`) was built
+with `lv_obj_set_width(label, 66)` and LVGL's default `LV_LABEL_LONG_WRAP`, left
+at whatever height the host's font metrics produced. The reported symptom (the
+top-left wheel's `bar` cut on its right, the bottom two wheels' cut at the top)
+could not be reproduced in any render — the panel, `--tpms normal`, and the
+psi/bar/kPa matrix all give four pixel-identical `bar` marks 5-7 px clear of the
+wheel art — but the box was a real latent clip: the left wheels' right-aligned ink
+ended on exactly x=120, which is the box's own right edge, and the height was
+host-derived, so a one-pixel rounding difference in advance or line box is a
+shave. Fixed structurally rather than cosmetically: the label is now sized to its
+own text (never wraps) with the height pinned to `lv_text_get_size()`'s line box,
+and positioned from the VALUE label's own `lv_obj_get_coords()` so the two can
+never disagree. `TPMS_UNIT_DY` is now a true pixel gap below the value's measured
+box instead of a hardcoded 24 px that assumed the value font's line height. PSI
+stays hidden and its render is byte-identical (0 differing pixels).
+
+## 2026-10-03 — Dyno Cell true-black face
+
+`dynoTrueBlack`, mirroring Night City's `hudTrueBlack` exactly (NVS `dyno_black`,
+`/themes` + both `/themes/config` transports, web, iOS, Android). The renderer
+reads it through `arc_face_color()` at the two places the arc face colour is
+chosen: the cached background canvas fill and the scene root. Measured in the
+panel: the dominant face colour goes (8,8,8) -> (0,0,0) and back. Like Night
+City's, it is read at scene build, so a toggle lands through the scene rebuild a
+`/themes/config` PUT already performs. The sim panel gained a `dynoblack on|off`
+command and a Dyno Cell control so it can be eyeballed before flashing.

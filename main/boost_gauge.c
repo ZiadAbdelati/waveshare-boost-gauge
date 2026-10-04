@@ -120,6 +120,20 @@ static inline void boost_display_gauge_update_end(void) {}
 #define VALUE_ONES_X       (-27)
 #define VALUE_DECIMAL_X    9
 #define VALUE_TENTHS_X     45
+/* Converted-unit grid (bar/kPa). PSI keeps the hand-tuned slots above; the
+ * converted formats are the SAME odometer, with the decimal point pinned to
+ * VALUE_DECIMAL_X and every digit on a fixed pitch, so nothing moves when the
+ * value, its digit count or its sign changes - a new digit or the minus is
+ * tacked on outside the digits that were already there. These values are
+ * derived, not invented: PSI's own sign sits a fixed 32 px left of the leading
+ * integer digit (-59 for one digit, -102 for two) and its fraction continues on
+ * the 36 px dot-to-tenths step, so a converted value lands on PSI's slots
+ * wherever PSI has one. kPa has no decimal point, so it pins its units digit to
+ * VALUE_ONES_X and grows left, which is why its digits land on PSI's integer
+ * slots too. */
+#define VALUE_DIGIT_PITCH   (VALUE_ONES_X - VALUE_TENS_X)      /* 43 */
+#define VALUE_FRAC_PITCH    (VALUE_TENTHS_X - VALUE_DECIMAL_X) /* 36 */
+#define VALUE_SIGN_GAP      32                                  /* PSI: -27-32 = -59 */
 #define VALUE_READOUT_Y    6      /* readout slot centre (moved up 10 px from 16) */
 /* Top of the readout's line box, face-local: the old label objects were
  * VALUE_SLOT_HEIGHT-tall boxes centred at VALUE_READOUT_Y, and label ink
@@ -397,6 +411,16 @@ static lv_obj_t *s_zone_label;
  * centred by construction; bar/kPa lay out on the same 24 px pitch. */
 #define VAULT_MAX_CELLS 6
 static const int k_vault_slot_x[VAULT_MAX_CELLS] = { -60, -36, -12, 12, 36, 60 };
+/* Converted-unit grid for the vault dial: the psi field's own 24 px mono pitch
+ * (k_vault_slot_x is uniform), anchored on the UNITS digit so every digit keeps
+ * its psi slot. The decimal point then falls one pitch right of it, which is
+ * exactly psi's dot slot (+12); the fraction continues one pitch per digit
+ * (+36, +60), which is psi's too. kPa has no point and simply skips the dot
+ * cell, so its digits still land on psi's integer slots. The sign takes the
+ * next cell to the left of the leading integer digit. */
+#define VAULT_PITCH    24
+#define VAULT_ONES_X  (-12)  /* psi slot 2 = ones */
+#define VAULT_DOT_X   (VAULT_ONES_X + VAULT_PITCH)  /* psi slot 3 = '.' */
 
 static lv_obj_t *s_vault_bg;
 static uint8_t *s_vault_bg_buf;
@@ -5376,6 +5400,15 @@ static void set_value_arc(float psi, float raw_color_psi)
  * from its get_center(), which is ARC_DIAMETER/2 with zero padding here).
  * LV_PART_INDICATOR was always LV_OPA_0 and drew nothing, so it is not
  * reproduced. */
+/* Dyno Cell's face, or true black when the user asks for it (AMOLED pixels
+ * off), exactly mirroring hud_face_color() for Night City. Read at scene build,
+ * so a toggle takes effect through the scene rebuild that a /themes/config PUT
+ * already performs for every theme setting. */
+static lv_color_t arc_face_color(const boost_theme_t *theme)
+{
+    return boost_theme_dyno_true_black() ? lv_color_black() : c(theme->face);
+}
+
 static void paint_arc_background(lv_obj_t *canvas, const boost_theme_t *theme)
 {
     const float cx = DISP_SIZE * 0.5f;
@@ -5386,7 +5419,7 @@ static void paint_arc_background(lv_obj_t *canvas, const boost_theme_t *theme)
 
     lv_draw_rect_dsc_t bg;
     lv_draw_rect_dsc_init(&bg);
-    bg.bg_color = c(theme->face);
+    bg.bg_color = arc_face_color(theme);
     bg.bg_opa = LV_OPA_COVER;
     lv_area_t full = { 0, 0, DISP_SIZE - 1, DISP_SIZE - 1 };
     lv_draw_rect(&layer, &bg, &full);
@@ -5468,17 +5501,15 @@ static void paint_arc_background(lv_obj_t *canvas, const boost_theme_t *theme)
 }
 
 /* Readout cells. PSI keeps the hand-tuned fixed slots of the 60 FPS reference
- * path; bar/kPa layout from the font's own advances, centred on the psi
- * decimal slot, because their digit counts and decimal lengths differ. The
- * cell array is rebuilt whenever the value changes (and on a scene rebuild
- * when the unit changes), so draw and invalidation share one geometry. */
-static int arc_glyph_advance(char ch)
+ * path; bar/kPa are the same fixed-slot odometer on the derived grid above, so
+ * every digit keeps its position as the value changes. The cell array is
+ * rebuilt whenever the value changes (and on a scene rebuild when the unit
+ * changes), so draw and invalidation share one geometry. */
+static void arc_set_cell(int index, char ch, int x)
 {
-    lv_font_glyph_dsc_t g;
-    if (!lv_font_get_glyph_dsc(&archivo_black_65, &g, (uint32_t)(unsigned char)ch, 0)) {
-        return 0;
-    }
-    return (int)g.adv_w;
+    s_arc_cell_ch[index][0] = ch;
+    s_arc_cell_ch[index][1] = '\0';
+    s_arc_cell_x[index] = (int16_t)x;
 }
 
 static void arc_build_cells(float psi)
@@ -5491,30 +5522,30 @@ static void arc_build_cells(float psi)
             (tens[0] != ' ') ? VALUE_SIGN_X_TWO : VALUE_SIGN_X_ONE,
             VALUE_TENS_X, VALUE_ONES_X, VALUE_DECIMAL_X, VALUE_TENTHS_X,
         };
-        for (int i = 0; i < 5; ++i) {
-            s_arc_cell_ch[i][0] = chars[i];
-            s_arc_cell_ch[i][1] = '\0';
-            s_arc_cell_x[i] = (int16_t)xs[i];
-        }
+        for (int i = 0; i < 5; ++i) arc_set_cell(i, chars[i], xs[i]);
         s_arc_cell_n = 5;
         return;
     }
+    /* bar/kPa: fixed slots, NOT the font's own advances. Slot position is a
+     * function of the character's PLACE IN THE NUMBER (which integer digit,
+     * which fraction digit), so the layout is stable across every value. */
     char buf[16];
     boost_units_format(boost_theme_pressure_unit(), psi, true, buf, sizeof(buf));
-    int n = (int)strlen(buf);
-    if (n > ARC_MAX_CELLS) n = ARC_MAX_CELLS;
-    int total = 0;
-    int adv[ARC_MAX_CELLS] = {0};
-    for (int i = 0; i < n; ++i) {
-        adv[i] = arc_glyph_advance(buf[i]);
-        total += adv[i];
+    const char *digits = buf;
+    const bool neg = (*digits == '-');
+    if (neg) ++digits;
+    const char *const dot = strchr(digits, '.');
+    const int int_len = (dot != NULL) ? (int)(dot - digits) : (int)strlen(digits);
+    const int frac_len = (dot != NULL) ? (int)strlen(dot + 1) : 0;
+    const int lead_x = VALUE_ONES_X - (int_len - 1) * VALUE_DIGIT_PITCH;
+    int n = 0;
+    if (neg && n < ARC_MAX_CELLS) arc_set_cell(n++, '-', lead_x - VALUE_SIGN_GAP);
+    for (int i = 0; i < int_len && n < ARC_MAX_CELLS; ++i) {
+        arc_set_cell(n++, digits[i], VALUE_ONES_X - (int_len - 1 - i) * VALUE_DIGIT_PITCH);
     }
-    int x = VALUE_DECIMAL_X - total / 2;
-    for (int i = 0; i < n; ++i) {
-        s_arc_cell_ch[i][0] = buf[i];
-        s_arc_cell_ch[i][1] = '\0';
-        s_arc_cell_x[i] = (int16_t)(x + adv[i] / 2);
-        x += adv[i];
+    if (dot != NULL && n < ARC_MAX_CELLS) arc_set_cell(n++, '.', VALUE_DECIMAL_X);
+    for (int i = 0; i < frac_len && n < ARC_MAX_CELLS; ++i) {
+        arc_set_cell(n++, dot[1 + i], VALUE_DECIMAL_X + (i + 1) * VALUE_FRAC_PITCH);
     }
     s_arc_cell_n = (uint8_t)n;
 }
@@ -6329,8 +6360,9 @@ static void vault_readout_area(int index, lv_area_t *area)
 }
 
 /* Fill the vault cells for `psi`: PSI keeps the historic fixed six-slot field
- * (always sign + two integer digits + two decimals); bar/kPa lay the formatted
- * string out on the same uniform 24 px mono pitch, centred. */
+ * (always sign + two integer digits + two decimals); bar/kPa are the same
+ * fixed-slot odometer on the uniform 24 px mono pitch, so a digit never moves
+ * as the value changes. */
 static void vault_build_cells(float psi)
 {
     if (boost_theme_pressure_unit() == BOOST_UNIT_PSI) {
@@ -6353,14 +6385,41 @@ static void vault_build_cells(float psi)
         s_vault_cell_n = VAULT_MAX_CELLS;
         return;
     }
+    /* bar/kPa: slot position depends on which digit of the number this is, not
+     * on the string's width, so the layout is stable across every value. */
     char buf[16];
     boost_units_format(boost_theme_pressure_unit(), psi, false, buf, sizeof(buf));
-    int n = (int)strlen(buf);
-    if (n > VAULT_MAX_CELLS) n = VAULT_MAX_CELLS;
-    for (int i = 0; i < n; ++i) {
-        s_vault_cell_ch[i][0] = buf[i];
-        s_vault_cell_ch[i][1] = '\0';
-        s_vault_cell_x[i] = (int16_t)((2 * i - (n - 1)) * 12);
+    const char *digits = buf;
+    const bool neg = (*digits == '-');
+    if (neg) ++digits;
+    const char *const dot = strchr(digits, '.');
+    const int int_len = (dot != NULL) ? (int)(dot - digits) : (int)strlen(digits);
+    const int frac_len = (dot != NULL) ? (int)strlen(dot + 1) : 0;
+    const int lead_x = VAULT_ONES_X - (int_len - 1) * VAULT_PITCH;
+    int n = 0;
+    if (neg && n < VAULT_MAX_CELLS) {
+        s_vault_cell_ch[n][0] = '-';
+        s_vault_cell_ch[n][1] = '\0';
+        s_vault_cell_x[n] = (int16_t)(lead_x - VAULT_PITCH);
+        ++n;
+    }
+    for (int i = 0; i < int_len && n < VAULT_MAX_CELLS; ++i) {
+        s_vault_cell_ch[n][0] = digits[i];
+        s_vault_cell_ch[n][1] = '\0';
+        s_vault_cell_x[n] = (int16_t)(VAULT_ONES_X - (int_len - 1 - i) * VAULT_PITCH);
+        ++n;
+    }
+    if (dot != NULL && n < VAULT_MAX_CELLS) {
+        s_vault_cell_ch[n][0] = '.';
+        s_vault_cell_ch[n][1] = '\0';
+        s_vault_cell_x[n] = (int16_t)VAULT_DOT_X;
+        ++n;
+    }
+    for (int i = 0; i < frac_len && n < VAULT_MAX_CELLS; ++i) {
+        s_vault_cell_ch[n][0] = dot[1 + i];
+        s_vault_cell_ch[n][1] = '\0';
+        s_vault_cell_x[n] = (int16_t)(VAULT_DOT_X + (i + 1) * VAULT_PITCH);
+        ++n;
     }
     s_vault_cell_n = (uint8_t)n;
 }
@@ -7309,9 +7368,8 @@ static void update_hud(const boost_sample_t *sample, const boost_theme_t *theme)
 /* Sign hugs whichever integer digit is leftmost. */
 #define BIG_MINUS_ONES_X (-98)
 #define BIG_MINUS_TENS_X (-179)
-/* bar/kPa draw one advances-centred string, so the sign sits just left of the
- * string's own left edge instead of a fixed slot (gap mirrors the ~3 px the
- * fixed PSI slots leave between the minus and the ones digit). */
+/* bar/kPa: the sign sits just left of the leading integer cell, with the same
+ * ~3 px gap the fixed PSI slots leave between the minus and the ones digit. */
 #define BIG_MINUS_EDGE_GAP 3
 /* bar/kPa readout cell geometry. The string is drawn as one cell per character,
  * each an alvida_big glyph box. The vertical anchor reproduces the previous
@@ -7321,6 +7379,17 @@ static void update_hud(const boost_sample_t *sample, const boost_theme_t *theme)
  * the font's own line height, so the cell clips nothing. */
 #define BIG_VAL_LINE_H  84
 #define BIG_VAL_Y       (-26)
+/* Cell widths for the bar/kPa string, FIXED per character class rather than
+ * taken from the font. Alvida is proportional ('1' advances 45 px, '0' 81 px),
+ * so an advance-based layout moved every digit in the number whenever any one
+ * digit changed - the readout was never still. A digit cell is the widest
+ * advance (alvida's '0', 80.6 px) so no glyph can be clipped by its own box and
+ * every digit sits on the same pitch; the point gets its own narrower cell.
+ * Alvida has no minus glyph, so the sign is the separate trapezoid widget.
+ * A right-anchored fixed pitch is what keeps a digit still: a new integer digit
+ * or the minus is added to the LEFT of the cells that were already there. */
+#define BIG_VAL_DIGIT_CELL BIG_SLOT   /* 81 */
+#define BIG_VAL_DOT_CELL   50
 
 static int s_big_minus_x = BIG_MINUS_ONES_X;
 
@@ -7524,7 +7593,10 @@ static void build_bigdigit(lv_obj_t *scr)
         lv_label_set_text_static(cell, s_big_val_ch[i]);
         lv_obj_set_style_text_font(cell, BIGDIGIT_FONT, 0);
         lv_obj_set_style_text_color(cell, c(boost_theme_bigdigit_text_color()), 0);
-        lv_obj_set_style_text_align(cell, LV_TEXT_ALIGN_LEFT, 0);
+        /* Centred in its cell, exactly like the four psi slots: the cells are
+         * fixed-pitch, so a narrow glyph ('1' advances 45 px against '0' 81)
+         * must not sit at the left of its cell. */
+        lv_obj_set_style_text_align(cell, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_style_pad_all(cell, 0, 0);
         lv_obj_set_size(cell, 1, BIG_VAL_LINE_H);
         lv_obj_align(cell, LV_ALIGN_CENTER, 0, BIG_VAL_Y);
@@ -7645,27 +7717,23 @@ static void update_bigdigit(const boost_sample_t *sample, const boost_theme_t *t
              * cells whose glyph or pen actually moved. */
             int n = (int)strlen(vbuf);
             if (n > BIG_VAL_CELLS) n = BIG_VAL_CELLS;
-            int adv[BIG_VAL_CELLS];
+            int cellw[BIG_VAL_CELLS];
             int total = 0;
             for (int i = 0; i < n; ++i) {
-                adv[i] = (int)lv_font_get_glyph_width(BIGDIGIT_FONT,
-                                                      (uint32_t)(unsigned char)vbuf[i], 0);
-                total += adv[i];
+                cellw[i] = (vbuf[i] == '.') ? BIG_VAL_DOT_CELL : BIG_VAL_DIGIT_CELL;
+                total += cellw[i];
             }
-            /* PSI pins its slots (ones -29, dot +29, tenths +86), so the
-             * number is anchored on its RIGHT ink edge and the integer part
-             * grows left. Centring the bar/kPa string on the face (x=0, what
-             * this used to do) put it ~29 px left of a one-digit psi reading
-             * and ~74 px left of psi's decimal point, so the value jumped
-             * sideways on a unit change. Right-align it to the same edge the
-             * psi tenths slot ends at. */
+            /* The cells are fixed-pitch and right-anchored, so the digits keep
+             * their positions: only a new integer digit or the sign is added,
+             * and it is added outside the cells already on screen. The right
+             * edge is psi's tenths ink edge, the same edge the psi odometer
+             * grows left from. */
             const int right_edge = BIG_TENTHS_X + BIG_DIGIT_INK_HALF;
             int pen = right_edge - total;
             for (int i = 0; i < n; ++i) {
-                /* Box left is the glyph's advance pen, so the glyph draws
-                 * where the advances-centred layout puts it; the width is the
-                 * glyph's own advance (which already covers its ink). */
-                const int w = (adv[i] + 3) & ~1;
+                /* One fixed cell per character; the glyph draws centred in it,
+                 * so the box always covers the ink whatever digit it holds. */
+                const int w = cellw[i];
                 if (s_big_val_ch[i][0] != vbuf[i] ||
                     s_big_val_pen[i] != (int16_t)pen ||
                     lv_obj_get_width(s_big_val_cell[i]) != w) {
@@ -7676,7 +7744,7 @@ static void update_bigdigit(const boost_sample_t *sample, const boost_theme_t *t
                     lv_label_set_text_static(s_big_val_cell[i], s_big_val_ch[i]);
                     lv_obj_align(s_big_val_cell[i], LV_ALIGN_CENTER, pen + w / 2, BIG_VAL_Y);
                 }
-                pen += adv[i];
+                pen += cellw[i];
             }
             for (int i = n; i < BIG_VAL_CELLS; ++i) {
                 if (s_big_val_ch[i][0] != '\0') {
@@ -7878,7 +7946,8 @@ static void build_scene(boost_gauge_style_t style)
      * root owns the face when the coordinator is active, so page chrome can
      * remain separate from the renderer. */
     lv_obj_set_style_bg_color(scr,
-                              style == BOOST_STYLE_HUD ? hud_face_color(theme) : c(theme->face),
+                              style == BOOST_STYLE_HUD ? hud_face_color(theme) :
+                              style == BOOST_STYLE_ARC ? arc_face_color(theme) : c(theme->face),
                               0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
 
