@@ -137,72 +137,90 @@ def check_panel_picks_up_a_rebuild(result: Result) -> None:
     the OLD firmware, which is indistinguishable from a change that did not work
     - it is exactly how a rebuilt layout came to look "exactly the same". The
     supervisor must notice the binary's mtime change and respawn, so this drives
-    a real panel, bumps the binary's mtime, and requires the restart.
+    a real panel, bumps the mtime of a COPY of the binary, and requires the
+    restart. The copy matters: touching the real artifact would make the panel's
+    reported build time a lie.
     """
     if PANEL_SCRIPT is None:
         return
-    port = _free_port()
-    panel = subprocess.Popen(
-        [sys.executable, str(PANEL_SCRIPT), "--port", str(port),
-         "--shot-dir", str(REPO_ROOT / "preview" / "panel-test")],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        cwd=str(REPO_ROOT),
-    )
-    try:
-        deadline = time.time() + 20.0
-        state = None
-        while time.time() < deadline:
-            state = _state_on(port)
-            if state is not None and state.get("running"):
-                break
-            time.sleep(0.25)
-        result.check(state is not None and bool(state.get("running")),
-                     "panel serves a running sim", f"state={state}")
-        if state is None or not state.get("running"):
-            return
-        result.check(bool(state.get("simBuiltAt")),
-                     "panel reports the sim build time",
-                     "no simBuiltAt in /state")
+    import shutil
+    import tempfile
 
-        before_frames = int(state.get("frames") or 0)
-        os.utime(SIM_BINARY, None)   # simulate `cmake --build`
-        restarted = False
-        deadline = time.time() + 15.0
-        while time.time() < deadline:
-            after = _state_on(port)
-            if after and int(after.get("rebuilds") or 0) >= 1:
-                restarted = True
-                break
-            time.sleep(0.25)
-        result.check(restarted,
-                     "panel respawns the sim when the binary is rebuilt",
-                     "no rebuild observed within 15 s")
-        if restarted:
-            # The restart is a respawn, so `running` is briefly false while the
-            # new child comes up; require it to come BACK, not that it never
-            # left.
-            live = None
-            deadline = time.time() + 15.0
-            while time.time() < deadline:
-                live = _state_on(port)
-                if live and live.get("running"):
-                    break
-                time.sleep(0.25)
-            result.check(bool(live and live.get("running")),
-                         "panel serves a fresh sim after the rebuild restart",
-                         f"state={live}")
-            after = live or {}
-            result.check(int(after.get("frames") or 0) >= before_frames,
-                         "frame counter stays monotonic across a rebuild restart",
-                         f"{before_frames} -> {after.get('frames')}")
-    finally:
-        panel.terminate()
+    with tempfile.TemporaryDirectory() as tmp:
+        probe = pathlib.Path(tmp) / SIM_BINARY.name
+        shutil.copy2(SIM_BINARY, probe)
+        probe.chmod(0o755)
+        port = _free_port()
+        panel = subprocess.Popen(
+            [sys.executable, str(PANEL_SCRIPT), "--port", str(port), "--sim", str(probe),
+             "--shot-dir", str(REPO_ROOT / "preview" / "panel-test")],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            cwd=str(REPO_ROOT),
+        )
         try:
-            panel.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            panel.kill()
-            panel.wait(timeout=5)
+            _check_rebuild_pickup(result, panel, port, probe)
+        finally:
+            panel.terminate()
+            try:
+                panel.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                panel.kill()
+                panel.wait(timeout=5)
+
+
+def _check_rebuild_pickup(
+    result: Result,
+    panel: subprocess.Popen,
+    port: int,
+    probe: pathlib.Path,
+) -> None:
+    deadline = time.time() + 20.0
+    state = None
+    while time.time() < deadline:
+        state = _state_on(port)
+        if state is not None and state.get("running"):
+            break
+        time.sleep(0.25)
+    result.check(state is not None and bool(state.get("running")),
+                 "panel serves a running sim", f"state={state}")
+    if state is None or not state.get("running"):
+        return
+    result.check(bool(state.get("simBuiltAt")),
+                 "panel reports the sim build time",
+                 "no simBuiltAt in /state")
+
+    before_frames = int(state.get("frames") or 0)
+    os.utime(probe, None)   # simulate `cmake --build`
+    restarted = False
+    deadline = time.time() + 15.0
+    while time.time() < deadline:
+        after = _state_on(port)
+        if after and int(after.get("rebuilds") or 0) >= 1:
+            restarted = True
+            break
+        time.sleep(0.25)
+    result.check(restarted,
+                 "panel respawns the sim when the binary is rebuilt",
+                 "no rebuild observed within 15 s")
+    if not restarted:
+        return
+    # The restart is a respawn, so `running` is briefly false while the new
+    # child comes up; require it to come BACK, not that it never left.
+    live = None
+    deadline = time.time() + 15.0
+    while time.time() < deadline:
+        live = _state_on(port)
+        if live and live.get("running"):
+            break
+        time.sleep(0.25)
+    result.check(bool(live and live.get("running")),
+                 "panel serves a fresh sim after the rebuild restart",
+                 f"state={live}")
+    after = live or {}
+    result.check(int(after.get("frames") or 0) >= before_frames,
+                 "frame counter stays monotonic across a rebuild restart",
+                 f"{before_frames} -> {after.get('frames')}")
 
 
 def main() -> int:
