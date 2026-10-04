@@ -1304,3 +1304,44 @@ values. That is a pre-existing approximation (the web already lays its readout
 out from canvas font metrics rather than the firmware's pixel slots), flagged
 rather than changed unilaterally: re-anchoring it also re-derives its
 auto-sizing extents, a design change the user has not seen.
+
+## 2026-10-04 — dyno-cell bar: the tenths digit on the dial centre, and a build trap
+
+Board request: "on dyno cell with bar units, can you position it so that the
+tenths place is centered?" psi's tenths slot is 45 px right of the dial centre,
+which is what left the bar block reading as pushed right. The bar readout is now
+psi's own slots TRANSLATED by `VALUE_BAR_SHIFT` (-45) so the tenths lands on the
+centre. The translation is uniform, so nothing about the internal spacing
+changes - the point keeps its 36 px gap to the tenths and the digits their 43 px
+pitch; only where the block sits moves. Measured cell ink centres, all four sim
+states: ones -72.0, point -36.5, tenths **+0.0**, hundredths +43.0, and for the
+negative case the sign a complete 17 px minus at -105.0 (the same width psi's own
+minus measures, so it is not clipped by the readout container, whose left edge is
+118 and whose measured margin is 2 px). Ink gaps 5 / 9 / 10 / 4 - unchanged, as a
+pure translation must leave them. psi returns early on its hand-tuned slots and
+kPa passes `shift = 0`, so neither is touched.
+
+**The trap, recorded because it silently invalidated a verification run.** To
+isolate a change I build a baseline binary by copying the working source aside,
+`git checkout --` the file, building, saving the binary, restoring the source and
+building again. That second build was a NO-OP: `cp` restored the source and the
+recompile landed in the same second as the baseline build, so the timestamp
+comparison saw the object as up to date. The binary left on disk was HEAD's, the
+panel was serving the pre-change layout, and the "isolation matrix" compared HEAD
+against HEAD - it would have reported 0 changed pixels everywhere and looked like
+a clean result. Caught by measuring the rendered cells (they were the OLD
+positions) and then confirming the binary's mtime had not moved. Lesson: after
+any rebuild that a measurement depends on, assert the artifact's mtime CHANGED
+(`touch` the source first), never assume the build produced a new file. The panel's
+mtime watcher was not at fault - there was no new mtime to see.
+
+Headroom check for that translation, since it moves the whole bar block 45 px
+left inside `ARC_READOUT_W` 230 (±115, LVGL clips a widget to its coords). The
+firmware clamps the range (`clamp_psi_min` / `clamp_psi_max`, and
+`gauge_config_valid`: psi_min in [-30, -1], psi_max in [5, 40]), so the widest
+converted readouts are bounded and all still fit: bar's worst is psi_min -30 ->
+`-2.07`, a 1-integer-digit format whose minus ink reaches -112.5 (2.5 px inside
+the edge); psi's own worst stays `-40.0` at -111.5; kPa's is `-207`, sign ink at
+-99.5. The container therefore needs no widening - but the bound is load-bearing:
+a range clamped wider than psi_min -30 / psi_max 40 would clip a minus or a
+hundreds digit, so re-derive this if those clamps ever move.

@@ -145,6 +145,17 @@ static inline void boost_display_gauge_update_end(void) {}
  * the odometer property - a slot is still a function of the digit's place in the
  * number - and only moves where the block sits. */
 #define VALUE_KPA_ONES_X    27
+/* bar is the ONE converted format that keeps psi's point/tenths spacing, so
+ * "centred" has to mean something specific for it - psi's tenths slot is 45 px
+ * right of the dial centre, which leaves the block reading as pushed right.
+ * The bar readout is therefore psi's own slots TRANSLATED so the TENTHS digit
+ * lands on the dial centre (user-specified). The translation is uniform: the
+ * whole number moves, so the point keeps its 36 px gap to the tenths and the
+ * digits keep their 43 px pitch - only where the block sits changes. psi is
+ * untouched (it returns early on its own hand-tuned slots) and kPa has no
+ * tenths and keeps the anchor above. */
+#define VALUE_BAR_TENTHS_X  0
+#define VALUE_BAR_SHIFT     (VALUE_BAR_TENTHS_X - VALUE_TENTHS_X) /* -45 */
 #define VALUE_READOUT_Y    6      /* readout slot centre (moved up 10 px from 16) */
 /* Top of the readout's line box, face-local: the old label objects were
  * VALUE_SLOT_HEIGHT-tall boxes centred at VALUE_READOUT_Y, and label ink
@@ -5557,25 +5568,29 @@ static void arc_build_cells(float psi)
     const int frac_len = (dot != NULL) ? (int)strlen(dot + 1) : 0;
     /* A format with no fraction part has nothing to the right of its units
      * digit, so it uses the anchor that centres the block rather than psi's
-     * ones slot (see VALUE_KPA_ONES_X). */
-    const int ones_x = (dot != NULL) ? VALUE_ONES_X : VALUE_KPA_ONES_X;
+     * ones slot (see VALUE_KPA_ONES_X). bar keeps psi's slots but translated
+     * so its TENTHS digit sits on the dial centre (see VALUE_BAR_SHIFT). */
+    const bool has_dot = (dot != NULL);
+    const int shift = has_dot ? VALUE_BAR_SHIFT : 0;
+    const int ones_x = (has_dot ? VALUE_ONES_X : VALUE_KPA_ONES_X) + shift;
     const int lead_x = ones_x - (int_len - 1) * VALUE_DIGIT_PITCH;
     int n = 0;
     if (neg && n < ARC_MAX_CELLS) arc_set_cell(n++, '-', lead_x - VALUE_SIGN_GAP);
     for (int i = 0; i < int_len && n < ARC_MAX_CELLS; ++i) {
         arc_set_cell(n++, digits[i], ones_x - (int_len - 1 - i) * VALUE_DIGIT_PITCH);
     }
-    if (dot != NULL && n < ARC_MAX_CELLS) arc_set_cell(n++, '.', VALUE_DECIMAL_X);
+    if (has_dot && n < ARC_MAX_CELLS) arc_set_cell(n++, '.', VALUE_DECIMAL_X + shift);
     /* The FIRST fraction digit sits on psi's own tenths slot - VALUE_FRAC_PITCH
-     * is psi's point-to-tenths gap. Any further fraction digit continues on
-     * psi's DIGIT pitch instead, so every digit pair in the number is spaced
-     * alike. At the 36 px point gap the second fraction digit OVERLAPPED the
-     * first: this font's ink here is ~39 px, wider than the pitch, and psi
-     * never showed it because psi prints exactly one fraction digit. Measured
-     * before the fix: dyno-cell bar's tenths+hundredths came out as ONE 75 px
-     * ink run - 39 + 39 = 78 px of glyph in 75 px of space. */
+     * is psi's point-to-tenths gap - which for bar the translation above puts
+     * on the dial centre. Any further fraction digit continues on psi's DIGIT
+     * pitch instead, so every digit pair in the number is spaced alike. At the
+     * 36 px point gap the second fraction digit OVERLAPPED the first: this
+     * font's ink here is ~39-41 px, wider than the pitch, and psi never showed
+     * it because psi prints exactly one fraction digit. Measured before the fix:
+     * dyno-cell bar's tenths+hundredths came out as ONE 75 px ink run - 39 + 39
+     * = 78 px of glyph in 75 px of space. */
     for (int i = 0; i < frac_len && n < ARC_MAX_CELLS; ++i) {
-        const int fx = VALUE_DECIMAL_X + VALUE_FRAC_PITCH + i * VALUE_DIGIT_PITCH;
+        const int fx = VALUE_DECIMAL_X + VALUE_FRAC_PITCH + i * VALUE_DIGIT_PITCH + shift;
         arc_set_cell(n++, dot[1 + i], fx);
     }
     s_arc_cell_n = (uint8_t)n;
