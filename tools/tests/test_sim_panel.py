@@ -157,6 +157,31 @@ def main() -> int:
         result.check(all(changed), "every unit change alters the rendered pixels",
                      f"unchanged at: {[u for u, c in zip(('bar', 'kPa', 'psi'), changed) if not c]}")
 
+        # Dyno Cell's true-black face is a per-theme option like the Vault
+        # needle or the neon preset, so the panel has to be able to reach it
+        # through the same stream - and the flag has to change pixels AND
+        # change them back, not latch.
+        proc.stdin.write(b"theme dyno-cell\n")
+        proc.stdin.flush()
+        on_theme = reader.wait_frame(before[0] + 1, timeout=10.0)
+        result.check(on_theme is not None, "fresh frame after 'theme dyno-cell'",
+                     "no post-command frame")
+        if on_theme is None:
+            return 1
+        before = on_theme
+        for state in ("on", "off"):
+            proc.stdin.write(f"dynoblack {state}\n".encode())
+            proc.stdin.flush()
+            nxt = reader.wait_frame(before[0] + 1, timeout=10.0)
+            result.check(nxt is not None, f"fresh frame after 'dynoblack {state}'",
+                         "no post-command frame")
+            if nxt is None:
+                return 1
+            result.check(nxt[3] != before[3],
+                         f"'dynoblack {state}' alters the rendered face",
+                         "frame identical to the previous one")
+            before = nxt
+
         result.check(reader.desyncs == 0,
                      "stdout is pure BGFR (no log line leaked into the stream)",
                      f"{reader.desyncs} desync(s)")

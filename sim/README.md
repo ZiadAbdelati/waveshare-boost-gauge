@@ -86,7 +86,7 @@ Commands map to the same firmware entry points the settings UI drives:
 `psi <float>` (freezes the sweep), `demo <on|off>`, `sweep <organic|fast>`,
 `layout <tube|segments|marquee>`, `neonfont <0|1>`, `preset <0..3>`,
 `page <boost|tpms>`, `tpms <normal|stale|disconnected>`, `needle <red|green>`,
-`tail <on|off>`, `quit`.
+`tail <on|off>`, `dynoblack <on|off>`, `quit`.
 
 ## Windowed mode
 

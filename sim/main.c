@@ -1128,6 +1128,14 @@ static void stream_exec(char *line)
             boost_theme_set_vault_needle_tail(false);
             stream_rebuild();
         }
+    } else if (strcmp(line, "dynoblack") == 0) {
+        if (strcmp(arg, "on") == 0) {
+            boost_theme_set_dyno_true_black(true);
+            stream_rebuild();
+        } else if (strcmp(arg, "off") == 0) {
+            boost_theme_set_dyno_true_black(false);
+            stream_rebuild();
+        }
     } else if (strcmp(line, "quit") == 0) {
         s_stream_quit = true;
     } else {

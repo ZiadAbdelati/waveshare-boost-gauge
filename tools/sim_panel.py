@@ -535,6 +535,11 @@ PAGE_HTML = """<!doctype html>
         <select id="tail"><option value="off">off</option><option value="on">on</option></select></div>
     </fieldset>
 
+    <fieldset><legend>Dyno Cell</legend>
+      <div class="row"><label for="dynoblack">background</label>
+        <select id="dynoblack"><option value="off">face</option><option value="on">true black</option></select></div>
+    </fieldset>
+
     <fieldset><legend>Pressure</legend>
       <div class="row"><label for="follow">source</label>
         <input type="checkbox" id="follow"> <span>follow the demo waveform</span></div>
@@ -578,6 +583,7 @@ on('font', 'change', (t) => cmd('neonfont ' + t.value));
 on('preset', 'change', (t) => cmd('preset ' + t.value));
 on('needle', 'change', (t) => cmd('needle ' + t.value));
 on('tail', 'change', (t) => cmd('tail ' + t.value));
+on('dynoblack', 'change', (t) => cmd('dynoblack ' + t.value));
 on('page', 'change', (t) => cmd('page ' + t.value));
 on('tpms', 'change', (t) => cmd('tpms ' + t.value));
 
