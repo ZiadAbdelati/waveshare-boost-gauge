@@ -118,6 +118,7 @@ class SimProcess:
         self.psi: float | None = DEFAULT_PSI
         self.demo = False
         self.restarts = 0
+        self.rebuilds = 0
         self.shutdown = False
         self.png_cache: tuple[int, bytes] | None = None
         self.encode_lock = threading.Lock()
@@ -127,6 +128,12 @@ class SimProcess:
         self._supervisor.start()
 
     # ---- lifecycle -------------------------------------------------------
+    def binary_mtime(self) -> float | None:
+        try:
+            return self.binary.stat().st_mtime
+        except OSError:
+            return None
+
     def _spawn(self) -> subprocess.Popen:
         return subprocess.Popen(
             [str(self.binary), "--stream"],
@@ -137,12 +144,50 @@ class SimProcess:
             bufsize=0,
         )
 
+    def _wait(self, proc: subprocess.Popen) -> tuple[int | None, bool]:
+        """Block until the sim exits or the binary on disk is rebuilt.
+
+        A rebuilt binary MUST be picked up. Serving frames from a sim started
+        before the last ``cmake --build`` is this harness's worst failure mode:
+        the panel exists to show the CURRENT firmware, and a stale render is
+        indistinguishable from a fix that did not work. Returns
+        ``(returncode, rebuilt)``; ``rebuilt`` means the child was replaced, not
+        that it crashed."""
+        mtime = self.binary_mtime()
+        while not self.shutdown:
+            try:
+                return proc.wait(timeout=0.5), False
+            except subprocess.TimeoutExpired:
+                pass
+            now = self.binary_mtime()
+            if now is not None and mtime is not None and now != mtime:
+                mtime = now
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    try:
+                        proc.kill()
+                        proc.wait(timeout=3)
+                    except (subprocess.TimeoutExpired, OSError):
+                        pass
+                except OSError:
+                    pass
+                return None, True
+        return None, False
+
     def _supervise(self) -> None:
         first = True
+        rebuild_restart = False
         while not self.shutdown:
-            if not first:
+            # Back off only between CRASH restarts. A rebuild restart must come
+            # back immediately: the page should reflect the new binary as soon
+            # as it exists, and the 0.5 s crash-loop delay would leave the panel
+            # holding a stale frame for half a second after every build.
+            if not first and not rebuild_restart:
                 time.sleep(0.5)
             first = False
+            rebuild_restart = False
             try:
                 proc = self._spawn()
             except OSError as exc:
@@ -178,17 +223,27 @@ class SimProcess:
             ]
             for r in readers:
                 r.start()
-            rc = proc.wait()
+            rc, rebuilt = self._wait(proc)
             for r in readers:
                 r.join(timeout=2)
             if self.shutdown:
                 break
-            self.restarts += 1
-            print(
-                f"[panel] sim exited (rc={rc}); restarting (#{self.restarts})",
-                file=sys.stderr,
-                flush=True,
-            )
+            if rebuilt:
+                rebuild_restart = True
+                self.rebuilds += 1
+                print(
+                    f"[panel] {self.binary.name} was rebuilt; restarting the sim "
+                    f"(#{self.rebuilds})",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            else:
+                self.restarts += 1
+                print(
+                    f"[panel] sim exited (rc={rc}); restarting (#{self.restarts})",
+                    file=sys.stderr,
+                    flush=True,
+                )
 
     def close(self) -> None:
         self.shutdown = True
@@ -459,7 +514,15 @@ class PanelHandler(BaseHTTPRequestHandler):
             "frames": count,
             "running": SIM.running(),
             "restarts": SIM.restarts,
+            "rebuilds": SIM.rebuilds,
+            "simBuiltAt": _fmt_mtime(SIM.binary_mtime()),
         }
+
+
+def _fmt_mtime(m: float | None) -> str | None:
+    if m is None:
+        return None
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(m))
 
 
 def _options(*pairs: tuple[str, str]) -> str:
@@ -619,7 +682,9 @@ async function poll() {
     let text = `theme ${s.theme}   unit ${s.unit}   psi ${psi}   `
              + `source ${s.demo ? 'demo waveform' : 'fixed'}   page ${s.page}\n`
              + `sim ${s.running ? 'running' : 'RESTARTING'}   frames ${s.frames}`
-             + (s.restarts ? `   restarts ${s.restarts}` : '');
+             + (s.simBuiltAt ? `   built ${s.simBuiltAt}` : '   built ?')
+             + (s.restarts ? `   restarts ${s.restarts}` : '')
+             + (s.rebuilds ? `   auto-restarted ${s.rebuilds}x after a rebuild` : '');
     $('readout').textContent = text;
     if (!initialised) {
       initialised = true;

@@ -63,12 +63,20 @@ python3 tools/sim_panel.py --port 8787 --sim sim/build/boost_gauge_sim \
 
 The page streams frames as `multipart/x-mixed-replace` (a plain
 `<img src="/stream">` updates with no JS video code) and offers theme, unit
-(psi/bar/kPa), neon layout/font/preset, Vault needle/tail, a pressure number +
-slider with a "follow the demo waveform" toggle, the organic and fast-sweep
-waveforms, the boost/TPMS page selector with the TPMS mock scenario, and a
-"Save screenshot" button. Screenshots are written to
-`preview/panel/<theme>-<unit>-<psi>.png`. The panel restarts the sim if the
+(psi/bar/kPa), neon layout/font/preset, Vault needle/tail, the Dyno Cell
+background, a pressure number + slider with a "follow the demo waveform"
+toggle, the organic and fast-sweep waveforms, the boost/TPMS page selector with
+the TPMS mock scenario, and a "Save screenshot" button. Screenshots are written
+to `preview/panel/<theme>-<unit>-<psi>.png`. The panel restarts the sim if the
 subprocess dies and shuts it down on Ctrl-C.
+
+**The panel also restarts the sim when the BINARY CHANGES**, so `cmake --build
+sim/build` is picked up without touching the panel — the page's status line
+shows the sim's build time and an `auto-restarted Nx after a rebuild` note when
+it happens. This matters more than it looks: a panel whose sim child predates
+the last build keeps streaming the OLD firmware, and a stale render is
+indistinguishable from a change that did not work. `tools/tests/test_sim_panel.py`
+drives a real panel and bumps the binary's mtime to keep that honest.
 
 `--stream` can also be driven by hand; the framing is
 `"BGFR" | uint32 width | uint32 height | uint32 seq | RGBA pixels`

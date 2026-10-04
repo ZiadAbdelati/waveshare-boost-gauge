@@ -1175,3 +1175,28 @@ panel: the dominant face colour goes (8,8,8) -> (0,0,0) and back. Like Night
 City's, it is read at scene build, so a toggle lands through the scene rebuild a
 `/themes/config` PUT already performs. The sim panel gained a `dynoblack on|off`
 command and a Dyno Cell control so it can be eyeballed before flashing.
+
+## 2026-10-04 — the panel was serving a pre-build sim
+
+Reported as "was the sim not updated? it still appears the exact same". It was
+not the firmware. `tools/sim_panel.py` supervises its `--stream` child for
+CRASHES only: `_supervise()` spawned once and then blocked in `proc.wait()`, so a
+panel started before a `cmake --build` kept streaming the old binary forever. The
+panel on :8787 had been up since 23:00:46 while the last sim build was 23:16:54,
+i.e. every render it served predated the whole layout round. This is the harness's
+worst failure mode: **a stale render is indistinguishable from a change that did
+not work**, which is exactly how it was read.
+
+Fixed in the supervisor: it now polls the binary's mtime while the child runs and
+respawns on a change (skipping the 0.5 s crash backoff, which exists for crash
+loops, not rebuilds). `/state` gained `simBuiltAt`, `rebuilds` and the page's
+status line shows the sim's build time and any auto-restart, so stale-vs-current
+is visible without asking. `tools/tests/test_sim_panel.py` now drives a real
+panel, bumps the binary's mtime, and requires the respawn AND that the panel comes
+back serving (19 checks). The first run of that test failed on the comeback check
+— the restart left a dead window because `rebuilds` is incremented before the
+respawn — which is a reminder that the test is doing real work.
+
+Rule: after `cmake --build sim/build`, either the panel restarts itself (now) or
+you restart it. Never read "unchanged" off a panel you have not confirmed is
+serving the build you just made.
