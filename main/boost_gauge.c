@@ -134,6 +134,17 @@ static inline void boost_display_gauge_update_end(void) {}
 #define VALUE_DIGIT_PITCH   (VALUE_ONES_X - VALUE_TENS_X)      /* 43 */
 #define VALUE_FRAC_PITCH    (VALUE_TENTHS_X - VALUE_DECIMAL_X) /* 36 */
 #define VALUE_SIGN_GAP      32                                  /* PSI: -27-32 = -59 */
+/* kPa has no decimal point, so its block is only as wide as its digits.
+ * Anchoring its units digit on psi's ones slot - which exists to leave room for
+ * psi's ".0" - parked the whole number 27-61 px left of the dial centre
+ * (measured on the sim renders), which reads as "not centred". A fractionless
+ * format instead anchors its units digit where the block's MEAN optical centre
+ * over the kPa operating range lands on psi's own mean optical centre (-4 px,
+ * measured over the four sim states): with the 43 px pitch and the 1..4-cell
+ * range that mean half-width is 43 * 0.727 = 31.3, so 31.3 - 4 = 27. This keeps
+ * the odometer property - a slot is still a function of the digit's place in the
+ * number - and only moves where the block sits. */
+#define VALUE_KPA_ONES_X    27
 #define VALUE_READOUT_Y    6      /* readout slot centre (moved up 10 px from 16) */
 /* Top of the readout's line box, face-local: the old label objects were
  * VALUE_SLOT_HEIGHT-tall boxes centred at VALUE_READOUT_Y, and label ink
@@ -421,6 +432,13 @@ static const int k_vault_slot_x[VAULT_MAX_CELLS] = { -60, -36, -12, 12, 36, 60 }
 #define VAULT_PITCH    24
 #define VAULT_ONES_X  (-12)  /* psi slot 2 = ones */
 #define VAULT_DOT_X   (VAULT_ONES_X + VAULT_PITCH)  /* psi slot 3 = '.' */
+/* Same rule as the arc's VALUE_KPA_ONES_X: a fractionless format has nothing to
+ * the right of its units digit, so anchoring on psi's ones slot parks the block
+ * left of centre (measured 12-36 px). The vault psi field is symmetric about the
+ * face centre (measured mean offset +0.5 px), and with the 24 px mono pitch over
+ * a 1..4-cell range the mean half-width is 24 * 0.727 = 17.5, so the units digit
+ * sits at +18 and the block's mean centre lands on the face centre. */
+#define VAULT_KPA_ONES_X 18
 
 static lv_obj_t *s_vault_bg;
 static uint8_t *s_vault_bg_buf;
@@ -5537,11 +5555,15 @@ static void arc_build_cells(float psi)
     const char *const dot = strchr(digits, '.');
     const int int_len = (dot != NULL) ? (int)(dot - digits) : (int)strlen(digits);
     const int frac_len = (dot != NULL) ? (int)strlen(dot + 1) : 0;
-    const int lead_x = VALUE_ONES_X - (int_len - 1) * VALUE_DIGIT_PITCH;
+    /* A format with no fraction part has nothing to the right of its units
+     * digit, so it uses the anchor that centres the block rather than psi's
+     * ones slot (see VALUE_KPA_ONES_X). */
+    const int ones_x = (dot != NULL) ? VALUE_ONES_X : VALUE_KPA_ONES_X;
+    const int lead_x = ones_x - (int_len - 1) * VALUE_DIGIT_PITCH;
     int n = 0;
     if (neg && n < ARC_MAX_CELLS) arc_set_cell(n++, '-', lead_x - VALUE_SIGN_GAP);
     for (int i = 0; i < int_len && n < ARC_MAX_CELLS; ++i) {
-        arc_set_cell(n++, digits[i], VALUE_ONES_X - (int_len - 1 - i) * VALUE_DIGIT_PITCH);
+        arc_set_cell(n++, digits[i], ones_x - (int_len - 1 - i) * VALUE_DIGIT_PITCH);
     }
     if (dot != NULL && n < ARC_MAX_CELLS) arc_set_cell(n++, '.', VALUE_DECIMAL_X);
     for (int i = 0; i < frac_len && n < ARC_MAX_CELLS; ++i) {
@@ -6395,7 +6417,8 @@ static void vault_build_cells(float psi)
     const char *const dot = strchr(digits, '.');
     const int int_len = (dot != NULL) ? (int)(dot - digits) : (int)strlen(digits);
     const int frac_len = (dot != NULL) ? (int)strlen(dot + 1) : 0;
-    const int lead_x = VAULT_ONES_X - (int_len - 1) * VAULT_PITCH;
+    const int ones_x = (dot != NULL) ? VAULT_ONES_X : VAULT_KPA_ONES_X;
+    const int lead_x = ones_x - (int_len - 1) * VAULT_PITCH;
     int n = 0;
     if (neg && n < VAULT_MAX_CELLS) {
         s_vault_cell_ch[n][0] = '-';
@@ -6406,7 +6429,7 @@ static void vault_build_cells(float psi)
     for (int i = 0; i < int_len && n < VAULT_MAX_CELLS; ++i) {
         s_vault_cell_ch[n][0] = digits[i];
         s_vault_cell_ch[n][1] = '\0';
-        s_vault_cell_x[n] = (int16_t)(VAULT_ONES_X - (int_len - 1 - i) * VAULT_PITCH);
+        s_vault_cell_x[n] = (int16_t)(ones_x - (int_len - 1 - i) * VAULT_PITCH);
         ++n;
     }
     if (dot != NULL && n < VAULT_MAX_CELLS) {

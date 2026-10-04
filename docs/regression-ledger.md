@@ -1200,3 +1200,39 @@ respawn — which is a reminder that the test is doing real work.
 Rule: after `cmake --build sim/build`, either the panel restarts itself (now) or
 you restart it. Never read "unchanged" off a panel you have not confirmed is
 serving the build you just made.
+
+## 2026-10-04 — kPa was stable but parked left of centre
+
+Board report: "kpa numbers are sitting super far to the left on dyno cell and
+vault tec? super far from centered." The odometer pass had pinned the kPa units
+digit on psi's ONES slot, which is where psi's ones digit sits only because psi
+has a `.0` to its right. kPa has no decimal point, so its block is just as wide
+as its digits and nothing balances the empty right side.
+
+Measured ink centres, face centre 233 (dyno psi's own mean is -3.9, vault's is
++0.5 — i.e. both psi faces are centred):
+
+| value | dyno-cell kPa BEFORE | AFTER | vault kPa BEFORE | AFTER |
+|---|---|---|---|---|
+| `-83` | -59.5 | -5.5 | -34.5 | -4.5 |
+| `0` | -27.0 | +27.0 | -12.5 | +17.5 |
+| `34` | -48.0 | +6.0 | -24.5 | +5.5 |
+| `134` | -61.0 | -13.0 | -36.0 | -6.0 |
+| **mean** | **-48** | **+3.6** | **-29** | **+3.1** |
+
+Fix: a format WITH no decimal point anchors its units digit on a new
+`VALUE_KPA_ONES_X` 27 (arc) / `VAULT_KPA_ONES_X` 18 (vault) — the anchor that puts
+the block's mean optical centre over the kPa range onto psi's own mean optical
+centre, derived as `pitch * 0.727 - psi_mean` (0.727 is the mean half-cell count
+over a 1..4-cell range). bar keeps psi's anchor: it HAS a decimal point, and
+sharing psi's point/ones slots is exactly what stops its digits from jumping when
+the unit is switched. Stability is untouched — the slots are still a function of
+the digit's place in the number; only where the block sits moved.
+
+Tradeoff recorded: kPa's block still drifts with the digit count (a single `0`
+now sits +27 on the arc against psi's +9 at atmosphere) because a fixed anchor
+plus a variable-width block cannot be centred for every value at once. That is
+inherent, and the same reason psi's own number moves between `5.0` and `-12.0`;
+what matters is that the MEAN is now on the dial centre instead of 48 px left.
+The lesson for the guard rails: stability and centring are two separate
+requirements, and satisfying one does not imply the other.
