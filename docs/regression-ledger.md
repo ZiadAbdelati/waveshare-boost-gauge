@@ -1250,3 +1250,57 @@ on dyno-cell, vault-tec and big-digit) because the new anchors are selected only
 when the formatted string has no decimal point, and psi is byte-identical on all
 five themes. The kPa change is confined to the fractionless path by construction,
 not by luck.
+
+## 2026-10-04 — the converted readout's second fraction digit, and big-digit kPa's anchor
+
+Board-reported, two items in one message.
+
+**(1) "on dyno cell, in bar, the tenths and hundredths digits are too close
+together, and overlap in some cases."** Reproduced exactly: `VALUE_FRAC_PITCH`
+36 is psi's point-to-tenths step, sized for the narrow decimal MARK beside the
+ONE fraction digit psi prints, and never exercised past it. Bar prints two, and
+this font's ink here is 39-41 px - wider than the pitch. dyno-cell bar's tenths
+and hundredths rendered as a SINGLE 75 px ink run: 78 px of glyph in 75 px of
+space, i.e. ~3 px of overlap. Every fraction digit after the first now continues
+on `VALUE_DIGIT_PITCH` 43, psi's own digit-to-digit pitch, so the first fraction
+digit still lands on psi's tenths slot. Exact ink gaps after the fix (1 px
+splitter): `0.00` 9 / 10 / 4, `0.34` 9 / 10 / 3, `1.34` 9 / 10 / 3, `-0.83`
+5 / 9 / 10 / 4 - the decimal keeps its 9-10 px because it is a mark, and the
+digits are 3-4 px apart against psi's integer digits' 4-5 px.
+
+Vault-Tec measured and left alone: a mono font on a uniform `VAULT_PITCH` 24
+gives 2-3 px digit gaps already, which is that theme's own convention, and there
+is no overlap. night-city and neon lay out from the font's advances, which
+cannot overlap by construction.
+
+**(2) "on big digit, can you have it be centered on the point halfway between
+the ones an[d] tens place digits when in kpa?"** `BIG_VAL_KPA_RIGHT_X` is now
+`BIG_SLOT` (81), which puts the ones/tens BOUNDARY on the dial centre: the cells
+are right-anchored one BIG_SLOT-wide cell at a time, so the ones cell spans
+[0, 81] and the tens [-81, 0]. Verified per-cell on the sim renders - the ones
+digit's ink centre is +40.0 and the tens -41/-42 in EVERY value (odometer holds;
+a new hundreds digit or the sign is tacked on outside the pair), and the 2-digit
+case is exactly symmetric. Consequence, deliberate and worth knowing: a 1- or
+3-digit kPa now sits ~40 px off centre (`0` +40, `34` -2, `134` -41, `-83` -33),
+because the anchor is the digit pair, not the block. This is the user's explicit
+choice of anchor; the earlier psi-mean-matched edge (psi's edge - 21) remains the
+rule for dyno-cell and vault-tec, whose spans are 1-4 cells of integer digits.
+bar keeps the psi edge - it has a decimal point and shares psi's point/tenths
+geometry, which is what stops its digits jumping on a unit change.
+
+Scope, isolated against a HEAD binary built side by side rather than asserted:
+psi is 0 changed pixels on all five themes, and vault-tec, big-digit, night-city
+and neon are 0 changed pixels in bar and kPa. Only dyno-cell bar (the intended
+fraction fix) and big-digit kPa (the intended anchor) differ.
+
+Surface check: the defect is firmware-only, which is also evidence for which
+surface was reported. The web mirror draws the fraction as ONE natural-advance
+string (`drawFixedDecimal`, web/app.js), and a proportional font's advances
+cannot overlap, so bar's tenths/hundredths are clean there. The firmware's fixed
+36 px slot is what collided. The mirror's big-digit fractionless anchor also
+differs by design - it centres the whole block, which agrees with the new
+ones/tens anchor for the 2-digit case and differs by ~40 px for 1- and 3-digit
+values. That is a pre-existing approximation (the web already lays its readout
+out from canvas font metrics rather than the firmware's pixel slots), flagged
+rather than changed unilaterally: re-anchoring it also re-derives its
+auto-sizing extents, a design change the user has not seen.

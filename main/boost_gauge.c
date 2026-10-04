@@ -5566,8 +5566,17 @@ static void arc_build_cells(float psi)
         arc_set_cell(n++, digits[i], ones_x - (int_len - 1 - i) * VALUE_DIGIT_PITCH);
     }
     if (dot != NULL && n < ARC_MAX_CELLS) arc_set_cell(n++, '.', VALUE_DECIMAL_X);
+    /* The FIRST fraction digit sits on psi's own tenths slot - VALUE_FRAC_PITCH
+     * is psi's point-to-tenths gap. Any further fraction digit continues on
+     * psi's DIGIT pitch instead, so every digit pair in the number is spaced
+     * alike. At the 36 px point gap the second fraction digit OVERLAPPED the
+     * first: this font's ink here is ~39 px, wider than the pitch, and psi
+     * never showed it because psi prints exactly one fraction digit. Measured
+     * before the fix: dyno-cell bar's tenths+hundredths came out as ONE 75 px
+     * ink run - 39 + 39 = 78 px of glyph in 75 px of space. */
     for (int i = 0; i < frac_len && n < ARC_MAX_CELLS; ++i) {
-        arc_set_cell(n++, dot[1 + i], VALUE_DECIMAL_X + (i + 1) * VALUE_FRAC_PITCH);
+        const int fx = VALUE_DECIMAL_X + VALUE_FRAC_PITCH + i * VALUE_DIGIT_PITCH;
+        arc_set_cell(n++, dot[1 + i], fx);
     }
     s_arc_cell_n = (uint8_t)n;
 }
@@ -7413,16 +7422,18 @@ static void update_hud(const boost_sample_t *sample, const boost_theme_t *theme)
  * or the minus is added to the LEFT of the cells that were already there. */
 #define BIG_VAL_DIGIT_CELL BIG_SLOT   /* 81 */
 #define BIG_VAL_DOT_CELL   50
-/* A fractionless format (kPa) is right-anchored on this instead of psi's tenths
- * ink edge: with a fixed pitch its block is only as wide as its digits, so the
- * psi edge leaves 1- and 2-digit values far right of the dial centre (measured
- * on the sim renders: a lone '0' sat +82 px, and the mean +22.8, against psi's
- * own mean +2.1). Derived as the psi edge minus the difference between those
- * means, so the block's mean optical centre lands on psi's, exactly as
- * VALUE_KPA_ONES_X does for the arc. bar keeps the psi edge - it has a decimal
- * point and shares psi's point/tenths geometry. */
+/* psi's own right-hand anchor: the tenths ink edge. A format WITH a decimal
+ * point right-anchors here, so bar shares psi's point/tenths geometry and its
+ * digits cannot jump when the unit changes. */
 #define BIG_VAL_PSI_RIGHT_X (BIG_TENTHS_X + BIG_DIGIT_INK_HALF)   /* 123 */
-#define BIG_VAL_KPA_RIGHT_X (BIG_VAL_PSI_RIGHT_X - 21)            /* 102 */
+/* kPa instead puts the ONES/TENS BOUNDARY - the point halfway between the two
+ * digits - on the dial centre. The cells are right-anchored one BIG_SLOT-wide
+ * cell at a time, so the ones cell spans [0, BIG_SLOT] and the tens and ones
+ * straddle the centre: the 2-digit case is exactly symmetric (+-40.5, measured)
+ * and a new integer digit or the sign is tacked on outside the pair, which is
+ * the odometer property this anchor exists for. bar keeps the psi edge above -
+ * it has a decimal point and shares psi's point/tenths geometry. */
+#define BIG_VAL_KPA_RIGHT_X BIG_SLOT                               /* 81 */
 
 static int s_big_minus_x = BIG_MINUS_ONES_X;
 
