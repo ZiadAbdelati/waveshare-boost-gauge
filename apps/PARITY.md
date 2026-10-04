@@ -101,6 +101,11 @@ bigDigitStaticBg) are edited ONLY in the Themes tab, inside that theme's
 editor dropdown — never in Settings → Demo mode. Both apps must expose the
 same per-theme controls with the same labels.
 
+**True black background** is a per-theme toggle in the theme editor: Night City
+(`hudTrueBlack`) and Dyno Cell (`dynoTrueBlack`) each get one, labelled
+"True black background" on both apps and saved via `PUT /themes/config` with
+the theme's other options.
+
 ## Logs graph window (2026-08-26)
 
 The logs graph shows the LAST 5 MINUTES (`GET /logs?seconds=300`), never the

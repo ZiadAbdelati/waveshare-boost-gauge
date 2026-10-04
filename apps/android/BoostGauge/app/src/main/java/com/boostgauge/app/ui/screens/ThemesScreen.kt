@@ -536,6 +536,11 @@ private fun ThemeOptionsEditor(
                     checked = state.arcGradient,
                     onCheckedChange = viewModel::updateArcGradient,
                 )
+                ToggleRow(
+                    label = "True black background",
+                    checked = state.dynoTrueBlack,
+                    onCheckedChange = viewModel::updateDynoTrueBlack,
+                )
             }
             "vault-tec" -> {
                 OutlinedTextField(

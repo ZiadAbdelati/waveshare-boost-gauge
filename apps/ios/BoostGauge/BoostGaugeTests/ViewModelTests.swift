@@ -1104,6 +1104,7 @@ enum Fixtures {
         "arcGradient": false,
         "hudGradient": false,
         "hudTrueBlack": false,
+        "dynoTrueBlack": false,
         "vaultFace": "#05281a",
         "vaultVignette": 60,
         "vaultNeedleRed": false,

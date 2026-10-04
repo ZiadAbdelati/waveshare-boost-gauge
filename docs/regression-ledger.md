@@ -1005,3 +1005,416 @@ app-descriptor check, this sweep is a secondary source-mode guard):
   per-line comparison and would not be matched.
 - A version with fewer than three components in a filename is not matched by
   `VERSION_IN_NAME`; the exact-expected-set check covers the file either way.
+
+## 2026-10-03 — unit-dependent layout: bounds and anchors
+
+Reported from a flashed board (phone + gauge): bar digits running onto the neon
+rings, bar tick numerals over the dyno arc, Night City no longer right-aligned
+in kPa. The sim rendered all five themes x three units at the time, so the
+breakage was already visible here — it had simply never been looked at across
+units. Root cause is one pattern repeated per theme: the psi face is a set of
+fixed slots, and each theme bolted on a bespoke "centre the string" fallback for
+bar/kPa with no collision test and no shared anchor.
+
+Measured with `boost_gauge_sim --screenshot` + Pillow, on the real renders:
+
+| defect | measured BEFORE | AFTER |
+|---|---|---|
+| dyno-cell bar dial numerals vs the arc band (inner edge r=177) | ink to **r=183.4**, 6.4 px into the band | **r=172.0**, 5.0 px clear |
+| dyno-cell kPa dial numerals | r=178.0 | r=171.4, 5.6 px clear |
+| night-city readout right edge, psi/bar/kPa | **339 / 295 / 256** — a 44-83 px jump on unit change | **339 / 339 / 339** |
+| night-city psi render | — | byte-identical (211..339 unchanged) |
+| big-digit bar/kPa readout | centred on x=0, composition centre ~29 px left of psi's | right-aligned; union right edge matches psi's 356 exactly |
+| vault-tec psi render | — | byte-identical (0 px changed) |
+| vault-tec bar dial numerals | r=190.1 vs tick ring inner 194 (tight) | ~4.7 px clear |
+
+Fixes: (a) `place_radial_label()` bounds a dial numeral by its far CORNER
+against `DIAL_NUM_LIMIT`, used by both `paint_arc_background` and `build_vault`
+— a label that already fits does not move; (b) night-city `draw_hud_readout`
+and big-digit `update_bigdigit` right-align the bar/kPa string to the same edge
+the psi odometer grows left from (`+109`, and `BIG_TENTHS_X +
+BIG_DIGIT_INK_HALF` = the tenths slot's measured right ink edge).
+
+Honest notes:
+- psi is NOT byte-identical on dyno-cell: its own `-15` and `10` numerals were
+  already grazing the band (r=176.7 and 173.4 against 177) and move 5.9/2.9 px
+  inward. The audit subagent rejected the "psi is byte-identical" claim in the
+  first draft of the comment; the measurement (704 changed px, confined to
+  y=333..355) agrees with its derivation. That is a fix to a latent overlap, not
+  a regression, and it is scene-build only — the cached background bake, not the
+  16 ms per-frame path or the arc/wedge geometry the 60 FPS guard covers.
+- vault-tec's bar numerals were TIGHT, not overlapping; the bound moved them
+  ~4 px further out of the tick ring.
+
+### Neon: root-caused, measured, deliberately NOT changed
+
+`neon_readout_place()` hangs the sign off the LEADING GLYPH's ink edge, so a
+value starting with a wide digit (`0` — which is every bar reading below 1.00,
+e.g. `-0.83` in vacuum) is ~22 px wider than one starting with `1` (the psi
+`-12.0` the rings were sized against). Measured as extra unit-dependent ink
+inside the ring annulus, bar vs psi: segments **+161 px**, tube **+73 px**,
+marquee **+0** (marquee was and is clean; psi is clean in all three).
+
+A "clamp the composition half-width" fix was implemented and REVERTED: it traded
+left-side intrusion for right-side (segments +161 -> +75, but tube +73 -> +205),
+i.e. it moved the problem rather than removing it, and left the block visibly
+off-centre. The honest fix is a design decision (a narrower readout for the ring
+layouts, or ring radii that clear the widest composition), and it needs eyes on
+the glass — the new panel is the tool for that. Do not re-land the clamp.
+
+### New harness: interactive sim panel
+
+`./sim/build/boost_gauge_sim --stream` (host-only; frames on stdout, commands on
+stdin) + `python3 tools/sim_panel.py` -> http://127.0.0.1:8787/ : live gauge
+image, theme/unit/layout/font/preset, pressure slider + number, organic and
+fast-sweep demo waveforms, TPMS scenario, and a Save-screenshot button. It drives
+the same `boost_theme_set_*`/`boost_page_*` entry points the settings UI does, so
+it cannot render a lie. `tools/tests/test_sim_panel.py` covers it in the host
+suite (skips when the sim is not built). This is the class of bug it exists to
+catch: batch screenshots existed, but nobody rendered the unit matrix.
+
+## 2026-10-03 (second round) — converted-unit readouts are odometers
+
+Reported from the flashed board: on several themes the bar/kPa number "shifts
+around depending on how many digits are displayed and whether there's a negative
+sign", worst on Big Digit, where even the width of an individual digit moved it.
+
+The first round (above) right-aligned/centred the string per theme. That fixed
+the cross-unit placement and introduced this: the string was laid out from the
+font's per-glyph ADVANCES, so adding an integer digit, adding the sign, or (on
+Alvida's proportional digits, 45 px for '1' against 81 px for '0') changing any
+single digit moved every glyph in the number.
+
+Root cause, stated plainly: **PSI is stable because its slot positions are a
+function of a character's PLACE IN THE NUMBER, not of the string's width.** The
+converted formats were laid out as strings with a shared anchor. Fixed by giving
+each affected theme a derived slot grid whose anchor is one of its own psi slots,
+so the converted face inherits the odometer property and reuses psi geometry
+wherever psi has a slot.
+
+|theme|anchored on|digit pitch|point|fraction pitch|sign|
+|---|---|---|---|---|---|
+|dyno-cell (arc)|`VALUE_ONES_X` -27|43 (`VALUE_DIGIT_PITCH`, = `VALUE_ONES_X - VALUE_TENS_X`)|`VALUE_DECIMAL_X` 9|36 (`VALUE_FRAC_PITCH`)|leading digit - 32 (psi's own -59/-102)|
+|vault-tec|`VAULT_ONES_X` -12|24 (`VAULT_PITCH`, the mono advance)|`VAULT_DOT_X` +12 = ones + pitch|24|leading digit - 24 (psi slot 0/1/2)|
+|big-digit|right `BIG_TENTHS_X + BIG_DIGIT_INK_HALF` = +123|81 (`BIG_VAL_DIGIT_CELL` = `BIG_SLOT`)|`BIG_VAL_DOT_CELL` 50|50|leading cell - `BIG_MINUS_EDGE_GAP` - `BIG_MINUS_W`/2|
+
+Big Digit is the exception on anchoring, forced by geometry: psi's own worst case
+is "-15.0", whose minus ink already reaches face x -205 of a 466 px face. A kPa
+"-103" at psi's 81 px pitch needs sign + three integer digits and lands at -286,
+off-screen, so its cells stay fixed-pitch but the block is anchored on its right
+edge instead. Big Digit's cells also had to be changed from `LV_TEXT_ALIGN_LEFT`
+to `LV_TEXT_ALIGN_CENTER`: with a fixed cell width a left-aligned narrow glyph
+sits at the left of its cell (the '1' in "1.34" measured 14.5 px out of place).
+
+Measured stability: seven pressures (-12, -3, 0, 3, 5, 9, 19.5 psi) per theme per
+unit, reading the ink-run centres in the readout band of real sim renders. Every
+slot is stationary; only the ink CENTRE of a slot wobbles by up to 2.5 px as the
+digit changes, which is glyph asymmetry inside an advance-centred slot and is
+exactly what PSI already does. Screen-x slots:
+
+|theme|unit|hundreds|tens|ones|point|tenths|hundredths|
+|---|---|---|---|---|---|---|---|
+|dyno-cell|kPa|120|163|206|-|-|-|
+|dyno-cell|bar|-|-|206|241.5|278|314|
+|vault-tec|kPa|-|196.5|220.5|-|-|-|
+|vault-tec|bar|-|-|220.5|244.5|268.5|293|
+|big-digit|kPa|-|234.5|315.5|-|-|-|
+|big-digit|bar|-|-|103.5|169|234.5|315.5|
+
+(`dyno-cell bar`'s tenths and hundredths merge into one 75 px ink run centred at
+296 in every render; `kPa 34` merges its tens and ones likewise. The slot
+positions above are read off the cases where they separate.)
+
+**PSI is byte-identical.** The committed HEAD binary and the new one were built
+side by side and all 5 themes x 4 sim states rendered with each: **0 differing
+pixels** in all 20 renders. The arc change is a pure refactor of the psi branch
+(the cell writes moved into `arc_set_cell()`) plus a new non-psi branch; vault and
+big-digit psi paths are untouched. This matters because psi is the 60 FPS
+reference path.
+
+Deliberately NOT changed, with the reason:
+
+- **night-city** — its psi slots are 52 px digit-to-digit and 40 px around the
+  point, so bar's hundredths would land at +122. The readout object's right edge
+  is `HUD_READOUT_OBJ_X2` 117 (LVGL clips a widget's draw to its coords) and the
+  reticle bracket sits at `HUD_BRACKET_X` 126, so pinning the point clashes with
+  the bracket; the only clash-free alternative is right-anchoring, which moves
+  the whole number 52 px on a unit change. Its current defect is small — the '.'
+  (advance 435) and '-' (551) against a digit's 829 shift the run by ~8.6 px —
+  and the cure costs more than the disease. Open, needs a design decision.
+- **neon** — its readout is a centred uniform-pitch block by design, so it
+  re-centres when the digit count changes. Same class as above, and it is also
+  the theme with the unfixed ring-annulus intrusion; both want one design pass
+  with the panel open.
+
+## 2026-10-03 — TPMS unit marks are content-sized
+
+The TPMS page's unit mark (`main/boost_tpms_ui.c:make_unit_label()`) was built
+with `lv_obj_set_width(label, 66)` and LVGL's default `LV_LABEL_LONG_WRAP`, left
+at whatever height the host's font metrics produced. The reported symptom (the
+top-left wheel's `bar` cut on its right, the bottom two wheels' cut at the top)
+could not be reproduced in any render — the panel, `--tpms normal`, and the
+psi/bar/kPa matrix all give four pixel-identical `bar` marks 5-7 px clear of the
+wheel art — but the box was a real latent clip: the left wheels' right-aligned ink
+ended on exactly x=120, which is the box's own right edge, and the height was
+host-derived, so a one-pixel rounding difference in advance or line box is a
+shave. Fixed structurally rather than cosmetically: the label is now sized to its
+own text (never wraps) with the height pinned to `lv_text_get_size()`'s line box,
+and positioned from the VALUE label's own `lv_obj_get_coords()` so the two can
+never disagree. `TPMS_UNIT_DY` is now a true pixel gap below the value's measured
+box instead of a hardcoded 24 px that assumed the value font's line height. PSI
+stays hidden and its render is byte-identical (0 differing pixels).
+
+## 2026-10-03 — Dyno Cell true-black face
+
+`dynoTrueBlack`, mirroring Night City's `hudTrueBlack` exactly (NVS `dyno_black`,
+`/themes` + both `/themes/config` transports, web, iOS, Android). The renderer
+reads it through `arc_face_color()` at the two places the arc face colour is
+chosen: the cached background canvas fill and the scene root. Measured in the
+panel: the dominant face colour goes (8,8,8) -> (0,0,0) and back. Like Night
+City's, it is read at scene build, so a toggle lands through the scene rebuild a
+`/themes/config` PUT already performs. The sim panel gained a `dynoblack on|off`
+command and a Dyno Cell control so it can be eyeballed before flashing.
+
+## 2026-10-04 — the panel was serving a pre-build sim
+
+Reported as "was the sim not updated? it still appears the exact same". It was
+not the firmware. `tools/sim_panel.py` supervises its `--stream` child for
+CRASHES only: `_supervise()` spawned once and then blocked in `proc.wait()`, so a
+panel started before a `cmake --build` kept streaming the old binary forever. The
+panel on :8787 had been up since 23:00:46 while the last sim build was 23:16:54,
+i.e. every render it served predated the whole layout round. This is the harness's
+worst failure mode: **a stale render is indistinguishable from a change that did
+not work**, which is exactly how it was read.
+
+Fixed in the supervisor: it now polls the binary's mtime while the child runs and
+respawns on a change (skipping the 0.5 s crash backoff, which exists for crash
+loops, not rebuilds). `/state` gained `simBuiltAt`, `rebuilds` and the page's
+status line shows the sim's build time and any auto-restart, so stale-vs-current
+is visible without asking. `tools/tests/test_sim_panel.py` now drives a real
+panel, bumps the binary's mtime, and requires the respawn AND that the panel comes
+back serving (19 checks). The first run of that test failed on the comeback check
+— the restart left a dead window because `rebuilds` is incremented before the
+respawn — which is a reminder that the test is doing real work.
+
+Rule: after `cmake --build sim/build`, either the panel restarts itself (now) or
+you restart it. Never read "unchanged" off a panel you have not confirmed is
+serving the build you just made.
+
+## 2026-10-04 — kPa was stable but parked left of centre
+
+Board report: "kpa numbers are sitting super far to the left on dyno cell and
+vault tec? super far from centered." The odometer pass had pinned the kPa units
+digit on psi's ONES slot, which is where psi's ones digit sits only because psi
+has a `.0` to its right. kPa has no decimal point, so its block is just as wide
+as its digits and nothing balances the empty right side.
+
+Measured ink centres, face centre 233 (dyno psi's own mean is -3.9, vault's is
++0.5 — i.e. both psi faces are centred):
+
+| value | dyno-cell kPa BEFORE | AFTER | vault kPa BEFORE | AFTER |
+|---|---|---|---|---|
+| `-83` | -59.5 | -5.5 | -34.5 | -4.5 |
+| `0` | -27.0 | +27.0 | -12.5 | +17.5 |
+| `34` | -48.0 | +6.0 | -24.5 | +5.5 |
+| `134` | -61.0 | -13.0 | -36.0 | -6.0 |
+| **mean** | **-48** | **+3.6** | **-29** | **+3.1** |
+
+Fix: a format WITH no decimal point anchors its units digit on a new
+`VALUE_KPA_ONES_X` 27 (arc) / `VAULT_KPA_ONES_X` 18 (vault) — the anchor that puts
+the block's mean optical centre over the kPa range onto psi's own mean optical
+centre, derived as `pitch * 0.727 - psi_mean` (0.727 is the mean half-cell count
+over a 1..4-cell range). bar keeps psi's anchor: it HAS a decimal point, and
+sharing psi's point/ones slots is exactly what stops its digits from jumping when
+the unit is switched. Stability is untouched — the slots are still a function of
+the digit's place in the number; only where the block sits moved.
+
+Tradeoff recorded: kPa's block still drifts with the digit count (a single `0`
+now sits +27 on the arc against psi's +9 at atmosphere) because a fixed anchor
+plus a variable-width block cannot be centred for every value at once. That is
+inherent, and the same reason psi's own number moves between `5.0` and `-12.0`;
+what matters is that the MEAN is now on the dial centre instead of 48 px left.
+The lesson for the guard rails: stability and centring are two separate
+requirements, and satisfying one does not imply the other.
+
+big-digit had the same defect MIRRORED, found by measuring rather than by
+report (the board report named only dyno-cell and vault-tec): it is right-anchored
+on psi's tenths ink edge, so a fractionless block that is only as wide as its
+digits sat far RIGHT — a lone `0` measured +82 px and the mean +22.8 against psi's
+own +2.1. It now uses `BIG_VAL_KPA_RIGHT_X` (psi's edge - 21) for a fractionless
+format and keeps psi's edge for one with a decimal point, exactly like the arc and
+vault. After: `-83` -12.5, `0` +61.0, `34` +20.0, `134` -19.0, mean +12.4.
+
+Scope check: bar is BYTE-IDENTICAL on every theme (0 changed pixels over 4 states
+on dyno-cell, vault-tec and big-digit) because the new anchors are selected only
+when the formatted string has no decimal point, and psi is byte-identical on all
+five themes. The kPa change is confined to the fractionless path by construction,
+not by luck.
+
+## 2026-10-04 — the converted readout's second fraction digit, and big-digit kPa's anchor
+
+Board-reported, two items in one message.
+
+**(1) "on dyno cell, in bar, the tenths and hundredths digits are too close
+together, and overlap in some cases."** Reproduced exactly: `VALUE_FRAC_PITCH`
+36 is psi's point-to-tenths step, sized for the narrow decimal MARK beside the
+ONE fraction digit psi prints, and never exercised past it. Bar prints two, and
+this font's ink here is 39-41 px - wider than the pitch. dyno-cell bar's tenths
+and hundredths rendered as a SINGLE 75 px ink run: 78 px of glyph in 75 px of
+space, i.e. ~3 px of overlap. Every fraction digit after the first now continues
+on `VALUE_DIGIT_PITCH` 43, psi's own digit-to-digit pitch, so the first fraction
+digit still lands on psi's tenths slot. Exact ink gaps after the fix (1 px
+splitter): `0.00` 9 / 10 / 4, `0.34` 9 / 10 / 3, `1.34` 9 / 10 / 3, `-0.83`
+5 / 9 / 10 / 4 - the decimal keeps its 9-10 px because it is a mark, and the
+digits are 3-4 px apart against psi's integer digits' 4-5 px.
+
+Vault-Tec measured and left alone: a mono font on a uniform `VAULT_PITCH` 24
+gives 2-3 px digit gaps already, which is that theme's own convention, and there
+is no overlap. night-city and neon lay out from the font's advances, which
+cannot overlap by construction.
+
+**(2) "on big digit, can you have it be centered on the point halfway between
+the ones an[d] tens place digits when in kpa?"** `BIG_VAL_KPA_RIGHT_X` is now
+`BIG_SLOT` (81), which puts the ones/tens BOUNDARY on the dial centre: the cells
+are right-anchored one BIG_SLOT-wide cell at a time, so the ones cell spans
+[0, 81] and the tens [-81, 0]. Verified per-cell on the sim renders - the ones
+digit's ink centre is +40.0 and the tens -41/-42 in EVERY value (odometer holds;
+a new hundreds digit or the sign is tacked on outside the pair), and the 2-digit
+case is exactly symmetric. Consequence, deliberate and worth knowing: a 1- or
+3-digit kPa now sits ~40 px off centre (`0` +40, `34` -2, `134` -41, `-83` -33),
+because the anchor is the digit pair, not the block. This is the user's explicit
+choice of anchor; the earlier psi-mean-matched edge (psi's edge - 21) remains the
+rule for dyno-cell and vault-tec, whose spans are 1-4 cells of integer digits.
+bar keeps the psi edge - it has a decimal point and shares psi's point/tenths
+geometry, which is what stops its digits jumping on a unit change.
+
+Scope, isolated against a HEAD binary built side by side rather than asserted:
+psi is 0 changed pixels on all five themes, and vault-tec, big-digit, night-city
+and neon are 0 changed pixels in bar and kPa. Only dyno-cell bar (the intended
+fraction fix) and big-digit kPa (the intended anchor) differ.
+
+Surface check: the defect is firmware-only, which is also evidence for which
+surface was reported. The web mirror draws the fraction as ONE natural-advance
+string (`drawFixedDecimal`, web/app.js), and a proportional font's advances
+cannot overlap, so bar's tenths/hundredths are clean there. The firmware's fixed
+36 px slot is what collided. The mirror's big-digit fractionless anchor also
+differs by design - it centres the whole block, which agrees with the new
+ones/tens anchor for the 2-digit case and differs by ~40 px for 1- and 3-digit
+values. That is a pre-existing approximation (the web already lays its readout
+out from canvas font metrics rather than the firmware's pixel slots), flagged
+rather than changed unilaterally: re-anchoring it also re-derives its
+auto-sizing extents, a design change the user has not seen.
+
+## 2026-10-04 — dyno-cell bar: the tenths digit on the dial centre, and a build trap
+
+Board request: "on dyno cell with bar units, can you position it so that the
+tenths place is centered?" psi's tenths slot is 45 px right of the dial centre,
+which is what left the bar block reading as pushed right. The bar readout is now
+psi's own slots TRANSLATED by `VALUE_BAR_SHIFT` (-45) so the tenths lands on the
+centre. The translation is uniform, so nothing about the internal spacing
+changes - the point keeps its 36 px gap to the tenths and the digits their 43 px
+pitch; only where the block sits moves. Measured cell ink centres, all four sim
+states: ones -72.0, point -36.5, tenths **+0.0**, hundredths +43.0, and for the
+negative case the sign a complete 17 px minus at -105.0 (the same width psi's own
+minus measures, so it is not clipped by the readout container, whose left edge is
+118 and whose measured margin is 2 px). Ink gaps 5 / 9 / 10 / 4 - unchanged, as a
+pure translation must leave them. psi returns early on its hand-tuned slots and
+kPa passes `shift = 0`, so neither is touched.
+
+**The trap, recorded because it silently invalidated a verification run.** To
+isolate a change I build a baseline binary by copying the working source aside,
+`git checkout --` the file, building, saving the binary, restoring the source and
+building again. That second build was a NO-OP: `cp` restored the source and the
+recompile landed in the same second as the baseline build, so the timestamp
+comparison saw the object as up to date. The binary left on disk was HEAD's, the
+panel was serving the pre-change layout, and the "isolation matrix" compared HEAD
+against HEAD - it would have reported 0 changed pixels everywhere and looked like
+a clean result. Caught by measuring the rendered cells (they were the OLD
+positions) and then confirming the binary's mtime had not moved. Lesson: after
+any rebuild that a measurement depends on, assert the artifact's mtime CHANGED
+(`touch` the source first), never assume the build produced a new file. The panel's
+mtime watcher was not at fault - there was no new mtime to see.
+
+Headroom check for that translation, since it moves the whole bar block 45 px
+left inside `ARC_READOUT_W` 230 (±115, LVGL clips a widget to its coords). The
+firmware clamps the range (`clamp_psi_min` / `clamp_psi_max`, and
+`gauge_config_valid`: psi_min in [-30, -1], psi_max in [5, 40]), so the widest
+converted readouts are bounded and all still fit: bar's worst is psi_min -30 ->
+`-2.07`, a 1-integer-digit format whose minus ink reaches -112.5 (2.5 px inside
+the edge); psi's own worst stays `-40.0` at -111.5; kPa's is `-207`, sign ink at
+-99.5. The container therefore needs no widening - but the bound is load-bearing:
+a range clamped wider than psi_min -30 / psi_max 40 would clip a minus or a
+hundreds digit, so re-derive this if those clamps ever move.
+
+## 2026-10-04 — v1.0.0 reissued: the published artifacts now carry the layout rounds
+
+User request: rebuild the binaries and replace the 1.0.0 release with the fixed
+ones, plus a release-note line for the Dyno Cell true-black option. The version
+stayed 1.0.0 by explicit instruction (same tag, replaced assets) — the two builds
+are indistinguishable by file name or by the version they report, so `SHA256SUMS`
+is the only way to tell them apart. That is called out in `release/README.md`
+(which is also the published GitHub release body), `docs/release-notes.md` and
+`AGENTS.md`.
+
+Rebuilt from the branch tip in three parallel slices — firmware / iOS / Android —
+with the coordinator owning the assembly, the gates and the publication.
+
+| artifact | bytes | sha256 |
+|---|---|---|
+| `boost_gauge.bin` | 2,677,744 | `8befb0f9…caffde25` |
+| `boost_gauge_merged.bin` | 2,808,816 | `3cd27eba…130de354` |
+| `bootloader.bin` | 22,576 | `b6bf34ec…007c739c` |
+| `BoostGauge-1.0.0-ios.ipa` | 1,305,755 | `759c2f36…636e424a3` |
+| `BoostGauge-ios-app.zip` | 1,305,471 | `37e9dca3…f8d21319` |
+| `BoostGauge-android-debug.apk` | 61,339,732 | `c0eca976…4d645ab5` |
+
+Evidence actually observed:
+
+- **Firmware**: `idf.py -B build_release build` + `merge-bin`; app image `0x28dbf0`
+  (36% of `ota_0` free), merged image written to `0x0` with `dio / 80m / 16MB`;
+  `esp_app_desc` version `1.0.0` in BOTH the app image and the merged image (at
+  merged offset `0x20020`). `partition-table.bin`, `ota_data_initial.bin` and
+  `flash_args` came out **byte-identical** to the 2026-10-02 cut; the bootloader
+  differs only because it embeds a build timestamp (`Oct 3 2026 23:22:27` — it was
+  correctly not rebuilt by an app-only change), which is why its hash moves while
+  its bytes do not. `merge-bin -o` resolves RELATIVE paths against the build
+  directory, so the output path must be absolute.
+- **The shipped firmware really carries the web fixes** (the end-to-end check for
+  the recorded "web edits shipped stale" failure): 8 gzip members decompress out
+  of `release/boost_gauge.bin` and the two largest contain `dynoTrueBlack`,
+  `pressureUnit` and `arcReadoutDisplayPsi`.
+- **iOS**: unsigned arm64 device Release archive (Xcode 26.3,
+  `CODE_SIGNING_ALLOWED=NO`, no provisioning profile installed), `Info.plist`
+  1.0.0 (8); the built executable, the IPA's copy and the `.app` zip's copy hash
+  identically, and neither archive carries stray `__MACOSX`/`.DS_Store` entries.
+- **Android**: clean `:app:assembleDebug :app:testDebugUnitTest` — 109 tests, 0
+  failures; `versionName 1.0.0` / `versionCode 10` / `minSdk 29` read from the
+  SHIPPED apk via `aapt2`; the release copy is `cmp`-identical to the build output.
+- **Gates**: `test_version_consistency.py --release` **45/45 PASS** (shipped bytes:
+  the firmware descriptor, the merged image at the `flash_args` offset, the IPA and
+  the `.app` zip, the APK, and every `SHA256SUMS` digest) and `tools/test_suite.py`
+  **14/14 PASS**.
+
+Two process notes worth keeping:
+
+1. **A rebuild is only evidence if the binary on disk actually changed.** The
+   baseline/restore recipe can recompile in the same second as the baseline and
+   silently leave HEAD's binary in place (hit earlier the same day during the
+   dyno-cell bar work). This reissue asserts it: the coordinator regenerated
+   `main/generated_web_assets.c` through `tools/embed_web.py` while the firmware
+   build's CMake configure was in flight, so the firmware slice had to prove the
+   compile postdated that write — the object's mtime (14:52:56) is newer than the
+   source's (14:52:18), and the regeneration produced an empty `git diff`. Benign,
+   but only because it was checked rather than assumed.
+2. **Concurrent builds starve the simulator.** The iOS suite run alongside the
+   firmware and Android builds reported
+   `GaugeMirrorWebViewTests/testCanonicalMirrorRendersVisibleCanvasOffline` failing
+   on an empty `gaugeCanvas.toDataURL()` — a WKWebView process that never came up
+   inside its 6 s + 6 s window on a 4-core machine under load, not a wrong render.
+   Re-run ALONE with the machine idle: **8/8 pass, TEST SUCCEEDED**. The two
+   `ViewModelTests` timezone failures are the known pre-existing ones. Never read a
+   loaded-machine simulator failure as a product regression without an isolated
+   re-run.
+
+HARDWARE: still not run — no board was attached. 1.0.0 remains host-built and
+simulator-verified; **v0.9.7 is the last hardware-verified baseline**.

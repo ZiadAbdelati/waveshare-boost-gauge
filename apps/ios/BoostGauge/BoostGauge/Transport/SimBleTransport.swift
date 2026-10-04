@@ -396,6 +396,7 @@ final class SimBleTransport: GaugeTransport {
         "arcGradient": false,
         "hudGradient": false,
         "hudTrueBlack": true,
+        "dynoTrueBlack": false,
         "neonMarqueeSpin": false,
         "teSync": true,
         "regionDBuf": true,

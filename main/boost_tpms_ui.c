@@ -58,9 +58,10 @@ static const tpms_capsule_t s_capsule[4] = {
  * margin below already accounts for the shadow, which spreads further). */
 #define TPMS_CAPSULE_GROW 2
 
-/* Distance from a readout label's top to its unit mark's top: the 23 px
- * font_wide_22 line plus a 1 px gap. */
-#define TPMS_UNIT_DY 24
+/* Gap between a value label's box bottom and its unit mark's box top. The mark
+ * is placed from the value label's measured box, so this stays a true gap even
+ * if the value font's line height changes. */
+#define TPMS_UNIT_DY 1
 
 static lv_obj_t *s_root;
 static lv_obj_t *s_canvas;
@@ -125,16 +126,34 @@ static lv_obj_t *make_psi_label(lv_obj_t *parent, int x, int y, bool right_align
     return label;
 }
 
+/* Place a unit mark under its value: its text edge (right for a right-aligned
+ * left wheel, left otherwise) shares the value label's own box edge, and its
+ * top sits TPMS_UNIT_DY below the value's measured box. */
+static void place_unit_label(lv_obj_t *label, lv_obj_t *value, bool right_aligned)
+{
+    lv_obj_update_layout(lv_obj_get_parent(label));
+    lv_area_t value_box;
+    lv_area_t parent_box;
+    lv_obj_get_coords(value, &value_box);
+    lv_obj_get_coords(lv_obj_get_parent(label), &parent_box);
+
+    const int32_t w = lv_obj_get_width(label);
+    const int32_t x = right_aligned
+                          ? (value_box.x2 - parent_box.x1) - w + 1
+                          : (value_box.x1 - parent_box.x1);
+    const int32_t y = (value_box.y2 - parent_box.y1) + 1 + TPMS_UNIT_DY;
+    lv_obj_set_pos(label, x, y);
+}
+
 /* Unit mark under a capsule readout. Converted (bar/kPa) values are otherwise
  * bare numbers, so the active unit is named next to the value; PSI hides it,
  * keeping that face byte-for-byte. Smaller and dimmer than the value, mirroring
  * the unit marks on the other faces. */
-static lv_obj_t *make_unit_label(lv_obj_t *parent, int x, int y, bool right_aligned)
+static lv_obj_t *make_unit_label(lv_obj_t *parent, lv_obj_t *value, bool right_aligned)
 {
     lv_obj_t *label = lv_label_create(parent);
-    lv_label_set_text_static(label, boost_units_label(boost_theme_pressure_unit()));
-    lv_obj_set_width(label, 66);
-    lv_obj_set_pos(label, x, y);
+    const char *const text = boost_units_label(boost_theme_pressure_unit());
+    lv_label_set_text_static(label, text);
     lv_obj_set_style_text_font(label, &lv_font_montserrat_18, 0);
     lv_obj_set_style_text_color(label, tpms_color(TPMS_WHITE), 0);
     lv_obj_set_style_text_opa(label, LV_OPA_70, 0);
@@ -142,6 +161,18 @@ static lv_obj_t *make_unit_label(lv_obj_t *parent, int x, int y, bool right_alig
                                 right_aligned ? LV_TEXT_ALIGN_RIGHT : LV_TEXT_ALIGN_LEFT,
                                 0);
     make_passive(label);
+
+    /* Size to the text, never to a fixed box: content width lays the string out
+     * on one line, so it can never wrap. The explicit height pins the object to
+     * the font's own line box, so a taller render or a descendered glyph cannot
+     * be clipped at the top or bottom. */
+    lv_obj_set_width(label, LV_SIZE_CONTENT);
+    lv_point_t size;
+    lv_text_get_size(&size, text, &lv_font_montserrat_18, 0, 0,
+                     LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    lv_obj_set_height(label, size.y);
+
+    place_unit_label(label, value, right_aligned);
     return label;
 }
 
@@ -213,10 +244,10 @@ void boost_tpms_ui_create(lv_obj_t *parent)
     /* Unit marks under each readout, aligned with the value they annotate.
      * They always exist so a unit change (which does not rebuild this page)
      * can show/hide them from boost_tpms_ui_update(). */
-    s_unit[0] = make_unit_label(s_root, 55, 119 + TPMS_UNIT_DY, true);
-    s_unit[1] = make_unit_label(s_root, 345, 119 + TPMS_UNIT_DY, false);
-    s_unit[2] = make_unit_label(s_root, 40, 318 + TPMS_UNIT_DY, true);
-    s_unit[3] = make_unit_label(s_root, 359, 318 + TPMS_UNIT_DY, false);
+    s_unit[0] = make_unit_label(s_root, s_psi[0], true);
+    s_unit[1] = make_unit_label(s_root, s_psi[1], false);
+    s_unit[2] = make_unit_label(s_root, s_psi[2], true);
+    s_unit[3] = make_unit_label(s_root, s_psi[3], false);
 
     boost_tpms_ui_update(NULL);
 }
@@ -234,9 +265,12 @@ void boost_tpms_ui_update(const boost_tpms_snapshot_t *snapshot)
         const bool show = unit != BOOST_UNIT_PSI;
         for (int i = 0; i < 4; ++i) {
             lv_obj_t *label = s_unit[i];
-            if (label == NULL) continue;
+            if (label == NULL || s_psi[i] == NULL) continue;
             if (strcmp(lv_label_get_text(label), unit_text) != 0) {
                 lv_label_set_text_static(label, unit_text);
+                /* The mark is sized to its text, so a new string re-anchors it
+                 * to the value label's edge. */
+                place_unit_label(label, s_psi[i], (i % 2) == 0);
             }
             if (show == lv_obj_has_flag(label, LV_OBJ_FLAG_HIDDEN)) {
                 /* A hidden object cannot be invalidated, so repaint first. */

@@ -185,6 +185,7 @@ THEME = {
     "arcGradient": False,
     "hudGradient": False,
     "hudTrueBlack": False,
+    "dynoTrueBlack": False,
     "neonMarqueeSpin": False,
     "teSync": False,
     "regionDBuf": False,
@@ -350,6 +351,7 @@ def reset_mock_state(seed: int | None = None) -> None:
         "arcGradient": False,
         "hudGradient": False,
         "hudTrueBlack": False,
+        "dynoTrueBlack": False,
         "neonMarqueeSpin": False,
         "teSync": False,
         "regionDBuf": False,
@@ -889,6 +891,7 @@ def themes_payload() -> dict:
         "arcGradient": bool(THEME["arcGradient"]),
         "hudGradient": bool(THEME["hudGradient"]),
         "hudTrueBlack": bool(THEME["hudTrueBlack"]),
+        "dynoTrueBlack": bool(THEME["dynoTrueBlack"]),
         "neonMarqueeSpin": bool(THEME["neonMarqueeSpin"]),
         "teSync": bool(THEME["teSync"]),
         "regionDBuf": bool(THEME["regionDBuf"]),
@@ -1274,6 +1277,8 @@ class Handler(BaseHTTPRequestHandler):
             THEME["hudGradient"] = payload["hudGradient"]
         if "hudTrueBlack" in payload and isinstance(payload["hudTrueBlack"], bool):
             THEME["hudTrueBlack"] = payload["hudTrueBlack"]
+        if "dynoTrueBlack" in payload and isinstance(payload["dynoTrueBlack"], bool):
+            THEME["dynoTrueBlack"] = payload["dynoTrueBlack"]
         if "neonMarqueeSpin" in payload and isinstance(payload["neonMarqueeSpin"], bool):
             THEME["neonMarqueeSpin"] = payload["neonMarqueeSpin"]
         if "teSync" in payload and isinstance(payload["teSync"], bool):

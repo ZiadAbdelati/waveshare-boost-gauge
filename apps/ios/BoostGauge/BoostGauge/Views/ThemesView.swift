@@ -232,6 +232,7 @@ struct ThemesView: View {
             switch theme.id {
             case "dyno-cell":
                 Toggle("Gradient fill", isOn: $vm.arcGradient)
+                Toggle("True black background", isOn: $vm.dynoTrueBlack)
             case "vault-tec":
                 TextField("Face color (#RRGGBB)", text: $vm.vaultFace)
                     .textInputAutocapitalization(.never)

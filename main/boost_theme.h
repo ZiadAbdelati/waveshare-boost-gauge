@@ -118,6 +118,11 @@ void boost_theme_set_hud_gradient(bool enabled);
 bool boost_theme_hud_true_black(void);
 void boost_theme_set_hud_true_black(bool enabled);
 
+/* Replace Dyno Cell's dark face with true black so unused AMOLED pixels are
+ * physically off. The setting is persisted and affects only the arc style. */
+bool boost_theme_dyno_true_black(void);
+void boost_theme_set_dyno_true_black(bool enabled);
+
 /* Marquee border chase: the accent bulbs rotate around each ring (inner and
  * outer clockwise, middle counterclockwise) while the bulb positions stay
  * fixed. Persisted; affects only the neon marquee layout. */

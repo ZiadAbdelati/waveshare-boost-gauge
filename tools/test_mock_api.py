@@ -233,7 +233,7 @@ def run_tests(base: str, result: Result) -> None:
     )
     result.check(
         {"bigDigitStaticBg", "bigDigitColorText", "bigDigitStaticColor", "bigDigitTextColor",
-         "arcGradient", "hudGradient", "hudTrueBlack", "neonMarqueeSpin", "teSync",
+         "arcGradient", "hudGradient", "hudTrueBlack", "dynoTrueBlack", "neonMarqueeSpin", "teSync",
          "regionDBuf", "teScanline", "rotation", "vaultFace", "vaultVignette",
          "vaultNeedleRed", "vaultNeedleTail", "neonLayout", "neonPreset", "demoMode",
          "demoFastSweep", "tpmsBle", "pixelShift", "pixelShiftSec"}.issubset(themes.keys()) and
