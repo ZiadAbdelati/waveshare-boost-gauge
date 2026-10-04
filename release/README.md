@@ -16,6 +16,24 @@ Settings page, or either app.
 > board run) for physical measurements, never this release. First flash to
 > hardware should exercise the UNITS button and soak a bar/kPa Big Digit face.
 
+## Reissued 2026-10-04 — the assets in this release were rebuilt
+
+The version stayed **1.0.0** (so `version.txt`, the app version strings and the
+file names are unchanged), but every binary in this release was **rebuilt** to carry
+the unit-layout corrections and the new **Dyno Cell true black** option. Anyone who
+downloaded the 2026-10-02 build of 1.0.0 should **re-download**: the two builds are
+indistinguishable by name or by the version they report, so `SHA256SUMS` is the only
+way to tell them apart.
+
+Changed in this reissue: converted (bar / kPa) readouts became fixed-slot odometers
+and were re-centred; the second fraction digit moved onto the digit pitch; Dyno Cell
+gained the true-black option with its toggle in the web, iOS and Android theme
+editors; and `tools/sim_panel.py` — an interactive panel that streams the real
+firmware renderer to a browser — landed as the pre-flash layout harness. Nothing in
+the display, cadence, media-store or WebSocket paths was touched, and psi readouts
+are byte-for-byte identical (0 differing pixels across all five themes × four
+states); the converted layouts moved only where the fix intended.
+
 ## What this changes
 
 **Firmware**
@@ -31,14 +49,39 @@ Settings page, or either app.
   conversion; Vault-Tec deliberately stays raw in every unit, and the Neon
   zone-colour decision folds through the same band so engine-off noise no longer
   flips the ring colour between samples.
-- Converted readouts use separate advances-centred layouts, and Big Digit's
-  bar/kPa value is drawn as one label cell **per character** - a single
+- Converted readouts are **fixed-slot odometers anchored on the theme's own psi
+  slots**, not advance-centred strings: a slot's position is a function of a
+  character's *place in the number*, never of the string's width. That was the
+  defect behind bar/kPa digits shifting whenever a digit, a sign or a digit count
+  changed (Alvida's `1` is 45 px against `0` at 81 px, so advance layout moved
+  everything). They are also optically centred rather than merely stable. The
+  second fraction digit continues on the **digit** pitch (43 px), not the
+  point-to-tenths gap (36 px, sized for the narrow decimal mark beside one digit),
+  which is what stopped dyno-cell bar's tenths and hundredths colliding; and
+  dyno-cell bar's block is translated so its **tenths digit sits on the dial
+  centre**.
+- Big Digit's bar/kPa value is drawn as one label cell **per character** - a single
   full-width label invalidated its whole 466×120 box on every 0.01-bar step
-  (3.56× the psi flush per cycle; now 1.81× bar, 1.11× kPa).
-- Converted Big Digit values keep the custom minus widget: `alvida_big` carries no
-  `-` glyph, so a literal sign in the string was painted as nothing and `-1.0` psi
-  rendered as `0.07` bar.
-- TPMS values and the low-pressure threshold follow the unit.
+  (3.56× the psi flush per cycle; now 1.81× bar, 1.11× kPa). Converted Big Digit
+  values keep the custom minus widget: `alvida_big` carries no `-` glyph, so a
+  literal sign in the string was painted as nothing and `-1.0` psi rendered as
+  `0.07` bar. Its kPa value is anchored with the ones/tens cell boundary on the
+  dial centre (an explicit design choice: 1- and 3-digit kPa then sit off-centre by
+  ~40 px rather than the digits moving when a hundreds digit appears).
+- **Dyno Cell true black** (`dynoTrueBlack`): the arc face can be pure `#000000`
+  instead of `#080808`, mirroring Night City's `hudTrueBlack`. Persisted as NVS
+  `dyno_black`, served by `/themes`, written by `PUT /api/v1/themes/config` on both
+  transports (HTTP and BLE Control), with a toggle in the web, iOS and Android
+  theme editors. The renderer reads it through `arc_face_color()` at both places
+  the arc face colour is chosen - the cached background canvas **and** the scene
+  root - so the darker face also holds during a scene rebuild instead of the old
+  grey showing through. Measured in the simulator: the dominant face colour goes
+  (8,8,8) → (0,0,0) → (8,8,8).
+- TPMS values and the low-pressure threshold follow the unit. The TPMS unit mark is
+  content-sized with its height pinned to the measured line box (it had been a
+  fixed 66 px-wide wrapping label).
+- No psi readout path moved: psi is byte-for-byte identical (0 differing pixels on
+  all five themes × four states).
 
 **Physical panel** — the two-finger overlay's OBD2/App rows are replaced by a
 **2-up + 1-down cluster of three rounded buttons**: APP BLE, OBD BLE, UNITS. UNITS
@@ -49,7 +92,8 @@ classifier, so a drag that starts on a button is still a theme swipe, not a tap.
 The cockpit reads the unit from every `/state` sample.
 
 **Companion apps** — the units dropdown sits on the Range page on both platforms;
-the About/Cockpit readouts show the unit.
+the About/Cockpit readouts show the unit. The theme editors on both platforms carry
+the new **Dyno Cell true black** toggle alongside the existing per-theme options.
 
 ## Version hygiene (why this release exists as 1.0.0)
 
@@ -76,15 +120,16 @@ the canonical file is bare `MAJOR.MINOR.PATCH`, matching the app version strings
 
 ## Firmware binaries — new in this release
 
-`boost_gauge.bin` (SHA-256 `b9758c37…89c2fb2d`), `bootloader.bin`,
+`boost_gauge.bin` (SHA-256 `8befb0f9…caffde25`), `bootloader.bin`,
 `partition-table.bin`, `ota_data_initial.bin` and `boost_gauge_merged.bin` are fresh
-1.0.0 builds (`0x28d710` bytes, 36% of the app partition free). This is an
-OTA-capable app-image release: web OTA uses `boost_gauge.bin` (offset `0x20000`);
-`boost_gauge_merged.bin` is for a full-flash reset.
+1.0.0 builds (`0x28dbf0` bytes, 2677744 bytes, 36% of the app partition free). This
+is an OTA-capable app-image release: web OTA uses `boost_gauge.bin` (offset
+`0x20000`); `boost_gauge_merged.bin` is for a full-flash reset (`0x2adbf0` bytes at
+offset `0x0`).
 
 The display, cadence, media-store and WebSocket paths are unchanged from the
 v0.9.7 hardware-verified baseline; this change-set touches the readout/formatting
-paths and the two-finger overlay.
+paths, the Dyno Cell face colour, and the two-finger overlay.
 
 ## Files
 
@@ -99,9 +144,9 @@ paths and the two-finger overlay.
 | `BoostGauge-ios-app.zip` | the same `.app` at the zip root, for `devicectl` install |
 | `SHA256SUMS` | checksums for every file above |
 
-The IPA is **unsigned** (no provisioning profile for this bundle id was available:
-the only profile on the build machine is an unrelated tvOS one). Sideloading tools
-re-sign it on install.
+The IPA is **unsigned** — no provisioning profile for this bundle id is installed on
+the build machine, so the Release archive is built with `CODE_SIGNING_ALLOWED=NO`.
+Sideloading tools re-sign it on install.
 
 ## Verify
 

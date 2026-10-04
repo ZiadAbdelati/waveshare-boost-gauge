@@ -38,6 +38,21 @@ from the physical panel, the web Range page, or either app.
   existing swipe classifier, so a drag that starts on a button is still a theme
   swipe, not a tap.
 - **Dashboard**: a **Pressure unit** selector on the Settings page (Range section).
+- **Dyno Cell true black** (`dynoTrueBlack`): the arc face can now be pure
+  **`#000000`** instead of `#080808`, mirroring Night City's `hudTrueBlack` — NVS key
+  `dyno_black`, served by `/themes` as `dynoTrueBlack`, written by
+  `PUT /api/v1/themes/config` on both transports, with a toggle in the web, iOS and
+  Android theme editors. The renderer reads it through `arc_face_color()` at both
+  places the arc face colour is chosen — the cached background canvas and the scene
+  root — so the darker face also survives a scene rebuild instead of the old grey
+  showing through mid-transition. Measured in the simulator: the dominant face
+  colour goes (8,8,8) → (0,0,0) and back on toggle, with the black blended into the
+  cached face rather than laid over it.
+- **Layout corrections for the converted units**: the first 1.0.0 cut laid out bar
+  and kPa from per-glyph advances, so a converted readout moved whenever a digit,
+  a sign or a digit *count* changed. Converted readouts are now fixed-slot
+  odometers — slot position is a function of a character's place in the number, not
+  of the string's width — and are optically centred rather than merely stable.
 - **Version hygiene**: the release version now has exactly one source,
   `version.txt`. ESP-IDF bakes it into the app descriptor instead of deriving it
   from `git describe` (which is how a v0.9.7 release shipped a binary reporting
@@ -53,6 +68,29 @@ from the physical panel, the web Range page, or either app.
 > Big Digit readout and the physical feel of the overlay's UNITS button were not
 > measured. **v0.9.7 remains the last hardware-verified baseline**; first flash
 > should exercise the UNITS button and a bar/kPa Big Digit soak.
+
+### v1.0.0 reissue — 2026-10-04
+
+The 1.0.0 **artifacts were rebuilt**: same version, same tag, replaced assets, so
+the published binaries carry the unit-layout corrections and the Dyno Cell
+true-black option added above. Anyone who downloaded the 2026-10-02 build should
+re-download — the file names and the embedded version strings are identical, so
+`SHA256SUMS` is the only way to tell the two builds apart.
+
+What changed since the first cut: converted (bar / kPa) readouts became fixed-slot
+odometers, were re-centred on every theme that draws numbers, and the second
+fraction digit moved onto the digit pitch so bar's tenths and hundredths no longer
+collide on dyno-cell; the Dyno Cell face gained the true-black option, with its
+toggle in the physical overlay path, the web, and both apps; and
+`tools/sim_panel.py` — an interactive panel that streams the real firmware
+renderer to a browser with controls for theme, unit, pressure, layout, fonts,
+page, TPMS and the per-theme options — landed so layout changes can be eyeballed
+and measured before an OTA flash.
+
+Isolation held to the pixel: psi readouts are byte-for-byte identical (0 differing
+pixels on all five themes × four states), and the converted layouts moved only
+where the fix intended — dyno-cell `bar` and big-digit `kPa`. The display, cadence,
+media-store and WebSocket paths are unchanged.
 
 ## v0.8.1
 

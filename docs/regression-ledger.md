@@ -1345,3 +1345,76 @@ the edge); psi's own worst stays `-40.0` at -111.5; kPa's is `-207`, sign ink at
 -99.5. The container therefore needs no widening - but the bound is load-bearing:
 a range clamped wider than psi_min -30 / psi_max 40 would clip a minus or a
 hundreds digit, so re-derive this if those clamps ever move.
+
+## 2026-10-04 — v1.0.0 reissued: the published artifacts now carry the layout rounds
+
+User request: rebuild the binaries and replace the 1.0.0 release with the fixed
+ones, plus a release-note line for the Dyno Cell true-black option. The version
+stayed 1.0.0 by explicit instruction (same tag, replaced assets) — the two builds
+are indistinguishable by file name or by the version they report, so `SHA256SUMS`
+is the only way to tell them apart. That is called out in `release/README.md`
+(which is also the published GitHub release body), `docs/release-notes.md` and
+`AGENTS.md`.
+
+Rebuilt from the branch tip in three parallel slices — firmware / iOS / Android —
+with the coordinator owning the assembly, the gates and the publication.
+
+| artifact | bytes | sha256 |
+|---|---|---|
+| `boost_gauge.bin` | 2,677,744 | `8befb0f9…caffde25` |
+| `boost_gauge_merged.bin` | 2,808,816 | `3cd27eba…130de354` |
+| `bootloader.bin` | 22,576 | `b6bf34ec…007c739c` |
+| `BoostGauge-1.0.0-ios.ipa` | 1,305,755 | `759c2f36…636e424a3` |
+| `BoostGauge-ios-app.zip` | 1,305,471 | `37e9dca3…f8d21319` |
+| `BoostGauge-android-debug.apk` | 61,339,732 | `c0eca976…4d645ab5` |
+
+Evidence actually observed:
+
+- **Firmware**: `idf.py -B build_release build` + `merge-bin`; app image `0x28dbf0`
+  (36% of `ota_0` free), merged image written to `0x0` with `dio / 80m / 16MB`;
+  `esp_app_desc` version `1.0.0` in BOTH the app image and the merged image (at
+  merged offset `0x20020`). `partition-table.bin`, `ota_data_initial.bin` and
+  `flash_args` came out **byte-identical** to the 2026-10-02 cut; the bootloader
+  differs only because it embeds a build timestamp (`Oct 3 2026 23:22:27` — it was
+  correctly not rebuilt by an app-only change), which is why its hash moves while
+  its bytes do not. `merge-bin -o` resolves RELATIVE paths against the build
+  directory, so the output path must be absolute.
+- **The shipped firmware really carries the web fixes** (the end-to-end check for
+  the recorded "web edits shipped stale" failure): 8 gzip members decompress out
+  of `release/boost_gauge.bin` and the two largest contain `dynoTrueBlack`,
+  `pressureUnit` and `arcReadoutDisplayPsi`.
+- **iOS**: unsigned arm64 device Release archive (Xcode 26.3,
+  `CODE_SIGNING_ALLOWED=NO`, no provisioning profile installed), `Info.plist`
+  1.0.0 (8); the built executable, the IPA's copy and the `.app` zip's copy hash
+  identically, and neither archive carries stray `__MACOSX`/`.DS_Store` entries.
+- **Android**: clean `:app:assembleDebug :app:testDebugUnitTest` — 109 tests, 0
+  failures; `versionName 1.0.0` / `versionCode 10` / `minSdk 29` read from the
+  SHIPPED apk via `aapt2`; the release copy is `cmp`-identical to the build output.
+- **Gates**: `test_version_consistency.py --release` **45/45 PASS** (shipped bytes:
+  the firmware descriptor, the merged image at the `flash_args` offset, the IPA and
+  the `.app` zip, the APK, and every `SHA256SUMS` digest) and `tools/test_suite.py`
+  **14/14 PASS**.
+
+Two process notes worth keeping:
+
+1. **A rebuild is only evidence if the binary on disk actually changed.** The
+   baseline/restore recipe can recompile in the same second as the baseline and
+   silently leave HEAD's binary in place (hit earlier the same day during the
+   dyno-cell bar work). This reissue asserts it: the coordinator regenerated
+   `main/generated_web_assets.c` through `tools/embed_web.py` while the firmware
+   build's CMake configure was in flight, so the firmware slice had to prove the
+   compile postdated that write — the object's mtime (14:52:56) is newer than the
+   source's (14:52:18), and the regeneration produced an empty `git diff`. Benign,
+   but only because it was checked rather than assumed.
+2. **Concurrent builds starve the simulator.** The iOS suite run alongside the
+   firmware and Android builds reported
+   `GaugeMirrorWebViewTests/testCanonicalMirrorRendersVisibleCanvasOffline` failing
+   on an empty `gaugeCanvas.toDataURL()` — a WKWebView process that never came up
+   inside its 6 s + 6 s window on a 4-core machine under load, not a wrong render.
+   Re-run ALONE with the machine idle: **8/8 pass, TEST SUCCEEDED**. The two
+   `ViewModelTests` timezone failures are the known pre-existing ones. Never read a
+   loaded-machine simulator failure as a product regression without an isolated
+   re-run.
+
+HARDWARE: still not run — no board was attached. 1.0.0 remains host-built and
+simulator-verified; **v0.9.7 is the last hardware-verified baseline**.
