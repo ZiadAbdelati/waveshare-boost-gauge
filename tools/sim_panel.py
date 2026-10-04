@@ -675,9 +675,25 @@ on('shot', 'click', async () => {
 });
 
 let initialised = false;
+let lastFrames = -1;
+let stalled = 0;
 async function poll() {
   try {
     const s = await (await fetch('/state')).json();
+    // A multipart <img> does NOT reconnect: if the panel is restarted (or a
+    // build restarts it for us) the stream just stops and the page keeps
+    // showing the last frame forever - the same silent-staleness trap as a
+    // pre-build sim. Re-arm the stream whenever the frame counter stops
+    // advancing while the sim is up (~5 polls = 2.5 s).
+    if (s.frames === lastFrames && s.running) {
+      if (++stalled >= 5) {
+        stalled = 0;
+        $('live').src = '/stream?t=' + Date.now();
+      }
+    } else {
+      stalled = 0;
+      lastFrames = s.frames;
+    }
     const psi = (s.psi === null || s.psi === undefined) ? '?' : Number(s.psi).toFixed(2);
     let text = `theme ${s.theme}   unit ${s.unit}   psi ${psi}   `
              + `source ${s.demo ? 'demo waveform' : 'fixed'}   page ${s.page}\n`
