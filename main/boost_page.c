@@ -118,7 +118,7 @@ static bool s_qr_swipe_suppress;
 
 /* One centred PAIR of square buttons per toggle page, matching the sim tap
  * hook's PAGE-LOCAL row: page 1 = 0 OBD BLE / 1 APP BLE, page 2 = 0 UNITS /
- * 1 REL-ABS. The pair is centred as a group with a gap smaller than the outer
+ * 1 REL/ABS. The pair is centred as a group with a gap smaller than the outer
  * margins, so the two read as one control cluster (the old 2-up-1-down triangle
  * is gone). */
 #define QR_BTN_SIZE  130

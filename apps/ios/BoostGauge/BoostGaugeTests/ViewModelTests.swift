@@ -216,6 +216,37 @@ final class ViewModelTests: XCTestCase {
         XCTAssertTrue(vm.pressureAbsolute)
     }
 
+    func testThemesViewModelPreviewCarriesLiveAmbientForAbsoluteReference() async throws {
+        let transport = FakeTransport()
+        transport.responses["themes"] = FakeTransport.resp(200, Fixtures.themesObject)
+        transport.responses["state"] = FakeTransport.resp(200, Fixtures.stateObject)
+        let vm = ThemesViewModel()
+        vm.reset(transport: transport)
+        await vm.load()
+        let theme = try XCTUnwrap(vm.themes.first)
+        // Absolute mode folds gauge + ambientKpa*0.145037738 at display time.
+        // The preview's bundled renderer reads the ambient from the payload, so
+        // seeding it with the live /state read makes the preview numeral equal
+        // the dashboard hero numeral for the same sample.
+        XCTAssertEqual(vm.ambientKpa, 101.3)
+        let payload = vm.previewPayload(for: theme)
+        XCTAssertEqual(payload["ambientKpa"] as? Double, 101.3)
+    }
+
+    func testThemesViewModelPreviewOmitsAmbientWhenStateUnavailable() async throws {
+        let transport = FakeTransport()
+        transport.responses["themes"] = FakeTransport.resp(200, Fixtures.themesObject)
+        let vm = ThemesViewModel()
+        vm.reset(transport: transport)
+        await vm.load()
+        let theme = try XCTUnwrap(vm.themes.first)
+        // No live ambient → the canonical renderer keeps its standard-atmosphere
+        // fallback (the same fallback the hero uses for a missing read), so the
+        // payload must not fabricate a reference.
+        XCTAssertNil(vm.ambientKpa)
+        XCTAssertNil(vm.previewPayload(for: theme)["ambientKpa"])
+    }
+
     func testThemesViewModelSaveOptionsSendsNoColorsWhenUnedited() async throws {
         let transport = FakeTransport()
         transport.responses["themes"] = FakeTransport.resp(200, Fixtures.themesObject)

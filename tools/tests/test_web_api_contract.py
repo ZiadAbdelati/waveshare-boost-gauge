@@ -363,9 +363,15 @@ def main() -> int:
         status, state_now = get_json(base, "/api/v1/state")
         result.check(status == 200 and state_now["pressureAbsolute"] is True,
                      "/state reports the absolute reference (the live path a panel toggle reaches)")
+        # Put the flag back to False FIRST: with it already True, a mock that
+        # coerced the string ("yes" -> True) would be indistinguishable from one
+        # that ignored it. The board ignores non-bools (boost_web.c gates on
+        # cJSON_IsBool), so False must survive the non-bool write.
+        status, _ = put_json(base, "/api/v1/themes/config", {"pressureAbsolute": False})
+        result.check(status == 200, "PUT themes/config pressureAbsolute false accepted")
         status, _ = put_json(base, "/api/v1/themes/config", {"pressureAbsolute": "yes"})
         status, state_now = get_json(base, "/api/v1/state")
-        result.check(state_now["pressureAbsolute"] is True,
+        result.check(state_now["pressureAbsolute"] is False,
                      "a non-bool pressureAbsolute is ignored rather than coerced "
                      "(the dynoTrueBlack convention for booleans)")
         status, resp = put_json(base, "/api/v1/themes/config", {"pressureAbsolute": False})

@@ -300,6 +300,14 @@ struct GaugeMirrorWebView: UIViewRepresentable {
               if (payload.tpms) state.tpms = payload.tpms;
               state.activePage = Number(payload.activePage || 0);
               const sample = Object.assign({ psi: 0, peakPsi: 0, zone: "ATMO", demo: false, uptimeMs: 1 }, payload.sample || {});
+              /* Absolute-mode reference: the live ambient carried by the
+                 payload (the same /state.sensors.ambientKpa source the
+                 dashboard hero folds), sourced exactly as renderState() does.
+                 A missing/non-finite value becomes null so pressureRefPsi()
+                 applies the standard-atmosphere fallback; Relative mode never
+                 reads it. */
+              const ambientKpa = Number(payload.ambientKpa);
+              state.ambientKpa = Number.isFinite(ambientKpa) ? ambientKpa : null;
               state.gaugeTarget = sample;
               drawGauge(sample);
               window.__gaugeMirrorRafDone = false;

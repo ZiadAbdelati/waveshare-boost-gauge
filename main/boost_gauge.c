@@ -435,12 +435,12 @@ static lv_obj_t *s_zone_label;
 #define VAULT_MAX_CELLS 6
 static const int k_vault_slot_x[VAULT_MAX_CELLS] = { -60, -36, -12, 12, 36, 60 };
 /* Converted-unit grid for the vault dial: the psi field's own 24 px mono pitch
- * (k_vault_slot_x is uniform), anchored on the UNITS digit so every digit keeps
- * its psi slot. The decimal point then falls one pitch right of it, which is
- * exactly psi's dot slot (+12); the fraction continues one pitch per digit
- * (+36, +60), which is psi's too. kPa has no point and simply skips the dot
- * cell, so its digits still land on psi's integer slots. The sign takes the
- * next cell to the left of the leading integer digit. */
+ * (k_vault_slot_x is uniform). PSI keeps its historic six-slot field laid out on
+ * k_vault_slot_x, centred about the face by construction. The converted units
+ * anchor their own digits instead of reusing psi's: bar places its decimal POINT
+ * on slot 0, the readout box centre (VAULT_BAR_ONES_X / VAULT_BAR_DOT_X), and
+ * kPa, which has no point, places its ones digit at VAULT_KPA_ONES_X. The sign
+ * takes the next cell to the left of the leading integer digit. */
 #define VAULT_PITCH    24
 #define VAULT_ONES_X  (-12)  /* psi slot 2 = ones */
 /* bar is the only converted unit with a decimal point, and the POINT is what the
@@ -3319,14 +3319,14 @@ static void neon_layout_readout_units(float psi, int slot_w, int dot_w, int sign
 {
     const boost_unit_t unit = boost_theme_pressure_unit();
     if (unit == BOOST_UNIT_PSI) {
-        /* The reference-adjusted value goes in UNFOLDED-again on purpose:
-         * boost_pressure_ref_display() already applied the gauge fold, and
-         * boost_neon_layout_readout() folds whatever it is handed. That second
-         * fold is a no-op (the absolute value is far outside the +-0.1 band, and
-         * the fold is idempotent), so the net result is fold-then-reference -
-         * the required order. Do NOT "simplify" this by folding afterwards. */
-        boost_neon_layout_readout(boost_pressure_ref_display(psi, true), slot_w, dot_w,
-                                  sign_w, sign_gap, negative_shift, font_px, metrics, out);
+        /* Fold exactly once, in gauge psi, BEFORE the reference: the dead band
+         * is a property of the gauge reading, not of the absolute value. The
+         * raw entry point performs no second fold, so a reference-adjusted
+         * value that lands inside the +-0.1 band (absolute mode near zero
+         * boost, or a strongly negative gauge reading) is shown as the true
+         * small number, matching every other theme and the web mirror. */
+        boost_neon_layout_readout_raw(boost_pressure_ref_display(psi, true), slot_w, dot_w,
+                                      sign_w, sign_gap, negative_shift, font_px, metrics, out);
         return;
     }
     const float value = boost_pressure_ref_from_psi(unit, psi, true);
@@ -4736,17 +4736,21 @@ static float s_arc_anim_target_psi;
 static float s_arc_anim_display_psi;
 static float s_arc_drawn_psi;
 static float s_arc_color_psi;
-/* The "PEAK  x.x" label is only regenerated when the peak value actually
- * moves. Formatting `%.1f` through a double runs soft-float conversion on
- * the S3 (no double FPU) and is pure waste on the ticks where the peak is
- * constant - which is nearly all of them once the sweep's maximum is set.
- * The cached text is a pure function of s_peak_psi (updated once per
- * boost_gauge_update() and on peak reset), so it can never diverge from
- * what the label should show; the strcmp in update_arc() still guards the
- * actual lv_label_set_text(), including the "PEAK  0.0" build text after a
- * scene rebuild. NAN != anything, so the first tick after boot always
- * formats. */
+/* The "PEAK  x.x" label is only regenerated when its inputs move.
+ * Formatting `%.1f` through a double runs soft-float conversion on the S3
+ * (no double FPU) and is pure waste on the ticks where the cached text is
+ * unchanged - which is nearly all of them once the sweep's maximum is set.
+ * The text is a function of s_peak_psi (updated once per boost_gauge_update()
+ * and on peak reset) AND, in absolute mode, of the effective reference
+ * boost_pressure_ref_psi(): the atmosphere is refreshed from the BMP280 every
+ * sample, so a held peak can still need a re-render as ambient drifts. Both
+ * inputs are cached and compared in update_arc(); relative mode never consults
+ * the reference, so it behaves exactly as before. The strcmp in update_arc()
+ * still guards the actual lv_label_set_text(), including the "PEAK  0.0" build
+ * text after a scene rebuild. NAN != anything, so the first tick after boot
+ * always formats. */
 static float s_arc_peak_text_psi = NAN;
+static float s_arc_peak_text_ref_psi = NAN;
 static char s_arc_peak_text[32] = "PEAK  0.0";
 
 static bool s_ui_ready;
@@ -5816,6 +5820,7 @@ static void build_arc(lv_obj_t *scr)
     s_arc_readout_color_valid = false;
     /* Force the cached "PEAK x.x" text to reformat after a unit change. */
     s_arc_peak_text_psi = NAN;
+    s_arc_peak_text_ref_psi = NAN;
 
     s_peak_label = lv_label_create(scr);
     lv_label_set_text(s_peak_label, "PEAK  0.0");
@@ -5847,14 +5852,18 @@ static void update_arc(const boost_sample_t *sample, const boost_theme_t *theme)
     }
     update_arc_readout(sample->psi, sample->psi >= s_psi_overboost, theme);
 
-    /* Only regenerate the "PEAK  x.x" text when the peak value actually
-     * moves; the soft-float double conversion in `%.1f` is otherwise wasted
-     * on every tick while the peak sits at the sweep's maximum. */
-    if (s_peak_psi != s_arc_peak_text_psi) {
+    /* Only regenerate the "PEAK  x.x" text when the peak value OR, in absolute
+     * mode, the effective reference moves; the soft-float double conversion in
+     * `%.1f` is otherwise wasted on every tick while the peak sits at the
+     * sweep's maximum. The reference disjunct is false by construction in
+     * relative mode, so that path is unchanged. */
+    if (s_peak_psi != s_arc_peak_text_psi ||
+        (boost_pressure_ref_absolute() && boost_pressure_ref_psi() != s_arc_peak_text_ref_psi)) {
         char peak_buf[16];
         boost_pressure_ref_format(boost_theme_pressure_unit(), s_peak_psi, false, peak_buf, sizeof(peak_buf));
         snprintf(s_arc_peak_text, sizeof(s_arc_peak_text), "PEAK  %s", peak_buf);
         s_arc_peak_text_psi = s_peak_psi;
+        s_arc_peak_text_ref_psi = boost_pressure_ref_psi();
     }
     if (strcmp(lv_label_get_text(s_peak_label), s_arc_peak_text) != 0) {
         lv_label_set_text(s_peak_label, s_arc_peak_text);

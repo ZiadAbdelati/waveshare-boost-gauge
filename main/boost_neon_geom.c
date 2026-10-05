@@ -125,21 +125,17 @@ void boost_neon_layout_readout_fmt(float value, int decimals, int slot_w, int do
                        font_px, metrics);
 }
 
-void boost_neon_layout_readout(float psi, int slot_w, int dot_w,
-                               int sign_w, int sign_gap, int negative_shift,
-                               int font_px,
-                               const boost_neon_digit_metrics_t *metrics,
-                               boost_neon_readout_t *out)
+/* Shared body: decompose an already-folded psi into cells and place them.
+ * Both public entry points below funnel through here so there is exactly one
+ * implementation, not two. */
+static void neon_layout_readout_impl(float psi, int slot_w, int dot_w,
+                                     int sign_w, int sign_gap, int negative_shift,
+                                     int font_px,
+                                     const boost_neon_digit_metrics_t *metrics,
+                                     boost_neon_readout_t *out)
 {
     if (out == NULL) return;
     if (metrics == NULL) metrics = &boost_neon_sf_metrics;
-
-    /* Legacy PSI entry point: fold the +-0.1 PSI dead zone, then decompose with
-     * integer math only. Callers rendering another unit convert first and call
-     * boost_neon_layout_readout_fmt() directly (which needs the float printf
-     * for an arbitrary decimal count); the 60 FPS psi path stays free of float
-     * printf, as it was before the units change. */
-    psi = boost_readout_display_psi(psi);
 
     /* Round once, then decompose. Rounding per-digit lets 8.95 print as
      * "8.10" when the tenths carry but the whole part is taken from the
@@ -166,6 +162,37 @@ void boost_neon_layout_readout(float psi, int slot_w, int dot_w,
 
     neon_readout_place(out, slot_w, dot_w, sign_w, sign_gap, negative_shift,
                        font_px, metrics);
+}
+
+void boost_neon_layout_readout(float psi, int slot_w, int dot_w,
+                               int sign_w, int sign_gap, int negative_shift,
+                               int font_px,
+                               const boost_neon_digit_metrics_t *metrics,
+                               boost_neon_readout_t *out)
+{
+    /* Legacy PSI entry point: fold the +-0.1 PSI dead zone, then decompose with
+     * integer math only. Callers rendering another unit convert first and call
+     * boost_neon_layout_readout_fmt() directly (which needs the float printf
+     * for an arbitrary decimal count); the 60 FPS psi path stays free of float
+     * printf, as it was before the units change. */
+    psi = boost_readout_display_psi(psi);
+    neon_layout_readout_impl(psi, slot_w, dot_w, sign_w, sign_gap, negative_shift,
+                             font_px, metrics, out);
+}
+
+void boost_neon_layout_readout_raw(float psi, int slot_w, int dot_w,
+                                   int sign_w, int sign_gap, int negative_shift,
+                                   int font_px,
+                                   const boost_neon_digit_metrics_t *metrics,
+                                   boost_neon_readout_t *out)
+{
+    /* Fold-free entry point for callers that have already applied the +-0.1 PSI
+     * dead zone in gauge psi, before the pressure reference. Folding again here
+     * would test the reference-adjusted value against the band, so any such
+     * value that happened to land inside it would be forced to 0.0 while the
+     * other themes - which fold exactly once - show the true small number. */
+    neon_layout_readout_impl(psi, slot_w, dot_w, sign_w, sign_gap, negative_shift,
+                             font_px, metrics, out);
 }
 
 void boost_neon_sign_bars(int cx, int cy, int size, int width,

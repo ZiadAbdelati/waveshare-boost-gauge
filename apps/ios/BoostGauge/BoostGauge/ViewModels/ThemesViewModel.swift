@@ -14,6 +14,13 @@ final class ThemesViewModel: ObservableObject {
     /// web preview so the bundled renderer draws the selected reference
     /// (reference contract). `false` = relative (gauge), `true` = absolute.
     @Published private(set) var pressureAbsolute = false
+    /// LIVE ambient reference (`/state.sensors.ambientKpa`) for the preview's
+    /// Absolute-mode numeral. The canonical `web/app.js` reads
+    /// `state.ambientKpa`; this mirror never runs `renderState()`, so the value
+    /// is snapshotted from `/state` on each themes load (the same best-effort
+    /// GET Android's themes load performs) and injected into the payload.
+    /// `nil` leaves the renderer's standard-atmosphere fallback intact.
+    @Published private(set) var ambientKpa: Double?
     @Published var isLoading = false
     @Published var errorMessage: String?
 
@@ -58,6 +65,7 @@ final class ThemesViewModel: ObservableObject {
         activeThemeID = nil
         configuration = nil
         errorMessage = nil
+        ambientKpa = nil
         themeColorEdits = [:]
         serverColorBaselines = [:]
     }
@@ -110,11 +118,13 @@ final class ThemesViewModel: ObservableObject {
             self.errorMessage = nil
         }
         do {
-            // Parallelize the two independent GETs: the HTTP transport serves
+            // Parallelize the independent GETs: the HTTP transport serves
             // them concurrently; the BLE transport serializes them in its own
-            // queue either way, so this never regresses the link.
+            // queue either way, so this never regresses the link. `/state` is
+            // best-effort and feeds only the preview's Absolute-mode reference.
             async let themesResp = transport.get("themes")
             async let configResp = transport.get("config")
+            async let stateResp = transport.get("state")
             let response = try await themesResp
             guard response.status == 200 else {
                 await MainActor.run { self.errorMessage = APIErrorText.from(response) }
@@ -122,9 +132,16 @@ final class ThemesViewModel: ObservableObject {
             }
             let list = try JSONDecoder().decode(ThemeList.self, from: response.body)
             let gaugeConfig = (try? await configResp).flatMap { try? $0.jsonObject() } ?? [:]
+            // /state.sensors.ambientKpa mirrored for the preview; a missing or
+            // non-positive read is left as-is (the renderer falls back to the
+            // standard atmosphere — the contract's single fallback path).
+            let ambientKpa = (try? await stateResp)
+                .flatMap { try? JSONDecoder().decode(GaugeState.self, from: $0.body) }
+                .flatMap { $0.sensors?.ambientKpa }
             await MainActor.run {
                 self.apply(list)
                 self.gaugeConfiguration = gaugeConfig
+                self.ambientKpa = ambientKpa
                 self.errorMessage = nil
             }
         } catch {
@@ -145,7 +162,7 @@ final class ThemesViewModel: ObservableObject {
             "colors": colors,
             "customized": theme.customized ?? false,
         ]
-        return [
+        var payload: [String: Any] = [
             "theme": themeObject,
             "config": gaugeConfiguration,
             "settings": [
@@ -169,6 +186,12 @@ final class ThemesViewModel: ObservableObject {
                 "neonMarqueeSpin": neonMarqueeSpin,
             ],
         ]
+        // Live reference for the preview's Absolute-mode numeral. Omitted when
+        // no /state read is available: the canonical renderer then falls back
+        // to the standard atmosphere, exactly as the dashboard does for a
+        // missing ambient. Relative mode ignores the key either way.
+        if let ambientKpa { payload["ambientKpa"] = ambientKpa }
+        return payload
     }
 
     func select(_ id: String) async {

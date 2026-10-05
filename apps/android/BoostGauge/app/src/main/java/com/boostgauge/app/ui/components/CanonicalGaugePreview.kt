@@ -54,6 +54,13 @@ fun CanonicalGaugePreview(
           if (selectedTheme) setTheme(selectedTheme);
           state.activePage = ${if (forceTpmsPage) 1 else 0};
           state.tpms = sample.tpms || { status: 2, wheels: [] };
+          /* Absolute-mode reference: the live ambient from the injected /state
+             sample, sourced exactly as the canonical renderState() does. A
+             missing/non-positive value stays null so pressureRefPsi() applies
+             the standard-atmosphere fallback — a zero-ambient sample must not
+             change what is drawn. Relative mode never reads it. */
+          const ambientKpa = Number(sample?.sensors?.ambientKpa);
+          state.ambientKpa = Number.isFinite(ambientKpa) ? ambientKpa : null;
           state.gaugeTarget = sample;
           state.gaugePsi = Number(sample.psi || 0);
           drawGauge(sample);

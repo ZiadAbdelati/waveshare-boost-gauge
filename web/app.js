@@ -366,10 +366,23 @@ function signedPressure(psi) {
 }
 
 /* Dial tick numeral. PSI keeps the existing integer-or-one-decimal formatter
- * (byte-identical default); other units print at their own precision. */
+ * (byte-identical default). Converted units mirror boost_units_format_tick()
+ * in main/boost_units.c: a value within half of the unit's own last digit
+ * prints as an integer, otherwise at the unit's precision; the fixed string is
+ * then trimmed of trailing zeros - and a bare trailing "." - exactly like the
+ * firmware's trim_trailing_zeros(), so the top bar tick reads "1.7" on both
+ * the panel and the dashboard and the zero tick reads "0", never "1.70"/"0.00". */
 function pressureTickLabel(psi) {
   if (unitIsPsi()) return formatTickLabel(psi);
-  return toDisplay(psi).toFixed(unitDecimals());
+  const value = toDisplay(psi);
+  const decimals = unitDecimals();
+  const rounded = Math.round(value);
+  if (Math.abs(value - rounded) < 0.5 / 10 ** decimals) return String(rounded);
+  let text = value.toFixed(decimals);
+  /* Keep the firmware's "only touch a string that has a decimal point" rule:
+   * an integer kPa value must not lose digit zeros. */
+  if (text.includes(".")) text = text.replace(/0+$/, "").replace(/\.$/, "");
+  return text;
 }
 
 /* Fold the unit carried by a /state sample into the display state. Returns

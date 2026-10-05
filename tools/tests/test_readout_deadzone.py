@@ -58,6 +58,11 @@ GEOM_H = REPO_ROOT / "main" / "boost_neon_geom.h"
 GEOM_C = REPO_ROOT / "main" / "boost_neon_geom.c"
 APP_JS = REPO_ROOT / "web" / "app.js"
 NET_C = REPO_ROOT / "main" / "boost_network.c"
+# Source roots for the tree-wide "one band definition" scan. Module-level (like
+# the path constants above) so a harness can point them at a doctored copy;
+# production runs use the repo.
+FIRMWARE_ROOTS = (REPO_ROOT / "main", REPO_ROOT / "sim")
+WEB_ROOTS = (REPO_ROOT / "web",)
 
 
 class Result:
@@ -253,7 +258,10 @@ def main() -> int:
                  and "refAdjustedPsi" not in neon_zone_js,
                  "web zone helper stays gauge-relative (no display reference)",
                  "neonZoneDisplayPsi must not apply the reference")
-    result.check("function boostDisplayPsi(psi) {\n  return refAdjustedPsi(arcReadoutDisplayPsi(Number(psi)));" in app_js,
+    result.check(re.search(
+        r"function\s+boostDisplayPsi\s*\(\s*psi\s*\)\s*\{\s*"
+        r"return\s+refAdjustedPsi\s*\(\s*arcReadoutDisplayPsi\s*\(",
+        app_js) is not None,
                  "web display transform folds BEFORE the reference",
                  "boostDisplayPsi must compose refAdjustedPsi(arcReadoutDisplayPsi(psi))")
     result.check("refAdjustedPsi" in vault_js and "arcReadoutDisplayPsi" not in vault_js,
@@ -263,6 +271,61 @@ def main() -> int:
                  and "? 2 : psi > 0.05" not in neon_js,
                  "no raw-psi zone threshold remains at the web neon zone sites",
                  "zone thresholds must test the folded value, not raw psi")
+
+    # --- ONE band definition across the tree (2026-10-04 hardening) ----------
+    # The +-0.1 psi fold is ONE convention: a single firmware #define and a
+    # single web constant. A second band literal at any fold site would let the
+    # two disagree silently, so count the DEFINITIONS across the firmware, web
+    # and sim source roots (references and comments excluded) and require
+    # exactly one of each; then require no bare 0.1 literal inside any fold
+    # site's CODE (comments may name the band).
+    def _sources(root: pathlib.Path, suffixes: tuple[str, ...]) -> list[pathlib.Path]:
+        return [p for p in root.rglob("*") if p.is_file() and p.suffix in suffixes]
+
+    def _code_only(body: str) -> str:
+        body = re.sub(r"/\*.*?\*/", "", body, flags=re.S)
+        return re.sub(r"//[^\n]*", "", body)
+
+    def _label(p: pathlib.Path) -> str:
+        try:
+            return str(p.relative_to(REPO_ROOT))
+        except ValueError:
+            return str(p)
+
+    fw_hits = [_label(p)
+               for root in FIRMWARE_ROOTS
+               for p in _sources(root, (".c", ".h"))
+               for _ in re.finditer(r"#define\s+BOOST_READOUT_DEADBAND_PSI\b",
+                                    p.read_text(encoding="utf-8"))]
+    result.check(fw_hits == ["main/boost_neon_geom.h"],
+                 "exactly ONE BOOST_READOUT_DEADBAND_PSI definition in the tree",
+                 f"definitions={fw_hits}")
+
+    web_hits = [_label(p)
+                for root in WEB_ROOTS
+                for p in _sources(root, (".js",))
+                for _ in re.finditer(r"\bARC_READOUT_DEADBAND\s*=\s*[0-9.]+",
+                                     p.read_text(encoding="utf-8"))]
+    result.check(web_hits == ["web/app.js"],
+                 "exactly ONE ARC_READOUT_DEADBAND definition in web/",
+                 f"definitions={web_hits}")
+
+    band_literal = re.compile(r"\b0\.1f?\b")
+    geom_fold = function_body(
+        geom_h, "static inline float boost_readout_display_psi(float psi)")
+    neon_c_fold = function_body(geom_c, "void boost_neon_layout_readout(float psi")
+    arc_js = function_body(app_js, "function arcReadoutDisplayPsi(psi)")
+    boost_js = function_body(app_js, "function boostDisplayPsi(psi)")
+    for site, body in (("boost_readout_display_psi (firmware fold helper)", geom_fold),
+                       ("arc_readout_display_psi (gauge fold helper)", arc_helper),
+                       ("boost_neon_layout_readout (neon fold site)", neon_c_fold),
+                       ("arcReadoutDisplayPsi (web fold helper)", arc_js),
+                       ("neonZoneDisplayPsi (web zone helper)", neon_zone_js),
+                       ("boostDisplayPsi (web display transform)", boost_js)):
+        result.check(band_literal.search(_code_only(body)) is None,
+                     f"{site} uses the shared band constant, not a 0.1 literal",
+                     "a second +-0.1 psi band literal would drift from the "
+                     "single definition")
 
     # --- wedge/zone use raw psi ---------------------------------------------
     value_arc = function_body(gauge_c, "static void value_arc_angles")

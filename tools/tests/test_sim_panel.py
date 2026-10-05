@@ -469,9 +469,20 @@ def _check_overlay(result: Result, port: int) -> None:
     result.check(st is not None and st.get("overlay") == 2,
                  "overlay prev wraps back to page 2", f"state={st}")
 
+    # Out-of-range pages must be REJECTED, not clamped or wrapped: jump to a
+    # known page first (0), send an over-max AND a negative page, let the sim
+    # process them (a post-command frame plus one [PANEL] status cycle), then
+    # assert the page never moved. Asserting from page 2 would also hold if the
+    # range guard were deleted, because "3" would only ever be clamped/wrapped
+    # - the original check could not fail.
+    _post_cmd(port, "overlay page 0")
+    _wait_state(port, 5.0, lambda s: s.get("overlay") == 0)
     _post_cmd(port, "overlay page 3")
-    st = _wait_state(port, 2.0, lambda s: s.get("overlay") == 2)
-    result.check(st is not None and st.get("overlay") == 2,
+    _post_cmd(port, "overlay page -1")
+    _shot_png(port)          # waits for a frame strictly after the last command
+    time.sleep(0.3)          # one [PANEL] status cycle reports the resulting page
+    st = _wait_state(port, 2.0, lambda s: s.get("overlay") == 0)
+    result.check(st is not None and st.get("overlay") == 0,
                  "an out-of-range overlay page is rejected", f"state={st}")
 
     _post_cmd(port, "overlay hide")

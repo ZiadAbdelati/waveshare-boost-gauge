@@ -49,7 +49,7 @@ void boost_page_qr_swipe_left(void);
 /** Step BACKWARD one page (0 -> 2 -> 1 -> 0). */
 void boost_page_qr_swipe_right(void);
 /** Simulate a tap on a toggle SWITCH itself: the row is PAGE-LOCAL, so page 1
- *  row 0/1 = OBD BLE / APP BLE and page 2 row 0/1 = UNITS / REL-ABS. Raises
+ *  row 0/1 = OBD BLE / APP BLE and page 2 row 0/1 = UNITS / REL/ABS. Raises
  *  CLICKED on that square exactly like an on-glass tap on the control. */
 void boost_page_qr_tap_switch(int row);
 /** Pending deferred-toggle request, or -1. Lets the sim assert the async

@@ -115,7 +115,7 @@ Commands map to the same firmware entry points the settings UI drives:
   (0→2→1→0).
 - `ref rel` / `ref abs` select the displayed pressure reference (gauge vs
   absolute) and rebuild the face; if the settings overlay is open, the current
-  page is rebuilt in place too, so its PRESSURE/REL-ABS square matches.
+  page is rebuilt in place too, so its REL/ABS square matches.
 - `atmosphere <kpa>` sets the sim BMP280 baseline (50–120 kPa; out of range is
   rejected with a stderr line). The sim starts at 101.325 kPa.
 

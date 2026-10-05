@@ -102,6 +102,33 @@ static bool snapshot_screen(const char *path)
 }
 
 /*
+ * Compare two .raw frame captures: 1 identical, 0 different, -1 unreadable.
+ * An unreadable capture is a harness error, never proof that the frames
+ * differ. Used by --qr-test to prove the three overlay pages render distinct
+ * frames.
+ */
+static int raw_files_cmp(const char *pa, const char *pb)
+{
+    FILE *a = fopen(pa, "rb");
+    FILE *b = fopen(pb, "rb");
+    if (a == NULL || b == NULL) {
+        if (a != NULL) fclose(a);
+        if (b != NULL) fclose(b);
+        return -1;
+    }
+    int result = 1;
+    for (;;) {
+        const int ca = fgetc(a);
+        const int cb = fgetc(b);
+        if (ca != cb) { result = 0; break; }
+        if (ca == EOF) break;
+    }
+    fclose(a);
+    fclose(b);
+    return result;
+}
+
+/*
  * Hold a fixed reading for `ms`, sampling at the firmware's 16 ms cadence.
  *
  * A single boost_gauge_update() followed by an idle pump is not what the device
@@ -809,6 +836,30 @@ static int run_qr_test(const char *out_dir)
     if (!snapshot_screen(path)) return 2;
     printf("wrote %s (Units page)\n", path);
 
+    /* 2a-ii. The three pages must be MUTUALLY DISTINCT frames. Without this a
+     * page-2 build that reused page 1's widgets would still pass: the capture
+     * checks above only prove a frame was written, never that it differs. */
+    {
+        char p0[512], p1[512], p2[512];
+        snprintf(p0, sizeof(p0), "%s/qr_page0.raw", out_dir);
+        snprintf(p1, sizeof(p1), "%s/qr_page1.raw", out_dir);
+        snprintf(p2, sizeof(p2), "%s/qr_page2.raw", out_dir);
+        const int c01 = raw_files_cmp(p0, p1);
+        const int c02 = raw_files_cmp(p0, p2);
+        const int c12 = raw_files_cmp(p1, p2);
+        if (c01 < 0 || c02 < 0 || c12 < 0) {
+            fprintf(stderr, "FAIL could not compare the three page frames\n");
+            failures++;
+        } else if (c01 == 1 || c02 == 1 || c12 == 1) {
+            fprintf(stderr, "FAIL overlay pages 0/1/2 do not render distinct frames "
+                            "(page0==page1: %d, page0==page2: %d, page1==page2: %d)\n",
+                    c01 == 1, c02 == 1, c12 == 1);
+            failures++;
+        } else {
+            printf("page frames distinct: OK (pages 0/1/2 render differently)\n");
+        }
+    }
+
     /* 2b. Wraparound: from page 0 a RIGHT swipe is 'prev' and wraps to page 2. */
     boost_page_qr_dismiss();
     pump_lvgl(30);
@@ -1209,7 +1260,7 @@ static void stream_exec(char *line)
         if (known) {
             stream_rebuild();
             /* The overlay page was built before the mode changed, so its
-             * PRESSURE/REL-ABS square would keep the old state. Rebuild the
+             * REL/ABS square would keep the old state. Rebuild the
              * open page in place, exactly as the device's own reference button
              * does; without this the panel can command a mode the overlay
              * still contradicts. */

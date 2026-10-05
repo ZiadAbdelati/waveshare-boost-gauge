@@ -84,6 +84,11 @@ The theme preview is a CIRCLE with the web `.gauge-device` bezel: an ~8 px
 shadow. Never render the preview as an unclipped square. iOS reference:
 `ThemesView.themePreview`. Android must produce the same silhouette.
 
+A canonical preview must also seed the renderer's live `ambientKpa` from
+`/state.sensors.ambientKpa` (never the standard atmosphere) whenever the
+reference mode is Absolute, so the preview numeral matches the dashboard hero
+for the same sample.
+
 ## Process rules for agents
 
 1. Read this file before any view work. Re-read it if your task mentions
@@ -203,7 +208,9 @@ button, no text entry, so the keyboard-dismissal contract is not involved).
 Every boost-side numeral converts — the dashboard hero, peak, the logs chart
 axis labels, crosshair pill and min/max rows, and the theme previews — while
 TPMS values/thresholds, calibration diagnostics, the live gauge canvas geometry
-and everything derived from raw psi stay on the gauge value. The zone word and
+and everything derived from raw psi stay on the gauge value. The `/logs` JSON
+psi and the `/logs.csv` columns are wire values and stay gauge psi; only the log
+numerals a client renders are reference-adjusted. The zone word and
 colour stay gauge-relative too: a positive absolute reading in vacuum still
 reads VAC. The physical panel toggles the same mode from the two-finger
 overlay's third page (the `REL/ABS` button).

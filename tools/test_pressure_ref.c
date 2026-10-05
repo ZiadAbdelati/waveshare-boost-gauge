@@ -4,11 +4,19 @@
  * Two properties are load-bearing and are pinned here so no future edit can
  * quietly break either:
  *
- *  1. ATMOSPHERIC MODE IS A BYTE-FOR-BYTE PASSTHROUGH. The gauge's psi render
- *     path is a measured 60 FPS guard; adding a display reference must not
- *     perturb a single character of it. Every formatter is compared - string
- *     identical, not "close" - against the pre-reference boost_units_*() call
- *     over the gauge's whole psi domain.
+ *  1. RELATIVE MODE IS A BYTE-FOR-BYTE PASSTHROUGH. Adding a display reference
+ *     must not perturb a single character of the gauge's psi render output;
+ *     this module is the transform that render path delegates to. Every
+ *     formatter is compared - string identical, not "close" - against the
+ *     pre-reference boost_units_*() call over the gauge's whole psi domain.
+ *
+ *     LIMIT, stated plainly: this test links the MODULE only, never
+ *     boost_gauge.c. It therefore pins the transform the render path is
+ *     supposed to call, not the render path itself - reverting a call site in
+ *     boost_gauge.c back to the raw boost_units_*() formatter would leave this
+ *     test green. That routing is guarded by the companion host audit
+ *     tools/tests/test_pressure_ref_sites.py, which parses boost_gauge.c and
+ *     requires every boost-side numeral site to call the wrapper.
  *
  *  2. THE FOLD PRECEDES THE REFERENCE, IN GAUGE PSI. The +-0.1 psi readout band
  *     is defined in gauge psi, so an engine-off sample that folds flat must
@@ -190,16 +198,15 @@ int main(void)
     }
 
     /* ---- the wire is never touched ---- */
-    /* Nothing in this module writes a psi value back to the model or the JSON;
-     * the transform is a pure function of (gauge psi, mode, reference). The
-     * strongest available host check is that the module exposes no setter for
-     * a displayed value: the only mutators are the atmospheric baseline and the
-     * persisted mode. Assert the module's transform is referentially
-     * transparent - same inputs, same outputs, no hidden state carry-over. */
-    boost_pressure_ref_update(101.325f, false);
-    const float a = boost_pressure_ref_display(3.5f, true);
-    const float b = boost_pressure_ref_display(3.5f, true);
-    check(memcmp(&a, &b, sizeof(a)) == 0, "the transform is a pure function");
+    /* Nothing in this module writes a psi value back to the model or the JSON,
+     * and its only mutators are the atmospheric baseline and the persisted
+     * mode. That is a property of the module's PUBLIC SURFACE, so it is checked
+     * where the header is readable: tools/tests/test_pressure_ref_sites.py
+     * parses main/boost_pressure_ref.h and fails if any other mutating entry
+     * point appears. The check that used to sit here called
+     * boost_pressure_ref_display() twice with identical inputs and memcmp'd the
+     * results - two calls with the same inputs are equal for ANY deterministic
+     * function, so it could never fail and proved nothing about the wire. */
 
     boost_theme_set_pressure_absolute(false);
     boost_pressure_ref_set_atmosphere_kpa(0.0f);
