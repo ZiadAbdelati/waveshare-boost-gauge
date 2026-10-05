@@ -2174,3 +2174,34 @@ Evidence (host):
 - Host suite 15/15 after the change.
 
 HARDWARE: not run. This is a repaint on the glass path and has not been seen on glass.
+
+## 2026-10-05 — the overlay's real-tap harness: LVGL dispatch, not just callbacks
+
+Every previous "the overlay is verified" claim rested on harness hooks that call the overlay's own
+callbacks (`boost_page_qr_press/move/release/drag/dismiss/tap_switch`) plus a source-contract test
+for the registrations. That SKIPS the layer where the wiring actually lives: hit-testing, object
+ownership (square vs overlay), PRESSED/PRESSING/RELEASED/CLICKED delivery and bubbling. A `CLICKED`
+that bubbled to the overlay, a registration aimed at the wrong object, or a square that never
+receives `PRESSING` would all have left that harness green — and two settings-page defects reached a
+release through exactly that gap.
+
+The sim now creates a synthetic `LV_INDEV_TYPE_POINTER` indev (`setup_tap_indev()` + `real_tap()`/
+`real_drag()` in `sim/main.c`) and a **real-tap section** in `--qr-test` delivers each interaction as
+press/move/release samples through `lv_indev_read_timer_cb` — the same path a finger takes on the
+glass. 14 assertions, all through real dispatch: both BLE squares toggle + repaint on the page they
+are on; a square tap does NOT bubble to the overlay and dismiss it; a background tap dismisses; a
+30 px drag neither dismisses nor steps; a long leftward flick steps exactly one page; a vertical
+flick does nothing; a 30 px drag starting on a square does not toggle; a tap with 7 px of jitter
+still toggles (the CST9217 drift the release notes name); UNITS cycles the unit; REL/ABS flips the
+reference and repaints; a tap ON the QR code falls through and dismisses.
+
+The harness is a genuine witness, not decoration: reverting the repaint fix makes **two of the
+real-tap assertions fail as well** (5 failures in the run), and all 14 pass again with it restored.
+The gesture machine still needs the injected hooks — a long `PRESSED` stream cannot be synthesised
+from a 33 ms read timer — so the two layers are complementary, and the *registrations* stay pinned
+by `tools/tests/test_gesture_constants.py`.
+
+Observed, deliberately NOT pinned: a real tap in the 40 px gap BETWEEN the two squares dismisses the
+overlay (the documented fresh-tap rule). With 130 px squares that is a plausible next board report;
+changing it would strand the user, since a fresh tap is the only way to close the overlay. Recorded
+here so the next report starts from the measurement, not from a guess.

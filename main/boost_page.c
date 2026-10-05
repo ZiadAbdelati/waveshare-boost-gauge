@@ -1134,3 +1134,15 @@ const char *boost_page_qr_switch_text(int row)
     return lv_label_get_text(s);
 }
 
+int boost_page_qr_switch_center(int row, int *x, int *y)
+{
+    if (s_qr_overlay == NULL || row < 0 || row >= QR_BTN_COUNT) return 0;
+    lv_obj_t *b = s_qr_btn[row];
+    if (b == NULL) return 0;
+    lv_area_t c;
+    lv_obj_get_coords(b, &c);
+    if (x != NULL) *x = (int)((c.x1 + c.x2) / 2);
+    if (y != NULL) *y = (int)((c.y1 + c.y2) / 2);
+    return 1;
+}
+
