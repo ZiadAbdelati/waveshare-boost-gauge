@@ -5,6 +5,10 @@ class FakeTransport: GaugeTransport {
     let transportKind = "FAKE"
 
     var responses: [String: Resp] = [:]
+    /// Responses consumed in order by successive calls to the same path, before
+    /// falling back to `responses[path]`. Lets a test script a 409 followed by a
+    /// 200 retry on one route.
+    var responseQueues: [String: [Resp]] = [:]
     var stream: AsyncStream<Result<Data, Error>>?
     var recordedMethods: [String] = []
     var recordedPaths: [String] = []
@@ -23,6 +27,11 @@ class FakeTransport: GaugeTransport {
         recordedMethods.append(method)
         recordedPaths.append(path)
         recordedBodies.append(body)
+        if var queue = responseQueues[path], !queue.isEmpty {
+            let response = queue.removeFirst()
+            responseQueues[path] = queue
+            return response
+        }
         guard let response = responses[path] else {
             throw URLError(.resourceUnavailable)
         }

@@ -12,6 +12,14 @@ import kotlinx.serialization.json.put
 
 class ApiException(val status: Int, message: String) : Exception(message)
 
+/**
+ * Outcome of POST /time: the parsed gauge state plus whether the gauge's RTC
+ * refused the phone clock (409 `clock_rejected`) and the request fell back to
+ * a timezone-only retry. `clockRejected` is always false for a forced set — a
+ * forced set that is still rejected is an error, not a fallback.
+ */
+data class TimeSyncResult(val status: Status, val clockRejected: Boolean)
+
 /** Typed access to the gauge's /api/v1 surface. */
 class GaugeApi(private val transportProvider: () -> GaugeTransport) {
 
@@ -96,16 +104,51 @@ class GaugeApi(private val transportProvider: () -> GaugeTransport) {
         parse(send("PUT", "sensors/supply", buildJsonObject { put("supplyVolts", volts) }.toString()))
 
     /**
-     * POST /time with ONLY the timezone. The gauge's DS3231 RTC is the sole
-     * time authority, so the phone epoch is never sent; the gauge rejects a
-     * body that omits either timezone field with 400.
+     * POST /time with the phone epoch for clock calibration plus the timezone.
+     * The gauge's DS3231 RTC stays authoritative: if it disagrees with the
+     * phone by more than BOOST_RTC_SYNC_TOLERANCE_MS the firmware answers 409
+     * `clock_rejected`, and the request is retried WITHOUT `epochMs` so the
+     * timezone still lands (the retry's outcome is reported via
+     * [TimeSyncResult.clockRejected]). A body omitting either timezone field is
+     * rejected with 400 regardless of `epochMs`; `epochMs` itself is optional.
+     *
+     * `force = true` is the deliberate recovery for an RTC that is genuinely
+     * wrong: the body carries `"force":true`, the disagreement guard is skipped
+     * by the firmware, and a 409 is NOT retried — a forced set that is still
+     * refused surfaces as [ApiException] (as does one below the plausibility
+     * floor, 400 `time_not_set`).
      */
-    suspend fun syncTime(timezoneOffsetMinutes: Int, timezoneTz: String): Status =
-        parse(send("POST", "time", buildJsonObject {
+    suspend fun syncTime(
+        timezoneOffsetMinutes: Int,
+        timezoneTz: String,
+        force: Boolean = false,
+    ): TimeSyncResult {
+        val transport = transportProvider()
+        val calibration = transport.send("POST", "time", buildJsonObject {
             put("epochMs", System.currentTimeMillis())
             put("timezoneOffsetMinutes", timezoneOffsetMinutes)
             put("timezoneTz", timezoneTz)
-        }.toString()))
+            if (force) put("force", true)
+        }.toString())
+        if (force) {
+            // No fallback: the user explicitly asked to overwrite the clock, so
+            // a refused forced set is an error the caller must show.
+            return TimeSyncResult(parse(check(calibration)), clockRejected = false)
+        }
+        // The raw status is inspected before check(): 409 is the calibration
+        // refusal, not a fatal error, so the timezone-only retry must happen
+        // instead of throwing.
+        val rejected = calibration.status == 409
+        val resp = if (rejected) {
+            transport.send("POST", "time", buildJsonObject {
+                put("timezoneOffsetMinutes", timezoneOffsetMinutes)
+                put("timezoneTz", timezoneTz)
+            }.toString())
+        } else {
+            calibration
+        }
+        return TimeSyncResult(parse(check(resp)), clockRejected = rejected)
+    }
 
     suspend fun getNetworkStatus(): NetworkStatus = parse(get("network"))
     suspend fun scanWifi(): WifiScanPayload = parse(get("network/scan"))

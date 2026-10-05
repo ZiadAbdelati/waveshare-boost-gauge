@@ -733,22 +733,30 @@ const boost_theme_t *boost_model_active_theme(void)
     return theme;
 }
 
-esp_err_t boost_model_set_time(int64_t epoch_ms, int timezone_offset_minutes, const char *timezone_tz)
+esp_err_t boost_model_set_time(int64_t epoch_ms, int timezone_offset_minutes,
+                               const char *timezone_tz, bool force)
 {
     if (epoch_ms <= 0 || epoch_ms < BOOST_RTC_EPOCH_MIN_MS) {
         return ESP_ERR_INVALID_ARG;
     }
-    /* Once a valid DS3231 exists it is the clock authority: reject a browser
-     * that disagrees with it by more than the sync tolerance. The RTC is read
-     * BEFORE settimeofday, so a rejected sync touches neither the system clock
-     * nor the NVS checkpoint. An OSF/unreadable/absent RTC falls through - that
-     * is the first-seed or battery-change case where the client is authoritative. */
+    /* Once a valid DS3231 exists it is the clock authority: reject a client that
+     * disagrees with it by more than the sync tolerance. The RTC is read BEFORE
+     * settimeofday, so a rejected sync touches neither the system clock nor the
+     * NVS checkpoint. An OSF/unreadable/absent RTC falls through - that is the
+     * first-seed or battery-change case where the client is authoritative.
+     * `force` is the deliberate recovery action for an RTC that is genuinely
+     * wrong (a >5-minute drift is unrecoverable otherwise without pulling the
+     * battery): it skips the comparison, logs the override, and still writes the
+     * RTC below, which clears OSF and makes the corrected time the new authority. */
     if (boost_sensors_rtc_present()) {
         int64_t rtc_ms = 0;
         if (boost_sensors_rtc_read(&rtc_ms) == ESP_OK) {
             const int64_t diff = epoch_ms - rtc_ms;
-            if (diff > BOOST_RTC_SYNC_TOLERANCE_MS || diff < -BOOST_RTC_SYNC_TOLERANCE_MS) {
-                ESP_LOGW(TAG, "time sync rejected: browser epoch differs from DS3231 by %lld ms (tolerance %lld)",
+            if (force) {
+                ESP_LOGW(TAG, "clock FORCED from client: overriding DS3231 by %lld ms",
+                         (long long)diff);
+            } else if (diff > BOOST_RTC_SYNC_TOLERANCE_MS || diff < -BOOST_RTC_SYNC_TOLERANCE_MS) {
+                ESP_LOGW(TAG, "time sync rejected: client epoch differs from DS3231 by %lld ms (tolerance %lld)",
                          (long long)diff, (long long)BOOST_RTC_SYNC_TOLERANCE_MS);
                 return ESP_ERR_INVALID_STATE;
             }

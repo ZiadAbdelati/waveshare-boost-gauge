@@ -585,16 +585,42 @@ static esp_err_t time_post(httpd_req_t *req)
     cJSON *epoch = cJSON_GetObjectItemCaseSensitive(root, "epochMs");
     cJSON *tz = cJSON_GetObjectItemCaseSensitive(root, "timezoneOffsetMinutes");
     cJSON *tzstr = cJSON_GetObjectItemCaseSensitive(root, "timezoneTz");
+    cJSON *force_item = cJSON_GetObjectItemCaseSensitive(root, "force");
     if (!cJSON_IsNumber(tz)) {
         cJSON_Delete(root);
         return send_err(req, HTTPD_400, "invalid_time");
+    }
+    /* A present-but-wrong-typed field is a client bug, not an absent one: a
+     * boolean/string epochMs must not be silently reinterpreted as "timezone
+     * only" (that would downgrade a clock sync to a zone write without saying
+     * so), and a non-string TZ likewise. Same rule as `pressureUnit`. */
+    if ((epoch != NULL && !cJSON_IsNumber(epoch)) ||
+        (tzstr != NULL && !cJSON_IsString(tzstr))) {
+        cJSON_Delete(root);
+        return send_err(req, HTTPD_400, "invalid_time");
+    }
+    /* `force` is the explicit recovery path for a DS3231 that is genuinely
+     * wrong: it makes the gauge take the client's epoch instead of answering 409
+     * clock_rejected. Rejected rather than ignored when it is not a bool, so a
+     * client bug cannot silently downgrade to the guarded path. */
+    bool force = false;
+    if (force_item != NULL) {
+        if (!cJSON_IsBool(force_item)) {
+            cJSON_Delete(root);
+            return send_err(req, HTTPD_400, "invalid_force");
+        }
+        force = cJSON_IsTrue(force_item);
+        if (force && !cJSON_IsNumber(epoch)) {
+            cJSON_Delete(root);
+            return send_err(req, HTTPD_400, "invalid_time");
+        }
     }
     const char *tz_tz = (cJSON_IsString(tzstr) && tzstr->valuestring != NULL)
         ? tzstr->valuestring : NULL;
     /* A timezone-only sync (no epochMs) just stores the zone: the DS3231 RTC
      * is the time authority, and the phone clock is never allowed to move it. */
     esp_err_t err = cJSON_IsNumber(epoch)
-        ? boost_model_set_time((int64_t)epoch->valuedouble, tz->valueint, tz_tz)
+        ? boost_model_set_time((int64_t)epoch->valuedouble, tz->valueint, tz_tz, force)
         : boost_model_set_timezone(tz->valueint, tz_tz);
     cJSON_Delete(root);
     if (err == ESP_ERR_INVALID_STATE) {
@@ -769,9 +795,10 @@ static esp_err_t themes_config_put(httpd_req_t *req)
     }
 
     /* Quarter turns only - see boost_theme.h for why an arbitrary angle is not
-     * on offer. Rejected rather than snapped so a typo is visible. The adapter
-     * takes rotation when the display is registered, so this needs a restart;
-     * the response carries restartRequired so the dashboard can say so. */
+     * on offer. Rejected rather than snapped so a typo is visible. The turn is
+     * applied to the panel's scan order at init, so it lands on the next boot;
+     * the dashboard says "restart to apply" for that reason (this response is
+     * the plain /themes payload and carries no restartRequired). */
     const cJSON *rot = cJSON_GetObjectItemCaseSensitive(root, "rotation");
     if (cJSON_IsNumber(rot)) {
         const double deg = rot->valuedouble;

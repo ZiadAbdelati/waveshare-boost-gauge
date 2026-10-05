@@ -641,7 +641,7 @@ final class ViewModelTests: XCTestCase {
         XCTAssertEqual(summary(5).phase, .scanning)
     }
 
-    func testSettingsViewModelSyncTimezoneSendsNoEpoch() async throws {
+    func testSettingsViewModelSyncTimezoneSendsEpoch() async throws {
         let transport = FakeTransport()
         transport.responses["time"] = FakeTransport.resp(200, ["ok": true])
         let vm = SettingsViewModel()
@@ -650,9 +650,73 @@ final class ViewModelTests: XCTestCase {
         XCTAssertEqual(transport.recordedMethods.last, "POST")
         XCTAssertEqual(transport.recordedPaths.last, "time")
         let body = try XCTUnwrap(transport.recordedBodies.last)
-        XCTAssertNil(body["epochMs"], "timezone-only sync must never send the phone epoch (the gauge RTC is the time authority)")
+        // epochMs is optional on the firmware side, but sending it lets the gauge
+        // calibrate its DS3231 from the phone clock; a 409 clock_rejected then
+        // falls back to the same body without it.
+        XCTAssertNotNil(body["epochMs"], "the phone epoch is sent so the gauge can calibrate its clock")
         XCTAssertNotNil(body["timezoneOffsetMinutes"])
         XCTAssertNotNil(body["timezoneTz"])
+        XCTAssertEqual(vm.savedMessage, "Device timezone synced")
+        XCTAssertNil(vm.errorMessage)
+    }
+
+    func testSettingsViewModelSyncTimezoneFallsBackWhenClockRejected() async throws {
+        let transport = FakeTransport()
+        // A valid DS3231 more than 5 minutes off the phone epoch rejects the
+        // calibration with 409 clock_rejected; the timezone must still land.
+        transport.responseQueues["time"] = [
+            FakeTransport.resp(409, ["error": "clock_rejected"]),
+            FakeTransport.resp(200, ["ok": true]),
+        ]
+        let vm = SettingsViewModel()
+        vm.reset(transport: transport)
+        await vm.syncTimezone()
+
+        XCTAssertEqual(transport.recordedPaths, ["time", "time"],
+                       "a 409 clock_rejected must be retried once")
+        let first = try XCTUnwrap(transport.recordedBodies.first)
+        XCTAssertNotNil(first["epochMs"], "the first attempt calibrates from the phone epoch")
+        let retry = try XCTUnwrap(transport.recordedBodies.last)
+        XCTAssertNil(retry["epochMs"], "the retry drops the epoch and saves the zone alone")
+        XCTAssertEqual(retry["timezoneOffsetMinutes"] as? Int, first["timezoneOffsetMinutes"] as? Int)
+        XCTAssertEqual(retry["timezoneTz"] as? String, first["timezoneTz"] as? String)
+        XCTAssertEqual(vm.savedMessage, SettingsViewModel.clockRejectedMessage,
+                       "the rescued sync must surface the clock rejection, not a plain success")
+        XCTAssertNil(vm.errorMessage, "a rescued 409 must not leave an error set")
+    }
+
+    func testSettingsViewModelForceClockSendsForceAndEpoch() async throws {
+        let transport = FakeTransport()
+        transport.responses["time"] = FakeTransport.resp(200, ["ok": true])
+        let vm = SettingsViewModel()
+        vm.reset(transport: transport)
+        await vm.forceClock()
+
+        XCTAssertEqual(transport.recordedMethods, ["POST"])
+        XCTAssertEqual(transport.recordedPaths, ["time"])
+        let body = try XCTUnwrap(transport.recordedBodies.last)
+        XCTAssertEqual(body["force"] as? Bool, true, "the forced action must set force: true")
+        XCTAssertNotNil(body["epochMs"], "force: true requires the phone epoch")
+        XCTAssertNotNil(body["timezoneOffsetMinutes"])
+        XCTAssertNotNil(body["timezoneTz"])
+        XCTAssertEqual(vm.savedMessage, "Gauge clock forced")
+        XCTAssertNil(vm.errorMessage)
+    }
+
+    func testSettingsViewModelForceClockDoesNotRetryARejectedClock() async throws {
+        let transport = FakeTransport()
+        // A forced request is a deliberate override: if the gauge still rejects
+        // it, that is a hard error, never the epoch-less zone-only retry.
+        transport.responseQueues["time"] = [FakeTransport.resp(409, ["error": "clock_rejected"])]
+        transport.responses["time"] = FakeTransport.resp(200, ["ok": true])
+        let vm = SettingsViewModel()
+        vm.reset(transport: transport)
+        await vm.forceClock()
+
+        XCTAssertEqual(transport.recordedPaths, ["time"],
+                       "a forced request must not issue the epoch-less retry")
+        XCTAssertEqual(vm.errorMessage, "Device: clock_rejected")
+        XCTAssertNil(vm.savedMessage)
     }
 
     func testSettingsViewModelApplyTimezoneOptionPostsTimeThenSavesConfig() async throws {
@@ -668,17 +732,23 @@ final class ViewModelTests: XCTestCase {
         saved["timezoneOffsetMinutes"] = -480
         saved["timezoneTz"] = "PST8PDT,M3.2.0/2,M11.1.0/2"
         transport.responses["config"] = FakeTransport.resp(200, saved)
+        // Selecting a curated option only updates the local fields; the explicit
+        // save is what POSTs the timezone then persists the config.
         await vm.applyTimezoneOption("pacific")
         XCTAssertEqual(vm.timezoneSelection, "pacific")
         XCTAssertEqual(vm.timezoneOffset, -480)
         XCTAssertEqual(vm.timezoneTZ, "PST8PDT,M3.2.0/2,M11.1.0/2")
 
-        // Timezone-only POST must carry no epoch, then the normal config save.
+        await vm.saveTimezoneCustom()
+
+        // The timezone POST carries the phone epoch (a clock calibration
+        // attempt), immediately before the normal config save.
+        XCTAssertTrue(transport.recordedPaths.contains("time"), "timezone POST should be recorded")
         let timeBody = try XCTUnwrap(
-            transport.recordedBodies.first { $0["timezoneTz"] as? String == "PST8PDT,M3.2.0/2,M11.1.0/2" },
-            "timezone-only POST should be recorded"
+            transport.recordedBodies.first { $0["epochMs"] != nil },
+            "timezone POST should be recorded"
         )
-        XCTAssertNil(timeBody["epochMs"])
+        XCTAssertNotNil(timeBody["epochMs"])
         XCTAssertEqual(timeBody["timezoneOffsetMinutes"] as? Int, -480)
         XCTAssertEqual(timeBody["timezoneTz"] as? String, "PST8PDT,M3.2.0/2,M11.1.0/2")
         XCTAssertEqual(transport.recordedMethods.last, "PUT")

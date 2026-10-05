@@ -145,8 +145,9 @@ static bool s_neon_marquee_spin;
 static bool s_te_sync;
 static bool s_region_dbuf;
 static bool s_te_scanline;   /* dynamic CO5300 set_tear_scanline writeback, default OFF */
-/* Panel rotation in degrees. The LVGL adapter accepts only quarter turns and
- * takes the value at registration time, so this is applied at boot. */
+/* Panel rotation in degrees. A quarter turn is applied to the panel's own scan
+ * order at init (the LVGL adapter refuses to rotate a PANEL_IF_OTHER display,
+ * see boost_theme_panel_orientation), so it is applied on the next boot. */
 static uint16_t s_rotation;
 /* Vault dial glow. 0x1000000 sentinel = "unset" so an absent key keeps the
  * default while a stored value (including a dark one) is honoured. */
@@ -718,15 +719,86 @@ uint16_t boost_theme_rotation(void)
 void boost_theme_set_rotation(uint16_t degrees)
 {
     ensure_loaded();
-    /* Only quarter turns exist: the panel bridge maps rotation onto the CO5300
-     * scan order, and anything else would need a full-frame affine transform
-     * per render on a CPU-rasterised partial pipeline. Reject rather than
-     * silently snap, so the API can report the bad value. */
+    /* Only quarter turns exist: the turn is applied to the CO5300's own scan
+     * order in boost_theme_panel_orientation(), so it lands on the next boot;
+     * anything else would need a full-frame affine transform per render on a
+     * CPU-rasterised partial pipeline. Reject rather than silently snap, so the
+     * API can report the bad value. */
     if (degrees != 0u && degrees != 90u && degrees != 180u && degrees != 270u) {
         return;
     }
     s_rotation = degrees;
     persist();
+}
+
+/* The CO5300's GRAM is 480x480; the panel's visible area is 466x466, inset by
+ * the vendor init (esp_lcd_panel_set_gap(0x06, 0) in boost_display.c). Mirroring
+ * an axis reverses its address order, which moves that inset to the far side of
+ * the GRAM: 480 - 6 - 466 = 8 in x, 480 - 0 - 466 = 14 in y. swap_xy exchanges
+ * the driver's x and y windows, so the two insets exchange axes with it. */
+#define BOOST_PANEL_GRAM          480
+#define BOOST_PANEL_VISIBLE       466
+#define BOOST_PANEL_GAP_X           6
+#define BOOST_PANEL_GAP_Y           0
+#define BOOST_PANEL_GAP_FAR_X     (BOOST_PANEL_GRAM - BOOST_PANEL_GAP_X - BOOST_PANEL_VISIBLE)
+#define BOOST_PANEL_GAP_FAR_Y     (BOOST_PANEL_GRAM - BOOST_PANEL_GAP_Y - BOOST_PANEL_VISIBLE)
+
+void boost_theme_panel_orientation(uint16_t degrees, boost_panel_orientation_t *out)
+{
+    if (out == NULL) {
+        return;
+    }
+    boost_panel_orientation_t o = {
+        .gap_x = BOOST_PANEL_GAP_X,
+        .gap_y = BOOST_PANEL_GAP_Y,
+        /* The rotation-0 touch calibration the BSP ships with (raw -> logical). */
+        .touch_mirror_x = true,
+        .touch_mirror_y = true,
+    };
+    switch (degrees) {
+    case 90:
+        /* swap + mirror_x. */
+        o.swap_xy = true;
+        o.mirror_x = true;
+        o.gap_x = BOOST_PANEL_GAP_Y;
+        o.gap_y = BOOST_PANEL_GAP_FAR_X;
+        /* Touch is the INVERSE of the panel turn composed with the rotation-0
+         * calibration, because the CST9217 reports in its own frame and the
+         * flags convert raw -> logical (see test_panel_orientation's tap
+         * simulation, which is what settled these three rows). Derive them
+         * with esp_lcd_touch's REAL order (mirror_x, mirror_y, then swap_xy):
+         * mirror and swap do not commute, so a swap-first model gives the
+         * transposed flags - the bug this pair was fixed from. */
+        o.touch_swap_xy = true;
+        o.touch_mirror_x = false;
+        o.touch_mirror_y = true;
+        break;
+    case 180:
+        /* mirror_x + mirror_y; the composed touch flags are the identity, so
+         * both mirrors must be cleared rather than left at the baseline. */
+        o.mirror_x = true;
+        o.mirror_y = true;
+        o.gap_x = BOOST_PANEL_GAP_FAR_X;
+        o.gap_y = BOOST_PANEL_GAP_FAR_Y;
+        o.touch_mirror_x = false;
+        o.touch_mirror_y = false;
+        break;
+    case 270:
+        /* swap + mirror_y. */
+        o.swap_xy = true;
+        o.mirror_y = true;
+        o.gap_x = BOOST_PANEL_GAP_FAR_Y;
+        o.gap_y = BOOST_PANEL_GAP_X;
+        /* The inverse of 90's turn: the mirror pair is transposed with it. */
+        o.touch_swap_xy = true;
+        o.touch_mirror_x = true;
+        o.touch_mirror_y = false;
+        break;
+    default:
+        /* 0 (and any value the setter would have rejected): the vendor frame. */
+        break;
+    }
+    *out = o;
 }
 
 bool boost_theme_te_sync(void)

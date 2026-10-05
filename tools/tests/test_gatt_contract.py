@@ -222,6 +222,30 @@ def main() -> int:
                      f"BLE route '{method} {path}' exists on HTTP /api/v1",
                      f"http has {[r for r in sorted(http_paths) if r[0] == path]}")
 
+    # --- /time BODY parity between the two transports --------------------------
+    # A route existing on both transports is not enough: `epochMs` is optional on
+    # HTTP (the companion apps' 409 clock_rejected retry drops it) and the BLE
+    # route once required it, which turned that retry into a 400 over the apps'
+    # primary transport. Pin the semantics, not just the path.
+    def function_body(source: str, signature: str) -> str:
+        m = re.search(re.escape(signature) + r".*?\n\}\n", source, re.S)
+        return m.group(0) if m else ""
+
+    ble_time = function_body(fw, "static int route_time_post(")
+    result.check(ble_time != "", "BLE /time route body found")
+    result.check("boost_model_set_timezone" in ble_time,
+                 "BLE /time accepts an epoch-less body (timezone-only), like HTTP",
+                 "boost_model_set_timezone missing from route_time_post")
+    result.check("!cJSON_IsNumber(epoch) || !cJSON_IsNumber(tz)" not in ble_time,
+                 "BLE /time does not require epochMs",
+                 "route_time_post still requires epochMs")
+    result.check("invalid_force" in ble_time and "bool force" in ble_time,
+                 "BLE /time validates `force` like HTTP",
+                 "route_time_post lacks the force validation")
+    web_time = function_body(web, "static esp_err_t time_post(")
+    result.check("boost_model_set_timezone" in web_time and "invalid_force" in web_time,
+                 "HTTP /time carries the timezone-only path and the force validation")
+
     passed = result.checks - len(result.failures)
     print(f"\n{passed}/{result.checks} checks passed, {len(result.failures)} failed")
     if result.failures:

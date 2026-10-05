@@ -133,7 +133,7 @@ class SettingsViewModelTest {
     }
 
     @Test
-    fun timezoneSyncSendsOnlyTimezoneWithoutEpochMs() = runTest(dispatcher) {
+    fun timezoneSyncAppliesLocallyThenSendsTimezoneAndEpochOnExplicitSync() = runTest(dispatcher) {
         val transport = FakeBleTransport { method, path, _ ->
             when {
                 path == "config" && method == "GET" -> Resp(200, ApiFixtures.CONFIG)
@@ -163,6 +163,109 @@ class SettingsViewModelTest {
         assertTrue(post.bodyJson!!.contains("\"timezoneOffsetMinutes\":-480"))
         assertTrue(post.bodyJson.contains("\"timezoneTz\":\"PST8PDT,M3.2.0/2,M11.1.0/2\""))
         assertTrue(Regex("\"epochMs\":\\d+").containsMatchIn(post.bodyJson))
+
+        // Ordinary path: no RTC rejection, so the message stays the plain one.
+        assertEquals("Timezone sent to gauge", viewModel.state.value.message)
+    }
+
+    @Test
+    fun timezoneSyncClockRejectionReportsZoneSavedAndNamesForceClock() = runTest(dispatcher) {
+        val transport = FakeBleTransport { method, path, body ->
+            when {
+                path == "config" && method == "GET" -> Resp(200, ApiFixtures.CONFIG)
+                path == "themes" -> Resp(200, ApiFixtures.THEMES)
+                path == "tpms/config" -> Resp(200, ApiFixtures.TPMS_CONFIG)
+                // First POST carries the epoch and is refused (RTC disagrees);
+                // the retry drops epochMs and lands the timezone.
+                path == "time" && method == "POST" && body!!.contains("epochMs") ->
+                    Resp(409, ApiFixtures.ERROR_CLOCK_REJECTED)
+                path == "time" && method == "POST" ->
+                    Resp(
+                        200,
+                        ApiFixtures.STATE.replace(
+                            "\"timezoneOffsetMinutes\": -240",
+                            "\"timezoneOffsetMinutes\": -480",
+                        ),
+                    )
+                else -> Resp(404, "{}")
+            }
+        }
+        val viewModel = newViewModel(transport)
+        viewModel.state.first { !it.loading }
+        viewModel.applyTimezone(-480, "PST8PDT,M3.2.0/2,M11.1.0/2")
+        runCurrent()
+
+        viewModel.syncTime()
+        runCurrent()
+
+        // Both POSTs happened: the guarded path retried without the epoch.
+        val posts = transport.requests.filter { it.method == "POST" && it.path == "time" }
+        assertEquals(2, posts.size)
+        assertFalse(posts[1].bodyJson!!.contains("epochMs"))
+        // The zone landed, but the rejection must be surfaced, not swallowed.
+        val message = viewModel.state.value.message!!
+        assertTrue(message.contains("rejected"))
+        assertTrue(message.contains("Force clock"))
+        assertNull(viewModel.state.value.error)
+    }
+
+    @Test
+    fun forceClockSendsForceTrueOnceAndReportsForcedMessage() = runTest(dispatcher) {
+        val transport = FakeBleTransport { method, path, _ ->
+            when {
+                path == "config" && method == "GET" -> Resp(200, ApiFixtures.CONFIG)
+                path == "themes" -> Resp(200, ApiFixtures.THEMES)
+                path == "tpms/config" -> Resp(200, ApiFixtures.TPMS_CONFIG)
+                path == "time" && method == "POST" ->
+                    Resp(
+                        200,
+                        ApiFixtures.STATE.replace(
+                            "\"timezoneOffsetMinutes\": -240",
+                            "\"timezoneOffsetMinutes\": -480",
+                        ),
+                    )
+                else -> Resp(404, "{}")
+            }
+        }
+        val viewModel = newViewModel(transport)
+        viewModel.state.first { !it.loading }
+        viewModel.applyTimezone(-480, "PST8PDT,M3.2.0/2,M11.1.0/2")
+        runCurrent()
+
+        viewModel.forceClock()
+        runCurrent()
+
+        val posts = transport.requests.filter { it.method == "POST" && it.path == "time" }
+        assertEquals(1, posts.size)
+        assertTrue(posts.single().bodyJson!!.contains("\"force\":true"))
+        assertEquals("Gauge clock forced", viewModel.state.value.message)
+    }
+
+    @Test
+    fun forceClockFailureSurfacesErrorText() = runTest(dispatcher) {
+        val transport = FakeBleTransport { method, path, body ->
+            when {
+                path == "config" && method == "GET" -> Resp(200, ApiFixtures.CONFIG)
+                path == "themes" -> Resp(200, ApiFixtures.THEMES)
+                path == "tpms/config" -> Resp(200, ApiFixtures.TPMS_CONFIG)
+                // A forced set that is still refused must surface as an error.
+                path == "time" && method == "POST" ->
+                    Resp(409, ApiFixtures.ERROR_CLOCK_REJECTED)
+                else -> Resp(404, "{}")
+            }
+        }
+        val viewModel = newViewModel(transport)
+        viewModel.state.first { !it.loading }
+        viewModel.applyTimezone(-480, "PST8PDT,M3.2.0/2,M11.1.0/2")
+        runCurrent()
+
+        viewModel.forceClock()
+        runCurrent()
+
+        // No retry: the refusal is terminal for a forced set.
+        assertEquals(1, transport.requests.count { it.method == "POST" && it.path == "time" })
+        assertEquals("clock_rejected", viewModel.state.value.error)
+        assertNull(viewModel.state.value.message)
     }
 
     @Test

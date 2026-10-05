@@ -132,8 +132,9 @@ void boost_display_set_region_dbuf(bool enabled);
  *  - src points at the (x0,y0) pixel; rows are src_stride_px pixels apart
  *    (the GIF canvas stride, which differs from the panel width for
  *    smaller-than-native clips).
- *  - Panel rotation is 0 (checked here: LVGL screen coords are panel coords
- *    only unrotated; a rotated setup gets ESP_ERR_NOT_SUPPORTED).
+ *  - Panel rotation is 0 (checked here: the rotated path has not been verified
+ *    on glass, so a rotated setup gets ESP_ERR_NOT_SUPPORTED and falls back to
+ *    the bounded LVGL invalidation).
  * Blocks until the transfer completes. Returns ESP_ERR_NOT_SUPPORTED when
  * the preconditions fail or the scratch strips are unavailable, so the
  * caller falls back to ordinary LVGL invalidation.

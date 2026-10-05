@@ -234,13 +234,16 @@ class SettingsViewModel(
         body: suspend () -> T,
         message: String,
         errorMessage: String = "save failed",
+        messageFor: ((T) -> String)? = null,
         fold: (T) -> (UiState) -> UiState,
     ) {
         viewModelScope.launch {
             _state.update { it.copy(saving = true, error = null, message = null) }
             runCatching { body() }
                 .onSuccess { result ->
-                    _state.update { state -> fold(result)(state).copy(saving = false, message = message) }
+                    _state.update { state ->
+                        fold(result)(state).copy(saving = false, message = messageFor?.invoke(result) ?: message)
+                    }
                 }
                 .onFailure { e ->
                     _state.update { it.copy(saving = false, error = e.message ?: errorMessage) }
@@ -379,7 +382,10 @@ class SettingsViewModel(
 
     /** Timezone-only sync: sends the SELECTED timezone (not the phone's zone —
      * a phone-derived string overwrote the gauge's real POSIX TZ and the picker
-     * then flapped back to "Custom" on reload). */
+     * then flapped back to "Custom" on reload). When the gauge's RTC rejects
+     * the phone clock (>5 min apart) the firmware answers 409 and we retry
+     * timezone-only; the message must say so and point at Force clock rather
+     * than silently reporting a clean sync. */
     fun syncTime() {
         val tz = _state.value.fields.timezoneTz.ifBlank { Timezones.forDefault().posix }
         val offset = _state.value.fields.timezoneOffsetMinutes
@@ -387,8 +393,32 @@ class SettingsViewModel(
             body = { api.syncTime(offset, tz) },
             message = "Timezone sent to gauge",
             errorMessage = "timezone sync failed",
-        ) { status ->
-            { s -> s.copy(fields = s.fields.copy(timezoneOffsetMinutes = status.timezoneOffsetMinutes, timezoneTz = tz)) }
+            messageFor = { result ->
+                if (result.clockRejected) {
+                    "Timezone saved, but the gauge clock was rejected (>5 min off). Use Force clock to overwrite it."
+                } else {
+                    "Timezone sent to gauge"
+                }
+            },
+        ) { result ->
+            { s -> s.copy(fields = s.fields.copy(timezoneOffsetMinutes = result.status.timezoneOffsetMinutes, timezoneTz = tz)) }
+        }
+    }
+
+    /** Force clock: the deliberate recovery for an RTC the user knows is wrong.
+     *  POSTs `force:true` so the firmware skips the >5-minute disagreement
+     *  guard and overwrites the gauge clock + RTC with this phone's time. A
+     *  forced set that is still refused (409) or below the plausibility floor
+     *  (400 `time_not_set`) surfaces as an error, with no timezone-only retry. */
+    fun forceClock() {
+        val tz = _state.value.fields.timezoneTz.ifBlank { Timezones.forDefault().posix }
+        val offset = _state.value.fields.timezoneOffsetMinutes
+        save(
+            body = { api.syncTime(offset, tz, force = true) },
+            message = "Gauge clock forced",
+            errorMessage = "force clock failed",
+        ) { result ->
+            { s -> s.copy(fields = s.fields.copy(timezoneOffsetMinutes = result.status.timezoneOffsetMinutes, timezoneTz = tz)) }
         }
     }
 

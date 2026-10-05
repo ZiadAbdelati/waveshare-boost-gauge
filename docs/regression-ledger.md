@@ -1747,3 +1747,163 @@ the client UIs may display those log numerals reference-adjusted (`AGENTS.md`, `
 
 **HARDWARE: not run — no board attached.** Every measurement above is host/simulator evidence.
 v0.9.7 remains the last hardware-verified release.
+
+## 2026-10-05 — two shipped-but-inert behaviours: panel rotation never applied, and the apps' timezone contract
+
+### Screen rotation was a dead setting on this hardware (user-reported against v1.0.0)
+
+The user set Screen rotation on v1.0.0, restarted as the toast instructed, and the glass
+did not move. It never could: the value was stored (NVS `rotation`), echoed in `/themes`,
+validated by `PUT /themes/config` (and the BLE mirror), and handed to the display adapter
+— which **refuses to rotate this panel**. `boost_display.c` registers the display as
+`ESP_LV_ADAPTER_PANEL_IF_OTHER` (QSPI/CO5300), and for that interface the vendored adapter
+only logs `SPI rotation is not handled by adapter; use esp_lcd_panel_swap_xy/
+esp_lcd_panel_mirror in panel init` (`display_manager.c:897-902`) while
+`lvgl_bridge_v9.c:1408-1410` forces `need_rotate = false`; its only rotation
+implementation is the PPA SRM path, `#if CONFIG_SOC_PPA_SUPPORTED` — ESP32-P4 silicon,
+absent on the S3. The panel is 466x466, so even the adapter's 90/270 logical dimension swap
+was identity. No `esp_lcd_panel_swap_xy`/`mirror` call existed anywhere in `main/`, and no
+regression-ledger row or hardware gate ever covered the setting: it was introduced
+2026-07-26 (`37339b4`, "… screen rotation") purely as `.rotation = rotation_setting()` on
+the adapter profile, and the sim ignores rotation entirely, so nothing could have caught
+it host-side. Two smaller falsehoods rode along: `themes_config_put`'s comment claimed the
+response carries `restartRequired` (it returns the plain `/themes` payload), and
+`boost_display_push_bitmap`'s guard comment described panel coordinates as equal to LVGL
+coordinates "only at rotation 0".
+
+Fix (repo-owned code only; the adapter is not ours to edit): `boost_theme_panel_orientation()`
+maps the persisted quarter turn to `esp_lcd_panel_swap_xy`/`esp_lcd_panel_mirror`, the
+visible-window gap, and the matching touch flags, and `panel_new()` applies it after
+`esp_lcd_panel_init()` (which rewrites MADCTL) and before the display registers. The
+adapter profile now stays `ESP_LV_ADAPTER_ROTATE_0` — a non-zero value there only swapped
+logical dimensions and demanded a third full-size frame buffer this pipeline does not have.
+
+**The touch mapping was the trap, and a tap simulation did not settle it on the first try.**
+`bsp_touch_new()` forwards only `touch_flags` (it ignores the adapter rotation), so the touch
+frame has to be rotated with the panel. The composed flags are the **inverse** of the panel
+turn composed with the rotation-0 baseline — not the forward turn: copying the panel flags
+straight onto touch is wrong at **every** rotation, **24 of 24** sample taps (the panel flags
+are never the required composed inverse).
+
+The trap inside the trap: `esp_lcd_touch` applies its flags in a fixed order — `mirror_x`,
+then `mirror_y`, then `swap_xy` (`esp_lcd_touch.c:91-104`) — and mirror and swap do **not**
+commute, so a swap-first model is the inverse composition. The guard's first version applied
+swap first and therefore validated a transposed 90/270 touch pair: with the helper patched to
+the driver's real order (and the firmware untouched) the simulation failed at 90 deg, and
+under the corrected model the shipped pair was **12 of 24** taps wrong. Caught in the
+pre-merge review, fixed the same day: `flags_apply()` now mirrors both axes before swapping,
+and the 90/270 mirror pairs are transposed relative to the first implementation. **Neither
+mapping has had a glass run** — host-only in both directions.
+
+`tools/test_panel_orientation.c` simulates a tap per rotation (project the drawn logical point
+to the glass with the panel turn, invert the rotation-0 calibration to get the controller's
+report, require the flags to return the original point), re-derives the visible-window coverage
+from the flags and gaps (a transposed mirror axis or a gap left on the wrong side fails), and
+pins rotation 0 to the vendor geometry. Proven to fail on a doctored mapping both ways:
+transposing the 90 deg mirrors fails the first simulated tap, and reverting the helper to the
+swap-first order fails against the fixed firmware. PASS with 34 checks on the real table.
+
+Gap arithmetic, which is the remaining glass-only unknown: the CO5300 GRAM is 480x480 and
+the visible area is 466x466 inset `(6, 0)` by the vendor init, so a mirrored axis puts the
+inset at the far side (`8`/`14`) and `swap_xy` exchanges which axis takes which inset. The
+boot log now prints the applied orientation and gap
+(`panel up at 80 MHz QSPI, orientation N deg (swap=… mx=… my=… gap=…)`) so a single serial
+line confirms or refutes it. `boost_display_push_bitmap()` still refuses while rotation ≠ 0
+(conservative: the rotated direct push has no glass run yet, so GIF playback keeps the
+bounded LVGL deviation).
+
+**HARDWARE: not run — no board attached.** The rotation mapping is host-verified only; the
+visible-window offset at 90/180/270, the touch alignment on glass, and the cadence/tear
+guard under rotation are open hardware items.
+
+### The iOS timezone failures were a two-convention disagreement, and the epoch send has to retry
+
+Two `ViewModelTests` failures (`testSettingsViewModelSyncTimezoneSendsNoEpoch`,
+`…ApplyTimezoneOptionPostsTimeThenSavesConfig`) assert `XCTAssertNil(body["epochMs"])` —
+"the gauge RTC is the time authority" — while `SettingsViewModel.syncTimezone()`
+(`:665`) and `saveTimezoneCustom()` (`:691`) send the phone epoch. The firmware does not
+require it (`main/boost_web.c:585-598`: `timezoneOffsetMinutes` is required, `epochMs` is
+optional; an epoch-less body routes to `boost_model_set_timezone()`, and a present epoch
+against a valid DS3231 more than 5 minutes away returns 409 `clock_rejected`). Both apps'
+comments claiming "the firmware /time route requires epochMs … tz-only bodies 400 with
+invalid_time" were false.
+
+How it happened: 2026-08-25 round 3 logged "clock sync sent the phone epoch when the
+DS3231 RTC must stay the time authority" as a bug and fixed it zone-only; 2026-08-27
+(`183f53a`) removed the epoch from iOS and added those two assertions; 2026-08-28
+(`d1e9e14`) re-added the epoch to **both** apps under the false premise and flipped
+Android's tests to assert its presence, leaving iOS's assertions untouched — red ever
+since (reproduced at base `3a8d1ae`). iOS was the only platform that failed because only
+iOS's suite pinned the no-epoch contract; Android sent the epoch *and asserted it*
+(`GaugeApiTest.kt:129-131`, `SettingsViewModelTest.kt:165`), and the web has always sent it
+(`web/app.js:3974`, the deliberate browser-Sync-calibrates-the-RTC path per AGENTS.md).
+
+Resolved by user decision as the middle path, with both behaviours preserved: the apps send
+the epoch (so a board with an unset RTC gets seeded — zone-only cannot do that) and, when
+the gauge answers **409 `clock_rejected`**, retry the identical body without `epochMs` so
+the timezone still lands. iOS does it in the shared `postTimezone` choke point; Android
+inspects the raw status before `parse`. Tests: iOS assertions flipped to require the epoch
+plus a 409-fallback case; Android gained
+`timeSyncClockRejectionRetriesWithoutEpoch` and a renamed
+`timezoneSyncAppliesLocallyThenSendsTimezoneAndEpochOnExplicitSync`; the misleading
+"firmware REQUIRES epochMs" comments are gone. The full Android unit suite is green
+(116 tests, 0 failures; 24 of them in the three touched classes); the web's clock-sync
+button is unchanged (it is a clock action with its own `clock_rejected` message).
+
+### 2026-10-05 (later) — the force-clock recovery path, and the BLE parity break it exposed
+
+The user asked how clock syncing actually works and pushed back on one consequence of the
+2026-08-17 guard: with a readable DS3231, an epoch more than 5 minutes away is *rejected*,
+so an RTC that is genuinely wrong cannot be corrected by any sync — the documented recovery
+was to pull the RTC battery (the web's own error message said so). Decision: keep the guard
+for automatic syncs, add an explicit force/reset path.
+
+`boost_model_set_time(..., bool force)` now skips the disagreement comparison when forced,
+logs `clock FORCED from client: overriding DS3231 by N ms` on serial, and still applies the
+plausibility floor (`BOOST_RTC_EPOCH_MIN_MS`) and still writes the RTC — the write clears
+OSF, so the corrected time becomes the new authority. `PUT`-shaped validation on both
+transports: `force` must be a bool (non-bool → 400 `invalid_force`) and must accompany an
+epoch (otherwise 400 `invalid_time`). The plausibility floor is not bypassable: a forced
+below-floor epoch is still 400 `time_not_set`.
+
+**A third shipped defect surfaced while wiring it.** `route_time_post()` in
+`main/boost_app_ble.c` required `epochMs` (`if (!cJSON_IsNumber(epoch) || !cJSON_IsNumber(tz))
+→ 400 invalid_time`) while the HTTP handler treats it as optional. So the zone-only 409 retry
+added earlier the same day answered **400 over BLE — the companion apps' primary transport** —
+meaning the timezone was still lost and the user still saw a sync failure on exactly the path
+the retry existed to fix. The BLE route now mirrors the HTTP semantics field for field.
+`tools/tests/test_gatt_contract.py` gains a body-parity check that extracts the BLE function
+body: the pre-existing "BLE routes are a subset of the HTTP control plane" check compared only
+path+method, which is precisely why a body-shape divergence could not be seen.
+
+**And a silent-downgrade class in the same handler.** A present-but-wrong-typed `epochMs`
+(e.g. `true`) failed `cJSON_IsNumber`, so the request silently took the timezone-only branch —
+a clock sync downgraded to a zone write with no error. Both transports now answer 400
+`invalid_time` for a wrong-typed `epochMs`/`timezoneTz`, the same rule as `pressureUnit`
+(a present-but-wrong-typed field is a client bug, not an absent one). The mock server mirrors
+all of it (`tools/mock_server.py` `handle_time_post`), and the new contract cases assert each
+shape — including that the mock's own boolean-epoch case is a 400, which is how the
+silent-downgrade was caught.
+
+Surfaces: the web Time-sync panel gains a confirmed **Force clock** button and its
+`clock_rejected` message now points at it instead of telling the user to pull the battery; iOS
+and Android gain the same secondary, destructive-styled **Force clock** action behind a
+confirmation, and their ordinary 409 path now reports that the zone was saved but the gauge's
+clock was rejected (>5 min off) and names the recovery action. `apps/PARITY.md` row 5 and the
+clock guard rails carry the contract.
+
+Evidence: `test_gatt_contract.py` 63/63, `test_web_api_contract.py` 239/239 (mock-backed, so
+the shapes are exercised over HTTP, not just grepped), firmware build clean (`0x28ef30`, 36%
+free, regenerated dashboard embedded — verified by decompressing the asset array out of
+`main/generated_web_assets.c`), Android 121/121, host suite 15/15. iOS `ViewModelTests`: a
+control run of the same class on the base commit (`origin/main` = `6960a58`) reports **exactly
+the 2 known timezone failures**, while this branch reports **0 assertion failures** (63 started
+vs 60 at base: +2 force tests, +1 fallback). Two of this branch's runs had a random handful of
+tests "never report" because the iOS *test host* crashed mid-class (`nw_socket_connect … No
+route to host` from the app process, always in the Themes/preview tests, a different set each
+run, 0–5 per run, and 0 in the base control) — a load-dependent simulator flake, not a
+failure: no `XCTAssert` failure in any run, and the individual tests pass in isolation. Quote
+it as such rather than as a clean sweep.
+
+**HARDWARE: not run.** The forced path's serial line and the RTC OSF-clearing write are
+unverified on glass.

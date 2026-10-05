@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -44,6 +45,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.ui.graphics.Color
 import androidx.compose.material3.Surface
@@ -246,6 +248,7 @@ fun SettingsScreen(container: AppContainer) {
                     onFieldChange = viewModel::updateFields,
                     onApply = viewModel::applyTimezone,
                     onSync = viewModel::syncTime,
+                    onForce = viewModel::forceClock,
                 )
             }
             SettingsPage.ObdScanner -> item {
@@ -923,7 +926,9 @@ private fun ClockTimezoneSection(
     onFieldChange: ((SettingsViewModel.FieldState) -> SettingsViewModel.FieldState) -> Unit,
     onApply: (Int, String) -> Unit,
     onSync: () -> Unit,
+    onForce: () -> Unit,
 ) {
+    var confirmForce by remember { mutableStateOf(false) }
     GroupedSection {
         val currentPosix = fields.timezoneTz
         val matched = Timezones.curated.firstOrNull { it.posix == currentPosix }
@@ -1026,6 +1031,44 @@ private fun ClockTimezoneSection(
                 )
             }
         }
+        OutlinedButton(
+            onClick = { confirmForce = true },
+            enabled = !saving,
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.outlinedButtonColors(
+                contentColor = MaterialTheme.colorScheme.error,
+            ),
+        ) {
+            Text("Force clock")
+        }
+    }
+    if (confirmForce) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { confirmForce = false },
+            title = { Text("Force gauge clock?") },
+            text = {
+                Text(
+                    "This overwrites the gauge's clock and RTC with this phone's time, " +
+                        "even if the gauge's RTC disagrees by more than 5 minutes. " +
+                        "Only continue if this phone's clock is correct — the gauge's " +
+                        "RTC is normally the authority.",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmForce = false
+                        onForce()
+                    },
+                    enabled = !saving,
+                ) {
+                    Text("Force clock", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmForce = false }) { Text("Cancel") }
+            },
+        )
     }
 }
 

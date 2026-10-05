@@ -3,6 +3,17 @@ import CoreLocation
 import NetworkExtension
 import SystemConfiguration.CaptiveNetwork
 
+/// Result of the single POST /time choke point (`SettingsViewModel.postTimezone`).
+enum TimePostOutcome {
+    /// 200 — the clock was accepted (or no clock was sent).
+    case saved
+    /// 409 — the gauge's RTC disagreed by >5 min and refused the clock; the
+    /// retry saved the timezone alone.
+    case zoneOnly
+    /// Non-200 status or transport error; `errorMessage` holds the reason.
+    case failed
+}
+
 /// `@MainActor`: every `@Published` mutation is main-actor-isolated. SwiftUI
 /// `.task` and Button-`Task` closures resume on background executors in this
 /// SDK, so without this, pre-await publishes trip the "Publishing changes from
@@ -387,7 +398,7 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
-    func saveConfig() async {
+    func saveConfig(announce: Bool = true) async {
         guard let transport else { return }
         savedMessage = nil
         let body: [String: Any] = [
@@ -405,7 +416,7 @@ final class SettingsViewModel: ObservableObject {
             "psiOverboost": psiOverboost,
             "zeroAngle": zeroAngle,
         ]
-        await save(transport, method: "PUT", path: "config", body: body) { [weak self] data in
+        await save(transport, method: "PUT", path: "config", body: body, announce: announce) { [weak self] data in
             let decoded = try JSONDecoder().decode(GaugeConfig.self, from: data)
             self?.applyConfig(decoded)
         }
@@ -659,14 +670,43 @@ final class SettingsViewModel: ObservableObject {
         // phone-offset-derived string: a synthetic "UTC4" overwrote the gauge's
         // real POSIX TZ ("EST5EDT,..."), and loadConfig then matched no curated
         // option → the picker flapped back to "Custom" on next load.
-        // The firmware /time route requires epochMs (the phone is the time
-        // authority, same as the web UI); tz-only bodies 400 with invalid_time.
+        // The firmware /time route treats epochMs as optional: sending it asks
+        // the gauge to calibrate its DS3231 from the phone clock. A valid RTC
+        // that disagrees with the phone epoch by more than 5 minutes rejects the
+        // calibration with 409 `clock_rejected`; postTimezone then retries the
+        // same request without epochMs so the timezone still lands.
         let body: [String: Any] = [
             "epochMs": Int64(Date().timeIntervalSince1970 * 1000),
             "timezoneOffsetMinutes": timezoneOffset,
             "timezoneTz": timezoneTZ,
         ]
-        await postTimezone(transport, body: body, success: "Device timezone synced")
+        // A 409 rescue (`zoneOnly`) means the zone landed but the gauge refused
+        // the calibration: surface that instead of a plain success, naming the
+        // deliberate override.
+        if await postTimezone(transport, body: body, success: "Device timezone synced") == .zoneOnly {
+            savedMessage = Self.clockRejectedMessage
+        }
+    }
+
+    /// Deliberate recovery for an RTC that is genuinely wrong: overwrite the
+    /// gauge's clock and DS3231 with this phone's clock, skipping the
+    /// firmware's >5-minute disagreement guard. Only correct when this phone's
+    /// clock is right. `force: true` requires `epochMs`, and the firmware's
+    /// plausibility floor still applies (400 `time_not_set` before 2023-11-14).
+    func forceClock() async {
+        guard let transport else {
+            errorMessage = "No gauge connection — reconnect, then retry."
+            return
+        }
+        savedMessage = nil
+        let body: [String: Any] = [
+            "epochMs": Int64(Date().timeIntervalSince1970 * 1000),
+            "timezoneOffsetMinutes": timezoneOffset,
+            "timezoneTz": timezoneTZ,
+            "force": true,
+        ]
+        // No fallback: a forced request that is still rejected is an error.
+        await postTimezone(transport, body: body, success: "Gauge clock forced")
     }
 
     /// Apply a curated (or custom) timezone: set the local fields only.
@@ -684,39 +724,58 @@ final class SettingsViewModel: ObservableObject {
 
     func saveTimezoneCustom() async {
         guard let transport else { return }
-        // Push the custom timezone + current time, then persist the config,
-        // but show only ONE toast — the intermediate "Timezone saved" + "Saved"
-        // double-fire was the second half of the double notification.
+        // Push the custom timezone + a clock calibration attempt, then persist
+        // the config, but show only ONE toast — the intermediate "Timezone
+        // saved" + "Saved" double-fire was the second half of the double
+        // notification. `success: nil` keeps postTimezone from announcing here;
+        // saveConfig publishes the single "Saved".
         let timeBody: [String: Any] = [
             "epochMs": Int64(Date().timeIntervalSince1970 * 1000),
             "timezoneOffsetMinutes": timezoneOffset,
             "timezoneTz": timezoneTZ,
         ]
-        do {
-            let timeResp = try await transport.send("POST", path: "time", body: timeBody)
-            guard timeResp.status == 200 else {
-                await MainActor.run { self.errorMessage = APIErrorText.from(timeResp) }
-                return
-            }
-        } catch {
-            await MainActor.run { self.errorMessage = error.localizedDescription }
-            return
+        let outcome = await postTimezone(transport, body: timeBody, success: nil)
+        guard outcome != .failed else { return }
+        if outcome == .zoneOnly {
+            // The zone landed but the clock was rejected: persist the config
+            // silently so the rejection notice — not "Saved" — is the toast.
+            await saveConfig(announce: false)
+            savedMessage = Self.clockRejectedMessage
+        } else {
+            await saveConfig()
         }
-        await saveConfig()
     }
 
-    private func postTimezone(_ transport: GaugeTransport, body: [String: Any], success: String) async {
+    /// The single POST /time choke point. Sends `body` as given; when the gauge
+    /// answers 409 (its DS3231 is valid but disagrees with the phone epoch by
+    /// more than the 5-minute tolerance, so it refuses the clock with
+    /// `clock_rejected`) it retries the same request with `epochMs` removed, so
+    /// the timezone still lands. That fallback is for an ordinary calibration
+    /// attempt only: a deliberate `force: true` request is never retried, so a
+    /// forced request the gauge still rejects is reported as an error.
+    /// `success` (when non-nil) is published as the confirmation toast on a
+    /// plain 200.
+    @discardableResult
+    private func postTimezone(_ transport: GaugeTransport, body: [String: Any], success: String?) async -> TimePostOutcome {
         do {
             let response = try await transport.send("POST", path: "time", body: body)
-            await MainActor.run {
-                if response.status == 200 {
-                    self.savedMessage = success
-                } else {
-                    self.errorMessage = APIErrorText.from(response)
-                }
+            if response.status == 409, body["epochMs"] != nil, body["force"] as? Bool != true {
+                var retryBody = body
+                retryBody.removeValue(forKey: "epochMs")
+                let retry = try await transport.send("POST", path: "time", body: retryBody)
+                if retry.status == 200 { return .zoneOnly }
+                errorMessage = APIErrorText.from(retry)
+                return .failed
             }
+            if response.status == 200 {
+                if let success { savedMessage = success }
+                return .saved
+            }
+            errorMessage = APIErrorText.from(response)
+            return .failed
         } catch {
-            await MainActor.run { self.errorMessage = error.localizedDescription }
+            errorMessage = error.localizedDescription
+            return .failed
         }
     }
 
@@ -725,6 +784,7 @@ final class SettingsViewModel: ObservableObject {
         method: String,
         path: String,
         body: [String: Any],
+        announce: Bool = true,
         onSuccess: @MainActor @escaping (Data) throws -> Void
     ) async {
         do {
@@ -739,7 +799,7 @@ final class SettingsViewModel: ObservableObject {
             // threads is not allowed" (observed: 4 named + ~30 generic during
             // theme churn + reconnect torture).
             try await MainActor.run { try onSuccess(response.body) }
-            await MainActor.run { self.savedMessage = "Saved" }
+            if announce { await MainActor.run { self.savedMessage = "Saved" } }
         } catch {
             await MainActor.run { self.errorMessage = error.localizedDescription }
         }
@@ -832,6 +892,12 @@ struct TimezoneOption: Identifiable, Hashable {
 
 extension SettingsViewModel {
     static let customTimezoneID = "custom"
+
+    /// Shown when the gauge's RTC disagrees with this phone by more than the
+    /// firmware's 5-minute tolerance: the timezone still saved, but the clock
+    /// needs the deliberate override (`forceClock`).
+    static let clockRejectedMessage =
+        "Timezone saved, but gauge clock rejected (>5 min off). Use Force clock to override."
 
     /// Phone-relevant zone presets, generated from the canonical web/tz.json
     /// (only the entries carrying IANA `ids`). POSIX strings are verbatim from

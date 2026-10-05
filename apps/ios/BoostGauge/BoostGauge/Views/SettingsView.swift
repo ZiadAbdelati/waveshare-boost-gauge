@@ -10,6 +10,7 @@ struct SettingsView: View {
     @State private var isConnecting = false
     @State private var hasCompletedBLEScan = false
     @State private var joinSheet: WifiJoinTarget?
+    @State private var showForceClockConfirmation = false
 
     var body: some View {
         NavigationStack {
@@ -656,7 +657,22 @@ struct SettingsView: View {
             Button("Sync timezone to gauge") {
                 Task { await vm.syncTimezone() }
             }
+            Button("Force clock", role: .destructive) {
+                showForceClockConfirmation = true
             }
+            }
+        }
+        .confirmationDialog(
+            "Overwrite the gauge's clock?",
+            isPresented: $showForceClockConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Force clock", role: .destructive) {
+                Task { await vm.forceClock() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This overwrites the gauge's clock and RTC with this phone's time even if the gauge's RTC disagrees. Only do this if this phone's clock is correct.")
         }
     }
 

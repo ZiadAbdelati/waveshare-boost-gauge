@@ -1118,7 +1118,10 @@ esp_err_t boost_display_push_bitmap(int x0, int y0, int x1, int y1,
     if (s_panel == NULL || src == NULL || src_stride_px <= 0) {
         return ESP_ERR_NOT_SUPPORTED;
     }
-    /* LVGL screen coordinates equal panel coordinates only at rotation 0. */
+    /* The panel's scan order carries the persisted quarter turn, so a 1:1 push
+     * would now be geometrically valid on this square panel - but the rotated
+     * path has not been exercised on glass, so a rotated setup keeps the
+     * bounded LVGL invalidation instead of the direct push until it is. */
     if (boost_theme_rotation() != 0) {
         return ESP_ERR_NOT_SUPPORTED;
     }
@@ -1479,11 +1482,31 @@ static esp_err_t panel_new(int initial_brightness)
     ESP_RETURN_ON_ERROR(esp_lcd_new_panel_co5300(s_panel_io, &panel_config, &s_panel),
                         TAG, "esp_lcd_new_panel_co5300 failed");
 
-    esp_lcd_panel_set_gap(s_panel, 0x06, 0);
     esp_lcd_panel_reset(s_panel);
     esp_lcd_panel_init(s_panel);
+    /* Panel orientation. The LVGL adapter refuses to rotate a PANEL_IF_OTHER
+     * display ("SPI rotation is not handled by adapter; use
+     * esp_lcd_panel_swap_xy/esp_lcd_panel_mirror in panel init"), so the
+     * persisted quarter turn is applied to the CO5300's own scan order here -
+     * after esp_lcd_panel_init(), which (re)writes MADCTL from the vendor
+     * table, and before the first draw. The panel is square, so LVGL's logical
+     * coordinates stay panel coordinates and only the scan order and the
+     * visible-window inset move. */
+    boost_panel_orientation_t orient;
+    boost_theme_panel_orientation(boost_theme_rotation(), &orient);
+    if (orient.swap_xy) {
+        ESP_RETURN_ON_ERROR(esp_lcd_panel_swap_xy(s_panel, true), TAG, "panel swap_xy failed");
+    }
+    if (orient.mirror_x || orient.mirror_y) {
+        ESP_RETURN_ON_ERROR(esp_lcd_panel_mirror(s_panel, orient.mirror_x, orient.mirror_y),
+                            TAG, "panel mirror failed");
+    }
+    esp_lcd_panel_set_gap(s_panel, orient.gap_x, orient.gap_y);
     esp_lcd_panel_disp_on_off(s_panel, true);
-    ESP_LOGI(TAG, "panel up at %d MHz QSPI", BOOST_LCD_PCLK_HZ / 1000000);
+    ESP_LOGI(TAG, "panel up at %d MHz QSPI, orientation %u deg (swap=%d mx=%d my=%d gap=%d,%d)",
+             BOOST_LCD_PCLK_HZ / 1000000, (unsigned)boost_theme_rotation(),
+             orient.swap_xy ? 1 : 0, orient.mirror_x ? 1 : 0, orient.mirror_y ? 1 : 0,
+             orient.gap_x, orient.gap_y);
     return ESP_OK;
 }
 
@@ -1555,19 +1578,6 @@ esp_err_t boost_display_set_brightness(int percent)
     return esp_lcd_panel_io_tx_param(s_panel_io, lcd_cmd, &param, 1);
 }
 
-/* Persisted rotation -> adapter enum. Quarter turns only; the adapter maps them
- * onto the panel scan order, so they cost nothing per frame. Anything else is
- * treated as 0 rather than guessed at. */
-static esp_lv_adapter_rotation_t rotation_setting(void)
-{
-    switch (boost_theme_rotation()) {
-    case 90:  return ESP_LV_ADAPTER_ROTATE_90;
-    case 180: return ESP_LV_ADAPTER_ROTATE_180;
-    case 270: return ESP_LV_ADAPTER_ROTATE_270;
-    default:  return ESP_LV_ADAPTER_ROTATE_0;
-    }
-}
-
 static lv_display_t *register_display(int initial_brightness)
 {
     ESP_RETURN_ON_FALSE(panel_new(initial_brightness) == ESP_OK, NULL, TAG, "panel_new failed");
@@ -1577,7 +1587,12 @@ static lv_display_t *register_display(int initial_brightness)
         .panel_io = s_panel_io,
         .profile = {
             .interface = ESP_LV_ADAPTER_PANEL_IF_OTHER,
-            .rotation = rotation_setting(),
+            /* Never the persisted turn: the adapter does not rotate a
+             * PANEL_IF_OTHER panel, and panel_new() has already applied it to
+             * the CO5300's scan order. Passing it here would only swap the
+             * logical dimensions (identity on a square panel) and demand a
+             * third full-size frame buffer this pipeline does not have. */
+            .rotation = ESP_LV_ADAPTER_ROTATE_0,
             .hor_res = BSP_LCD_H_RES,
             .ver_res = BSP_LCD_V_RES,
             .buffer_height = BOOST_LVGL_BUF_LINES,
@@ -1740,15 +1755,21 @@ static esp_err_t touch_read_cb(esp_lcd_touch_handle_t tp,
 
 static lv_indev_t *register_touch(lv_display_t *disp)
 {
+    /* bsp_touch_new() forwards ONLY touch_flags to the CST9217 (it ignores the
+     * adapter rotation), so the touch frame rotates with the panel: the flags
+     * are the INVERSE of the quarter turn composed with the rotation-0
+     * calibration (boost_theme_panel_orientation). A mismatch here would leave
+     * the display upright and the touch rotated, or vice versa. */
+    boost_panel_orientation_t orient;
+    boost_theme_panel_orientation(boost_theme_rotation(), &orient);
     bsp_display_cfg_t touch_cfg = {
         .lv_adapter_cfg = ESP_LV_ADAPTER_DEFAULT_CONFIG(),
-        /* Must match the display, or touch lands on the pre-rotation coords. */
-        .rotation = rotation_setting(),
+        .rotation = ESP_LV_ADAPTER_ROTATE_0,
         .tear_avoid_mode = ESP_LV_ADAPTER_TEAR_AVOID_MODE_NONE,
         .touch_flags = {
-            .swap_xy = 0,
-            .mirror_x = 1,
-            .mirror_y = 1,
+            .swap_xy = orient.touch_swap_xy,
+            .mirror_x = orient.touch_mirror_x,
+            .mirror_y = orient.touch_mirror_y,
         },
     };
 
