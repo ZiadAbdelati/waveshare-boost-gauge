@@ -30,6 +30,23 @@ final class AppSession: ObservableObject {
     /// flight across the write) and must not revert the confirmed selection.
     private var awaitingStateUnit: String?
 
+    /// Same hold for a locally confirmed reference write.
+    private var awaitingStateAbsolute: Bool?
+
+    /// App-wide pressure reference (reference contract). `false` = relative
+    /// (gauge) psi, today's behaviour; `true` = absolute, i.e. displayed =
+    /// gauge + `ambientKpa` reference. Canonical wire values stay gauge PSI;
+    /// the reference is added only at display time. Adopted from `/themes`
+    /// (initial config) and from every live `/state` sample.
+    @Published private(set) var pressureAbsolute = false
+
+    /// Standard-atmosphere reference (kPa), the contract's fallback when the
+    /// ambient read is missing or non-positive (= 14.696 psi).
+    static let standardAtmosphereKpa = 101.325
+
+    /// psi per kPa (exact contract factor).
+    static let psiPerKpa = 0.145037738
+
     let hardwareBleE2ERequested: Bool
     let simBleRequested: Bool
 
@@ -72,6 +89,58 @@ final class AppSession: ObservableObject {
         }
         guard unit != pressureUnit else { return }
         pressureUnit = unit
+    }
+
+    /// Adopt the pressure reference from a `/themes` payload (initial config
+    /// source, or the echo of a generic theme write). `/themes` is the
+    /// persisted config; live changes are adopted from `/state`.
+    @MainActor
+    func applyPressureAbsolute(_ absolute: Bool) {
+        guard absolute != pressureAbsolute else { return }
+        pressureAbsolute = absolute
+    }
+
+    /// Confirm a locally initiated reference write (its PUT echo). Publishes
+    /// the reference and holds it against stale `/state` samples until one
+    /// agrees (mirrors `confirmLocalPressureUnit`).
+    @MainActor
+    func confirmLocalPressureAbsolute(_ absolute: Bool) {
+        awaitingStateAbsolute = absolute
+        guard absolute != pressureAbsolute else { return }
+        pressureAbsolute = absolute
+    }
+
+    /// Adopt the reference from a live `/state` sample, so the app follows the
+    /// physical panel's PRESSURE button and recovers when the initial
+    /// `/themes` fetch raced transport setup. While a locally confirmed change
+    /// awaits agreement, a disagreeing sample is ignored; the first agreeing
+    /// sample releases the hold and samples lead again.
+    @MainActor
+    func applyPressureAbsoluteFromState(_ absolute: Bool) {
+        if let awaiting = awaitingStateAbsolute {
+            if absolute == awaiting { awaitingStateAbsolute = nil }
+            return
+        }
+        guard absolute != pressureAbsolute else { return }
+        pressureAbsolute = absolute
+    }
+
+    /// Boost-side display psi under the current reference: gauge psi unchanged
+    /// in relative mode, or gauge + the atmospheric reference in absolute
+    /// mode. `ambientKpa` is the EXISTING `/state.sensors.ambientKpa`; missing
+    /// or non-positive values fall back to the standard atmosphere (101.325 kPa
+    /// -> 14.696 psi), per the reference contract. Canonical wire/geometry
+    /// values are untouched — callers pass only the numeral they render.
+    func displayPsi(_ gaugePsi: Double, ambientKpa: Double?) -> Double {
+        Self.referenceAdjusted(gaugePsi, absolute: pressureAbsolute, ambientKpa: ambientKpa)
+    }
+
+    /// Pure form of `displayPsi` for call sites without a session (static
+    /// chart/axis formatters).
+    static func referenceAdjusted(_ gaugePsi: Double, absolute: Bool, ambientKpa: Double?) -> Double {
+        guard absolute else { return gaugePsi }
+        let kpa = ambientKpa.flatMap { $0 > 0 ? $0 : nil } ?? standardAtmosphereKpa
+        return gaugePsi + kpa * psiPerKpa
     }
 
     /// The HTTP host the app can reach the gauge's full HTTP API from. For

@@ -109,7 +109,7 @@ struct StatusView: View {
     private func gaugeCard(_ state: GaugeState) -> some View {
         VStack(spacing: 12) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(Format.pressure(state.psi, unit: session.pressureUnit, psiDecimals: 2))
+                Text(Format.pressure(session.displayPsi(state.psi, ambientKpa: state.sensors?.ambientKpa), unit: session.pressureUnit, psiDecimals: 2))
                     .font(.system(size: 72, weight: .bold, design: .rounded).monospacedDigit())
                 Text(PressureUnit.suffix(session.pressureUnit))
                     .font(.title3)
@@ -131,7 +131,7 @@ struct StatusView: View {
             }
             HStack(spacing: 6) {
                 Image(systemName: "arrow.up.right")
-                Text("Peak \(Format.pressure(state.peakPsi, unit: session.pressureUnit, psiDecimals: 1)) \(PressureUnit.suffix(session.pressureUnit))")
+                Text("Peak \(Format.pressure(session.displayPsi(state.peakPsi, ambientKpa: state.sensors?.ambientKpa), unit: session.pressureUnit, psiDecimals: 1)) \(PressureUnit.suffix(session.pressureUnit))")
             }
             .font(.subheadline)
             .foregroundColor(.secondary)

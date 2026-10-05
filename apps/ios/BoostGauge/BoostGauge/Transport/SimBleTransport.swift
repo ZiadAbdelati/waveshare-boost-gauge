@@ -163,6 +163,10 @@ final class SimBleTransport: GaugeTransport {
         state["epochMs"] = Int64(Date().timeIntervalSince1970 * 1000)
         state["activeThemeId"] = themesPayload["activeThemeId"] ?? "neon"
         state["activePage"] = activePage
+        // The firmware /state carries the live reference (the panel REFERENCE
+        // button flips it); mirror the theme-store value here so the app's
+        // live /state adoption is exercised in the simulator.
+        state["pressureAbsolute"] = themesPayload["pressureAbsolute"] ?? false
         state["tpms"] = tpms(atMs: uptimeMs)
         return (try? JSONSerialization.data(withJSONObject: state)) ?? Data()
     }
@@ -389,6 +393,7 @@ final class SimBleTransport: GaugeTransport {
     private static let defaultThemesPayload: [String: Any] = [
         "activeThemeId": "neon",
         "pressureUnit": "psi",
+        "pressureAbsolute": false,
         "bigDigitStaticBg": true,
         "bigDigitColorText": false,
         "bigDigitStaticColor": "#000000",

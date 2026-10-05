@@ -35,17 +35,22 @@ void boost_page_show(boost_page_id_t page);
  * The headless sim has no multi-touch input device, so the two-finger hold
  * cannot be synthesised there. These hooks drive the exact same overlay code
  * the gesture path uses (show_qr/hide_qr/qr_pressing_cb), letting the sim
- * exercise the QR page, the swipe-to-toggles flip and dismissal. */
+ * exercise all three pages, the swipe paging and dismissal. */
 bool boost_page_qr_active(void);
-/** True while the overlay shows the connections-toggles page. */
-bool boost_page_qr_toggles(void);
+/** Overlay page, or -1 while the overlay is closed.
+ *  0 = QR, 1 = Connections (OBD BLE, APP BLE), 2 = Units (UNITS, REL/ABS). */
+int boost_page_qr_page(void);
+/** Open the overlay on page 0 (the QR page). No-op while it is already open. */
 void boost_page_qr_show(void);
-/** Simulate a left-swipe drag across the overlay (start x to x-SWIPE_MIN_PX). */
+/** Open (or, while already open, jump to) a page: 0..2, out-of-range ignored. */
+void boost_page_qr_show_page(int page);
+/** Step FORWARD one page (0 -> 1 -> 2 -> 0). */
 void boost_page_qr_swipe_left(void);
-/** Simulate a right-swipe drag on the toggles page (back to the QR page). */
+/** Step BACKWARD one page (0 -> 2 -> 1 -> 0). */
 void boost_page_qr_swipe_right(void);
-/** Simulate a tap on a toggle SWITCH itself (0=OBD2, 1=App): raises
- *  VALUE_CHANGED on that switch exactly like an on-glass tap on the control. */
+/** Simulate a tap on a toggle SWITCH itself: the row is PAGE-LOCAL, so page 1
+ *  row 0/1 = OBD BLE / APP BLE and page 2 row 0/1 = UNITS / REL/ABS. Raises
+ *  CLICKED on that square exactly like an on-glass tap on the control. */
 void boost_page_qr_tap_switch(int row);
 /** Pending deferred-toggle request, or -1. Lets the sim assert the async
  *  request was queued (and later applied by the LVGL timer). */

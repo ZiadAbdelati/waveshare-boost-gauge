@@ -14,12 +14,25 @@ final class SimBleTransportTests: XCTestCase {
         XCTAssertTrue(state.zone == .vacuum || state.zone == .boost)
     }
 
+    func testStateCarriesLivePressureReference() async throws {
+        let sim = SimBleTransport()
+        let before = try (await sim.get("state")).jsonObject()
+        XCTAssertEqual(before["pressureAbsolute"] as? Bool, false)
+        // A persisted reference flip is reflected on the next /state sample, so
+        // the app's live-adoption path is exercised in the simulator.
+        _ = try await sim.send("PUT", path: "themes/config", body: ["pressureAbsolute": true])
+        let after = try (await sim.get("state")).jsonObject()
+        XCTAssertEqual(after["pressureAbsolute"] as? Bool, true)
+    }
+
     func testThemesFullListAndMutation() async throws {
         let sim = SimBleTransport()
         let themes = try JSONDecoder().decode(ThemeList.self, from: (try await sim.get("themes")).body)
         XCTAssertEqual(themes.themes?.count, 5)
         XCTAssertEqual(themes.themes?.first?.name, "Dyno Cell")
         XCTAssertEqual(themes.activeThemeId, "neon")
+        XCTAssertEqual(themes.pressureUnit, "psi")
+        XCTAssertEqual(themes.pressureAbsolute, false)
 
         let putActive = try await sim.send("PUT", path: "themes/active", body: ["id": "vault-tec"])
         XCTAssertEqual(putActive.status, 200)
@@ -36,6 +49,12 @@ final class SimBleTransportTests: XCTestCase {
         XCTAssertEqual(neon.colors?.boost, "#ff00aa")
         XCTAssertEqual(neon.customized, true)
         XCTAssertEqual(configured.neonLayout, 2)
+
+        // The reference flag round-trips through the sim like any themes flag.
+        let putRef = try await sim.send("PUT", path: "themes/config", body: ["pressureAbsolute": true])
+        XCTAssertEqual(putRef.status, 200)
+        let refEcho = try JSONDecoder().decode(ThemeList.self, from: putRef.body)
+        XCTAssertEqual(refEcho.pressureAbsolute, true)
     }
 
     func testThemeResetRestoresDefaults() async throws {

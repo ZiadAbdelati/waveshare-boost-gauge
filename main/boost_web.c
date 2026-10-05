@@ -738,6 +738,10 @@ static esp_err_t themes_config_put(httpd_req_t *req)
     if (cJSON_IsBool(dtb)) {
         boost_theme_set_dyno_true_black(cJSON_IsTrue(dtb));
     }
+    const cJSON *pabs = cJSON_GetObjectItemCaseSensitive(root, "pressureAbsolute");
+    if (cJSON_IsBool(pabs)) {
+        boost_theme_set_pressure_absolute(cJSON_IsTrue(pabs));
+    }
     const cJSON *nsp = cJSON_GetObjectItemCaseSensitive(root, "neonMarqueeSpin");
     if (cJSON_IsBool(nsp)) {
         boost_theme_set_neon_marquee_spin(cJSON_IsTrue(nsp));

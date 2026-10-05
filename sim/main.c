@@ -102,6 +102,33 @@ static bool snapshot_screen(const char *path)
 }
 
 /*
+ * Compare two .raw frame captures: 1 identical, 0 different, -1 unreadable.
+ * An unreadable capture is a harness error, never proof that the frames
+ * differ. Used by --qr-test to prove the three overlay pages render distinct
+ * frames.
+ */
+static int raw_files_cmp(const char *pa, const char *pb)
+{
+    FILE *a = fopen(pa, "rb");
+    FILE *b = fopen(pb, "rb");
+    if (a == NULL || b == NULL) {
+        if (a != NULL) fclose(a);
+        if (b != NULL) fclose(b);
+        return -1;
+    }
+    int result = 1;
+    for (;;) {
+        const int ca = fgetc(a);
+        const int cb = fgetc(b);
+        if (ca != cb) { result = 0; break; }
+        if (ca == EOF) break;
+    }
+    fclose(a);
+    fclose(b);
+    return result;
+}
+
+/*
  * Hold a fixed reading for `ms`, sampling at the firmware's 16 ms cadence.
  *
  * A single boost_gauge_update() followed by an idle pump is not what the device
@@ -757,10 +784,11 @@ static bool qr_layout_overlap(void)
     return overlap;
 }
 
-/* --qr-test: verify the two-finger QR overlay + swipe-to-toggles page.
+/* --qr-test: verify the two-finger QR overlay + the 3-page swipe cycle.
  *  1. show the overlay (QR page) -> snapshot qr_page0
- *  2. swipe left -> toggles page -> snapshot qr_page1
- *  3. tap dismiss -> overlay gone, gauge still live (updates again)
+ *  2. swipe left -> Connections page -> snapshot qr_page1
+ *  3. swipe right wraps (0 -> 2) and two more rights return to page 0
+ *  4. tap dismiss -> overlay gone, gauge still live (updates again)
  * Returns 0 only if every step observed. */
 static int run_qr_test(const char *out_dir)
 {
@@ -796,7 +824,43 @@ static int run_qr_test(const char *out_dir)
     if (!snapshot_screen(path)) return 2;
     printf("wrote %s (toggles page)\n", path);
 
-    /* 2b. Wraparound: from page 0, a RIGHT swipe must also reach page 1. */
+    /* 2a. Units page (holds the reference button). */
+    boost_page_qr_show_page(2);
+    pump_lvgl(100);
+    if (boost_page_qr_page() != 2) {
+        fprintf(stderr, "FAIL show_page(2) did not open the Units page (got %d)\n",
+                boost_page_qr_page());
+        failures++;
+    }
+    snprintf(path, sizeof(path), "%s/qr_page2.raw", out_dir);
+    if (!snapshot_screen(path)) return 2;
+    printf("wrote %s (Units page)\n", path);
+
+    /* 2a-ii. The three pages must be MUTUALLY DISTINCT frames. Without this a
+     * page-2 build that reused page 1's widgets would still pass: the capture
+     * checks above only prove a frame was written, never that it differs. */
+    {
+        char p0[512], p1[512], p2[512];
+        snprintf(p0, sizeof(p0), "%s/qr_page0.raw", out_dir);
+        snprintf(p1, sizeof(p1), "%s/qr_page1.raw", out_dir);
+        snprintf(p2, sizeof(p2), "%s/qr_page2.raw", out_dir);
+        const int c01 = raw_files_cmp(p0, p1);
+        const int c02 = raw_files_cmp(p0, p2);
+        const int c12 = raw_files_cmp(p1, p2);
+        if (c01 < 0 || c02 < 0 || c12 < 0) {
+            fprintf(stderr, "FAIL could not compare the three page frames\n");
+            failures++;
+        } else if (c01 == 1 || c02 == 1 || c12 == 1) {
+            fprintf(stderr, "FAIL overlay pages 0/1/2 do not render distinct frames "
+                            "(page0==page1: %d, page0==page2: %d, page1==page2: %d)\n",
+                    c01 == 1, c02 == 1, c12 == 1);
+            failures++;
+        } else {
+            printf("page frames distinct: OK (pages 0/1/2 render differently)\n");
+        }
+    }
+
+    /* 2b. Wraparound: from page 0 a RIGHT swipe is 'prev' and wraps to page 2. */
     boost_page_qr_dismiss();
     pump_lvgl(30);
     boost_page_qr_show();
@@ -804,13 +868,28 @@ static int run_qr_test(const char *out_dir)
     boost_page_qr_swipe_right();
     pump_lvgl(80);
     if (!boost_page_qr_active()) { fprintf(stderr, "FAIL overlay lost on wraparound right\n"); failures++; }
-    if (!boost_page_qr_toggles()) { fprintf(stderr, "FAIL swipe right on page0 did not wrap to toggles\n"); failures++; }
+    if (boost_page_qr_page() != 2) {
+        fprintf(stderr, "FAIL swipe right on page0 did not wrap to page 2 (got %d)\n",
+                boost_page_qr_page());
+        failures++;
+    }
     printf("wraparound right: OK\n");
 
-    /* 3. Swipe right -> back to the QR page */
+    /* 3. Two more right swipes (2 -> 1 -> 0) return to the QR page. */
+    boost_page_qr_swipe_right();
+    pump_lvgl(80);
+    if (boost_page_qr_page() != 1) {
+        fprintf(stderr, "FAIL swipe right did not land on page 1 (got %d)\n", boost_page_qr_page());
+        failures++;
+    }
     boost_page_qr_swipe_right();
     pump_lvgl(100);
     if (!boost_page_qr_active()) { fprintf(stderr, "FAIL overlay lost after swipe right\n"); failures++; }
+    if (boost_page_qr_page() != 0) {
+        fprintf(stderr, "FAIL swipe right did not restore the QR page (got %d)\n",
+                boost_page_qr_page());
+        failures++;
+    }
     /* The QR page is the only one with a qrcode widget; distinguish by
      * re-snapshotting and checking pixel content differs from page1. */
     snprintf(path, sizeof(path), "%s/qr_page0b.raw", out_dir);
@@ -843,7 +922,7 @@ static int run_qr_test(const char *out_dir)
     pump_lvgl(30);
     boost_page_qr_swipe_left();
     pump_lvgl(50);
-    if (!boost_page_qr_toggles()) { fprintf(stderr, "FAIL toggles page for toggle test\n"); failures++; }
+    if (boost_page_qr_page() != 1) { fprintf(stderr, "FAIL toggles page for toggle test\n"); failures++; }
     {
         extern int g_sim_obd_set_calls;
         extern bool g_sim_obd_state;
@@ -899,7 +978,7 @@ static int run_qr_test(const char *out_dir)
         pump_lvgl(30);
         boost_page_qr_show();
         pump_lvgl(30);
-        if (boost_page_qr_toggles()) { fprintf(stderr, "FAIL re-show not on QR page\n"); failures++; }
+        if (boost_page_qr_page() != 0) { fprintf(stderr, "FAIL re-show not on QR page\n"); failures++; }
     }
 
     /* 3b. Swipe left again -> toggles (back-and-forth round trip) */
@@ -1136,6 +1215,72 @@ static void stream_exec(char *line)
             boost_theme_set_dyno_true_black(false);
             stream_rebuild();
         }
+    } else if (strcmp(line, "overlay") == 0) {
+        /* Physical settings overlay: show/hide, jump to a page, or step the
+         * page cycle the same way a horizontal swipe does. */
+        char *sub = arg;
+        while (*sub == ' ' || *sub == '\t') sub++;
+        char *rest = sub;
+        while (*rest != '\0' && *rest != ' ' && *rest != '\t') rest++;
+        if (*rest != '\0') {
+            *rest++ = '\0';
+            while (*rest == ' ' || *rest == '\t') rest++;
+        }
+        if (strcmp(sub, "show") == 0) {
+            boost_page_qr_show();
+        } else if (strcmp(sub, "hide") == 0) {
+            boost_page_qr_dismiss();
+        } else if (strcmp(sub, "page") == 0) {
+            char *stop = NULL;
+            const long n = strtol(rest, &stop, 10);
+            if (stop != rest && *stop == '\0' && n >= 0 && n <= 2) {
+                boost_page_qr_show_page((int)n);
+            } else {
+                fprintf(stderr, "[stream] overlay page out of range (0..2): %s\n", rest);
+            }
+        } else if (strcmp(sub, "next") == 0) {
+            /* swipe_left advances: 0 -> 1 -> 2 -> 0 (see boost_page.c). */
+            boost_page_qr_swipe_left();
+        } else if (strcmp(sub, "prev") == 0) {
+            /* swipe_right walks back: 0 -> 2 -> 1 -> 0. */
+            boost_page_qr_swipe_right();
+        } else {
+            fprintf(stderr, "[stream] unknown overlay command: %s\n", arg);
+        }
+    } else if (strcmp(line, "ref") == 0) {
+        bool known = true;
+        if (strcmp(arg, "rel") == 0) {
+            boost_theme_set_pressure_absolute(false);
+        } else if (strcmp(arg, "abs") == 0) {
+            boost_theme_set_pressure_absolute(true);
+        } else {
+            known = false;
+            fprintf(stderr, "[stream] unknown ref: %s\n", arg);
+        }
+        if (known) {
+            stream_rebuild();
+            /* The overlay page was built before the mode changed, so its
+             * REL/ABS square would keep the old state. Rebuild the
+             * open page in place, exactly as the device's own reference button
+             * does; without this the panel can command a mode the overlay
+             * still contradicts. */
+            const int page = boost_page_qr_page();
+            if (page >= 0) boost_page_qr_show_page(page);
+        }
+    } else if (strcmp(line, "atmosphere") == 0) {
+        char *stop = NULL;
+        const float v = strtof(arg, &stop);
+        if (stop != arg && v >= 50.0f && v <= 120.0f) {
+            boost_sim_set_atmosphere_kpa(v);
+            /* The dial numerals BAKE the reference at scene build, so a changed
+             * baseline must rebuild exactly like a mode change does - otherwise
+             * the scale keeps the old atmosphere while the readout moves, which
+             * is the same disagreement the boot-order fix removes on the real
+             * device. */
+            stream_rebuild();
+        } else {
+            fprintf(stderr, "[stream] atmosphere out of range (50..120 kPa): %s\n", arg);
+        }
     } else if (strcmp(line, "quit") == 0) {
         s_stream_quit = true;
     } else {
@@ -1234,7 +1379,9 @@ static int run_stream(int frame_fd)
          * known before the next frame lands. */
         const double t = sim_now_ms();
         if (handled || t - last_status >= 100.0) {
-            printf("[PANEL] psi=%.2f demo=%d\n", (double)sample.psi, sample.demo ? 1 : 0);
+            printf("[PANEL] psi=%.2f demo=%d overlay=%d ref=%d\n",
+                   (double)sample.psi, sample.demo ? 1 : 0,
+                   boost_page_qr_page(), boost_theme_pressure_absolute() ? 1 : 0);
             fflush(stdout);
             last_status = t;
         }

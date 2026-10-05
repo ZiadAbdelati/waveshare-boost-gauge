@@ -141,6 +141,14 @@ final class GaugeMirrorWebViewTests: XCTestCase {
         ],
     ]
 
+    /// The Neon theme payload plus the reference settings a preview injects.
+    private static func neonPayloadWith(pressureAbsolute: Bool, ambientKpa: Double) -> [String: Any] {
+        var payload = neonPayload
+        payload["ambientKpa"] = ambientKpa
+        payload["settings"] = ["pressureUnit": "psi", "pressureAbsolute": pressureAbsolute]
+        return payload
+    }
+
     @MainActor
     func testCanonicalMirrorRendersVisibleCanvasOffline() async throws {
         let coordinator = GaugeMirrorWebView.Coordinator()
@@ -191,6 +199,46 @@ final class GaugeMirrorWebViewTests: XCTestCase {
         let tpms = try XCTUnwrap(tpmsResult as? [String: Any])
         XCTAssertEqual(tpms["page"] as? Int, 1)
         XCTAssertGreaterThan(tpms["artWidth"] as? Int ?? 0, 0, "Canonical TPMS artwork should load offline")
+    }
+
+    /// Absolute mode must fold the LIVE ambient the payload carries, so the
+    /// preview numeral equals the dashboard hero numeral for the same sample;
+    /// Relative mode must ignore it entirely (byte-for-byte pre-change render).
+    @MainActor
+    func testMirrorFoldsPayloadAmbientInAbsoluteModeAndIgnoresItInRelative() async throws {
+        let (coordinator, webView) = makeMirrorHost()
+        coordinator.payload = Self.neonPayloadWith(pressureAbsolute: true, ambientKpa: 101.3)
+        coordinator.loadCanonicalMirror()
+
+        // The flash guard hides until the requested theme actually paints.
+        try await Task.sleep(nanoseconds: 6_000_000_000)
+        let deadline = Date().addingTimeInterval(6)
+        while Date() < deadline && webView.alpha < 1 {
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        XCTAssertEqual(webView.alpha, 1, accuracy: 0.001, "mirror revealed")
+
+        let absoluteRaw = try await webView.evaluateJavaScript(
+            "({ ambient: state.ambientKpa, absolute: state.pressureAbsolute, numeral: boostDisplayPsi(0) })"
+        )
+        let absolute = try XCTUnwrap(absoluteRaw as? [String: Any])
+        XCTAssertEqual(absolute["ambient"] as? Double, 101.3, "payload ambient reached the renderer state")
+        XCTAssertEqual(absolute["absolute"] as? Bool, true)
+        XCTAssertEqual(absolute["numeral"] as? Double ?? .nan, 101.3 * 0.145037738, accuracy: 1e-9,
+                       "absolute preview numeral folds the live ambient, matching the dashboard hero for the same sample")
+
+        // Relative mode: same live ambient now present, but the reference must
+        // not be added — the pre-change renderer's output is preserved.
+        coordinator.payload = Self.neonPayloadWith(pressureAbsolute: false, ambientKpa: 103)
+        coordinator.renderIfReady()
+        try await Task.sleep(nanoseconds: 400_000_000)
+        let relativeRaw = try await webView.evaluateJavaScript(
+            "({ ambient: state.ambientKpa, numeral: boostDisplayPsi(0) })"
+        )
+        let relative = try XCTUnwrap(relativeRaw as? [String: Any])
+        XCTAssertEqual(relative["ambient"] as? Double, 103, "ambient still seeded, but unused")
+        XCTAssertEqual(relative["numeral"] as? Double ?? .nan, 0, accuracy: 1e-9,
+                       "Relative mode ignores the reference")
     }
 
     // MARK: - H3 mirror overlay freeze across WebContent stall/suspension

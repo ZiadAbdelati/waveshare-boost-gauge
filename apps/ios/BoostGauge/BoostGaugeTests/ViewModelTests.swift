@@ -106,6 +106,18 @@ final class ViewModelTests: XCTestCase {
         XCTAssertEqual(LogPressureChart.tickLabel(2.5), "2.5")
     }
 
+    func testLogPressureChartTickLabelAppliesReferenceInAbsoluteMode() {
+        // Gauge (default) labels are byte-identical to the pre-reference build.
+        XCTAssertEqual(LogPressureChart.tickLabel(0), "0")
+        XCTAssertEqual(LogPressureChart.tickLabel(-15), "-15")
+        // Absolute mode adds the atmospheric reference to the NUMERAL; tick
+        // positions stay gauge psi (covered by the domain tests above).
+        XCTAssertEqual(LogPressureChart.tickLabel(0, absolute: true, ambientKpa: 101.325), "14.7")
+        XCTAssertEqual(LogPressureChart.tickLabel(-15, absolute: true, ambientKpa: nil), "-0.3")
+        // Unit conversion still applies after the reference, at contract precision.
+        XCTAssertEqual(LogPressureChart.tickLabel(0, unit: "kPa", absolute: true, ambientKpa: 101.325), "101")
+    }
+
     func testLogPressureChartSampleIndexMapsColumnToRawSample() {
         // Column → the raw sample it represents (the column's last), so the
         // crosshair reads the exact psi + timestamp the line draws.
@@ -196,6 +208,43 @@ final class ViewModelTests: XCTestCase {
         XCTAssertNotNil(settings["bigDigitTextColor"])
         XCTAssertNotNil(settings["neonFont"])
         XCTAssertNotNil(settings["neonPreset"])
+        // Pressure presentation travels with the preview settings so the
+        // bundled renderer draws the selected unit AND reference.
+        XCTAssertEqual(settings["pressureUnit"] as? String, "psi")
+        XCTAssertEqual(settings["pressureAbsolute"] as? Bool, true)
+        XCTAssertEqual(vm.pressureUnit, "psi")
+        XCTAssertTrue(vm.pressureAbsolute)
+    }
+
+    func testThemesViewModelPreviewCarriesLiveAmbientForAbsoluteReference() async throws {
+        let transport = FakeTransport()
+        transport.responses["themes"] = FakeTransport.resp(200, Fixtures.themesObject)
+        transport.responses["state"] = FakeTransport.resp(200, Fixtures.stateObject)
+        let vm = ThemesViewModel()
+        vm.reset(transport: transport)
+        await vm.load()
+        let theme = try XCTUnwrap(vm.themes.first)
+        // Absolute mode folds gauge + ambientKpa*0.145037738 at display time.
+        // The preview's bundled renderer reads the ambient from the payload, so
+        // seeding it with the live /state read makes the preview numeral equal
+        // the dashboard hero numeral for the same sample.
+        XCTAssertEqual(vm.ambientKpa, 101.3)
+        let payload = vm.previewPayload(for: theme)
+        XCTAssertEqual(payload["ambientKpa"] as? Double, 101.3)
+    }
+
+    func testThemesViewModelPreviewOmitsAmbientWhenStateUnavailable() async throws {
+        let transport = FakeTransport()
+        transport.responses["themes"] = FakeTransport.resp(200, Fixtures.themesObject)
+        let vm = ThemesViewModel()
+        vm.reset(transport: transport)
+        await vm.load()
+        let theme = try XCTUnwrap(vm.themes.first)
+        // No live ambient → the canonical renderer keeps its standard-atmosphere
+        // fallback (the same fallback the hero uses for a missing read), so the
+        // payload must not fabricate a reference.
+        XCTAssertNil(vm.ambientKpa)
+        XCTAssertNil(vm.previewPayload(for: theme)["ambientKpa"])
     }
 
     func testThemesViewModelSaveOptionsSendsNoColorsWhenUnedited() async throws {
@@ -474,6 +523,69 @@ final class ViewModelTests: XCTestCase {
         await vm.saveDisplay()
         XCTAssertTrue(transport.recordedBodies.contains { $0["brightnessHigh"] as? Int == 80 })
         XCTAssertFalse(transport.recordedBodies.contains { $0["appBle"] != nil }, "Display save must not echo appBle")
+    }
+
+    func testSettingsViewModelSelectPressureReferencePutsFlagAndAdoptsEcho() async throws {
+        let session = AppSession(defaults: UserDefaults(suiteName: "pressure.ref.\(UUID().uuidString)")!)
+        let transport = FakeTransport()
+        var initial = Fixtures.themesObject
+        initial["pressureAbsolute"] = false
+        transport.responses["themes"] = FakeTransport.resp(200, initial)
+        var echo = Fixtures.themesObject
+        echo["pressureAbsolute"] = true
+        transport.responses["themes/config"] = FakeTransport.resp(200, echo)
+        let vm = SettingsViewModel()
+        vm.appSession = session
+        vm.reset(transport: transport)
+        await vm.loadAll()
+        XCTAssertFalse(session.pressureAbsolute)
+
+        await vm.selectPressureReference(true)
+        XCTAssertEqual(transport.recordedMethods.last, "PUT")
+        XCTAssertEqual(transport.recordedPaths.last, "themes/config")
+        let body = try XCTUnwrap(transport.recordedBodies.last)
+        XCTAssertEqual(body["pressureAbsolute"] as? Bool, true)
+        XCTAssertTrue(session.pressureAbsolute, "the PUT echo is the authority for the reference")
+    }
+
+    func testPressureReferenceAddsReferenceToBoostNumeralsOnly() {
+        let session = AppSession(defaults: UserDefaults(suiteName: "pressure.ref.\(UUID().uuidString)")!)
+        // Relative (default): gauge values pass through untouched.
+        XCTAssertFalse(session.pressureAbsolute)
+        XCTAssertEqual(session.displayPsi(3.24, ambientKpa: 101.3), 3.24, accuracy: 0.0001)
+
+        session.applyPressureAbsolute(true)
+        XCTAssertTrue(session.pressureAbsolute)
+        // absolute = gauge + ambientKpa * 0.145037738 (contract factor).
+        XCTAssertEqual(session.displayPsi(3.24, ambientKpa: 101.3),
+                       3.24 + 101.3 * 0.145037738, accuracy: 0.0005)
+        // A folded-flat sample (0.0 gauge) reads the reference: 101.325 kPa -> 14.696 psi.
+        XCTAssertEqual(session.displayPsi(0, ambientKpa: 101.325), 14.6959, accuracy: 0.001)
+        // Missing / non-positive ambient falls back to the standard atmosphere.
+        XCTAssertEqual(session.displayPsi(0, ambientKpa: nil), 14.6959, accuracy: 0.001)
+        XCTAssertEqual(session.displayPsi(0, ambientKpa: 0), 14.6959, accuracy: 0.001)
+        XCTAssertEqual(session.displayPsi(0, ambientKpa: -5), 14.6959, accuracy: 0.001)
+    }
+
+    func testStatusViewModelAdoptsPressureAbsoluteFromStateOverThemes() async throws {
+        let session = AppSession(defaults: UserDefaults(suiteName: "pressure.ref.\(UUID().uuidString)")!)
+        let transport = FakeTransport()
+        var themes = Fixtures.themesObject
+        themes["pressureAbsolute"] = false
+        transport.responses["themes"] = FakeTransport.resp(200, themes)
+        transport.responses["state"] = FakeTransport.resp(200, Fixtures.stateObject)
+        let vm = StatusViewModel()
+        vm.appSession = session
+        vm.reset(transport: transport)
+        // Cancel the auto-started loops so this test owns the ordering.
+        vm.stop()
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        await vm.loadThemeNames(transport)
+        XCTAssertFalse(session.pressureAbsolute, "/themes is the initial config source")
+
+        await vm.forceRefresh()
+        XCTAssertTrue(session.pressureAbsolute,
+                      "a /state sample carrying the flag wins (live panel change / cold-start recovery)")
     }
 
     func testSettingsViewModelLoadsOBDStateFromState() async throws {
@@ -1041,6 +1153,7 @@ enum Fixtures {
         "timezoneOffsetMinutes": -240,
         "activeThemeId": "dyno-cell",
         "activePage": 0,
+        "pressureAbsolute": true,
         "display": [
             "renderFps": 60,
             "gaugeDemandPerSecond": 62,
@@ -1095,6 +1208,8 @@ enum Fixtures {
         "demoMode": true,
         "demoFastSweep": false,
         "tpmsBle": true,
+        "pressureUnit": "psi",
+        "pressureAbsolute": true,
         "rotation": 0,
         "regionDBuf": true,
         "bigDigitStaticBg": true,

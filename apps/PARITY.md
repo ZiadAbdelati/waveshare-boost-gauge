@@ -12,12 +12,12 @@ has not finished.
 |---|-----------|----------|
 | 1 | Connection | BLE device picker, current selection, connection state; **Saved gauge row** shows the remembered peer identity at ALL times when a peer is known — Connected (name+address, "Connected" tag, no button), Reconnecting (identity, no button), Disconnected (identity + Connect button). "No gauge found" only after an empty user-initiated scan |
 | 2 | Display | 3 grouped sections: **Brightness** (high/low steppers), **Dim schedule** (toggle + start/end), **Display** (rotation dropdown, regionDBuf, teSync, teScanline, pixelShift + interval); single **Save display settings** button. `appBle` is NOT exposed in the app (firmware `PUT /api/v1/config {"appBle":bool}` only; web UI also hidden — toggling via BLE would trap the app disconnected with no UI to re-enable) |
-| 3 | Range | psiMin, psiMax, psiOverboost, zeroAngle fields; **Pressure unit** dropdown (PSI / bar / kPa, saves immediately via `PUT /themes/config {"pressureUnit"}`); Save button. Range field values are shown/entered in the selected unit and converted back to PSI before the `PUT /config` |
+| 3 | Range | psiMin, psiMax, psiOverboost, zeroAngle fields; **Pressure unit** dropdown (PSI / bar / kPa, saves immediately via `PUT /themes/config {"pressureUnit"}`); **Pressure reference** dropdown directly beneath it (Relative / Absolute, saves immediately via `PUT /themes/config {"pressureAbsolute"}`, default Relative); Save button. Range field values are shown/entered in the selected unit and converted back to PSI before the `PUT /config` |
 | 4 | Demo mode | **Demo mode** toggle + when ON, **Demo waveform** dropdown: `Organic swell` (= `demoFastSweep` false) / `Linear sweep (9.789 psi/s)` (= true); **Save demo settings** button. THEME-SPECIFIC settings (vaultNeedleRed, vaultNeedleTail, bigDigitStaticBg) NEVER appear here — they live exclusively in the Themes tab inside the matching theme's editor dropdown |
 | 5 | Clock & timezone | Timezone dropdown (curated list + Custom), one full-width primary button labelled exactly **"Sync timezone to gauge"** |
 | 6 | TPMS & OBD2 (merged page) | TPMS BLE link toggle (instant `PUT /themes/config tpmsBle`), lowPsi threshold, staleness (staleAfterMs; iOS picker auto-includes a saved custom value so the real state always shows), Save button, then the OBD link status: pill (`Scanning` / `Connecting to <name>` / `Connected` / `Idle` + lastError), peer rows (name + address) + **Forget** (clears `obd_peer` NVS). No scan trigger needed (gauge auto-scans when `tpmsBle` is on). Standalone TPMS page removed on both apps |
 | 8 | Wi-Fi | STA/AP status (mode, staConnected staSsid staIp rssi, apSsid apIp, saved list), **Scan networks** button → results (ssid rssi auth, tap to fill SSID), SSID + password fields + **Save** (`PUT /network` apsta), saved-network **Delete** (`DELETE /network`), **Reconnect** (`POST /network/reconnect`). All via BLE Control over the live link — no SoftAP join needed; STA stays usable alongside BLE. **Use-phone-network**: Android reads the phone SSID (`WifiManager`, needs FINE location runtime grant); iOS CANNOT read the SSID without the paid Access WiFi Information entitlement — the button explains this and points to the scan-list join. Both apps request permissions in-line from the tap |
-| 9 | About | Dedicated sub-page (not an inline footer): **App** `1.0.0 (8)` on iOS and `1.0.0 (10)` on Android, where the parenthesised number is the store build number (`CFBundleVersion` / `versionCode` — they are separate counters and are not required to match), bundle/package, **Gauge firmware** + API/device when connected, and source link. Both platforms use the same grouped-card spacing (`GroupedSection` 8 dp vertical padding, `HorizontalDivider` 0.08 α, `BoostMetric` / `BoostMetricValue`) |
+| 9 | About | Dedicated sub-page (not an inline footer): **App** `1.1.0 (9)` on iOS and `1.1.0 (11)` on Android, where the parenthesised number is the store build number (`CFBundleVersion` / `versionCode` — they are separate counters and are not required to match), bundle/package, **Gauge firmware** + API/device when connected, and source link. Both platforms use the same grouped-card spacing (`GroupedSection` 8 dp vertical padding, `HorizontalDivider` 0.08 α, `BoostMetric` / `BoostMetricValue`) |
 
 ## Connection state arbitration (2026-08-26)
 
@@ -83,6 +83,11 @@ The theme preview is a CIRCLE with the web `.gauge-device` bezel: an ~8 px
 `#0c0e12` pod ring plus a hairline rim, transparent corners, no offset drop
 shadow. Never render the preview as an unclipped square. iOS reference:
 `ThemesView.themePreview`. Android must produce the same silhouette.
+
+A canonical preview must also seed the renderer's live `ambientKpa` from
+`/state.sensors.ambientKpa` (never the standard atmosphere) whenever the
+reference mode is Absolute, so the preview numeral matches the dashboard hero
+for the same sample.
 
 ## Process rules for agents
 
@@ -183,6 +188,32 @@ converts; sensor/calibration kPa rows and the TPMS low-threshold comparison stay
 canonical (kPa / PSI). The theme-preview payload must include `pressureUnit` so
 the bundled canonical `web/app.js` renders the selected unit. The physical
 panel cycles the same unit from the two-finger overlay's UNITS button.
+
+## Pressure display reference (Relative / Absolute) (2026-10-04)
+
+A second global display setting rides beside the unit: `pressureAbsolute`
+(`GET /themes`, default `false` = Relative/gauge), written by
+`PUT /themes/config {"pressureAbsolute": bool}`. `Absolute = gauge + the BMP280
+ambient`, so an engine-off 0.0 psi reads ~14.7 psi / ~1.01 bar / ~101 kPa. The
+baseline comes from the `/state` field both apps already parse
+(`sensors.ambientKpa`), falling back to 101.325 kPa when it is missing or <= 0;
+no new sensor field was added. The flag itself also ships in `/state` beside
+`pressureUnit`, and both apps adopt it from EVERY state sample (not only
+`/themes`) so a mode flipped on the physical panel reaches an already-open app —
+the same live-path rule the unit has.
+
+Both apps surface a **Reference** row directly beneath **Pressure unit** on the
+Range page, same control type as the unit row, saving immediately (no Save
+button, no text entry, so the keyboard-dismissal contract is not involved).
+Every boost-side numeral converts — the dashboard hero, peak, the logs chart
+axis labels, crosshair pill and min/max rows, and the theme previews — while
+TPMS values/thresholds, calibration diagnostics, the live gauge canvas geometry
+and everything derived from raw psi stay on the gauge value. The `/logs` JSON
+psi and the `/logs.csv` columns are wire values and stay gauge psi; only the log
+numerals a client renders are reference-adjusted. The zone word and
+colour stay gauge-relative too: a positive absolute reading in vacuum still
+reads VAC. The physical panel toggles the same mode from the two-finger
+overlay's third page (the `REL/ABS` button).
 
 ## Status badge layout (2026-08-30)
 

@@ -60,15 +60,17 @@ struct LogsView: View {
                             }
                             LogPressureChart(samples: vm.samples, anchor: vm.anchor, revision: vm.dataRevision,
                                  unit: session.pressureUnit,
+                                 absolute: session.pressureAbsolute,
+                                 ambientKpa: vm.anchor?.sensors?.ambientKpa,
                                  fixtureCrosshair: ProcessInfo.processInfo.arguments.contains("-e2eCrosshair"))
                                 .frame(height: 200)
                                 .padding(.vertical, 8)
                             if let minimum = vm.samples.map(\.psi).min(),
                                let maximum = vm.samples.map(\.psi).max() {
                                 HStack {
-                                    Label("Min \(Format.pressure(minimum, unit: session.pressureUnit, psiDecimals: 2)) \(PressureUnit.suffix(session.pressureUnit))", systemImage: "arrow.down")
+                                    Label("Min \(Format.pressure(session.displayPsi(minimum, ambientKpa: vm.anchor?.sensors?.ambientKpa), unit: session.pressureUnit, psiDecimals: 2)) \(PressureUnit.suffix(session.pressureUnit))", systemImage: "arrow.down")
                                     Spacer()
-                                    Label("Max \(Format.pressure(maximum, unit: session.pressureUnit, psiDecimals: 2)) \(PressureUnit.suffix(session.pressureUnit))", systemImage: "arrow.up")
+                                    Label("Max \(Format.pressure(session.displayPsi(maximum, ambientKpa: vm.anchor?.sensors?.ambientKpa), unit: session.pressureUnit, psiDecimals: 2)) \(PressureUnit.suffix(session.pressureUnit))", systemImage: "arrow.up")
                                 }
                                 .font(.caption.monospacedDigit())
                                 .foregroundColor(.secondary)
@@ -143,6 +145,12 @@ struct LogPressureChart: View {
     /// Pressure-display unit for the y-axis labels and crosshair readout.
     /// Geometry (domain, ticks, trace) stays in PSI; only the numerals convert.
     var unit: String = PressureUnit.psi
+    /// Pressure reference (reference contract): when `absolute`, the rendered
+    /// numerals add the ambient reference. Geometry/domain/trace stay gauge psi.
+    var absolute: Bool = false
+    /// The `/state.sensors.ambientKpa` reference source (standard atmosphere
+    /// when missing/non-positive). Only read when `absolute` is true.
+    var ambientKpa: Double?
     /// Test/screenshot fixture only: when true and no finger is down, show the
     /// crosshair readout at the newest sample so the UI is deterministic to
     /// capture. Gated by the `-e2eCrosshair` launch argument; never on in real
@@ -288,7 +296,7 @@ struct LogPressureChart: View {
                 path.addLine(to: CGPoint(x: plot.maxX, y: y))
             }
             .stroke(Color.secondary.opacity(0.15), lineWidth: 1)
-            Text(Self.tickLabel(tick, unit: unit))
+            Text(Self.tickLabel(tick, unit: unit, absolute: absolute, ambientKpa: ambientKpa))
                 .font(.caption2.monospacedDigit())
                 .foregroundColor(.secondary)
                 .frame(width: yAxisWidth - 6, alignment: .trailing)
@@ -350,7 +358,8 @@ struct LogPressureChart: View {
                 .frame(width: 8, height: 8)
                 .position(x: point.x, y: point.y)
 
-            let text = "\(Format.pressure(point.value, unit: unit, psiDecimals: 1)) \(PressureUnit.suffix(unit)) · \(timeText(for: point.sampleIndex))"
+            let value = AppSession.referenceAdjusted(point.value, absolute: absolute, ambientKpa: ambientKpa)
+            let text = "\(Format.pressure(value, unit: unit, psiDecimals: 1)) \(PressureUnit.suffix(unit)) · \(timeText(for: point.sampleIndex))"
             Text(text)
                 .font(.caption2.monospacedDigit())
                 .foregroundColor(.white)
@@ -454,15 +463,19 @@ struct LogPressureChart: View {
 
     /// Y-axis tick label from a PSI-domain tick value. PSI keeps the legacy
     /// label rules (byte-identical default output); converted units render at
-    /// the contract precision. Tick positions stay PSI — only numerals change.
-    static func tickLabel(_ psiValue: Double, unit: String = PressureUnit.psi) -> String {
+    /// the contract precision. Tick POSITIONS stay PSI — only numerals change.
+    /// `absolute` adds the atmospheric reference to the numeral (reference
+    /// contract).
+    static func tickLabel(_ psiValue: Double, unit: String = PressureUnit.psi,
+                          absolute: Bool = false, ambientKpa: Double? = nil) -> String {
+        let value = AppSession.referenceAdjusted(psiValue, absolute: absolute, ambientKpa: ambientKpa)
         if PressureUnit.normalized(unit) != PressureUnit.psi {
-            let display = PressureUnit.display(fromPsi: psiValue, unit: unit)
+            let display = PressureUnit.display(fromPsi: value, unit: unit)
             return String(format: "%.\(PressureUnit.decimals(unit))f", display)
         }
-        if psiValue == 0 { return "0" }
-        if psiValue == psiValue.rounded() { return String(format: "%.0f", psiValue) }
-        return String(format: "%.1f", psiValue)
+        if value == 0 { return "0" }
+        if value == value.rounded() { return String(format: "%.0f", value) }
+        return String(format: "%.1f", value)
     }
 
     static func relativeTime(_ tMs: Int64?, newestMs: Int64?) -> String {

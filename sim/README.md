@@ -66,9 +66,16 @@ The page streams frames as `multipart/x-mixed-replace` (a plain
 (psi/bar/kPa), neon layout/font/preset, Vault needle/tail, the Dyno Cell
 background, a pressure number + slider with a "follow the demo waveform"
 toggle, the organic and fast-sweep waveforms, the boost/TPMS page selector with
-the TPMS mock scenario, and a "Save screenshot" button. Screenshots are written
-to `preview/panel/<theme>-<unit>-<psi>.png`. The panel restarts the sim if the
+the TPMS mock scenario, the physical **settings overlay** (open/close, one
+button per page — QR / Connections / Units — and `prev`/`next` page stepping),
+the pressure **reference** (Relative / Absolute), an **atmosphere** value in
+kPa, and a "Save screenshot" button. Screenshots are written to
+`preview/panel/<theme>-<unit>-<psi>.png`. The panel restarts the sim if the
 subprocess dies and shuts it down on Ctrl-C.
+
+The status readout names the open overlay page (`closed`, `QR`, `Connections`
+or `Units`) and the active reference, taken from the sim's own report rather
+than guessed — the panel cannot decode the rendered pixels.
 
 **The panel also restarts the sim when the BINARY CHANGES**, so `cmake --build
 sim/build` is picked up without touching the panel — the page's status line
@@ -76,7 +83,10 @@ shows the sim's build time and an `auto-restarted Nx after a rebuild` note when
 it happens. This matters more than it looks: a panel whose sim child predates
 the last build keeps streaming the OLD firmware, and a stale render is
 indistinguishable from a change that did not work. `tools/tests/test_sim_panel.py`
-drives a real panel and bumps the binary's mtime to keep that honest.
+drives a real panel and bumps the binary's mtime to keep that honest. A restart
+is a fresh process — the atmosphere override and (for a non-persistent store)
+the reference would silently revert — so the panel re-sends the tracked
+reference and atmosphere once the new sim is up.
 
 `--stream` can also be driven by hand; the framing is
 `"BGFR" | uint32 width | uint32 height | uint32 seq | RGBA pixels`
@@ -94,7 +104,31 @@ Commands map to the same firmware entry points the settings UI drives:
 `psi <float>` (freezes the sweep), `demo <on|off>`, `sweep <organic|fast>`,
 `layout <tube|segments|marquee>`, `neonfont <0|1>`, `preset <0..3>`,
 `page <boost|tpms>`, `tpms <normal|stale|disconnected>`, `needle <red|green>`,
-`tail <on|off>`, `dynoblack <on|off>`, `quit`.
+`tail <on|off>`, `dynoblack <on|off>`, `overlay <show|hide|page <0|1|2>|next|prev>`,
+`ref <rel|abs>`, `atmosphere <kpa>`, `quit`.
+
+- `overlay show` / `overlay hide` open and dismiss the physical settings
+  overlay; `overlay page <0|1|2>` jumps straight to QR / Connections / Units
+  (out-of-range is rejected with a stderr line).
+- `overlay next` / `overlay prev` step the page cycle the way a horizontal
+  swipe does: `next` is forward with wraparound (0→1→2→0), `prev` is backward
+  (0→2→1→0).
+- `ref rel` / `ref abs` select the displayed pressure reference (gauge vs
+  absolute) and rebuild the face; if the settings overlay is open, the current
+  page is rebuilt in place too, so its REL/ABS square matches.
+- `atmosphere <kpa>` sets the sim BMP280 baseline (50–120 kPa; out of range is
+  rejected with a stderr line). The sim starts at 101.325 kPa.
+
+The sim writes one machine-readable status line to **stderr** after every
+handled command (and at least every 100 ms):
+
+```
+[PANEL] psi=%.2f demo=%d overlay=%d ref=%d
+```
+
+`overlay` is `boost_page_qr_page()` (−1 closed, else 0..2) and `ref` is 1 in
+absolute mode. `tools/sim_panel.py` consumes this instead of guessing the
+overlay state, because the frame stream carries pixels, not widget state.
 
 ## Windowed mode
 

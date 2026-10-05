@@ -227,6 +227,34 @@ class SettingsViewModelTest {
     }
 
     @Test
+    fun savePressureReferenceRoundTripsThroughServer() = runTest(dispatcher) {
+        // Range ▸ Reference saves immediately with its own themes/config patch;
+        // the echoed payload carries the flag back into the form (and the
+        // process-wide mirror is fed from that same payload by SettingsScreen).
+        val transport = FakeBleTransport { method, path, _ ->
+            when {
+                path == "config" && method == "GET" -> Resp(200, ApiFixtures.CONFIG)
+                path == "themes" -> Resp(200, ApiFixtures.THEMES)
+                path == "themes/config" && method == "PUT" ->
+                    Resp(200, ApiFixtures.THEMES.replace("\"pressureAbsolute\": false", "\"pressureAbsolute\": true"))
+                path == "tpms/config" -> Resp(200, ApiFixtures.TPMS_CONFIG)
+                else -> Resp(404, "{}")
+            }
+        }
+        val viewModel = newViewModel(transport)
+        viewModel.state.first { !it.loading }
+        assertFalse(viewModel.state.value.fields.pressureAbsolute)
+
+        viewModel.savePressureReference(true)
+        runCurrent()
+
+        val put = transport.requests.first { it.method == "PUT" && it.path == "themes/config" }
+        assertTrue(put.bodyJson!!.contains("\"pressureAbsolute\":true"))
+        assertFalse(put.bodyJson!!.contains("pressureUnit"))
+        assertEquals(true, viewModel.state.value.fields.pressureAbsolute)
+    }
+
+    @Test
     fun forgetObdPeerPostsObdForget() = runTest(dispatcher) {
         val transport = FakeBleTransport { method, path, _ ->
             when {

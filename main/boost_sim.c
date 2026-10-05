@@ -3,6 +3,8 @@
 #include <stdint.h>
 #include <math.h>
 
+#include "boost_pressure_ref.h"
+
 #ifdef ESP_PLATFORM
 #include "esp_timer.h"
 #else
@@ -79,6 +81,20 @@ void boost_sim_set_fast_sweep(bool enabled)
 bool boost_sim_fast_sweep(void)
 {
     return s_fast_sweep;
+}
+
+/* Thin adapters to the ONE owner of the atmospheric baseline
+ * (main/boost_pressure_ref.c). They exist so the host harness speaks in its own
+ * vocabulary; they hold no state of their own, so the effective value can never
+ * disagree between the sim and the firmware module. */
+void boost_sim_set_atmosphere_kpa(float kpa)
+{
+    boost_pressure_ref_set_atmosphere_kpa(kpa);
+}
+
+float boost_sim_atmosphere_kpa(void)
+{
+    return boost_pressure_ref_atmosphere_kpa();
 }
 
 boost_sample_t boost_sim_tick(void)

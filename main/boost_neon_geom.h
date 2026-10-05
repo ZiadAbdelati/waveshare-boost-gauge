@@ -106,6 +106,19 @@ void boost_neon_layout_readout(float psi, int slot_w, int dot_w,
                                boost_neon_readout_t *out);
 
 /**
+ * Same layout as boost_neon_layout_readout(), WITHOUT the +-0.1 PSI dead-band
+ * fold. Use it when the caller has already folded in gauge psi and then applied
+ * the pressure reference: folding the reference-adjusted value again would test
+ * it against the band and force any value inside it to 0.0. The fold must
+ * happen exactly once, in gauge psi, before the reference.
+ */
+void boost_neon_layout_readout_raw(float psi, int slot_w, int dot_w,
+                                   int sign_w, int sign_gap, int negative_shift,
+                                   int font_px,
+                                   const boost_neon_digit_metrics_t *metrics,
+                                   boost_neon_readout_t *out);
+
+/**
  * Same layout, but from an already-unit-converted `value` with the given
  * decimal count (0..3). Callers converting psi to bar/kPa fold the +-0.1 PSI
  * dead zone BEFORE conversion and pass the converted value here. The legacy

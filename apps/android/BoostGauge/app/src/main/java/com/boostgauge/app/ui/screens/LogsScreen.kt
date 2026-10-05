@@ -84,6 +84,7 @@ import com.boostgauge.app.ui.BoostNavTitle
 import com.boostgauge.app.ui.BoostSectionHeader
 import com.boostgauge.app.ui.BoostCaptionSemibold
 import com.boostgauge.app.ui.PressureUnit
+import com.boostgauge.app.ui.boostDisplayPsi
 import com.boostgauge.app.ui.viewmodels.LogsViewModel
 import com.boostgauge.app.ui.viewmodels.LogWindow
 import kotlinx.coroutines.launch
@@ -111,6 +112,13 @@ fun LogsScreen(container: AppContainer) {
     )
     val state by viewModel.state.collectAsState()
     val pressureUnit by container.pressureUnit.unit.collectAsState()
+    val pressureAbsolute by container.pressureReference.absolute.collectAsState()
+    // The reference value comes from the EXISTING /state sensors.ambientKpa
+    // (never /logs); a missing/non-positive read falls back to the standard
+    // atmosphere inside boostDisplayPsi. Only the rendered numerals change —
+    // the plotted values and every axis position stay gauge psi.
+    val status by container.repository.status.collectAsState()
+    val ambientKpa = status?.sensors?.ambientKpa
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var exportDone by remember { mutableStateOf(false) }
@@ -254,6 +262,8 @@ fun LogsScreen(container: AppContainer) {
                                 samples = state.samples,
                                 anchor = viewModel.anchor(),
                                 unit = pressureUnit,
+                                ambientKpa = ambientKpa,
+                                absolute = pressureAbsolute,
                                 fixtureCrosshair = fixtureCrosshair,
                             )
 
@@ -277,7 +287,7 @@ fun LogsScreen(container: AppContainer) {
                                             modifier = Modifier.size(14.dp),
                                         )
                                         Text(
-                                            text = "Min ${pressureUnit.format(min, 2)} ${pressureUnit.suffix}",
+                                            text = "Min ${pressureUnit.format(boostDisplayPsi(min, ambientKpa, pressureAbsolute), 2)} ${pressureUnit.suffix}",
                                             style = BoostMonoCaption,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         )
@@ -293,7 +303,7 @@ fun LogsScreen(container: AppContainer) {
                                             modifier = Modifier.size(14.dp),
                                         )
                                         Text(
-                                            text = "Max ${pressureUnit.format(max, 2)} ${pressureUnit.suffix}",
+                                            text = "Max ${pressureUnit.format(boostDisplayPsi(max, ambientKpa, pressureAbsolute), 2)} ${pressureUnit.suffix}",
                                             style = BoostMonoCaption,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         )
@@ -341,6 +351,8 @@ private fun LogPressureChart(
     samples: List<LogSample>,
     anchor: Status?,
     unit: PressureUnit,
+    ambientKpa: Double?,
+    absolute: Boolean,
     fixtureCrosshair: Boolean = false,
 ) {
     val values = remember(samples) { samples.map { it.psi } }
@@ -395,7 +407,7 @@ private fun LogPressureChart(
             },
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
-            drawChart(values, domain, samples, anchor, plot, series, tracePath, userCrosshair, userTouched, unit, fixtureCrosshair, gridColor, zeroColor)
+            drawChart(values, domain, samples, anchor, plot, series, tracePath, userCrosshair, userTouched, unit, ambientKpa, absolute, fixtureCrosshair, gridColor, zeroColor)
         }
     }
 }
@@ -411,6 +423,8 @@ private fun DrawScope.drawChart(
     userCrosshair: Crosshair?,
     userTouched: Boolean,
     unit: PressureUnit,
+    ambientKpa: Double?,
+    absolute: Boolean,
     fixtureCrosshair: Boolean,
     gridColor: Color,
     zeroColor: Color,
@@ -419,7 +433,8 @@ private fun DrawScope.drawChart(
     val span = max(domain.max - domain.min, 1.0)
 
     // Horizontal psi gridlines + value labels (left edge). The tick POSITIONS
-    // stay in psi (geometry); only the numerals convert.
+    // stay in psi (geometry); only the numerals convert — including the
+    // pressure reference (absolute mode relabels the whole scale).
     psiTicks(domain).forEach { tick ->
         val y = plot.top + plot.height * ((domain.max - tick) / span).toFloat()
         drawLine(
@@ -428,7 +443,12 @@ private fun DrawScope.drawChart(
             end = Offset(plot.right, y),
             strokeWidth = 1f,
         )
-        drawRightText(unit.formatTick(tick), rightX = plot.left - 6.dp.toPx(), centerY = y, color = gridColor)
+        drawRightText(
+            unit.formatTick(boostDisplayPsi(tick, ambientKpa, absolute)),
+            rightX = plot.left - 6.dp.toPx(),
+            centerY = y,
+            color = gridColor,
+        )
     }
 
     // Zero line (dashed, slightly stronger).
@@ -495,7 +515,7 @@ private fun DrawScope.drawChart(
             radius = 4.dp.toPx(),
             center = Offset(effective.x, effective.y),
         )
-        val text = "${unit.format(effective.value, 1)} ${unit.suffix} · ${timeTextFor(samples, effective.sampleIndex, anchor)}"
+        val text = "${unit.format(boostDisplayPsi(effective.value, ambientKpa, absolute), 1)} ${unit.suffix} · ${timeTextFor(samples, effective.sampleIndex, anchor)}"
         drawPill(text, plot)
     }
 }

@@ -279,6 +279,18 @@ struct SettingsView: View {
                     Text(PressureUnit.label(unit)).tag(unit)
                 }
             }
+            Picker("Pressure reference", selection: Binding(
+                get: { session.pressureAbsolute },
+                set: { absolute in
+                    // Same contract as the unit: publishes only once the
+                    // gauge confirms the write (the PUT echo), with rapid
+                    // selections sequenced newest-wins.
+                    Task { await vm.selectPressureReference(absolute) }
+                }
+            )) {
+                Text("Relative").tag(false)
+                Text("Absolute").tag(true)
+            }
             HStack {
                 Text("psiMin")
                     .foregroundColor(.secondary)

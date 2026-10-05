@@ -75,6 +75,8 @@ class SettingsViewModel(
         val lowPsi: String = "32.0",
         /** Display unit for every pressure field/readout on this form. */
         val pressureUnit: PressureUnit = PressureUnit.default,
+        /** Display reference for every boost-side numeral (relative vs absolute). */
+        val pressureAbsolute: Boolean = false,
         val staleAfterMs: String = "15000",
         val timezoneOffsetMinutes: Int = 0,
         val timezoneTz: String = "",
@@ -108,6 +110,7 @@ class SettingsViewModel(
             pixelShiftSec = themes.pixelShiftSec.toString(),
             tpmsBle = themes.tpmsBle,
             pressureUnit = PressureUnit.fromWire(themes.pressureUnit),
+            pressureAbsolute = themes.pressureAbsolute,
         )
 
         fun withTpms(tpms: TpmsConfig): FieldState = copy(
@@ -341,6 +344,21 @@ class SettingsViewModel(
                     ),
                 )
             }
+        }
+    }
+
+    /**
+     * Persist the pressure reference on its own (themes/config accepts partial
+     * patches, mirroring [savePressureUnit]). Relative (`false`) is today's
+     * gauge behaviour; absolute (`true`) adds the ambient reference to every
+     * boost-side numeral. The echoed payload carries the flag back.
+     */
+    fun savePressureReference(absolute: Boolean) {
+        save(
+            body = { api.updateThemesConfig(buildJsonObject { put("pressureAbsolute", absolute) }) },
+            message = if (absolute) "Pressure reference set to absolute" else "Pressure reference set to relative",
+        ) { themes ->
+            { s -> s.copy(themes = themes, fields = s.fields.withThemes(themes)) }
         }
     }
 

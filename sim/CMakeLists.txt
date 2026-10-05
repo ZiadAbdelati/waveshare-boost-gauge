@@ -36,6 +36,7 @@ add_executable(boost_gauge_sim
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_theme.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_neon_geom.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_units.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_pressure_ref.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/alvida_big.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/font_mono_16.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/fonts/font_mono_40.c
@@ -102,6 +103,8 @@ add_executable(test_neon_geom
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_theme.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_sim.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_units.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_pressure_ref.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_tpms_protocol.c
 )
 target_include_directories(test_neon_geom PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../main
@@ -120,6 +123,24 @@ target_include_directories(test_units_format PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../main
 )
 target_link_libraries(test_units_format PRIVATE m)
+
+# Host-side unit test for the pressure display reference. Pins the two
+# load-bearing properties: the fold happens in GAUGE psi before the reference is
+# added, and relative mode is an exact passthrough (every psi render must
+# stay byte-identical). No LVGL or IDF dependency.
+add_executable(test_pressure_ref
+    ${CMAKE_CURRENT_SOURCE_DIR}/../tools/test_pressure_ref.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_pressure_ref.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_units.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_neon_geom.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_theme.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_sim.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_tpms_protocol.c
+)
+target_include_directories(test_pressure_ref PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main
+)
+target_link_libraries(test_pressure_ref PRIVATE m)
 
 add_custom_target(sim-screenshots
     COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_SOURCE_DIR}/../preview/sim

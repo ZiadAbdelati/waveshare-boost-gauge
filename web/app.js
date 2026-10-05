@@ -113,6 +113,11 @@ const state = {
    * applyThemePayload() from /themes (and by host preview injections through
    * renderConfig's config.pressureUnit). */
   pressureUnit: "psi",
+  /* Global pressure reference for boost-side numerals. false = RELATIVE
+   * (gauge, today's behaviour); true = ABSOLUTE (gauge + the atmospheric
+   * reference from /state's sensors.ambientKpa). Same scope and adoption paths
+   * as pressureUnit. Zone colours/ids, gauge geometry and TPMS stay gauge. */
+  pressureAbsolute: false,
   tpms: { status: 2, wheels: [] },
   themes: [],
   config: null,
@@ -164,6 +169,11 @@ const state = {
    * kpa/ageMs come from the device, at is the browser clock when the response
    * landed, so the freshness window can advance between polls. */
   ambient: null,
+  /* sensors.ambientKpa from the last /state sample: the atmospheric reference
+   * added to boost-side numerals in absolute mode (standard atmosphere when
+   * missing/falsy/<=0). Deliberately separate from `ambient` above, which is
+   * the calibration-diagnostics freshness mirror. */
+  ambientKpa: null,
 };
 
 const el = {
@@ -248,6 +258,7 @@ const el = {
   saveRangeBtn: document.getElementById("saveRangeBtn"),
   rangeHint: document.getElementById("rangeHint"),
   pressureUnit: document.getElementById("pressureUnit"),
+  pressureAbsolute: document.getElementById("pressureAbsolute"),
   supplyVolts: document.getElementById("supplyVolts"),
   calibrateBtn: document.getElementById("calibrateBtn"),
   calConfirm: document.getElementById("calConfirm"),
@@ -355,10 +366,23 @@ function signedPressure(psi) {
 }
 
 /* Dial tick numeral. PSI keeps the existing integer-or-one-decimal formatter
- * (byte-identical default); other units print at their own precision. */
+ * (byte-identical default). Converted units mirror boost_units_format_tick()
+ * in main/boost_units.c: a value within half of the unit's own last digit
+ * prints as an integer, otherwise at the unit's precision; the fixed string is
+ * then trimmed of trailing zeros - and a bare trailing "." - exactly like the
+ * firmware's trim_trailing_zeros(), so the top bar tick reads "1.7" on both
+ * the panel and the dashboard and the zero tick reads "0", never "1.70"/"0.00". */
 function pressureTickLabel(psi) {
   if (unitIsPsi()) return formatTickLabel(psi);
-  return toDisplay(psi).toFixed(unitDecimals());
+  const value = toDisplay(psi);
+  const decimals = unitDecimals();
+  const rounded = Math.round(value);
+  if (Math.abs(value - rounded) < 0.5 / 10 ** decimals) return String(rounded);
+  let text = value.toFixed(decimals);
+  /* Keep the firmware's "only touch a string that has a decimal point" rule:
+   * an integer kPa value must not lose digit zeros. */
+  if (text.includes(".")) text = text.replace(/0+$/, "").replace(/\.$/, "");
+  return text;
 }
 
 /* Fold the unit carried by a /state sample into the display state. Returns
@@ -370,6 +394,20 @@ function adoptPressureUnit(value) {
   const unit = normalizePressureUnit(value);
   if (unit === state.pressureUnit) return false;
   state.pressureUnit = unit;
+  return true;
+}
+
+/* Fold the reference carried by a /state sample into the display state. Same
+ * live-convergence reason as adoptPressureUnit: the physical panel can flip the
+ * mode while a dashboard is open, so /themes (the initial-config source) alone
+ * would leave it stale until a refresh. Returns true only when the mode
+ * actually changed, so the 62.5 Hz sample path pays one boolean compare in the
+ * steady state. A missing field leaves the current mode untouched. */
+function adoptPressureAbsolute(value) {
+  if (value === undefined) return false;
+  const absolute = !!value;
+  if (absolute === state.pressureAbsolute) return false;
+  state.pressureAbsolute = absolute;
   return true;
 }
 
@@ -614,8 +652,47 @@ function neonZoneDisplayPsi(psi) {
   return arcReadoutDisplayPsi(psi);
 }
 
+/* ── Relative reference (relative vs absolute display) ───────────────
+ * A persisted GLOBAL setting (state.pressureAbsolute, /themes) selects the
+ * displayed reference for boost-side numerals only. Canonical wire data stays
+ * GAUGE psi; absolute mode adds the atmosphere on top at the presentation
+ * boundary, exactly like the unit conversion. The reference is /state's
+ * sensors.ambientKpa, or the standard atmosphere when it is missing, falsy or
+ * non-positive (matching the firmware's STANDARD_ATM_KPA constant). */
+const STANDARD_ATM_KPA = 101.325;
+const PSI_PER_KPA = 0.145037738;
+
+function pressureRefPsi() {
+  const kpa = Number(state.ambientKpa);
+  return (Number.isFinite(kpa) && kpa > 0 ? kpa : STANDARD_ATM_KPA) * PSI_PER_KPA;
+}
+
+/* Add the atmospheric reference to a gauge psi when absolute mode is on. No
+ * fold: callers choose it. `boostDisplayPsi` folds through the shared readout
+ * dead band FIRST, then adds the reference (the contract's ordering), so a
+ * folded-flat sample (0.0 gauge) reads 14.7 absolute. Zone colour/id decisions
+ * keep neonZoneDisplayPsi()/arcReadoutDisplayPsi() and never route here. */
+function refAdjustedPsi(psi) {
+  const n = Number(psi);
+  return state.pressureAbsolute ? n + pressureRefPsi() : n;
+}
+
+function boostDisplayPsi(psi) {
+  return refAdjustedPsi(arcReadoutDisplayPsi(Number(psi)));
+}
+
+/* Dial scale numeral: the tick value is a fixed gauge psi, so it takes the
+ * reference but NOT the readout dead-band fold - the firmware tick path is
+ * boost_pressure_ref_display(gauge_psi, fold_deadband=false), and the
+ * pre-patch web called pressureTickLabel(value) directly. Folding here would
+ * paint psiOverboost 0.1 as "0". Settings chrome (range hint, validation
+ * messages) keeps the plain pressureTickLabel(psi). */
+function boostTickLabel(psi) {
+  return pressureTickLabel(refAdjustedPsi(psi));
+}
+
 function drawFixedPsi(psi, decimalX, baselineY, scale) {
-  const value = arcReadoutDisplayPsi(Number(psi));
+  const value = boostDisplayPsi(psi);
   const absoluteTenths = Math.round(Math.abs(value) * 10);
   const whole = Math.floor(absoluteTenths / 10);
   const tenth = absoluteTenths % 10;
@@ -634,11 +711,12 @@ function drawFixedPsi(psi, decimalX, baselineY, scale) {
 }
 
 /* Unit-aware counterpart to drawFixedPsi for the non-PSI units. Folds through
- * the shared dead zone exactly like the PSI path, converts once, then renders
- * at the unit's own precision with the same pinned-decimal layout (an integer
- * unit with no fractional digits draws centred on the decimal slot). */
+ * the shared dead zone exactly like the PSI path, then adds the absolute
+ * reference, converts once, and renders at the unit's own precision with the
+ * same pinned-decimal layout (an integer unit with no fractional digits draws
+ * centred on the decimal slot). */
 function drawFixedPressure(psi, decimalX, baselineY) {
-  const folded = arcReadoutDisplayPsi(Number(psi));
+  const folded = boostDisplayPsi(psi);
   const shown = toDisplay(folded);
   const { neg, intPart, fracPart } = splitNum(shown, unitDecimals(), displayIsNegative(folded));
   drawFixedDecimal(`${neg ? "−" : ""}${intPart}`, fracPart, decimalX, baselineY);
@@ -762,7 +840,7 @@ function drawArcGauge(sample, psi, g) {
     let r = 160 * scale;
     if (Math.abs(value) < 0.01) r = 142 * scale;
     const a = degToRad(psiToAngle(value));
-    ctx.fillText(pressureTickLabel(value), cx + r * Math.cos(a), cy + r * Math.sin(a));
+    ctx.fillText(boostTickLabel(value), cx + r * Math.cos(a), cy + r * Math.sin(a));
   }
 
   /* Center stack — zone / PSI / unit / peak / mode (matches physical UI) */
@@ -783,7 +861,7 @@ function drawArcGauge(sample, psi, g) {
 
   ctx.fillStyle = peak >= range.psiOverboost ? state.palette.overboost : state.palette.boost;
   ctx.font = `700 ${Math.max(13, 16 * scale)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
-  ctx.fillText(`PEAK  ${pressureText(peak)}`, cx, cy + 113 * scale);
+  ctx.fillText(`PEAK  ${pressureText(refAdjustedPsi(peak))}`, cx, cy + 113 * scale);
 
   /* DEMO only in demo. The panel sets this label to "" on the real-sensor path
    * (boost_gauge.c), so drawing "LIVE" here made the mirror disagree with the
@@ -1023,7 +1101,7 @@ function drawNeonGauge(sample, psi, g) {
   const doto = Number(state.neonFont) === 1;
   /* Readout digits fold through the shared dead zone (all themes except
    * vault-tec); the ring run above keeps the raw psi. */
-  const readoutPsi = arcReadoutDisplayPsi(psi);
+  const readoutPsi = boostDisplayPsi(psi);
   let tenthsTotal;
   let chars;
   if (unitIsPsi()) {
@@ -1174,7 +1252,7 @@ function drawNeonGauge(sample, psi, g) {
   /* Peak is clamped at zero on the panel, as on every other face here. */
   ctx.textBaseline = "middle";
   ctx.font = `700 ${16 * mq}px monospace`;
-  ctx.fillText(`PEAK ${pressureText(Math.max(0, Number(sample.peakPsi) || 0))}`, 0, Math.round(158 * mq) + stackDy);
+  ctx.fillText(`PEAK ${pressureText(refAdjustedPsi(Math.max(0, Number(sample.peakPsi) || 0)))}`, 0, Math.round(158 * mq) + stackDy);
   ctx.restore();
 }
 
@@ -1414,7 +1492,7 @@ function drawVaultGauge(sample, psi, g) {
     const [x, y] = AP(152, psiToAngle(v, range));
     ctx.fillStyle = v >= range.psiOverboost ? warn : green;
     ctx.font = `700 24px Consolas, "SF Mono", monospace`;
-    ctx.fillText(pressureTickLabel(v), x, y);
+    ctx.fillText(boostTickLabel(v), x, y);
   }
 
   /* zero notch — thick radial phosphor tick at the configured zero angle */
@@ -1474,7 +1552,10 @@ function drawVaultGauge(sample, psi, g) {
   ctx.lineWidth = 1.5;
   roundRectPath(-74, 96, 148, 46, 4);
   ctx.stroke();
-  const { neg, intPart, fracPart } = vaultReadoutParts(psi);
+  /* Vault-Tec keeps the RAW gauge psi (no dead-band fold, deliberate
+   * exception documented on vaultReadoutParts) but still takes the absolute
+   * reference, so route through refAdjustedPsi rather than boostDisplayPsi. */
+  const { neg, intPart, fracPart } = vaultReadoutParts(refAdjustedPsi(psi));
   ctx.fillStyle = over ? warn : green;
   ctx.font = `700 32px Consolas, "SF Mono", monospace`;
   drawFixedDecimal(`${neg ? "−" : "+"}${intPart}`, fracPart, 0, 120);
@@ -1484,7 +1565,7 @@ function drawVaultGauge(sample, psi, g) {
   ctx.fillStyle = warn;
   ctx.globalAlpha = 0.85;
   ctx.font = `700 13px Consolas, monospace`;
-  ctx.fillText(`PEAK  ${pressureText(peak)}`, 0, 178);
+  ctx.fillText(`PEAK  ${pressureText(refAdjustedPsi(peak))}`, 0, 178);
   ctx.globalAlpha = 1;
 
   /* needle at the mapped angle (0° = east; up-pointing art rotated by a+90) */
@@ -1631,18 +1712,23 @@ function drawHudGauge(sample, psi, g) {
    * extremes and fractional width. */
   ctx.font = `700 italic 88px "Bahnschrift", "DIN Alternate", system-ui, sans-serif`;
   const nHalf = ctx.measureText(".").width * 0.5;
+  /* Widest reading sized from the displayed range extremes, which in absolute
+   * mode include the atmospheric reference (e.g. max 10 -> 24.7 psi). Range
+   * extremes are not current readings, so no fold (refAdjustedPsi). */
+  const loPsi = refAdjustedPsi(range.psiMin);
+  const hiPsi = refAdjustedPsi(range.psiMax);
   let worstNegInt;
   let worstPosInt;
   let fracDigits;
   if (unitIsPsi()) {
     fracDigits = 1;
-    worstNegInt = range.psiMin < 0 ? "−" + String(Math.floor(Math.abs(range.psiMin))) : "";
-    worstPosInt = String(Math.floor(Math.abs(range.psiMax)));
+    worstNegInt = loPsi < 0 ? "−" + String(Math.floor(Math.abs(loPsi))) : "";
+    worstPosInt = String(Math.floor(Math.abs(hiPsi)));
   } else {
     fracDigits = unitDecimals();
-    const loDisp = toDisplay(range.psiMin);
-    const hiDisp = toDisplay(range.psiMax);
-    worstNegInt = range.psiMin < 0 ? "−" + String(Math.floor(Math.abs(loDisp))) : "";
+    const loDisp = toDisplay(loPsi);
+    const hiDisp = toDisplay(hiPsi);
+    worstNegInt = loPsi < 0 ? "−" + String(Math.floor(Math.abs(loDisp))) : "";
     worstPosInt = String(Math.floor(Math.abs(hiDisp)));
   }
   const Lmax = nHalf + Math.max(ctx.measureText(worstNegInt).width, ctx.measureText(worstPosInt).width);
@@ -1675,11 +1761,11 @@ function drawHudGauge(sample, psi, g) {
   let readoutInt;
   let readoutFrac;
   if (unitIsPsi()) {
-    const { neg, intPart, fracPart } = splitNum(arcReadoutDisplayPsi(psi), 1);
+    const { neg, intPart, fracPart } = splitNum(boostDisplayPsi(psi), 1);
     readoutInt = `${neg ? "−" : ""}${intPart}`;
     readoutFrac = fracPart;
   } else {
-    const folded = arcReadoutDisplayPsi(psi);
+    const folded = boostDisplayPsi(psi);
     const { neg, intPart, fracPart } = splitNum(toDisplay(folded), unitDecimals(), displayIsNegative(folded));
     readoutInt = `${neg ? "−" : ""}${intPart}`;
     readoutFrac = fracPart;
@@ -1720,7 +1806,7 @@ function drawHudGauge(sample, psi, g) {
   ctx.font = `600 15px Consolas, monospace`;
   ctx.fillText(ambientAtmText(), -138, 128);
   ctx.textAlign = "right";
-  ctx.fillText(`PK ${pressureText(peak)}`, 138, 128);
+  ctx.fillText(`PK ${pressureText(refAdjustedPsi(peak))}`, 138, 128);
   ctx.fillStyle = p.muted;
   ctx.textAlign = "left";
   ctx.font = `600 12px Consolas, monospace`;
@@ -1780,8 +1866,11 @@ function drawBigDigitGauge(sample, psi, g) {
   const gap100 = refFs * 0.08;
   /* Non-PSI units size the widest reading from their own converted range. */
   const dispDecimals = unitIsPsi() ? 1 : unitDecimals();
-  const dispMin = unitIsPsi() ? range.psiMin : toDisplay(range.psiMin);
-  const dispMax = unitIsPsi() ? range.psiMax : toDisplay(range.psiMax);
+  /* Displayed range extremes include the atmospheric reference in absolute
+   * mode, so the worst-case width must size against them. No fold - range
+   * extremes are not current readings. */
+  const dispMin = unitIsPsi() ? refAdjustedPsi(range.psiMin) : toDisplay(refAdjustedPsi(range.psiMin));
+  const dispMax = unitIsPsi() ? refAdjustedPsi(range.psiMax) : toDisplay(refAdjustedPsi(range.psiMax));
   const maxInt = String(Math.floor(Math.max(Math.abs(dispMin), Math.abs(dispMax), 1))).length;
   /* Extents from the centered ones digit: integers + sign grow left, the
    * decimal + fractional digits sit right. Size so the widest reading stays in
@@ -1805,7 +1894,7 @@ function drawBigDigitGauge(sample, psi, g) {
 
   /* Readout digits fold through the shared dead zone (all themes except
    * vault-tec); the ground colour above keeps the raw psi. */
-  const readoutPsi = arcReadoutDisplayPsi(psi);
+  const readoutPsi = boostDisplayPsi(psi);
   const dispValue = unitIsPsi() ? readoutPsi : toDisplay(readoutPsi);
   const fracScale = 10 ** dispDecimals;
   const absTenths = Math.round(Math.abs(dispValue) * fracScale);
@@ -1875,8 +1964,8 @@ function drawBigDigitGauge(sample, psi, g) {
   ctx.font = `600 18px Consolas, monospace`;
   /* Matches the panel's `PEAK %.1f` exactly in live mode - no suffix, no
    * trailing separator. The DEMO marker returns only in demo. */
-  ctx.fillText(sample.demo ? `PEAK ${pressureText(peak)}   DEMO`
-                           : `PEAK ${pressureText(peak)}`, 0, 168);
+  ctx.fillText(sample.demo ? `PEAK ${pressureText(refAdjustedPsi(peak))}   DEMO`
+                           : `PEAK ${pressureText(refAdjustedPsi(peak))}`, 0, 168);
   ctx.globalAlpha = 1;
   ctx.restore();
 }
@@ -2397,11 +2486,19 @@ function setTzOffsetSelect(select, minutes) {
 }
 
 function renderState(sample) {
-  /* The unit is presentation state, but every /state sample carries it (HTTP
-   * 4 Hz / WebSocket 62.5 Hz). Adopting from each sample is the live path for
-   * the panel's UNITS button and it converges a client whose initial /themes
-   * fetch was missed; /themes keeps supplying the unit for initial config. */
-  if (adoptPressureUnit(sample.pressureUnit)) refreshPressureUnitPresentation();
+  /* Absolute-mode reference: /state already carries the BMP280 atmosphere as
+   * sensors.ambientKpa. Missing/falsy/non-positive falls back to the standard
+   * atmosphere inside pressureRefPsi(); nothing else derives the reference. */
+  const ambientKpa = Number(sample?.sensors?.ambientKpa);
+  state.ambientKpa = Number.isFinite(ambientKpa) ? ambientKpa : null;
+  /* The unit and reference are presentation state, but every /state sample
+   * carries them (HTTP 4 Hz / WebSocket 62.5 Hz). Adopting from each sample is
+   * the live path for the panel's UNITS/REFERENCE buttons and it converges a
+   * client whose initial /themes fetch was missed; /themes keeps supplying both
+   * for initial config. */
+  const unitChanged = adoptPressureUnit(sample.pressureUnit);
+  const refChanged = adoptPressureAbsolute(sample.pressureAbsolute);
+  if (unitChanged || refChanged) refreshPressureUnitPresentation();
   if (IS_COCKPIT) {
     if (sample.firmwareVersion && el.firmwareVersion) el.firmwareVersion.textContent = sample.firmwareVersion;
     if (el.uptime) el.uptime.textContent = formatDuration(sample.uptimeMs || 0);
@@ -2495,6 +2592,7 @@ function rangeHintText(range) {
  * For psi every generated attribute string equals the literal it replaces. */
 function applyPressureUnitControls() {
   if (el.pressureUnit) el.pressureUnit.value = pressureUnitId();
+  if (el.pressureAbsolute) el.pressureAbsolute.value = state.pressureAbsolute ? "true" : "false";
   if (el.psiMinLabel) el.psiMinLabel.textContent = `Min ${unitLabel()} (vacuum)`;
   if (el.psiMaxLabel) el.psiMaxLabel.textContent = `Max ${unitLabel()} (boost)`;
   if (el.tpmsLowLabel) el.tpmsLowLabel.textContent = `Low-pressure alert (${unitLabel()})`;
@@ -2517,6 +2615,11 @@ function renderConfig(config) {
    * serves it on /themes (applyThemePayload). Tolerate both. */
   if (config && config.pressureUnit !== undefined) {
     state.pressureUnit = normalizePressureUnit(config.pressureUnit);
+  }
+  /* Host preview injections may also carry the reference; the device serves it
+   * on /themes (applyThemePayload). Tolerate both. */
+  if (config && config.pressureAbsolute !== undefined) {
+    state.pressureAbsolute = !!config.pressureAbsolute;
   }
   if (IS_COCKPIT) {
     if (el.tzOffset) setTzOffsetSelect(el.tzOffset, config.timezoneOffsetMinutes ?? 0);
@@ -2671,6 +2774,11 @@ function applyThemePayload(payload, fallback = {}) {
    * leaves the current unit untouched; anything unrecognised falls back psi. */
   const unitValue = pick("pressureUnit");
   if (unitValue !== undefined) state.pressureUnit = normalizePressureUnit(unitValue);
+
+  /* Global pressure reference (contract: false = relative/gauge, true =
+   * absolute). Same adoption shape as pressureUnit: a missing field leaves it
+   * untouched, anything truthy/falsey coerces. */
+  set("pressureAbsolute", bool("pressureAbsolute"));
 
   set("bigDigitStaticBg", bool("bigDigitStaticBg"));
   set("bigDigitColorText", bool("bigDigitColorText"));
@@ -3131,7 +3239,7 @@ function wireDisplayToggles() {
         clearError(ERR_USER);
         const payload = await api("/themes/config", {
           method: "PUT",
-          body: JSON.stringify({ pressureUnit: unit }),
+          body: JSON.stringify({ pressureUnit: unit, pressureAbsolute: state.pressureAbsolute }),
         });
         applyThemePayload(payload);
         /* Keep a host preview's injected config in step, then re-derive every
@@ -3140,6 +3248,28 @@ function wireDisplayToggles() {
         if (state.config) state.config.pressureUnit = unit;
         refreshPressureUnitPresentation();
         showOk(`Pressure unit ${unitLabel()}`);
+      } catch (error) {
+        syncDisplayToggles();
+        showError(error.message);
+      }
+    });
+  }
+  if (el.pressureAbsolute) {
+    /* Pressure reference: Relative (false) vs Absolute (true). Persists on
+     * the same endpoint as the unit, then re-derives every boost-side numeral
+     * and repaints the cockpit canvases; zone colours/geometry stay gauge. */
+    el.pressureAbsolute.addEventListener("change", async () => {
+      const absolute = el.pressureAbsolute.value === "true";
+      try {
+        clearError(ERR_USER);
+        const payload = await api("/themes/config", {
+          method: "PUT",
+          body: JSON.stringify({ pressureAbsolute: absolute }),
+        });
+        applyThemePayload(payload);
+        if (state.config) state.config.pressureAbsolute = absolute;
+        refreshPressureUnitPresentation();
+        showOk(absolute ? "Pressure reference absolute" : "Pressure reference relative");
       } catch (error) {
         syncDisplayToggles();
         showError(error.message);
@@ -3990,8 +4120,13 @@ async function reconnectNetwork() {
  * dropdown). Null means nothing is loaded: leave the last status message. */
 function renderLogSummary() {
   if (!el.logSummary || !state.logRange) return;
+  /* Displayed TEXT follows the reference (parity with the apps' log/chart
+   * numerals); the stored logRange and the CSV export stay canonical gauge
+   * psi. A window's min/max IS a max-hold reading, so it takes the reference
+   * WITHOUT the live-readout fold (refAdjustedPsi), exactly like the peaks and
+   * the dial ticks - folding would report a distorted extreme (0.07 -> 0.0). */
   const { count, low, peak } = state.logRange;
-  el.logSummary.textContent = `${count} samples loaded. Range ${signedPressure(low)} to ${signedPressure(peak)} ${unitLabel()}.`;
+  el.logSummary.textContent = `${count} samples loaded. Range ${signedPressure(refAdjustedPsi(low))} to ${signedPressure(refAdjustedPsi(peak))} ${unitLabel()}.`;
 }
 
 async function loadLogs() {

@@ -12,7 +12,7 @@ object ApiFixtures {
           "psi": 3.42, "peakPsi": 5.01, "zone": "BOOST", "demo": true,
           "brightness": 92, "firmwareVersion": "v0.8.0", "uptimeMs": 1234567,
           "epochMs": 1780000000000, "timezoneOffsetMinutes": -240,
-          "activeThemeId": "neon", "activePage": 0,
+          "activeThemeId": "neon", "activePage": 0, "pressureAbsolute": false,
           "display": {
             "renderFps": 60, "gaugeDemandPerSecond": 60, "flushesPerSecond": 60,
             "pixelsPerSecond": 1000000, "worstRenderUs": 8500,
@@ -66,7 +66,7 @@ object ApiFixtures {
           "vaultVignette": 22, "vaultNeedleRed": false, "vaultNeedleTail": false,
           "neonLayout": 0, "neonPreset": 0, "demoMode": false,
           "demoFastSweep": false, "tpmsBle": false, "pixelShift": false,
-          "pixelShiftSec": 90,
+          "pixelShiftSec": 90, "pressureAbsolute": false,
           "themes": [
             {
               "id": "dyno-cell", "name": "Dyno Cell", "style": "arc",

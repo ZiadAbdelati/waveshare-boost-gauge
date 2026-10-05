@@ -43,7 +43,7 @@ int boost_json_state(char *json, size_t len)
     boost_tpms_config_t tpms_cfg;
     boost_tpms_get_config(&tpms_cfg);
     return snprintf(json, len,
-                    "{\"psi\":%.2f,\"peakPsi\":%.2f,\"pressureUnit\":\"%s\","
+                    "{\"psi\":%.2f,\"peakPsi\":%.2f,\"pressureUnit\":\"%s\",\"pressureAbsolute\":%s,"
                     "\"zone\":\"%s\",\"demo\":%s,"
                     "\"brightness\":%d,\"firmwareVersion\":\"%s\",\"uptimeMs\":%llu,"
                     "\"epochMs\":%lld,\"timezoneOffsetMinutes\":%d,\"activeThemeId\":\"%s\",\"activePage\":%d,"
@@ -64,6 +64,11 @@ int boost_json_state(char *json, size_t len)
                     "\"throttlePct\":%.1f,\"mafGps\":%.1f,\"fuelPct\":%.1f,\"batteryV\":%.1f}}",
                     (double)st.psi, (double)st.peak_psi,
                     boost_units_name(boost_theme_pressure_unit()),
+                    /* Display reference rides beside the unit so a client can
+                     * follow a live panel toggle, exactly like pressureUnit:
+                     * /themes is the initial-config source, this is the live
+                     * one (see the units guard row in AGENTS.md). */
+                    boost_theme_pressure_absolute() ? "true" : "false",
                     st.zone, st.demo ? "true" : "false",
                     st.brightness, st.firmware_version, (unsigned long long)st.uptime_ms,
                     (long long)st.epoch_ms, st.timezone_offset_minutes, st.active_theme_id, st.active_page,
@@ -233,7 +238,7 @@ int boost_json_themes(char *json, size_t len)
                      "{\"activeThemeId\":\"%s\",\"bigDigitStaticBg\":%s,"
                      "\"bigDigitColorText\":%s,\"bigDigitStaticColor\":\"#%06lx\","
                      "\"bigDigitTextColor\":\"#%06lx\","
-                     "\"arcGradient\":%s,\"hudGradient\":%s,\"hudTrueBlack\":%s,\"dynoTrueBlack\":%s,\"neonMarqueeSpin\":%s,"
+                     "\"arcGradient\":%s,\"hudGradient\":%s,\"hudTrueBlack\":%s,\"dynoTrueBlack\":%s,\"pressureAbsolute\":%s,\"neonMarqueeSpin\":%s,"
                      "\"teSync\":%s,\"regionDBuf\":%s,\"teScanline\":%s,"
                      "\"rotation\":%u,"
                      "\"vaultFace\":\"#%06lx\",\"vaultVignette\":%u,\"vaultNeedleRed\":%s,"
@@ -250,6 +255,7 @@ int boost_json_themes(char *json, size_t len)
                      boost_theme_hud_gradient() ? "true" : "false",
                      boost_theme_hud_true_black() ? "true" : "false",
                      boost_theme_dyno_true_black() ? "true" : "false",
+                     boost_theme_pressure_absolute() ? "true" : "false",
                      boost_theme_neon_marquee_spin() ? "true" : "false",
                      boost_theme_te_sync() ? "true" : "false",
                      boost_theme_region_dbuf() ? "true" : "false",

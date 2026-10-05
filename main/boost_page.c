@@ -95,9 +95,15 @@ static lv_obj_t *s_qr_overlay;
 static bool s_qr_active;
 static uint32_t s_qr_hold_start_ms;
 static bool s_two_finger_seen;
-/* Overlay page 0 = QR, page 1 = BLE toggles. A left swipe on the QR flips to
- * the toggles; a fresh tap still dismisses the whole overlay. */
-static bool s_qr_toggles_shown;
+/* Overlay page: 0 = QR, 1 = Connections, 2 = Units. A horizontal swipe steps
+ * one page in either direction with wraparound; a fresh tap still dismisses the
+ * whole overlay. Only meaningful while s_qr_active - hide_qr() resets it to the
+ * QR page, so every fresh open starts there. */
+#define QR_PAGE_QR          0
+#define QR_PAGE_CONNECTIONS 1
+#define QR_PAGE_UNITS       2
+#define QR_PAGE_COUNT       3
+static int32_t s_qr_page;
 static int32_t s_qr_press_x;
 static int32_t s_qr_press_y;
 static bool s_qr_press_tracking;
@@ -110,11 +116,20 @@ static bool s_qr_drag_classified;
  * drag is not a tap. Cleared when the next press seeds a fresh gesture. */
 static bool s_qr_swipe_suppress;
 
-/* Connections page: three square buttons (2 up, 1 down). Order matches the
- * sim tap hook: 0 = OBD BLE, 1 = APP BLE, 2 = UNITS. */
-#define QR_BTN_SIZE 130
-static lv_obj_t *s_qr_btn[3];
+/* One centred PAIR of square buttons per toggle page, matching the sim tap
+ * hook's PAGE-LOCAL row: page 1 = 0 OBD BLE / 1 APP BLE, page 2 = 0 UNITS /
+ * 1 REL/ABS. The pair is centred as a group with a gap smaller than the outer
+ * margins, so the two read as one control cluster (the old 2-up-1-down triangle
+ * is gone). */
+#define QR_BTN_SIZE  130
+#define QR_PAIR_GAP  40
+#define QR_PAIR_X0   ((PAGE_SIZE - 2 * QR_BTN_SIZE - QR_PAIR_GAP) / 2)
+#define QR_PAIR_X1   (QR_PAIR_X0 + QR_BTN_SIZE + QR_PAIR_GAP)
+#define QR_PAIR_Y    150
+#define QR_BTN_COUNT 2
+static lv_obj_t *s_qr_btn[QR_BTN_COUNT];
 static lv_obj_t *s_qr_btn_unit_label;
+static lv_obj_t *s_qr_btn_ref_label;
 
 static bool media_active(void);
 
@@ -129,11 +144,13 @@ static void show_page(boost_page_id_t page);
 static void hide_qr(void);
 static void qr_click_cb(lv_event_t *event);
 static void qr_pressing_cb(lv_event_t *event);
-static void qr_flip_to(bool toggles);
+static void qr_goto_page(int32_t page);
+static void qr_step(int32_t dir);
 static void qr_swipe_press_cb(lv_event_t *event);
 static void qr_tap_obd_cb(lv_event_t *event);
 static void qr_tap_app_cb(lv_event_t *event);
 static void qr_tap_units_cb(lv_event_t *event);
+static void qr_tap_ref_cb(lv_event_t *event);
 static void apply_theme_delta(int direction);
 typedef struct {
     char ap_ssid[33];
@@ -222,8 +239,8 @@ static void qr_square_set_text(lv_obj_t *b, const char *primary, const char *sec
  * ended the two-finger hold does not count - its press target predates the
  * overlay). The opaque black cover hides the gauge underneath; boost_page_update
  * is gated on s_qr_active so the 16 ms path stops invalidating under it.
- * Page 0 is the QR; a left swipe rebuilds it as the connections-toggles page
- * (s_qr_toggles_shown). One shared widget tree - the host sim screenshots
+ * Page 0 is the QR; a horizontal swipe steps to the Connections then the Units
+ * page (s_qr_page), wrapping. One shared widget tree - the host sim screenshots
  * verify the exact layout that reaches the glass. */
 static void show_qr(void)
 {
@@ -245,52 +262,77 @@ static void show_qr(void)
     s_qr_drag_classified = false;
     s_qr_swipe_suppress = false;
 
-    /* Page indicator + swipe hint render on BOTH pages so the two-page
-     * structure is visible from either side. The dots are real objects, not
+    /* Page indicator + swipe hint render on EVERY page so the three-page
+     * structure is visible from any of them. The dots are real objects, not
      * font glyphs (the -/X glyph pair read as mystery buttons); the active
      * page's dot is lit. Pure indicators - not clickable, a tap on one falls
      * through to the overlay's dismiss. */
 
-    for (int i = 0; i < 3; ++i) s_qr_btn[i] = NULL;
+    for (int i = 0; i < QR_BTN_COUNT; ++i) s_qr_btn[i] = NULL;
     s_qr_btn_unit_label = NULL;
+    s_qr_btn_ref_label = NULL;
 
-    if (s_qr_toggles_shown) {
+    if (s_qr_page == QR_PAGE_CONNECTIONS || s_qr_page == QR_PAGE_UNITS) {
+        const bool units_page = (s_qr_page == QR_PAGE_UNITS);
         lv_obj_t *title = lv_label_create(s_qr_overlay);
-        lv_label_set_text(title, "Connections");
+        lv_label_set_text(title, units_page ? "Units" : "Connections");
         lv_obj_set_style_text_color(title, lv_color_white(), 0);
         lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
         lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 40);
 
-        /* Three square buttons, 2 up + 1 down. Each is one big tappable square
-         * so a mistap on the label cannot fall through to the overlay and
-         * dismiss the screen. A press starting on a button is OWNED by the
-         * button, so the overlay never sees its PRESSING: PRESSED seeds the
-         * shared drag tracker and PRESSING (delivered to the pressed button
-         * while the finger stays inside it) runs the same classifier, letting
-         * a drag that starts on a button flip pages / change theme. */
-        s_qr_btn[0] = qr_make_square(s_qr_overlay, 52, 100, boost_obd_enabled(), 0x62D6A5);
-        qr_square_set_text(s_qr_btn[0], "OBD BLE", boost_obd_enabled() ? "ON" : "OFF");
-        lv_obj_add_event_cb(s_qr_btn[0], qr_swipe_press_cb, LV_EVENT_PRESSED, NULL);
-        lv_obj_add_event_cb(s_qr_btn[0], qr_pressing_cb, LV_EVENT_PRESSING, NULL);
-        lv_obj_add_event_cb(s_qr_btn[0], qr_tap_obd_cb, LV_EVENT_CLICKED, NULL);
+        /* One centred pair. Each button is one big tappable square so a mistap
+         * on the label cannot fall through to the overlay and dismiss the
+         * screen. A press starting on a button is OWNED by the button, so the
+         * overlay never sees its PRESSING: PRESSED seeds the shared drag
+         * tracker and PRESSING (delivered to the pressed button while the finger
+         * stays inside it) runs the same classifier, letting a drag that starts
+         * on a button step pages / change theme. */
+        if (units_page) {
+            /* The units button's second line is the current selection; tapping
+             * it cycles PSI -> bar -> kPa. */
+            s_qr_btn[0] = qr_make_square(s_qr_overlay, QR_PAIR_X0, QR_PAIR_Y, true, 0x4DD2FF);
+            qr_square_set_text(s_qr_btn[0], "UNITS",
+                               boost_units_label(boost_theme_pressure_unit()));
+            s_qr_btn_unit_label =
+                lv_obj_get_child(s_qr_btn[0], lv_obj_get_child_count(s_qr_btn[0]) - 1);
+            lv_obj_add_event_cb(s_qr_btn[0], qr_swipe_press_cb, LV_EVENT_PRESSED, NULL);
+            lv_obj_add_event_cb(s_qr_btn[0], qr_pressing_cb, LV_EVENT_PRESSING, NULL);
+            lv_obj_add_event_cb(s_qr_btn[0], qr_tap_units_cb, LV_EVENT_CLICKED, NULL);
 
-        s_qr_btn[1] = qr_make_square(s_qr_overlay, PAGE_SIZE - 52 - QR_BTN_SIZE, 100,
-                                     boost_app_ble_enabled(), 0x62D6A5);
-        qr_square_set_text(s_qr_btn[1], "APP BLE", boost_app_ble_enabled() ? "ON" : "OFF");
-        lv_obj_add_event_cb(s_qr_btn[1], qr_swipe_press_cb, LV_EVENT_PRESSED, NULL);
-        lv_obj_add_event_cb(s_qr_btn[1], qr_pressing_cb, LV_EVENT_PRESSING, NULL);
-        lv_obj_add_event_cb(s_qr_btn[1], qr_tap_app_cb, LV_EVENT_CLICKED, NULL);
+            /* Display reference. The primary line names the pair of modes and
+             * the second line the one in force; `active` lights the square (and
+             * its LED) only while ABSOLUTE is selected, so the on/off cue still
+             * means something. The pair is abbreviated "REL/ABS" because the
+             * button's label box is QR_BTN_SIZE - 12 = 118 px: parsing LVGL's own
+             * montserrat_24 advance table, "GAUGE/ABS" is 148.7 px and
+             * "PRESSURE" 133.1 px (both overflow), while "REL/ABS" is 106.8 px -
+             * the same width class as the proven "OBD BLE" (113.1 px). The state
+             * line runs at montserrat_20, so it carries the full words: "RELATIVE"
+             * measures 99.9 px and "ABSOLUTE" 111.8 px. */
+            s_qr_btn[1] = qr_make_square(s_qr_overlay, QR_PAIR_X1, QR_PAIR_Y,
+                                         boost_theme_pressure_absolute(), 0xC792EA);
+            qr_square_set_text(s_qr_btn[1], "REL/ABS",
+                               boost_theme_pressure_absolute() ? "ABSOLUTE" : "RELATIVE");
+            s_qr_btn_ref_label =
+                lv_obj_get_child(s_qr_btn[1], lv_obj_get_child_count(s_qr_btn[1]) - 1);
+            lv_obj_add_event_cb(s_qr_btn[1], qr_swipe_press_cb, LV_EVENT_PRESSED, NULL);
+            lv_obj_add_event_cb(s_qr_btn[1], qr_pressing_cb, LV_EVENT_PRESSING, NULL);
+            lv_obj_add_event_cb(s_qr_btn[1], qr_tap_ref_cb, LV_EVENT_CLICKED, NULL);
+        } else {
+            s_qr_btn[0] = qr_make_square(s_qr_overlay, QR_PAIR_X0, QR_PAIR_Y,
+                                         boost_obd_enabled(), 0x62D6A5);
+            qr_square_set_text(s_qr_btn[0], "OBD BLE", boost_obd_enabled() ? "ON" : "OFF");
+            lv_obj_add_event_cb(s_qr_btn[0], qr_swipe_press_cb, LV_EVENT_PRESSED, NULL);
+            lv_obj_add_event_cb(s_qr_btn[0], qr_pressing_cb, LV_EVENT_PRESSING, NULL);
+            lv_obj_add_event_cb(s_qr_btn[0], qr_tap_obd_cb, LV_EVENT_CLICKED, NULL);
 
-        /* The units button's second line is the current selection; tapping it
-         * cycles PSI -> bar -> kPa. */
-        s_qr_btn[2] = qr_make_square(s_qr_overlay, (PAGE_SIZE - QR_BTN_SIZE) / 2, 256,
-                                     true, 0x4DD2FF);
-        qr_square_set_text(s_qr_btn[2], "UNITS", boost_units_label(boost_theme_pressure_unit()));
-        s_qr_btn_unit_label =
-            lv_obj_get_child(s_qr_btn[2], lv_obj_get_child_count(s_qr_btn[2]) - 1);
-        lv_obj_add_event_cb(s_qr_btn[2], qr_swipe_press_cb, LV_EVENT_PRESSED, NULL);
-        lv_obj_add_event_cb(s_qr_btn[2], qr_pressing_cb, LV_EVENT_PRESSING, NULL);
-        lv_obj_add_event_cb(s_qr_btn[2], qr_tap_units_cb, LV_EVENT_CLICKED, NULL);
+            s_qr_btn[1] = qr_make_square(s_qr_overlay, QR_PAIR_X1, QR_PAIR_Y,
+                                         boost_app_ble_enabled(), 0x62D6A5);
+            qr_square_set_text(s_qr_btn[1], "APP BLE", boost_app_ble_enabled() ? "ON" : "OFF");
+            lv_obj_add_event_cb(s_qr_btn[1], qr_swipe_press_cb, LV_EVENT_PRESSED, NULL);
+            lv_obj_add_event_cb(s_qr_btn[1], qr_pressing_cb, LV_EVENT_PRESSING, NULL);
+            lv_obj_add_event_cb(s_qr_btn[1], qr_tap_app_cb, LV_EVENT_CLICKED, NULL);
+        }
 
         /* Firmware version readout, bottom-anchored above the swipe hint -
          * the same slot pattern the QR page uses for the SSID/IP lines. The
@@ -344,22 +386,22 @@ static void show_qr(void)
     lv_obj_set_style_text_font(hint, &lv_font_montserrat_24, 0);
     lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -14);
 
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < QR_PAGE_COUNT; ++i) {
         lv_obj_t *dot = lv_obj_create(s_qr_overlay);
         lv_obj_remove_style_all(dot);
         lv_obj_set_size(dot, 14, 14);
         lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
         lv_obj_set_style_bg_color(dot,
-            (i == (s_qr_toggles_shown ? 1 : 0)) ? lv_color_white() : lv_color_hex(0x5a5a5a), 0);
+            (i == s_qr_page) ? lv_color_white() : lv_color_hex(0x5a5a5a), 0);
         lv_obj_clear_flag(dot, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_align(dot, LV_ALIGN_TOP_MID, i == 0 ? -14 : 14, 18);
+        lv_obj_align(dot, LV_ALIGN_TOP_MID, (i - (QR_PAGE_COUNT / 2)) * 18, 18);
     }
 
     s_qr_active = true;
     /* Pause GIF playback so its direct panel push cannot overwrite the QR. */
     boost_gauge_media_pause();
-    ESP_LOGI(TAG, "%s shown for AP %s", s_qr_toggles_shown ? "toggles" : "QR", ap.ap_ssid);
+    ESP_LOGI(TAG, "overlay page %d shown for AP %s", (int)s_qr_page, ap.ap_ssid);
 }
 
 static void show_page(boost_page_id_t page)
@@ -387,12 +429,13 @@ static void hide_qr(void)
         s_qr_overlay = NULL;
     }
     s_qr_active = false;
-    s_qr_toggles_shown = false;
+    s_qr_page = QR_PAGE_QR;
     s_qr_press_tracking = false;
     s_qr_drag_classified = false;
     s_qr_swipe_suppress = false;
-    for (int i = 0; i < 3; ++i) s_qr_btn[i] = NULL;
+    for (int i = 0; i < QR_BTN_COUNT; ++i) s_qr_btn[i] = NULL;
     s_qr_btn_unit_label = NULL;
+    s_qr_btn_ref_label = NULL;
     /* Resume GIF playback (direct panel push) now that the overlay is gone. */
     boost_gauge_media_resume();
 }
@@ -426,7 +469,8 @@ static void qr_click_cb(lv_event_t *event)
  * enough to black the panel and drop the gesture (observed on hardware), so
  * the callback only records the request; a one-shot lv_timer applies it after
  * the current LVGL cycle finishes rendering. */
-static int32_t s_qr_toggle_req = -1;   /* 0=app off 1=app on 2=obd off 3=obd on 4=cycle unit */
+static int32_t s_qr_toggle_req = -1;   /* 0=app off 1=app on 2=obd off 3=obd on 4=cycle unit
+                                        * 5=toggle the display reference */
 
 static void qr_toggle_apply_cb(lv_timer_t *timer)
 {
@@ -452,6 +496,20 @@ static void qr_toggle_apply_cb(lv_timer_t *timer)
         /* The rebuild re-raises a loaded GIF over every other screen child;
          * keep the overlay the user is looking at on top. */
         qr_reassert_overlay();
+        return;
+    }
+    if (req == 5) {
+        boost_theme_set_pressure_absolute(!boost_theme_pressure_absolute());
+        /* Readouts take the reference live, but the dial numerals are baked at
+         * scene build, so rebuild the face exactly like the unit cycle does.
+         * The square's own lit state is a style, so rebuild the overlay page
+         * too (its secondary line and glow both follow the mode). */
+#ifdef ESP_PLATFORM
+        boost_gauge_apply_theme(boost_model_active_theme());
+#else
+        boost_gauge_apply_theme(boost_theme_default());
+#endif
+        qr_goto_page(s_qr_page);
         return;
     }
     if (req <= 1) {
@@ -521,27 +579,42 @@ static void qr_tap_units_cb(lv_event_t *event)
     qr_toggle_request(4);
 }
 
-/* Two-page overlay carousel with WRAPAROUND: a swipe of at least SWIPE_MIN_PX
- * in either direction flips to the other page, from either page. A fresh tap
- * (no drag) still dismisses. The overlay is torn down and rebuilt on a flip -
- * show_qr() early-returns while s_qr_active is set (caught by the sim:
- * setting the flag before show_qr() silently kept the old page). */
-static void qr_flip_to(bool toggles)
+static void qr_tap_ref_cb(lv_event_t *event)
 {
+    (void)event;
+    if (s_qr_swipe_suppress) { s_qr_swipe_suppress = false; return; }
+    qr_toggle_request(5);
+}
+
+/* Three-page overlay carousel with WRAPAROUND. A fresh tap (no drag) still
+ * dismisses. The overlay is torn down and rebuilt on a step - show_qr()
+ * early-returns while s_qr_active is set (caught by the sim: setting the flag
+ * before show_qr() silently kept the old page). */
+static void qr_goto_page(int32_t page)
+{
+    if (page < 0 || page >= QR_PAGE_COUNT) return;
     lv_obj_delete(s_qr_overlay);
     s_qr_overlay = NULL;
     s_qr_active = false;
-    s_qr_toggles_shown = toggles;
+    s_qr_page = page;
     s_qr_press_tracking = false;
     boost_gauge_media_pause();   /* show_qr pauses again; keep state */
     show_qr();
 }
 
+/* +1 = forward (0 -> 1 -> 2 -> 0), -1 = backward, both wrapping. */
+static void qr_step(int32_t dir)
+{
+    qr_goto_page((s_qr_page + dir + QR_PAGE_COUNT) % QR_PAGE_COUNT);
+}
+
 /* The shared gesture classifier: the overlay's own PRESSING and each square
  * button's PRESSING both land here. A predominantly horizontal drag of at
- * least SWIPE_MIN_PX flips the overlay page; a predominantly vertical one
- * changes theme (the gauge's direction: drag up = next theme). The ratio
- * tests match the gauge's finish_press() classification. */
+ * least SWIPE_MIN_PX steps the overlay page in the DIRECTION OF THE DRAG
+ * (dragging left advances, dragging right goes back, both wrapping); a
+ * predominantly vertical one changes theme (the gauge's direction: drag up =
+ * next theme). The ratio tests match the gauge's finish_press()
+ * classification. */
 static void qr_pressing_cb(lv_event_t *event)
 {
     if (!s_qr_active) return;
@@ -567,7 +640,7 @@ static void qr_pressing_cb(lv_event_t *event)
     if (ax >= SWIPE_MIN_PX && (int64_t)ax * 4 >= (int64_t)ay * 5) {
         s_qr_drag_classified = true;
         s_qr_swipe_suppress = true;
-        qr_flip_to(!s_qr_toggles_shown);
+        qr_step(dx < 0 ? 1 : -1);
     } else if (ay >= SWIPE_MIN_PX && (int64_t)ay * 4 >= (int64_t)ax * 5) {
         s_qr_drag_classified = true;
         s_qr_swipe_suppress = true;
@@ -742,10 +815,11 @@ void boost_page_create(void)
     s_qr_active = false;
     s_two_finger_seen = false;
     s_qr_hold_start_ms = 0;
-    s_qr_toggles_shown = false;
+    s_qr_page = QR_PAGE_QR;
     s_qr_press_tracking = false;
-    for (int i = 0; i < 3; ++i) s_qr_btn[i] = NULL;
+    for (int i = 0; i < QR_BTN_COUNT; ++i) s_qr_btn[i] = NULL;
     s_qr_btn_unit_label = NULL;
+    s_qr_btn_ref_label = NULL;
     s_screen = lv_screen_active();
     lv_obj_remove_style_all(s_screen);
     lv_obj_set_size(s_screen, PAGE_SIZE, PAGE_SIZE);
@@ -805,35 +879,54 @@ void boost_page_show(boost_page_id_t page)
 }
 
 bool boost_page_qr_active(void) { return s_qr_active; }
-bool boost_page_qr_toggles(void) { return s_qr_toggles_shown; }
+
+int boost_page_qr_page(void)
+{
+    return s_qr_active ? (int)s_qr_page : -1;
+}
 
 void boost_page_qr_show(void)
 {
     s_two_finger_seen = false;   /* hold path already finished in the sim */
+    if (s_qr_active) return;     /* show_qr() early-returns too */
+    s_qr_page = QR_PAGE_QR;      /* every fresh open starts on the QR page */
+    show_qr();
+}
+
+void boost_page_qr_show_page(int page)
+{
+    if (page < 0 || page >= QR_PAGE_COUNT) return;
+    s_two_finger_seen = false;
+    if (s_qr_active) {
+        qr_goto_page(page);
+        return;
+    }
+    s_qr_page = page;
     show_qr();
 }
 
 void boost_page_qr_swipe_left(void)
 {
-    /* Drives the same teardown-and-rebuild the real swipe handler performs
-     * (show_qr() early-returns while the overlay is active). With wraparound
-     * both directions flip to the other page. */
+    /* Forward, driving the same teardown-and-rebuild the real swipe handler
+     * performs (show_qr() early-returns while the overlay is active). */
     if (!s_qr_active) return;
-    qr_flip_to(!s_qr_toggles_shown);
+    qr_step(1);
 }
 
 void boost_page_qr_swipe_right(void)
 {
     if (!s_qr_active) return;
-    qr_flip_to(!s_qr_toggles_shown);
+    qr_step(-1);
 }
 
 void boost_page_qr_dismiss(void) { hide_qr(); }
 
 void boost_page_qr_tap_switch(int row)
 {
-    if (!s_qr_active || !s_qr_toggles_shown || s_qr_overlay == NULL) return;
-    if (row < 0 || row >= 3 || s_qr_btn[row] == NULL) return;
+    /* Rows are PAGE-LOCAL: the QR page has no buttons, and each toggle page
+     * has exactly QR_BTN_COUNT. */
+    if (!s_qr_active || s_qr_page == QR_PAGE_QR || s_qr_overlay == NULL) return;
+    if (row < 0 || row >= QR_BTN_COUNT || s_qr_btn[row] == NULL) return;
     lv_obj_send_event(s_qr_btn[row], LV_EVENT_CLICKED, NULL);
 }
 

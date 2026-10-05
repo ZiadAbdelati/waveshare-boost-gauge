@@ -133,7 +133,9 @@ static const char *TAG = "boost_sensors";
  * gauge is still usable (degraded), rather than reading nonsense. Whenever this
  * constant is in force the published sample sets ambient_is_fallback, and
  * calibration refuses to use it as a reference. */
-#define STANDARD_ATM_KPA     101.325f
+#include "boost_pressure_ref.h"
+
+#define STANDARD_ATM_KPA     BOOST_STANDARD_ATM_KPA
 
 #define KPA_TO_PSI           0.145037738f
 

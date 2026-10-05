@@ -1418,3 +1418,332 @@ Two process notes worth keeping:
 
 HARDWARE: still not run — no board was attached. 1.0.0 remains host-built and
 simulator-verified; **v0.9.7 is the last hardware-verified baseline**.
+
+
+## 2026-10-04 — pressure display reference (REL / ABS) and a three-page settings overlay
+
+User request: "add an option for displaying either atmospheric or absolute ... based on
+reading the bmp280 for reference", surfaced on the web UI, both apps and the physical gauge;
+split the physical settings overlay into a connections page and a units page "accessible by
+scrolling just like scrolling from the QR code, and with a third page indicator"; move the
+two toggles "closer together and centered as opposed to the triangle layout"; and extend the
+web SIM to walk the settings pages before flashing.
+
+### What the reference is
+
+`absolute = gauge + atmospheric`. The baseline needs no new sensor work: `boost_sensors.c`
+already computes gauge psi as `map_abs - ambient`, so absolute mode displays the MAP sensor's
+absolute manifold pressure and the BMP280 ambient is exactly the right reference. New module
+`main/boost_pressure_ref.[ch]` owns it, NVS key `press_abs`, `/themes` key `pressureAbsolute`
+(default false = Relative), parsed by BOTH config transports. `main/boost_sensors.c` now
+aliases the single `BOOST_STANDARD_ATM_KPA` constant instead of carrying its own literal, so
+the sensor fallback (101.325 kPa) and the display reference cannot drift.
+
+Ordering is the load-bearing detail: the shared +-0.1 psi fold runs FIRST in gauge psi, then
+the reference is added, then the unit conversion. A sample folded flat to 0.0 displays as
+exactly 14.7 psi absolute, so in-band jitter cannot move the readout.
+
+### Overlay: three pages, centred pairs
+
+Pages are 0 QR, 1 Connections (OBD BLE, APP BLE), 2 Units (UNITS, REL/ABS); a horizontal
+swipe steps one page in the DIRECTION OF THE DRAG with wraparound (left = forward), the
+vertical swipe still changes theme, a fresh tap still dismisses, and the indicator is three
+dots with the active one lit. Measured on the rendered pages: the pair lands at x 83..212 and
+253..382, y 150..279 (130 px squares, 40 px gap, symmetric 83 px outer margins), and the lit
+dot's centre moves 214.5 -> 232.5 -> 250.5 (18 px spacing) across pages 0/1/2.
+
+The reference button is labelled `REL/ABS`, NOT `PRESSURE` or `GAUGE/ABS`, and that was a
+measurement, not a guess: parsing LVGL's own `lv_font_montserrat_24` glyph advance table,
+"PRESSURE" is 133.1 px and "GAUGE/ABS" 148.7 px against the button's 118 px label box
+(`QR_BTN_SIZE - 12`) — both overflow — while "REL/ABS" is 106.8 px, the same width class as the
+already-proven "OBD BLE" (113.1 px). The secondary line runs at `lv_font_montserrat_20`, so it
+carries the full words rather than abbreviations: "RELATIVE" 99.9 px, "ABSOLUTE" 111.8 px. Its
+square lights (glow + LED) only while absolute mode is on, and the secondary line always names
+the current mode. (The first cut of this row shipped the label "ATM/ABS" with abbreviations; the
+terminology round below renamed both.)
+
+### Isolation: the psi render path is provably untouched
+
+A baseline binary was built side by side whose ONLY difference is `main/boost_gauge.c` at HEAD
+(everything else identical), then both binaries rendered 5 themes x 3 units x 4 states
+(-12.0 / 0.0 / 5.0 / 19.5 psi) through the `--stream` command path:
+
+    dyno-cell 0/0/0   vault-tec 0/0/0   night-city 0/0/0   big-digit 0/0/0   neon 0/0/0   (psi/bar/kPa)
+    -> 60 renders, 0 differing pixels in relative mode
+
+In absolute mode the same comparison changes pixels on every theme (dyno-cell 21388,
+vault-tec 12537, night-city 30747, big-digit 35074, neon 93321 over the four states), which is
+the feature being live rather than the layout moving. The mechanism is `boost_pressure_ref_display()`
+returning its input with NO arithmetic when the mode is off.
+
+Rendered proof of the conversion itself (dyno-cell, psi, 5.0 psi fixed reading): atmospheric
+readout `5.0` with dial numerals `-15 / 0 / 5 / 8 / 10`; absolute readout `19.7` with dial
+numerals `-0.3 / 14.7 / 19.7 / 22.7 / 24.7` and `PEAK 19.7`. The zone word stays `BOOST`/`VAC`
+in both, because the zone decision is gauge-relative and keeps the fold-only call.
+
+Web mirror, checked in a real browser against `tools/mock_server.py`: the Range page's
+`#pressureAbsolute` control offers exactly `Relative` / `Absolute`; in absolute mode the
+cockpit canvas paints `13.0 PSI` while the zone headline still reads `VAC`, and the dial
+numerals relabel to `-0.3 / 14.7 / 19.7 / 22.7 / 24.7` (relative: `1.1 PSI`, dial
+`-15 / 0 / 5 / 8 / 10`). The conversion function itself is drift-free and was checked
+directly in-page: `boostDisplayPsi(5.0)` = 5 in relative mode, 19.6923 in absolute (=
+5 + 101.3 x 0.145037738), and `neonZoneDisplayPsi` still delegates to the fold-only
+`arcReadoutDisplayPsi`.
+
+### Test coverage added or re-pinned
+
+`tools/test_pressure_ref.c` (built by `sim/CMakeLists.txt` as `test_pressure_ref`, run like its
+siblings `test_units_format`/`test_neon_geom`) pins the two load-bearing properties over
+[-30, 40] psi step 0.01 in all three units: 63009 passthrough compares proving relative mode
+is a byte-for-byte passthrough, and the fold-before-reference ordering with quoted strings
+(`0.0 -> 14.7`, `5.0 -> 19.7`, `-12.0 -> 2.7`, the atmosphere tick -> 14.7 psi / 101 kPa). It
+also pins the fallback ladder (non-positive, `ambient_is_fallback` and NaN all land on the
+standard atmosphere) and the override precedence used by the sim.
+
+`tools/tests/test_readout_deadzone.py` had SEVEN source-text pins at the exact call sites this
+change rewired, so it failed. It was re-pinned to the new contract rather than weakened
+(46 -> 51 checks, all passing), and it gained the invariants that matter most here: the
+firmware zone colour/id must NOT contain the reference transform, the web zone helper must not
+route through `boostDisplayPsi`/`refAdjustedPsi`, `boostDisplayPsi` must compose
+`refAdjustedPsi(arcReadoutDisplayPsi(psi))` (fold first), and vault must take the reference
+while still skipping the fold.
+
+Host suite 14/14 (`tools/test_suite.py`, 18.94 s). Firmware `idf.py build` clean:
+`boost_gauge.bin` 0x28e5a0 (2,678,176 B), 36 % of `ota_0` free — 922 B above the 1.0.0 release
+image, consistent with one setting plus one module. iOS `xcodebuild test` 110/112 with the two
+known pre-existing `ViewModelTests` timezone failures. Sim panel `tools/tests/test_sim_panel.py`
+44 checks (pages pairwise pixel-differ, lit dot found and moved, `ref abs` repaints an OPEN
+overlay page, `atmosphere` changes the absolute render, a restart re-asserts both).
+
+### Two harness traps hit again, worth recording
+
+1. **A rebuild that did not happen.** The first baseline build reused a stale `/tmp/simbase`
+   and CMake refused to write it; because the recipe had already checked `boost_gauge.c` back
+   to HEAD, the working tree sat with the reverted renderer for one step. Any baseline recipe
+   must be trap-protected (`trap 'cp back' EXIT`) so a failure cannot leave the tree reverted,
+   and it must assert a FRESH build directory.
+2. **A frame reader that loses sync.** The first isolation harness dropped its partial-frame
+   buffer between capture points and then misparsed every later frame, reporting "no frame"
+   instead of a wrong comparison. A BGFR reader must keep its buffer across reads and resync on
+   a bad magic (exactly what the panel does).
+
+HARDWARE: still not run — no board was attached. The reference's live behaviour on the real
+BMP280 (baseline stability in the enclosure, whether the psi last digit needs any smoothing)
+remains a hardware-verification item, as does the new overlay page geometry on the glass.
+
+### 2026-10-04 (later) — review round: two defects the render matrices could not see
+
+Both were found by read-only reviewers comparing the clients against the firmware's own
+fold policy, and neither was reachable from the coordinator's pixel matrices because the
+test VALUES never landed in the window that exposes them.
+
+1. **Web folded two things the firmware deliberately does not fold** (`web/app.js`).
+   `boostDisplayPsi()` applies the ±0.1 psi readout fold, and four PEAK sites plus both dial
+   tick numerals were routed through it. The firmware formats every theme's peak with
+   `fold_deadband = false` (the documented "peak / max-hold readouts stay RAW" guard) and
+   `boost_pressure_ref_format_tick()` passes `false` by construction, so a session peak or a
+   tick in (0.05, 0.1] rendered "0.0" instead of "0.1" — and with `psiOverboost` = 0.1 (legal:
+   the range validation accepts anything > 0) the dial painted "0" instead of "0.1".
+   WHY THE MATRIX MISSED IT: the isolation sweeps used psi ∈ {-12, 0, 5, 19.5} and the default
+   overboost, and a peak only grows to the values the sweep itself set — so nothing ever
+   evaluated a value inside the band's upper half. The matrix was extended to
+   psi ∈ {0.06, 0.07, 0.09, 0.11, 0.14} across 5 themes x 3 units and re-run: the FIRMWARE is
+   byte-identical there too (75 renders, 0 px), which is what proved the defect was web-only.
+   Fixed call shapes, now the written rule: `boostDisplayPsi` (fold-first) only for
+   current-reading readouts (arc drawFixedPsi/drawFixedPressure, neon, HUD, big-digit);
+   `pressureText(refAdjustedPsi(peak))` for peaks (all five themes, vault already);
+   `pressureTickLabel(refAdjustedPsi(psi))` inside `boostTickLabel`;
+   `signedPressure(refAdjustedPsi(low/peak))` for the settings Logs summary extremes. Verified
+   in-page at the band edge: readout 0.07 → "0.0" (fold retained), peak 0.07 → "0.1",
+   tick 0.1 → "0.1" / bar "0.01", and in absolute 14.7 / 14.8 / 14.8 — plus a rendered check
+   with `psiOverboost` = 0.1, where the dial now carries the 0.1 flag beside -15/0/5/10.
+
+2. **Cold boot in absolute mode baked the wrong scale** (`main/main.c`). `boost_page_create()`
+   ran BEFORE the first sample, so the dial numerals — baked once, never re-derived per sample —
+   used the standard-atmosphere default while every readout used the measured ambient. A real
+   BMP280 at 98-103 kPa is 0.2-0.5 psi away, i.e. several display counts in psi and ~3 counts in
+   kPa, persisting for the whole session until a theme/unit/reference rebuild. Fixed by taking
+   the sample first and seeding the reference before the scene build:
+   `boost_pressure_ref_update(next_sample())` ahead of `boost_page_create()`. The host harness
+   cannot reproduce this by construction — the sim's `atmosphere` command drives the same
+   override the bake reads — so it is recorded as a source-level invariant, and the sim's
+   `atmosphere` command now rebuilds the scene for the same reason (verified: with the fix,
+   switching 95 → 101.325 kPa in absolute mode moves 2166 px on the dial, not just the readout).
+
+Both reviews also confirmed the areas they could falsify were clean: numeral-site coverage on
+both sides, zone/geometry purity (`neon_zone_rgb`/`neon_zone_id`/`neonZoneDisplayPsi` keep the
+fold-only call), fold-before-reference ordering everywhere, the overlay's paging/row mapping and
+deferred-toggle rebuild, the NVS load/persist path, the `/themes` and `/state` format-string ↔
+argument pairing (60 specifiers / 60 arguments, audited positionally), and that no reference
+value reaches the wire.
+
+Re-verified after the fixes: `test_pressure_ref` PASS (63009 compares), `test_units_format`
+PASS, `test_neon_geom` PASS, `--qr-test` PASS (3 pages), `tools/tests/test_sim_panel.py` 44
+checks, `tools/test_suite.py` 14/14, `idf.py build` clean.
+
+## 2026-10-04 (later) — terminology: the mode pair is RELATIVE / ABSOLUTE, not "atmospheric"; and Vault-Tec's bar decimal lands on the box centre
+
+### The terminology was wrong, and the user was right to challenge it
+
+The feature shipped calling its two options "Atmospheric / Absolute". The user asked whether
+that was the correct terminology. It is not: the standard pair for this axis is **relative (or
+gauge) pressure** vs **absolute pressure** — `psig`/`psia`, "barg"/"bara" — and "atmospheric"
+names the *reference value*, not the mode. Worse, it collides with the atmospheric baseline this
+very feature adds (`atm` is also a unit of pressure), and the physical button's caption read
+`ATM/ABS`. So it was also ambiguous on the glass.
+
+Renamed to **Relative / Absolute** across every surface: the physical overlay button (caption
+`REL/ABS`, state line now the full words `RELATIVE` / `ABSOLUTE` at Montserrat 20), the web
+Range page option label and its hint text and save toast, the iOS Range picker, the Android
+Range dropdown and its save message, the sim panel's Reference radios, and the sim's stream
+command (`ref rel`, with `ref atm` now rejected outright — no alias shim).
+
+`Relative` was chosen over the equally standard `Gauge` for two measured reasons: `GAUGE/ABS`
+measures **148.7 px** against the physical button's 118 px label box (it overflows at 20 px too,
+123.9 px), so `Gauge` would have forced an invented caption; and "gauge" already names the
+device, so a button reading "GAUGE" on a boost gauge would read as the *device* mode. Everything
+else keeps its existing name, because it was already accurate: the row stays **Pressure
+reference**, and everything that names the BASELINE keeps `atmosphere` — `atmosphere <kpa>`,
+`BOOST_STANDARD_ATM_KPA`, `boost_pressure_ref_atmosphere_kpa()`, "measured atmosphere",
+"Calibrate MAP to ATM". The zone word `ATMO` (VAC/ATMO/BOOST) is a different axis and is
+untouched. No identifier, JSON key or NVS key changed: `pressureAbsolute`, `press_abs`,
+`boost_theme_pressure_absolute()` are all still correct.
+
+Re-verified after the rename: web assets regenerated (226995 gzip bytes, idempotent, check
+repeated on the regenerated .c by decompressing rather than grepping); Android **115 tests / 0
+failures** + `assembleDebug` BUILD SUCCESSFUL; iOS **115 tests / 113 passed / 2 failed**, both
+the known pre-existing `ViewModelTests` timezone failures; sim panel **44 checks** plus a live
+round trip (`ref abs` -> `/state ref=abs`, `ref rel` -> `ref=rel`, `ref atm` rejected).
+
+### Vault-Tec + bar: the decimal point now sits on the box centre
+
+User request: "on Vault Tec when using bar units ... move the readout such that the decimal
+point is centered in that box". The vault readout object is 146 px wide and centred on the face,
+so the box centre is slot 0 of the field's 24 px mono pitch. bar had been anchored on psi's ones
+slot (`VAULT_ONES_X` -12), which parked the point at **+12** — a visible half-cell right of
+centre — and, more tellingly, diverged from the web mirror, which has always drawn the vault
+decimal at x = 0 (`drawFixedDecimal(..., 0, 120)`). The fix anchors bar on `VAULT_BAR_ONES_X`
+(-24) so the point lands on 0; bar can never outgrow that anchor because the psi range's 40 psi
+ceiling is 2.76 bar and even the absolute reference's +14.7 psi reaches only 3.77, so the field
+is sign + one integer digit + point + two decimals, landing on -48, -24, 0, +24, +48.
+
+Measured with the `--screenshot` path (which re-renders the whole tree, so the readout is live —
+the `--stream` frames are NOT suitable for readout-geometry work; verified below), vault-tec,
+`gauge_boost` frame, bar:
+
+    build A (HEAD) ink runs: 210..231  241..248  259..278  282..303
+    build B (fix)  ink runs: 198..219  229..236  247..266  270..291
+    best-fit shift = 12 px left over the band (160 residual AA px; every other shift 648+)
+    decimal point (the w8 run): centre 244.5  ->  232.5   FACE / BOX CENTRE = 232.5
+
+The whole-frame diff is confined to **x 198..303, y 346..373** — the readout row — so nothing
+else on the face moved. Isolation against the same HEAD baseline binary, same screenshots:
+**psi: all four gauge frames byte-identical; kPa: all four byte-identical; bar: all four differ**
+(the intended change). This is the mirror divergence the earlier rounds' notes had left open for
+the vault readout; the web needed no change, the firmware moved to the web's anchor.
+
+A harness note worth keeping: the `--stream` path renders the vault readout from a stale state —
+a 48 px gross shift of the cell anchor produced a byte-identical `--stream` frame, while the
+same binaries differ under `--screenshot`. Any future readout-geometry measurement must use
+`--screenshot` (or the live panel), never blind `--stream` diffs.
+
+## 2026-10-04 (later) — pre-v1.1.0 independent review: four confirmed defects, the harness gaps and the mode-naming cleanups
+
+PR #4 (`feat/pressure-units`, `8f48e92..3a8d1ae`) was reviewed by four independent
+read-only slices before the v1.1.0 cut. Four defects were confirmed against the source and are
+fixed in this round; each names its file and the invariant it restores. The measured evidence
+for every item is the coordinator's post-fix verification — **pending here**; no number is
+asserted from this round and no test is claimed to have run.
+
+### Confirmed defects
+
+- **The arc PEAK cache key did not include the reference** (`main/boost_gauge.c`). The
+  `PEAK x.x` label is cached and re-formatted only when its inputs move; in absolute mode the
+  text is a function of the peak psi AND the effective reference
+  (`boost_pressure_ref_psi()`), so a held peak never re-rendered as the BMP280 ambient drifted.
+  INVARIANT: the arc peak cache key must include the reference, not the peak value alone.
+- **The neon psi readout folded twice** (`main/boost_gauge.c`). `neon_layout_readout_units()`'s
+  psi branch re-applied the shared ±0.1 psi fold to a value the reference path had already
+  folded, so a reference-adjusted sample landing inside the band was cut a second time.
+  INVARIANT: the fold has exactly ONE definition (`boost_readout_display_psi()`) and the psi
+  branch folds exactly once — it now calls the fold-free `boost_neon_layout_readout_raw()`,
+  keeping RELATIVE mode byte-for-byte the pre-change renderer.
+- **Web converted-unit dial ticks kept trailing zeros** (`web/app.js`). The bar/kPa dial-tick
+  renderer emitted values the firmware's `boost_units_format_tick` trims (`1.10` where the
+  firmware prints `1.1`). INVARIANT: tick numerals trim trailing zeros and psi ticks stay
+  integer — the documented cosmetic exception, matching on both sides.
+- **The theme previews used the standard atmosphere in absolute mode**
+  (`apps/android/BoostGauge/app/src/main/java/com/boostgauge/app/ui/components/CanonicalGaugePreview.kt`,
+  `apps/ios/BoostGauge/BoostGauge/Support/GaugeMirrorWebView.swift` and
+  `apps/ios/BoostGauge/BoostGauge/ViewModels/ThemesViewModel.swift`, which now fetches `/state`
+  for the ambient).
+  The canonical-preview payload omitted the reference, so an absolute preview fell back to
+  101.325 kPa instead of the measured `/state.sensors.ambientKpa` and disagreed with the
+  dashboard. INVARIANT: every preview payload carries the ambient reference so absolute
+  previews render the measured baseline.
+
+### Harness gaps fixed
+
+- **The passthrough test guarded the module, not the renderer** (`tools/test_pressure_ref.c`).
+  Its 63,009 compares call the reference module and diff it against `boost_units_*`; no renderer
+  is linked, so reverting any of the ~20 boost-side call sites in `main/boost_gauge.c` to the raw
+  formatter would drop the reference silently with the suite green. The file's own claim was
+  corrected, and a real call-site guard was added as `tools/tests/test_pressure_ref_sites.py`
+  (registered in `tools/test_suite.py`): every live readout, PEAK label and dial tick in
+  `main/boost_gauge.c` must route through `boost_pressure_ref_*`, with three documented
+  post-reference exceptions. INVARIANT: a numeral that bypasses the reference fails the suite.
+- **Checks that could not fail.** Three: `tools/test_pressure_ref.c` compared a deterministic
+  function with itself under a "the wire is never touched" label (deleted);
+  `tools/tests/test_web_api_contract.py` PUT `"yes"` while the flag was already true, so ignore
+  and coerce both passed (now PUTs false, then `"yes"`, and asserts it stays false);
+  `tools/tests/test_sim_panel.py` sent an out-of-range page while already at the last page (now
+  starts at page 0). Each was proven to fail on a doctored copy of the code it guards.
+- **`--qr-test` page-2 content** (`sim/main.c`): the self-test asserted only the page index and
+  wrote the Units frame, so a page-2 build reusing page 1's widgets still passed; it now asserts
+  the three page frames render differently before reporting PASS.
+- **Dead-zone test's whitespace-exact JS pin** (`tools/tests/test_readout_deadzone.py`): a
+  `web/app.js` source pin required exact whitespace and failed on any reformat; it now matches
+  structurally while still proving the fold-before-reference call order, and the file gained a
+  global one-band check (exactly one `BOOST_READOUT_DEADBAND_PSI` in firmware and one
+  `ARC_READOUT_DEADBAND` in web, and no bare `0.1` band literal at any fold site).
+
+### Mode-naming cleanups
+
+The overlay's caption is `REL/ABS` and the mode pair is RELATIVE / ABSOLUTE; `atmosphere`
+names only the BASELINE value. Stale comment forms were corrected in `sim/README.md`,
+`main/boost_page.c`, `main/boost_page.h` and `sim/main.c`; a grep of the whole tree finds no
+remaining place where `ATM`/`atmospheric` names the MODE (the survivors are the atmospheric
+BASELINE value, the retired-label record, and the `ATMO` zone word, which is a different axis).
+
+The `/logs` contract sentence was reconciled with the code: the reference never alters a wire
+VALUE — `/state.psi`, the `/logs` JSON psi and the `/logs.csv` columns stay gauge psi — while
+the client UIs may display those log numerals reference-adjusted (`AGENTS.md`, `apps/PARITY.md`).
+
+### Measured evidence (coordinator, post-fix, tree at this commit)
+
+- **RELATIVE psi byte-identity holds after the fixes.** Side-by-side sims: this tree vs a
+  detached worktree at `3a8d1ae` (the pre-fix commit), `--screenshot` for all five themes:
+  **35/35 frames byte-identical** (`gauge_vac/atmo/boost/over` + `tpms_normal/stale/disconnected`),
+  0 differing.
+- **The neon double fold was observable and is gone.** Scoped host harness: the psi branch's new
+  shape `boost_neon_layout_readout_raw(fold(v))` equals the old `boost_neon_layout_readout(v)`
+  for 3530 samples across [-30,+30] psi (so RELATIVE is untouched), while a reference-adjusted
+  0.06 psi renders `0.1` on the raw path and `0.0` on the old double-fold path.
+- **Firmware build:** clean, `boost_gauge.bin` 0x28e8e0 (36% free). The only warnings are the two
+  pre-existing `cJSON_Delete` const warnings in `main/boost_app_ble.c`.
+- **Host suite:** 15/15 (the new `test_pressure_ref_sites.py` is registered; 14 before this round).
+  C host tests: `test_pressure_ref` PASS (63,009 compares), `test_units_format` PASS (14,002),
+  `test_neon_geom` all assertions pass. `--qr-test` PASS including the new
+  `page frames distinct: OK`.
+- **Web tick parity:** the new `pressureTickLabel` was swept against `boost_units_format_tick`
+  (and a float32 emulation of it) over -30..40 psi at 0.1 psi steps for bar and kPa: **0
+  mismatches**; psi ticks unchanged. Assets regenerated, idempotent, **227,287 gzip bytes**
+  (md5 7991f9fbcad316199ba9623f81158c2a), and the committed blob was re-checked by decompression.
+- **Apps:** Android `testDebugUnitTest` BUILD SUCCESSFUL **115/115** + `compileDebugKotlin` OK;
+  iOS `GaugeMirrorWebViewTests` **9/9** (including the new real-WebKit ambient-fold test) and
+  ViewModelTests passing except the **2 pre-existing timezone failures**, reproduced at base
+  `3a8d1ae`. Preview equality checked numerically against the real `web/app.js` functions:
+  absolute numerals now match the dashboard hero exactly (was up to 0.48 psi apart).
+
+**HARDWARE: not run — no board attached.** Every measurement above is host/simulator evidence.
+v0.9.7 remains the last hardware-verified release.

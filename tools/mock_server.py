@@ -186,6 +186,7 @@ THEME = {
     "hudGradient": False,
     "hudTrueBlack": False,
     "dynoTrueBlack": False,
+    "pressureAbsolute": False,
     "neonMarqueeSpin": False,
     "teSync": False,
     "regionDBuf": False,
@@ -352,6 +353,7 @@ def reset_mock_state(seed: int | None = None) -> None:
         "hudGradient": False,
         "hudTrueBlack": False,
         "dynoTrueBlack": False,
+        "pressureAbsolute": False,
         "neonMarqueeSpin": False,
         "teSync": False,
         "regionDBuf": False,
@@ -740,6 +742,9 @@ def state_payload() -> dict:
         "peakPsi": round(PEAK, 2),
         # Presentation-only unit; key order mirrors boost_json_state().
         "pressureUnit": str(THEME["pressureUnit"]),
+        # Display reference rides beside the unit so a client can follow a live
+        # panel toggle; /themes is the initial-config source, this is the live one.
+        "pressureAbsolute": bool(THEME["pressureAbsolute"]),
         "zone": zone_for(psi),
         "demo": demo,
         "brightness": int(CONFIG["brightnessHigh"]),
@@ -892,6 +897,7 @@ def themes_payload() -> dict:
         "hudGradient": bool(THEME["hudGradient"]),
         "hudTrueBlack": bool(THEME["hudTrueBlack"]),
         "dynoTrueBlack": bool(THEME["dynoTrueBlack"]),
+        "pressureAbsolute": bool(THEME["pressureAbsolute"]),
         "neonMarqueeSpin": bool(THEME["neonMarqueeSpin"]),
         "teSync": bool(THEME["teSync"]),
         "regionDBuf": bool(THEME["regionDBuf"]),
@@ -1279,6 +1285,8 @@ class Handler(BaseHTTPRequestHandler):
             THEME["hudTrueBlack"] = payload["hudTrueBlack"]
         if "dynoTrueBlack" in payload and isinstance(payload["dynoTrueBlack"], bool):
             THEME["dynoTrueBlack"] = payload["dynoTrueBlack"]
+        if "pressureAbsolute" in payload and isinstance(payload["pressureAbsolute"], bool):
+            THEME["pressureAbsolute"] = payload["pressureAbsolute"]
         if "neonMarqueeSpin" in payload and isinstance(payload["neonMarqueeSpin"], bool):
             THEME["neonMarqueeSpin"] = payload["neonMarqueeSpin"]
         if "teSync" in payload and isinstance(payload["teSync"], bool):

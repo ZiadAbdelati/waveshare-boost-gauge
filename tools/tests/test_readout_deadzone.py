@@ -58,6 +58,11 @@ GEOM_H = REPO_ROOT / "main" / "boost_neon_geom.h"
 GEOM_C = REPO_ROOT / "main" / "boost_neon_geom.c"
 APP_JS = REPO_ROOT / "web" / "app.js"
 NET_C = REPO_ROOT / "main" / "boost_network.c"
+# Source roots for the tree-wide "one band definition" scan. Module-level (like
+# the path constants above) so a harness can point them at a doctored copy;
+# production runs use the repo.
+FIRMWARE_ROOTS = (REPO_ROOT / "main", REPO_ROOT / "sim")
+WEB_ROOTS = (REPO_ROOT / "web",)
 
 
 class Result:
@@ -125,15 +130,15 @@ def main() -> int:
     # definition of the band - one convention beside an existing one is the
     # thing AGENTS.md forbids).
     arc_helper = function_body(gauge_c, "static float arc_readout_display_psi(float psi)")
-    result.check("boost_readout_display_psi(psi)" in arc_helper
+    result.check("boost_pressure_ref_display(psi, true)" in arc_helper
                  and "#define" not in arc_helper,
-                 "arc_readout_display_psi delegates to the shared fold helper",
-                 "arc helper redefines the band locally")
+                 "arc_readout_display_psi uses the shared display transform (fold, then reference)",
+                 "arc helper redefines the band or bypasses the shared transform")
 
     # --- every folding theme routes through the shared helper ---------------
     hud_body = function_body(gauge_c, "static void update_hud(const boost_sample_t *sample, const boost_theme_t *theme)")
-    result.check("boost_readout_display_psi(" in hud_body,
-                 "night-city HUD readout folds through the shared dead zone",
+    result.check("boost_pressure_ref_display(" in hud_body,
+                 "night-city HUD readout folds through the shared display transform",
                  "update_hud uses raw psi for its digit slots")
     hud_sign = re.search(r"const char \*sign = (\w+) < -0\.05f \? \"-\" : \"\";", hud_body)
     result.check(hud_sign is not None and hud_sign.group(1) == "readout_psi",
@@ -141,8 +146,8 @@ def main() -> int:
                  "HUD sign still reads the raw sample")
 
     big_body = function_body(gauge_c, "static void update_bigdigit(const boost_sample_t *sample, const boost_theme_t *theme)")
-    result.check("boost_readout_display_psi(" in big_body,
-                 "big-digit readout folds through the shared dead zone",
+    result.check("boost_pressure_ref_display(" in big_body,
+                 "big-digit readout folds through the shared display transform",
                  "update_bigdigit uses raw psi for its digit slots")
     big_neg = re.search(r"const bool neg = (\w+) < -0\.05f;", big_body)
     result.check(big_neg is not None and big_neg.group(1) == "readout_psi",
@@ -179,6 +184,16 @@ def main() -> int:
                  "thresholds must test the folded value, not raw psi")
 
     # --- vault-tec is the deliberate exception ------------------------------
+    result.check("boost_pressure_ref_display" not in zone_rgb_body
+                 and "boost_pressure_ref_display" not in zone_id_body,
+                 "zone colour/id stay gauge-relative (no display reference)",
+                 "a zone decision must not shift with the display reference")
+
+    vault_cells = function_body(gauge_c, "static void vault_build_cells(float psi)")
+    result.check("boost_pressure_ref_display(psi, false)" in vault_cells,
+                 "vault takes the display reference but still skips the fold",
+                 "vault must stay unfoliated yet reference-aware")
+
     vault_body = function_body(gauge_c, "static void update_vault(const boost_sample_t *sample, const boost_theme_t *theme)")
     result.check("boost_readout_display_psi" not in vault_body
                  and "readout_psi" not in vault_body,
@@ -201,13 +216,13 @@ def main() -> int:
                  "expected fold shape in arcReadoutDisplayPsi")
 
     result.check(re.search(
-        r"function drawFixedPsi\(psi, decimalX, baselineY, scale\)\s*\{\s*const value = arcReadoutDisplayPsi\(Number\(psi\)\);",
+        r"function drawFixedPsi\(psi, decimalX, baselineY, scale\)\s*\{\s*const value = boostDisplayPsi\(psi\);",
         app_js) is not None,
-        "drawFixedPsi routes through arcReadoutDisplayPsi",
-        "web dyno readout not using the dead zone")
+        "drawFixedPsi routes through boostDisplayPsi (fold, then reference)",
+        "web dyno readout bypasses the shared display transform")
 
-    result.check("splitNum(arcReadoutDisplayPsi(psi), 1)" in app_js,
-                 "web HUD readout folds through arcReadoutDisplayPsi",
+    result.check("splitNum(boostDisplayPsi(psi), 1)" in app_js,
+                 "web HUD readout folds through boostDisplayPsi",
                  "web HUD still splits the raw psi")
     result.check("splitNum(psi, 2)" in app_js,
                  "web vault readout keeps the raw psi (deliberate exception)",
@@ -219,13 +234,13 @@ def main() -> int:
                  "vault web mirror must stay raw")
 
     bigdigit_js = function_body(app_js, "function drawBigDigitGauge(sample, psi, g)")
-    result.check("arcReadoutDisplayPsi(psi)" in bigdigit_js
+    result.check("boostDisplayPsi(psi)" in bigdigit_js
                  and "isNeg = readoutPsi < -0.05" in bigdigit_js,
                  "web big-digit readout + minus fold",
                  "web big-digit still uses raw psi")
 
     neon_js = function_body(app_js, "function drawNeonGauge(sample, psi, g)")
-    result.check("const readoutPsi = arcReadoutDisplayPsi(psi);" in neon_js
+    result.check("const readoutPsi = boostDisplayPsi(psi);" in neon_js
                  and "if (readoutPsi < 0 && tenthsTotal !== 0)" in neon_js,
                  "web neon readout + sign fold",
                  "web neon still uses raw psi for the digit composition")
@@ -239,10 +254,78 @@ def main() -> int:
     result.check(neon_js.count("neonZoneDisplayPsi(psi)") >= 2,
                  "web neon zone colour AND zone id consume the folded value",
                  "drawNeonGauge must route both zone sites through neonZoneDisplayPsi")
+    result.check("boostDisplayPsi" not in neon_zone_js
+                 and "refAdjustedPsi" not in neon_zone_js,
+                 "web zone helper stays gauge-relative (no display reference)",
+                 "neonZoneDisplayPsi must not apply the reference")
+    result.check(re.search(
+        r"function\s+boostDisplayPsi\s*\(\s*psi\s*\)\s*\{\s*"
+        r"return\s+refAdjustedPsi\s*\(\s*arcReadoutDisplayPsi\s*\(",
+        app_js) is not None,
+                 "web display transform folds BEFORE the reference",
+                 "boostDisplayPsi must compose refAdjustedPsi(arcReadoutDisplayPsi(psi))")
+    result.check("refAdjustedPsi" in vault_js and "arcReadoutDisplayPsi" not in vault_js,
+                 "web vault takes the reference but still does not fold",
+                 "vault must stay unfolded yet reference-aware")
     result.check("psi > 0.05 ? p.boost : p.vacuum" not in neon_js
                  and "? 2 : psi > 0.05" not in neon_js,
                  "no raw-psi zone threshold remains at the web neon zone sites",
                  "zone thresholds must test the folded value, not raw psi")
+
+    # --- ONE band definition across the tree (2026-10-04 hardening) ----------
+    # The +-0.1 psi fold is ONE convention: a single firmware #define and a
+    # single web constant. A second band literal at any fold site would let the
+    # two disagree silently, so count the DEFINITIONS across the firmware, web
+    # and sim source roots (references and comments excluded) and require
+    # exactly one of each; then require no bare 0.1 literal inside any fold
+    # site's CODE (comments may name the band).
+    def _sources(root: pathlib.Path, suffixes: tuple[str, ...]) -> list[pathlib.Path]:
+        return [p for p in root.rglob("*") if p.is_file() and p.suffix in suffixes]
+
+    def _code_only(body: str) -> str:
+        body = re.sub(r"/\*.*?\*/", "", body, flags=re.S)
+        return re.sub(r"//[^\n]*", "", body)
+
+    def _label(p: pathlib.Path) -> str:
+        try:
+            return str(p.relative_to(REPO_ROOT))
+        except ValueError:
+            return str(p)
+
+    fw_hits = [_label(p)
+               for root in FIRMWARE_ROOTS
+               for p in _sources(root, (".c", ".h"))
+               for _ in re.finditer(r"#define\s+BOOST_READOUT_DEADBAND_PSI\b",
+                                    p.read_text(encoding="utf-8"))]
+    result.check(fw_hits == ["main/boost_neon_geom.h"],
+                 "exactly ONE BOOST_READOUT_DEADBAND_PSI definition in the tree",
+                 f"definitions={fw_hits}")
+
+    web_hits = [_label(p)
+                for root in WEB_ROOTS
+                for p in _sources(root, (".js",))
+                for _ in re.finditer(r"\bARC_READOUT_DEADBAND\s*=\s*[0-9.]+",
+                                     p.read_text(encoding="utf-8"))]
+    result.check(web_hits == ["web/app.js"],
+                 "exactly ONE ARC_READOUT_DEADBAND definition in web/",
+                 f"definitions={web_hits}")
+
+    band_literal = re.compile(r"\b0\.1f?\b")
+    geom_fold = function_body(
+        geom_h, "static inline float boost_readout_display_psi(float psi)")
+    neon_c_fold = function_body(geom_c, "void boost_neon_layout_readout(float psi")
+    arc_js = function_body(app_js, "function arcReadoutDisplayPsi(psi)")
+    boost_js = function_body(app_js, "function boostDisplayPsi(psi)")
+    for site, body in (("boost_readout_display_psi (firmware fold helper)", geom_fold),
+                       ("arc_readout_display_psi (gauge fold helper)", arc_helper),
+                       ("boost_neon_layout_readout (neon fold site)", neon_c_fold),
+                       ("arcReadoutDisplayPsi (web fold helper)", arc_js),
+                       ("neonZoneDisplayPsi (web zone helper)", neon_zone_js),
+                       ("boostDisplayPsi (web display transform)", boost_js)):
+        result.check(band_literal.search(_code_only(body)) is None,
+                     f"{site} uses the shared band constant, not a 0.1 literal",
+                     "a second +-0.1 psi band literal would drift from the "
+                     "single definition")
 
     # --- wedge/zone use raw psi ---------------------------------------------
     value_arc = function_body(gauge_c, "static void value_arc_angles")

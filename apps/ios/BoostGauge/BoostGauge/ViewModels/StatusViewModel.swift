@@ -12,7 +12,8 @@ final class StatusViewModel: ObservableObject {
 
     private weak var transport: GaugeTransport?
     /// Shared session: the `/themes` probe already run for theme names also
-    /// carries `pressureUnit`, which must reach the other tabs.
+    /// carries `pressureUnit` and `pressureAbsolute`, which must reach the
+    /// other tabs.
     weak var appSession: AppSession?
     private var statusStream: AsyncStream<Result<Data, Error>>?
     private var updateTask: Task<Void, Never>?
@@ -104,11 +105,18 @@ final class StatusViewModel: ObservableObject {
             // changes the unit, and it recovers a client that missed the
             // initial /themes fetch.
             let stateUnit = Self.pressureUnit(from: statusData)
+            // The reference also travels on every /state sample (reference
+            // contract): the live path for the panel's PRESSURE button, and
+            // the recovery path when the /themes fetch raced transport setup.
+            let stateAbsolute = Self.pressureAbsolute(from: statusData)
             await MainActor.run {
                 assertMainThread()
                 self.state = decoded
                 if let stateUnit {
                     self.appSession?.applyPressureUnitFromState(stateUnit)
+                }
+                if let stateAbsolute {
+                    self.appSession?.applyPressureAbsoluteFromState(stateAbsolute)
                 }
                 self.isLoading = false
                 self.errorMessage = nil
@@ -131,6 +139,13 @@ final class StatusViewModel: ObservableObject {
         return object["pressureUnit"] as? String
     }
 
+    /// Reads `pressureAbsolute` from a raw `/state` payload without extending
+    /// the decoded `GaugeState` model (the field is presentation-only).
+    private static func pressureAbsolute(from data: Data) -> Bool? {
+        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
+        return object["pressureAbsolute"] as? Bool
+    }
+
     func loadThemeNames(_ transport: GaugeTransport) async {
         guard let response = try? await transport.get("themes"),
               let object = try? response.jsonObject(),
@@ -139,6 +154,7 @@ final class StatusViewModel: ObservableObject {
         }
         let tpmsBle = object["tpmsBle"] as? Bool
         let pressureUnit = object["pressureUnit"] as? String
+        let pressureAbsolute = object["pressureAbsolute"] as? Bool
         var names: [String: String] = [:]
         for row in rows {
             if let id = row["id"] as? String {
@@ -149,6 +165,9 @@ final class StatusViewModel: ObservableObject {
             self.tpmsBleEnabled = tpmsBle
             if let pressureUnit {
                 self.appSession?.applyPressureUnit(pressureUnit)
+            }
+            if let pressureAbsolute {
+                self.appSession?.applyPressureAbsolute(pressureAbsolute)
             }
             if let id = self.state?.activeThemeId {
                 self.themeName = names[id] ?? id
