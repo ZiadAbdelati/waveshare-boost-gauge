@@ -1003,6 +1003,195 @@ static int run_qr_test(const char *out_dir)
         }
     }
 
+    /* 3c. Gesture classification on the overlay (board report 2026-10-05: "I
+     * can't swipe on the settings page - it takes me out of settings and
+     * changes themes"). Three properties, all driven through the PRODUCTION
+     * classifier and state machine via the gesture-injection hooks:
+     *   (a) a short background flick (past the 12 px tap slop, under the 48 px
+     *       swipe threshold) is a DRAG, not a tap: it must not dismiss;
+     *   (b) a vertical flick changes the theme, the overlay survives, and the
+     *       very next swipe still steps a page (the latch that used to wedge
+     *       the classifier for every later gesture);
+     *   (c) a flick whose PRESSED was never delivered must not be measured
+     *       from the previous gesture's touch-down point. */
+    boost_page_qr_dismiss();
+    pump_lvgl(30);
+    boost_page_qr_show();
+    pump_lvgl(30);
+    if (boost_page_qr_page() != 0) {
+        fprintf(stderr, "FAIL gesture section did not open on the QR page\n");
+        failures++;
+    }
+
+    /* (a) 40 px background flick: a drag, so no dismiss. */
+    boost_page_qr_drag(150, 233, 190, 260);
+    pump_lvgl(60);
+    if (!boost_page_qr_active()) {
+        fprintf(stderr, "FAIL a 40 px drag dismissed the overlay (a drag is not a tap)\n");
+        failures++;
+    } else if (boost_page_qr_page() != 0) {
+        fprintf(stderr, "FAIL a 40 px drag stepped the page\n");
+        failures++;
+    } else {
+        printf("short drag does not dismiss: OK\n");
+    }
+
+    /* (b) vertical flick -> theme changes, overlay survives, next swipe works.
+     * Snapshot the theme-0 face with the overlay DOWN first. */
+    boost_page_qr_dismiss();
+    pump_lvgl(60);
+    {
+        char face_pre[512];
+        snprintf(face_pre, sizeof(face_pre), "%s/qr_face_pre.raw", out_dir);
+        if (!snapshot_screen(face_pre)) return 2;
+    }
+    boost_page_qr_show();
+    pump_lvgl(30);
+    boost_page_qr_drag(233, 400, 233, 100);   /* flick up: next theme */
+    pump_lvgl(120);
+    if (!boost_page_qr_active()) {
+        fprintf(stderr, "FAIL vertical flick lost the overlay\n");
+        failures++;
+    }
+    if (boost_page_qr_page() != 0) {
+        fprintf(stderr, "FAIL vertical flick stepped the page (got %d)\n",
+                boost_page_qr_page());
+        failures++;
+    }
+    boost_page_qr_swipe_left();
+    pump_lvgl(80);
+    if (!boost_page_qr_active()) {
+        fprintf(stderr, "FAIL overlay lost after the post-flick swipe\n");
+        failures++;
+    } else if (boost_page_qr_page() != 1) {
+        fprintf(stderr, "FAIL swipe after a vertical flick did not step one page (got %d)\n",
+                boost_page_qr_page());
+        failures++;
+    } else {
+        printf("swipe after a vertical flick: OK\n");
+    }
+
+    /* (c) No touch-down event: the first sample must establish its own origin.
+     * From page 1 a leftward flick steps forward to page 2. */
+    boost_page_qr_drag_unseeded(406, 233, 60, 233);
+    pump_lvgl(80);
+    if (!boost_page_qr_active()) {
+        fprintf(stderr, "FAIL overlay lost on the unseeded flick\n");
+        failures++;
+    } else if (boost_page_qr_page() != 2) {
+        fprintf(stderr, "FAIL unseeded flick did not step 1 -> 2 (got %d): stale origin\n",
+                boost_page_qr_page());
+        failures++;
+    } else {
+        printf("unseeded flick steps one page: OK\n");
+    }
+
+    /* (b, conclusion) the theme really changed: the face differs with the
+     * overlay down. */
+    boost_page_qr_dismiss();
+    pump_lvgl(60);
+    {
+        char face_post[512], face_pre[512];
+        snprintf(face_post, sizeof(face_post), "%s/qr_face_post.raw", out_dir);
+        snprintf(face_pre, sizeof(face_pre), "%s/qr_face_pre.raw", out_dir);
+        if (!snapshot_screen(face_post)) return 2;
+        /* raw_files_cmp: 0 = the files differ, 1 = identical, -1 = open error. */
+        if (raw_files_cmp(face_pre, face_post) != 0) {
+            fprintf(stderr, "FAIL the vertical flick did not change the theme face\n");
+            failures++;
+        } else {
+            printf("vertical flick changed the theme: OK\n");
+        }
+    }
+
+    /* (d) A drag that starts ON a switch is a drag too - the square owns the
+     * whole press stream on glass, and its tap callback must apply the same
+     * "a drag is not a tap" rule as the overlay background: a 30 px flick must
+     * not change the setting, while a 300 px horizontal flick steps the page.
+     * The SETTING is the durable witness: the deferred request is consumed by
+     * the next LVGL cycle, so a pending-request check would pass either way. */
+    boost_page_qr_dismiss();
+    pump_lvgl(30);
+    boost_page_qr_show();
+    pump_lvgl(30);
+    boost_page_qr_show_page(2);   /* Units: UNITS + REL/ABS */
+    pump_lvgl(60);
+    if (boost_page_qr_page() != 2) {
+        fprintf(stderr, "FAIL switch test did not open the Units page (got %d)\n",
+                boost_page_qr_page());
+        failures++;
+    }
+    const boost_unit_t unit_before = boost_theme_pressure_unit();
+    boost_page_qr_switch_gesture(0, 30, 12);   /* short flick on UNITS */
+    pump_lvgl(60);
+    if (!boost_page_qr_active()) {
+        fprintf(stderr, "FAIL a 30 px switch drag dismissed the overlay\n");
+        failures++;
+    } else if (boost_theme_pressure_unit() != unit_before) {
+        fprintf(stderr, "FAIL a 30 px drag starting on a switch changed the unit\n");
+        failures++;
+    } else {
+        printf("short switch drag does not toggle: OK\n");
+    }
+    boost_page_qr_tap_switch(0);   /* a real tap must still cycle the unit */
+    for (int i = 0; i < 10; ++i) { lv_tick_inc(16); lv_timer_handler(); usleep(16000); }
+    if (boost_theme_pressure_unit() == unit_before) {
+        fprintf(stderr, "FAIL a tap on the switch no longer cycles the unit\n");
+        failures++;
+    } else {
+        printf("switch tap still toggles: OK\n");
+    }
+    const boost_unit_t unit_after_tap = boost_theme_pressure_unit();
+    boost_page_qr_dismiss();
+    pump_lvgl(30);
+    boost_page_qr_show();
+    pump_lvgl(30);
+    boost_page_qr_show_page(2);
+    pump_lvgl(60);
+    boost_page_qr_switch_gesture(0, -300, 0);   /* flick left from UNITS */
+    pump_lvgl(60);
+    if (!boost_page_qr_active()) {
+        fprintf(stderr, "FAIL a switch flick dismissed the overlay\n");
+        failures++;
+    } else if (boost_page_qr_page() != 0) {
+        fprintf(stderr, "FAIL switch flick did not step 2 -> 0 (got %d)\n",
+                boost_page_qr_page());
+        failures++;
+    } else if (boost_theme_pressure_unit() != unit_after_tap) {
+        fprintf(stderr, "FAIL a switch flick also changed the unit\n");
+        failures++;
+    } else {
+        printf("switch flick steps the page without toggling: OK\n");
+    }
+
+    /* (e) One action per gesture: further PRESSING samples after a
+     * page-stepping flick must not step a second page (the mid-drag rebuild
+     * drops the origin; the one-shot latch is what keeps it to one action). */
+    boost_page_qr_dismiss();
+    pump_lvgl(30);
+    boost_page_qr_show();
+    pump_lvgl(30);
+    boost_page_qr_press(406, 233);
+    boost_page_qr_move(60, 233);
+    pump_lvgl(60);
+    if (boost_page_qr_page() != 1) {
+        fprintf(stderr, "FAIL the step flick did not reach page 1 (got %d)\n",
+                boost_page_qr_page());
+        failures++;
+    }
+    boost_page_qr_move(60, 233);
+    boost_page_qr_move(406, 233);
+    pump_lvgl(60);
+    if (boost_page_qr_page() != 1) {
+        fprintf(stderr, "FAIL two steps' worth of movement in one gesture re-stepped (got %d)\n",
+                boost_page_qr_page());
+        failures++;
+    } else {
+        printf("one page per gesture: OK\n");
+    }
+    boost_page_qr_release();
+    pump_lvgl(30);
+
     /* 4. Tap dismisses and gauge resumes */
     boost_page_qr_dismiss();
     pump_lvgl(50);

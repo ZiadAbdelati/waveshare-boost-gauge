@@ -115,6 +115,13 @@ static bool s_qr_drag_classified;
  * after the release (RELEASED is sent first, then CLICKED) is swallowed - a
  * drag is not a tap. Cleared when the next press seeds a fresh gesture. */
 static bool s_qr_swipe_suppress;
+/* Set as soon as a gesture moves past TAP_SLOP_PX, whether or not it was long
+ * enough to classify. A moved gesture is a drag, not a tap, so its release
+ * must NOT dismiss the overlay: without this a 20-47 px background flick
+ * (under SWIPE_MIN_PX, so it sets no other latch) fell straight through to
+ * qr_click_cb and closed the whole settings overlay - the "swiping takes me
+ * out of the settings" board report. */
+static bool s_qr_drag_seen;
 
 /* One centred PAIR of square buttons per toggle page, matching the sim tap
  * hook's PAGE-LOCAL row: page 1 = 0 OBD BLE / 1 APP BLE, page 2 = 0 UNITS /
@@ -143,10 +150,16 @@ static bool media_active(void)
 static void show_page(boost_page_id_t page);
 static void hide_qr(void);
 static void qr_click_cb(lv_event_t *event);
+static void qr_press_cb(lv_event_t *event);
 static void qr_pressing_cb(lv_event_t *event);
+static void qr_release_cb(lv_event_t *event);
 static void qr_goto_page(int32_t page);
 static void qr_step(int32_t dir);
-static void qr_swipe_press_cb(lv_event_t *event);
+static void qr_gesture_begin(int32_t x, int32_t y);
+static void qr_gesture_end(void);
+static void qr_gesture_reset(void);
+static void qr_gesture_rebuild(void);
+static void qr_drag_update(int32_t x, int32_t y);
 static void qr_tap_obd_cb(lv_event_t *event);
 static void qr_tap_app_cb(lv_event_t *event);
 static void qr_tap_units_cb(lv_event_t *event);
@@ -209,6 +222,15 @@ static lv_obj_t *qr_make_square(lv_obj_t *parent, int x, int y, bool active, uin
     lv_obj_set_style_bg_color(dot, lv_color_hex(active ? accent : 0x3a4048), 0);
     lv_obj_align(dot, LV_ALIGN_TOP_RIGHT, -12, 12);
     lv_obj_clear_flag(dot, LV_OBJ_FLAG_CLICKABLE);
+    /* Gesture bookkeeping is registered HERE, once, for every square. A press
+     * that starts on a square is OWNED by the square, so the overlay never sees
+     * its PRESSED/PRESSING/RELEASED: the square must feed the shared classifier
+     * itself (seeding the gesture from the true touch-down point) and must clear
+     * it at release, or the origin and the one-shot latch leak into the next
+     * gesture. Registering it in the factory keeps all four call sites identical. */
+    lv_obj_add_event_cb(b, qr_press_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(b, qr_pressing_cb, LV_EVENT_PRESSING, NULL);
+    lv_obj_add_event_cb(b, qr_release_cb, LV_EVENT_RELEASED, NULL);
     return b;
 }
 
@@ -256,11 +278,17 @@ static void show_qr(void)
     lv_obj_set_style_bg_opa(s_qr_overlay, LV_OPA_COVER, 0);
     lv_obj_add_flag(s_qr_overlay, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(s_qr_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    /* Gesture state is deliberately NOT touched here. show_qr() is also the
+     * mid-gesture rebuild path (qr_goto_page() deletes and re-creates the
+     * overlay to step a page), so clearing the latches here armed the
+     * classifier again for the remainder of the SAME drag (a slow 300 px swipe
+     * could step two pages) and dropped the "not a tap" latch the release needs
+     * to swallow its CLICKED. The state is reset at the gesture boundaries and
+     * when the overlay closes instead - see boost_page_create()/hide_qr(). */
     lv_obj_add_event_cb(s_qr_overlay, qr_click_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(s_qr_overlay, qr_press_cb, LV_EVENT_PRESSED, NULL);
     lv_obj_add_event_cb(s_qr_overlay, qr_pressing_cb, LV_EVENT_PRESSING, NULL);
-    s_qr_press_tracking = false;
-    s_qr_drag_classified = false;
-    s_qr_swipe_suppress = false;
+    lv_obj_add_event_cb(s_qr_overlay, qr_release_cb, LV_EVENT_RELEASED, NULL);
 
     /* Page indicator + swipe hint render on EVERY page so the three-page
      * structure is visible from any of them. The dots are real objects, not
@@ -295,8 +323,6 @@ static void show_qr(void)
                                boost_units_label(boost_theme_pressure_unit()));
             s_qr_btn_unit_label =
                 lv_obj_get_child(s_qr_btn[0], lv_obj_get_child_count(s_qr_btn[0]) - 1);
-            lv_obj_add_event_cb(s_qr_btn[0], qr_swipe_press_cb, LV_EVENT_PRESSED, NULL);
-            lv_obj_add_event_cb(s_qr_btn[0], qr_pressing_cb, LV_EVENT_PRESSING, NULL);
             lv_obj_add_event_cb(s_qr_btn[0], qr_tap_units_cb, LV_EVENT_CLICKED, NULL);
 
             /* Display reference. The primary line names the pair of modes and
@@ -315,22 +341,16 @@ static void show_qr(void)
                                boost_theme_pressure_absolute() ? "ABSOLUTE" : "RELATIVE");
             s_qr_btn_ref_label =
                 lv_obj_get_child(s_qr_btn[1], lv_obj_get_child_count(s_qr_btn[1]) - 1);
-            lv_obj_add_event_cb(s_qr_btn[1], qr_swipe_press_cb, LV_EVENT_PRESSED, NULL);
-            lv_obj_add_event_cb(s_qr_btn[1], qr_pressing_cb, LV_EVENT_PRESSING, NULL);
             lv_obj_add_event_cb(s_qr_btn[1], qr_tap_ref_cb, LV_EVENT_CLICKED, NULL);
         } else {
             s_qr_btn[0] = qr_make_square(s_qr_overlay, QR_PAIR_X0, QR_PAIR_Y,
                                          boost_obd_enabled(), 0x62D6A5);
             qr_square_set_text(s_qr_btn[0], "OBD BLE", boost_obd_enabled() ? "ON" : "OFF");
-            lv_obj_add_event_cb(s_qr_btn[0], qr_swipe_press_cb, LV_EVENT_PRESSED, NULL);
-            lv_obj_add_event_cb(s_qr_btn[0], qr_pressing_cb, LV_EVENT_PRESSING, NULL);
             lv_obj_add_event_cb(s_qr_btn[0], qr_tap_obd_cb, LV_EVENT_CLICKED, NULL);
 
             s_qr_btn[1] = qr_make_square(s_qr_overlay, QR_PAIR_X1, QR_PAIR_Y,
                                          boost_app_ble_enabled(), 0x62D6A5);
             qr_square_set_text(s_qr_btn[1], "APP BLE", boost_app_ble_enabled() ? "ON" : "OFF");
-            lv_obj_add_event_cb(s_qr_btn[1], qr_swipe_press_cb, LV_EVENT_PRESSED, NULL);
-            lv_obj_add_event_cb(s_qr_btn[1], qr_pressing_cb, LV_EVENT_PRESSING, NULL);
             lv_obj_add_event_cb(s_qr_btn[1], qr_tap_app_cb, LV_EVENT_CLICKED, NULL);
         }
 
@@ -430,9 +450,7 @@ static void hide_qr(void)
     }
     s_qr_active = false;
     s_qr_page = QR_PAGE_QR;
-    s_qr_press_tracking = false;
-    s_qr_drag_classified = false;
-    s_qr_swipe_suppress = false;
+    qr_gesture_reset();
     for (int i = 0; i < QR_BTN_COUNT; ++i) s_qr_btn[i] = NULL;
     s_qr_btn_unit_label = NULL;
     s_qr_btn_ref_label = NULL;
@@ -457,9 +475,12 @@ static void qr_reassert_overlay(void)
 static void qr_click_cb(lv_event_t *event)
 {
     (void)event;
-    /* A drag classified as a swipe is not a tap: swallow the CLICKED that
-     * follows its release so the overlay is not dismissed mid-gesture. */
-    if (s_qr_swipe_suppress) { s_qr_swipe_suppress = false; return; }
+    /* A drag is not a tap, by either route: the gesture classified as a swipe
+     * (suppress), or it moved past the tap slop without reaching the swipe
+     * threshold (drag_seen). Both must swallow the CLICKED LVGL delivers after
+     * the release, or the overlay is dismissed mid-gesture - the 20-47 px
+     * background flick that used to close the whole settings overlay. */
+    if (s_qr_swipe_suppress || s_qr_drag_seen) { qr_gesture_reset(); return; }
     hide_qr();
 }
 
@@ -531,58 +552,43 @@ static void qr_toggle_request(int32_t req)
     lv_timer_set_repeat_count(t, 1);
 }
 
-/* A drag that starts on a switch is OWNED by the switch (the overlay's
- * PRESSING tracker never sees it), so a swipe beginning on a toggle flips
- * pages / changes theme only if we classify it here. PRESSED seeds the shared
- * drag tracker from the true touch-down point; the button's own PRESSING
- * callback then feeds the same classifier the overlay uses. Once the
- * excursion since PRESSED crosses SWIPE_MIN_PX the gesture is a swipe: the
- * action fires and the CLICKED LVGL delivers after the release is swallowed
- * (s_qr_swipe_suppress, checked by the button and overlay CLICKED callbacks)
- * so the button does not toggle. A genuine tap stays inside SWIPE_MIN_PX and
- * toggles as before. */
-
-static void qr_swipe_press_cb(lv_event_t *event)
-{
-    (void)event;
-    /* A press STARTED on a switch: the overlay never sees PRESSED, so seed the
-     * shared drag tracker HERE. */
-    lv_indev_t *indev = lv_indev_get_act();
-    if (indev == NULL) return;
-    lv_point_t p;
-    lv_indev_get_point(indev, &p);
-    s_qr_press_x = p.x;
-    s_qr_press_y = p.y;
-    s_qr_press_tracking = true;
-    s_qr_drag_classified = false;
-    s_qr_swipe_suppress = false;
-}
-
 static void qr_tap_obd_cb(lv_event_t *event)
 {
     (void)event;
-    if (s_qr_swipe_suppress) { s_qr_swipe_suppress = false; return; }
+    /* Every CLICKED ends its gesture. A drag is not a tap by either route - it
+     * classified as a swipe, or it only moved past the 12 px tap slop - so the
+     * switch must not toggle: a 20-47 px flick that began on a switch used to
+     * flip the setting (same rule as the overlay background in qr_click_cb). */
+    const bool suppress = s_qr_swipe_suppress || s_qr_drag_seen;
+    qr_gesture_reset();
+    if (suppress) return;
     qr_toggle_request(boost_obd_enabled() ? 2 : 3);
 }
 
 static void qr_tap_app_cb(lv_event_t *event)
 {
     (void)event;
-    if (s_qr_swipe_suppress) { s_qr_swipe_suppress = false; return; }
+    const bool suppress = s_qr_swipe_suppress || s_qr_drag_seen;
+    qr_gesture_reset();
+    if (suppress) return;
     qr_toggle_request(boost_app_ble_enabled() ? 0 : 1);
 }
 
 static void qr_tap_units_cb(lv_event_t *event)
 {
     (void)event;
-    if (s_qr_swipe_suppress) { s_qr_swipe_suppress = false; return; }
+    const bool suppress = s_qr_swipe_suppress || s_qr_drag_seen;
+    qr_gesture_reset();
+    if (suppress) return;
     qr_toggle_request(4);
 }
 
 static void qr_tap_ref_cb(lv_event_t *event)
 {
     (void)event;
-    if (s_qr_swipe_suppress) { s_qr_swipe_suppress = false; return; }
+    const bool suppress = s_qr_swipe_suppress || s_qr_drag_seen;
+    qr_gesture_reset();
+    if (suppress) return;
     qr_toggle_request(5);
 }
 
@@ -597,7 +603,14 @@ static void qr_goto_page(int32_t page)
     s_qr_overlay = NULL;
     s_qr_active = false;
     s_qr_page = page;
-    s_qr_press_tracking = false;
+    /* The gesture is STILL IN FLIGHT: this rebuild is what its page step does.
+     * Drop only the origin, keep the one-shot classification latch, so the rest
+     * of the drag cannot act again (qr_drag_update() consults the latch BEFORE
+     * re-seeding, so a slow swipe steps exactly one page). On glass LVGL would
+     * also stop dispatching PRESSING at all here - lv_obj_delete() of the
+     * pressed overlay runs obj_indev_reset() -> lv_indev_wait_release() - but the
+     * state machine must not depend on that. */
+    qr_gesture_rebuild();
     boost_gauge_media_pause();   /* show_qr pauses again; keep state */
     show_qr();
 }
@@ -608,35 +621,87 @@ static void qr_step(int32_t dir)
     qr_goto_page((s_qr_page + dir + QR_PAGE_COUNT) % QR_PAGE_COUNT);
 }
 
-/* The shared gesture classifier: the overlay's own PRESSING and each square
- * button's PRESSING both land here. A predominantly horizontal drag of at
- * least SWIPE_MIN_PX steps the overlay page in the DIRECTION OF THE DRAG
- * (dragging left advances, dragging right goes back, both wrapping); a
- * predominantly vertical one changes theme (the gauge's direction: drag up =
- * next theme). The ratio tests match the gauge's finish_press()
- * classification. */
-static void qr_pressing_cb(lv_event_t *event)
+/* One gesture = one touch-down. Every entry point that can start a gesture
+ * funnels through qr_gesture_begin() and every release through
+ * qr_gesture_end()/qr_gesture_reset(), so neither the origin nor the one-shot
+ * latch can survive into the next gesture. That leak WAS the "swiping is
+ * broken" defect: the origin was only ever seeded by a PRESSING, and only when
+ * s_qr_press_tracking happened to be false. After a tap on a square, or after a
+ * vertical (theme) classification, it stayed set - so the next background drag
+ * measured its excursion from the PREVIOUS gesture's touch-down point (a 20 px
+ * swipe classifying as a 200 px one, i.e. an accidental theme change), and with
+ * s_qr_drag_classified still latched every later gesture returned early: the
+ * overlay stopped stepping pages until it was reopened. */
+static void qr_gesture_begin(int32_t x, int32_t y)
+{
+    s_qr_press_x = x;
+    s_qr_press_y = y;
+    s_qr_press_tracking = true;
+    s_qr_drag_classified = false;
+    s_qr_drag_seen = false;
+    s_qr_swipe_suppress = false;
+}
+
+/* End of a gesture: drop the origin and the one-shot classification latch so
+ * the next gesture cannot inherit either. The two RELEASE-CONSUMED latches
+ * (suppress, drag_seen) are deliberately NOT touched here: LVGL delivers
+ * CLICKED after RELEASED and that callback reads them to decide whether this
+ * gesture was a drag. Clearing them here is exactly how a short drag slipped
+ * past qr_click_cb and dismissed the overlay. They are cleared by
+ * qr_gesture_reset() from every CLICKED path, and by the next gesture's begin -
+ * so a release that produced no CLICKED (finger left the object) cannot leak
+ * them either. */
+static void qr_gesture_end(void)
+{
+    s_qr_press_tracking = false;
+    s_qr_drag_classified = false;
+}
+
+static void qr_gesture_reset(void)
+{
+    qr_gesture_end();
+    s_qr_swipe_suppress = false;
+    s_qr_drag_seen = false;
+}
+
+/* A mid-gesture scene/overlay rebuild (qr_goto_page) drops the origin, because
+ * the rebuilt object cannot receive the rest of the stream, but KEEPS the
+ * one-shot classification latch: one gesture = one action, whatever the rebuild
+ * does. qr_gesture_end() (a real release) clears both. */
+static void qr_gesture_rebuild(void)
+{
+    s_qr_press_tracking = false;
+}
+
+/* The shared gesture classifier. A predominantly horizontal drag of at least
+ * SWIPE_MIN_PX steps the overlay page in the DIRECTION OF THE DRAG (dragging
+ * left advances, dragging right goes back, both wrapping); a predominantly
+ * vertical one changes theme (the gauge's direction: drag up = next theme).
+ * The ratio tests match the gauge's finish_press() classification. The point is
+ * passed in rather than read from an indev so the host harness drives THIS
+ * function - the production classifier, not a copy of it (the headless sim has
+ * no pointer device to synthesise real PRESSING events on). */
+static void qr_drag_update(int32_t x, int32_t y)
 {
     if (!s_qr_active) return;
-    lv_indev_t *indev = lv_event_get_indev(event);
-    if (indev == NULL) indev = lv_indev_get_act();
-    if (indev == NULL) return;
-    lv_point_t p;
-    lv_indev_get_point(indev, &p);
+    /* One action per gesture. Consulted BEFORE the seeding fallback: a drag
+     * whose origin was dropped by a mid-gesture rebuild (qr_goto_page) must not
+     * re-seed and act again, which is what keeps a slow swipe to exactly one
+     * page if further PRESSING samples arrive. */
+    if (s_qr_drag_classified) return;
     if (!s_qr_press_tracking) {
-        /* A press that began on the overlay background has no PRESSED seed;
-         * the first PRESSING establishes the drag origin. */
-        s_qr_press_x = p.x;
-        s_qr_press_y = p.y;
-        s_qr_press_tracking = true;
-        s_qr_drag_classified = false;
+        /* Fallback for a PRESSING whose PRESSED was not delivered: the first
+         * sample of the gesture establishes the drag origin. */
+        qr_gesture_begin(x, y);
         return;
     }
-    if (s_qr_drag_classified) return;
-    const int32_t dx = p.x - s_qr_press_x;
-    const int32_t dy = p.y - s_qr_press_y;
+    const int32_t dx = x - s_qr_press_x;
+    const int32_t dy = y - s_qr_press_y;
     const int32_t ax = abs_i32(dx);
     const int32_t ay = abs_i32(dy);
+    /* Movement past the tap slop makes this gesture a DRAG, whatever it ends up
+     * classifying as: its release must not dismiss the overlay. */
+    if (ax >= TAP_SLOP_PX || ay >= TAP_SLOP_PX) s_qr_drag_seen = true;
     if (ax >= SWIPE_MIN_PX && (int64_t)ax * 4 >= (int64_t)ay * 5) {
         s_qr_drag_classified = true;
         s_qr_swipe_suppress = true;
@@ -646,6 +711,40 @@ static void qr_pressing_cb(lv_event_t *event)
         s_qr_swipe_suppress = true;
         apply_theme_delta(dy < 0 ? 1 : -1);
     }
+}
+
+/* All three callbacks run while the overlay (or one of its squares, which owns
+ * the press when the finger starts on one) is the pressed object. */
+static bool qr_event_point(lv_event_t *event, lv_point_t *p)
+{
+    lv_indev_t *indev = lv_event_get_indev(event);
+    if (indev == NULL) indev = lv_indev_get_act();
+    if (indev == NULL) return false;
+    lv_indev_get_point(indev, p);
+    return true;
+}
+
+static void qr_press_cb(lv_event_t *event)
+{
+    if (!s_qr_active) return;
+    lv_point_t p;
+    if (!qr_event_point(event, &p)) return;
+    qr_gesture_begin(p.x, p.y);
+}
+
+static void qr_pressing_cb(lv_event_t *event)
+{
+    if (!s_qr_active) return;
+    lv_point_t p;
+    if (!qr_event_point(event, &p)) return;
+    qr_drag_update(p.x, p.y);
+}
+
+static void qr_release_cb(lv_event_t *event)
+{
+    (void)event;
+    if (!s_qr_active) return;
+    qr_gesture_end();
 }
 
 static void qr_hold_timer_cb(lv_timer_t *timer)
@@ -816,7 +915,7 @@ void boost_page_create(void)
     s_two_finger_seen = false;
     s_qr_hold_start_ms = 0;
     s_qr_page = QR_PAGE_QR;
-    s_qr_press_tracking = false;
+    qr_gesture_reset();
     for (int i = 0; i < QR_BTN_COUNT; ++i) s_qr_btn[i] = NULL;
     s_qr_btn_unit_label = NULL;
     s_qr_btn_ref_label = NULL;
@@ -890,6 +989,7 @@ void boost_page_qr_show(void)
     s_two_finger_seen = false;   /* hold path already finished in the sim */
     if (s_qr_active) return;     /* show_qr() early-returns too */
     s_qr_page = QR_PAGE_QR;      /* every fresh open starts on the QR page */
+    qr_gesture_reset();          /* show_qr() deliberately does not touch it */
     show_qr();
 }
 
@@ -902,24 +1002,105 @@ void boost_page_qr_show_page(int page)
         return;
     }
     s_qr_page = page;
+    qr_gesture_reset();
     show_qr();
+}
+
+/* --- Gesture injection -------------------------------------------------------
+ * The headless sim has no pointer device, so a real PRESSING stream cannot be
+ * synthesised as an LVGL event. These drive the SAME functions the overlay's
+ * own callbacks call (qr_gesture_begin / qr_drag_update / qr_release_cb /
+ * qr_click_cb), so the harness exercises the production classifier and the
+ * production state machine - never a copy of either. Model a gesture as: press
+ * (touch-down), one or more move samples, release. */
+void boost_page_qr_press(int x, int y)
+{
+    if (!s_qr_active) return;
+    qr_gesture_begin(x, y);
+}
+
+void boost_page_qr_move(int x, int y)
+{
+    qr_drag_update(x, y);
+}
+
+void boost_page_qr_release(void)
+{
+    if (!s_qr_active) return;
+    qr_release_cb(NULL);   /* RELEASED: drop the origin and the one-shot latch */
+    qr_click_cb(NULL);     /* the CLICKED that follows: dismisses only a tap */
+}
+
+/* A complete flick: touch-down, ONE move sample to the end point, release. One
+ * sample on purpose - the classifier is one-shot per gesture and the hook then
+ * models a flick exactly, with no re-sampling after a mid-drag page rebuild. */
+void boost_page_qr_drag(int x0, int y0, int x1, int y1)
+{
+    boost_page_qr_press(x0, y0);
+    boost_page_qr_move(x1, y1);
+    boost_page_qr_release();
+}
+
+/* A flick whose PRESSED was never delivered: the first move sample must
+ * establish its own origin. This is the path a background press takes while the
+ * tracker still holds the previous gesture's touch-down point. */
+void boost_page_qr_drag_unseeded(int x0, int y0, int x1, int y1)
+{
+    boost_page_qr_move(x0, y0);
+    boost_page_qr_move(x1, y1);
+    boost_page_qr_release();
+}
+
+void boost_page_qr_switch_gesture(int row, int dx, int dy)
+{
+    if (!s_qr_active || s_qr_page == QR_PAGE_QR) return;
+    if (row < 0 || row >= QR_BTN_COUNT || s_qr_btn[row] == NULL) return;
+    lv_obj_t *btn = s_qr_btn[row];
+    lv_obj_t *overlay_before = s_qr_overlay;
+    lv_area_t coords;
+    lv_obj_get_coords(btn, &coords);
+    const int32_t x0 = (coords.x1 + coords.x2) / 2;
+    const int32_t y0 = (coords.y1 + coords.y2) / 2;
+    /* A press starting on a square is OWNED by that square on glass: PRESSED,
+     * PRESSING, RELEASED and CLICKED all go to the square, never to the overlay.
+     * Model exactly that - the shared state machine plus the square's OWN tap
+     * callback, which is where the switch's drag rules live. */
+    qr_gesture_begin(x0, y0);
+    qr_drag_update(x0 + dx, y0 + dy);
+    qr_release_cb(NULL);
+    /* A page-stepping flick deleted this square (and the overlay with it), and
+     * glass would then deliver no CLICKED at all. Compare the OVERLAY object, not
+     * just the square pointer: lv_obj_is_valid() walks the live tree, and a
+     * reused allocator block could put the new page's square at the same address
+     * and same row, making a bare pointer check raise CLICKED on a switch this
+     * gesture never touched. */
+    if (s_qr_overlay == overlay_before && s_qr_btn[row] == btn && lv_obj_is_valid(btn)) {
+        lv_obj_send_event(btn, LV_EVENT_CLICKED, NULL);
+    }
 }
 
 void boost_page_qr_swipe_left(void)
 {
-    /* Forward, driving the same teardown-and-rebuild the real swipe handler
-     * performs (show_qr() early-returns while the overlay is active). */
+    /* Forward, through the production classifier - not qr_step() directly. */
     if (!s_qr_active) return;
-    qr_step(1);
+    boost_page_qr_drag(PAGE_SIZE - 60, PAGE_SIZE / 2, 60, PAGE_SIZE / 2);
 }
 
 void boost_page_qr_swipe_right(void)
 {
     if (!s_qr_active) return;
-    qr_step(-1);
+    boost_page_qr_drag(60, PAGE_SIZE / 2, PAGE_SIZE - 60, PAGE_SIZE / 2);
 }
 
-void boost_page_qr_dismiss(void) { hide_qr(); }
+void boost_page_qr_dismiss(void)
+{
+    /* A fresh tap: touch-down and release with no movement, which must still
+     * dismiss. Routed through the same callbacks the glass path uses so the
+     * "a drag is not a tap" rule is exercised rather than bypassed. */
+    if (!s_qr_active) return;
+    boost_page_qr_press(PAGE_SIZE / 2, PAGE_SIZE / 2);
+    boost_page_qr_release();
+}
 
 void boost_page_qr_tap_switch(int row)
 {

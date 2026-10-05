@@ -96,6 +96,70 @@ def main() -> int:
         print("WARN: AGENTS.md prose says 'for 3 s' but QR_HOLD_MS == 2200 ms "
               "(ledger/source are authoritative); documentation drift - update AGENTS.md")
 
+    # --- Overlay gesture wiring (ledger 2026-10-05) ---------------------------
+    # The fix that made the settings overlay swipeable is a set of EVENT
+    # REGISTRATIONS plus a state-machine rule, and the host harness cannot see
+    # either: it drives the state machine directly, so a missing or
+    # mis-targeted registration (or a handler that forgets the new drag latch)
+    # would still leave `--qr-test` green. Pin them structurally.
+    def body_of(sig: str, text: str) -> str:
+        """Return the body of the definition of `sig` (skipping declarations)."""
+        for m in re.finditer(re.escape(sig), text):
+            rest = text[m.end():]
+            brace = rest.find("{")
+            semi = rest.find(";")
+            if brace < 0 or (semi >= 0 and semi < brace):
+                continue
+            start = m.end() + brace
+            depth = 0
+            for i in range(start, len(text)):
+                if text[i] == "{":
+                    depth += 1
+                elif text[i] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        return text[start:i + 1]
+        return ""
+
+    # Target-ANCHORED on purpose: the point of this check is a mis-targeted
+    # registration, so a bare `[^,]+` target pattern is not enough - it passes
+    # any comma-free target, e.g. moving the overlay's press callback onto a
+    # square inside show_qr(). The target identifier is part of the assertion.
+    for site, sig, target in (("the overlay", "static void show_qr(void)", "s_qr_overlay"),
+                              ("the square factory",
+                               "static lv_obj_t *qr_make_square(lv_obj_t *parent", "b")):
+        body = body_of(sig, page)
+        result.check(bool(body), f"{site} definition found for the wiring check")
+        for cb, ev in (("qr_press_cb", "LV_EVENT_PRESSED"),
+                       ("qr_pressing_cb", "LV_EVENT_PRESSING"),
+                       ("qr_release_cb", "LV_EVENT_RELEASED")):
+            result.check(
+                bool(re.search(
+                    rf"lv_obj_add_event_cb\({re.escape(target)},\s*{cb},\s*{ev},", body)),
+                f"{site} registers {cb} for {ev} on {target}",
+                "registration missing, or targeted at the wrong object")
+
+    # One gesture = one touch-down: the mid-drag rebuild must drop only the
+    # origin, and show_qr() (also the rebuild path) must touch no gesture state.
+    goto_body = body_of("static void qr_goto_page(int32_t page)", page)
+    result.check("qr_gesture_rebuild()" in goto_body and "qr_gesture_end()" not in goto_body,
+                 "qr_goto_page keeps the one-shot latch across the page rebuild",
+                 "must call qr_gesture_rebuild(), not qr_gesture_end()")
+    show_body = body_of("static void show_qr(void)", page)
+    result.check(
+        not re.search(r"s_qr_(press_tracking|drag_classified|swipe_suppress|drag_seen)\s*=", show_body),
+        "show_qr() leaves gesture state alone (it is the mid-gesture rebuild path)")
+
+    # A drag is not a tap on the SWITCHES either: all four must consult both
+    # latches, not only the classified-swipe one. The overlay BACKGROUND
+    # (qr_click_cb) is the same rule and must not rot either.
+    for cb in ("qr_click_cb", "qr_tap_obd_cb", "qr_tap_app_cb", "qr_tap_units_cb",
+               "qr_tap_ref_cb"):
+        body = body_of(f"static void {cb}(lv_event_t *event)", page)
+        result.check(bool(re.search(r"s_qr_swipe_suppress\s*\|\|\s*s_qr_drag_seen", body)),
+                     f"{cb} treats a short drag as a drag (both latches)",
+                     "a 12-47 px flick would act as a tap and dismiss/toggle")
+
     passed = result.checks - len(result.failures)
     print(f"\n{passed}/{result.checks} checks passed, {len(result.failures)} failed")
     if result.failures:
