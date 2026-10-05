@@ -181,8 +181,10 @@ void boost_theme_set_rotation(uint16_t degrees);
  * adapter hands the panel stay panel coordinates at all four angles: only the
  * MADCTL scan order and the visible-window inset inside the CO5300's 480x480
  * GRAM change. The touch flags are the rotation-0 calibration composed with the
- * same turn, because bsp_touch_new() reads only the flags (it ignores the
- * adapter rotation), so touch and panel have to be rotated together.
+ * INVERSE of the same turn (esp_lcd_touch applies them mirror_x, mirror_y, then
+ * swap_xy on a raw point, so mirror and swap do not commute), because
+ * bsp_touch_new() reads only the flags (it ignores the adapter rotation), so
+ * touch and panel have to be rotated together.
  */
 typedef struct {
     bool swap_xy;        /* esp_lcd_panel_swap_xy() */

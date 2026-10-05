@@ -719,10 +719,11 @@ uint16_t boost_theme_rotation(void)
 void boost_theme_set_rotation(uint16_t degrees)
 {
     ensure_loaded();
-    /* Only quarter turns exist: the panel bridge maps rotation onto the CO5300
-     * scan order, and anything else would need a full-frame affine transform
-     * per render on a CPU-rasterised partial pipeline. Reject rather than
-     * silently snap, so the API can report the bad value. */
+    /* Only quarter turns exist: the turn is applied to the CO5300's own scan
+     * order in boost_theme_panel_orientation(), so it lands on the next boot;
+     * anything else would need a full-frame affine transform per render on a
+     * CPU-rasterised partial pipeline. Reject rather than silently snap, so the
+     * API can report the bad value. */
     if (degrees != 0u && degrees != 90u && degrees != 180u && degrees != 270u) {
         return;
     }
@@ -764,10 +765,13 @@ void boost_theme_panel_orientation(uint16_t degrees, boost_panel_orientation_t *
         /* Touch is the INVERSE of the panel turn composed with the rotation-0
          * calibration, because the CST9217 reports in its own frame and the
          * flags convert raw -> logical (see test_panel_orientation's tap
-         * simulation, which is what settled these three rows). */
+         * simulation, which is what settled these three rows). Derive them
+         * with esp_lcd_touch's REAL order (mirror_x, mirror_y, then swap_xy):
+         * mirror and swap do not commute, so a swap-first model gives the
+         * transposed flags - the bug this pair was fixed from. */
         o.touch_swap_xy = true;
-        o.touch_mirror_x = true;
-        o.touch_mirror_y = false;
+        o.touch_mirror_x = false;
+        o.touch_mirror_y = true;
         break;
     case 180:
         /* mirror_x + mirror_y; the composed touch flags are the identity, so
@@ -785,9 +789,10 @@ void boost_theme_panel_orientation(uint16_t degrees, boost_panel_orientation_t *
         o.mirror_y = true;
         o.gap_x = BOOST_PANEL_GAP_FAR_Y;
         o.gap_y = BOOST_PANEL_GAP_X;
+        /* The inverse of 90's turn: the mirror pair is transposed with it. */
         o.touch_swap_xy = true;
-        o.touch_mirror_x = false;
-        o.touch_mirror_y = true;
+        o.touch_mirror_x = true;
+        o.touch_mirror_y = false;
         break;
     default:
         /* 0 (and any value the setter would have rejected): the vendor frame. */

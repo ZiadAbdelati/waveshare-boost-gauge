@@ -83,13 +83,17 @@ static void panel_map(unsigned deg, int lx, int ly, int *px, int *py)
     }
 }
 
-/* What esp_lcd_touch does with a raw point: swap, then mirror each axis. */
+/* What esp_lcd_touch does with a raw point, in its real order
+ * (managed_components/espressif__esp_lcd_touch/esp_lcd_touch.c:91-104):
+ * mirror_x, then mirror_y, then swap_xy. Mirror and swap do NOT commute, so
+ * modelling the order wrongly inverts the composition and silently validates
+ * the wrong flags - which is exactly what happened once (see the ledger row). */
 static void flags_apply(bool swap_xy, bool mirror_x, bool mirror_y,
                         int x, int y, int *ox, int *oy)
 {
-    if (swap_xy) { const int t = x; x = y; y = t; }
     if (mirror_x) x = LAST - x;
     if (mirror_y) y = LAST - y;
+    if (swap_xy) { const int t = x; x = y; y = t; }
     *ox = x; *oy = y;
 }
 

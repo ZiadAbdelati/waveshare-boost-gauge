@@ -3296,9 +3296,9 @@ function wireDisplayToggles() {
     );
   }
   if (el.rotation) {
-    /* The LVGL adapter takes rotation when the display is registered, so the
-     * panel keeps its current orientation until the device restarts. Say so
-     * rather than letting it look like the setting did not stick. */
+    /* The turn is applied to the panel's scan order at init, so the panel keeps
+     * its current orientation until the device restarts. Say so rather than
+     * letting it look like the setting did not stick. */
     el.rotation.addEventListener("change", () =>
       send({ rotation: Number(el.rotation.value) },
            `Rotation ${el.rotation.value} deg - restart to apply`),

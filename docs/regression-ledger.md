@@ -1778,20 +1778,30 @@ visible-window gap, and the matching touch flags, and `panel_new()` applies it a
 adapter profile now stays `ESP_LV_ADAPTER_ROTATE_0` — a non-zero value there only swapped
 logical dimensions and demanded a third full-size frame buffer this pipeline does not have.
 
-**The touch mapping was the trap, and a tap simulation settled it.** `bsp_touch_new()`
-forwards only `touch_flags` (it ignores the adapter rotation), so the touch frame has to be
-rotated with the panel. The composed flags are the **inverse** of the panel turn composed
-with the rotation-0 baseline — not the forward turn, which is what both intuition and the
-adapter's own non-MIPI test helper suggest: with the forward turn, six sample taps per
-rotation land on mirrored coordinates (verified: 27 of 36 wrong). The first implementation
-also left 180 deg at the baseline mirrors instead of clearing both. `tools/test_panel_orientation.c`
-now simulates a tap per rotation (project the drawn logical point to the glass with the
-panel turn, invert the rotation-0 calibration to get the controller's report, require the
-flags to return the original point), re-derives the visible-window coverage from the flags
-and gaps (a transposed mirror axis or a gap left on the wrong side fails), and pins
-rotation 0 to the vendor geometry. Proven to fail on a doctored mapping (90 deg mirrors
-swapped → first tap simulated at (0,0) reports mismatch). PASS with 34 checks on the real
-table.
+**The touch mapping was the trap, and a tap simulation did not settle it on the first try.**
+`bsp_touch_new()` forwards only `touch_flags` (it ignores the adapter rotation), so the touch
+frame has to be rotated with the panel. The composed flags are the **inverse** of the panel
+turn composed with the rotation-0 baseline — not the forward turn: copying the panel flags
+straight onto touch is wrong for **18 of the 24** sample taps (rotations 90 and 270 entirely,
+plus 180, which then needs the baseline mirrors it was given).
+
+The trap inside the trap: `esp_lcd_touch` applies its flags in a fixed order — `mirror_x`,
+then `mirror_y`, then `swap_xy` (`esp_lcd_touch.c:91-104`) — and mirror and swap do **not**
+commute, so a swap-first model is the inverse composition. The guard's first version applied
+swap first and therefore validated a transposed 90/270 touch pair: with the helper patched to
+the driver's real order (and the firmware untouched) the simulation failed at 90 deg, and
+under the corrected model the shipped pair was **12 of 24** taps wrong. Caught in the
+pre-merge review, fixed the same day: `flags_apply()` now mirrors both axes before swapping,
+and the 90/270 mirror pairs are transposed relative to the first implementation. **Neither
+mapping has had a glass run** — host-only in both directions.
+
+`tools/test_panel_orientation.c` simulates a tap per rotation (project the drawn logical point
+to the glass with the panel turn, invert the rotation-0 calibration to get the controller's
+report, require the flags to return the original point), re-derives the visible-window coverage
+from the flags and gaps (a transposed mirror axis or a gap left on the wrong side fails), and
+pins rotation 0 to the vendor geometry. Proven to fail on a doctored mapping both ways:
+transposing the 90 deg mirrors fails the first simulated tap, and reverting the helper to the
+swap-first order fails against the fixed firmware. PASS with 34 checks on the real table.
 
 Gap arithmetic, which is the remaining glass-only unknown: the CO5300 GRAM is 480x480 and
 the visible area is 466x466 inset `(6, 0)` by the vendor init, so a mirrored axis puts the
