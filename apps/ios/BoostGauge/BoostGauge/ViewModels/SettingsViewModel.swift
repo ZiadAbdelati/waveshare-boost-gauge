@@ -659,8 +659,11 @@ final class SettingsViewModel: ObservableObject {
         // phone-offset-derived string: a synthetic "UTC4" overwrote the gauge's
         // real POSIX TZ ("EST5EDT,..."), and loadConfig then matched no curated
         // option → the picker flapped back to "Custom" on next load.
-        // The firmware /time route requires epochMs (the phone is the time
-        // authority, same as the web UI); tz-only bodies 400 with invalid_time.
+        // The firmware /time route treats epochMs as optional: sending it asks
+        // the gauge to calibrate its DS3231 from the phone clock. A valid RTC
+        // that disagrees with the phone epoch by more than 5 minutes rejects the
+        // calibration with 409 `clock_rejected`; postTimezone then retries the
+        // same request without epochMs so the timezone still lands.
         let body: [String: Any] = [
             "epochMs": Int64(Date().timeIntervalSince1970 * 1000),
             "timezoneOffsetMinutes": timezoneOffset,
@@ -684,39 +687,44 @@ final class SettingsViewModel: ObservableObject {
 
     func saveTimezoneCustom() async {
         guard let transport else { return }
-        // Push the custom timezone + current time, then persist the config,
-        // but show only ONE toast — the intermediate "Timezone saved" + "Saved"
-        // double-fire was the second half of the double notification.
+        // Push the custom timezone + a clock calibration attempt, then persist
+        // the config, but show only ONE toast — the intermediate "Timezone
+        // saved" + "Saved" double-fire was the second half of the double
+        // notification. `success: nil` keeps postTimezone from announcing here;
+        // saveConfig publishes the single "Saved".
         let timeBody: [String: Any] = [
             "epochMs": Int64(Date().timeIntervalSince1970 * 1000),
             "timezoneOffsetMinutes": timezoneOffset,
             "timezoneTz": timezoneTZ,
         ]
-        do {
-            let timeResp = try await transport.send("POST", path: "time", body: timeBody)
-            guard timeResp.status == 200 else {
-                await MainActor.run { self.errorMessage = APIErrorText.from(timeResp) }
-                return
-            }
-        } catch {
-            await MainActor.run { self.errorMessage = error.localizedDescription }
-            return
-        }
+        guard await postTimezone(transport, body: timeBody, success: nil) else { return }
         await saveConfig()
     }
 
-    private func postTimezone(_ transport: GaugeTransport, body: [String: Any], success: String) async {
+    /// The single POST /time choke point. Sends `body` as given; when the gauge
+    /// answers 409 (its DS3231 is valid but disagrees with the phone epoch by
+    /// more than the 5-minute tolerance, so it refuses the clock with
+    /// `clock_rejected`) it retries the same request with `epochMs` removed, so
+    /// the timezone still lands. Returns whether a 200 was finally reached;
+    /// `success` (when non-nil) is published as the confirmation toast.
+    @discardableResult
+    private func postTimezone(_ transport: GaugeTransport, body: [String: Any], success: String?) async -> Bool {
         do {
-            let response = try await transport.send("POST", path: "time", body: body)
-            await MainActor.run {
-                if response.status == 200 {
-                    self.savedMessage = success
-                } else {
-                    self.errorMessage = APIErrorText.from(response)
-                }
+            var response = try await transport.send("POST", path: "time", body: body)
+            if response.status == 409, body["epochMs"] != nil {
+                var retryBody = body
+                retryBody.removeValue(forKey: "epochMs")
+                response = try await transport.send("POST", path: "time", body: retryBody)
             }
+            if response.status == 200 {
+                if let success { savedMessage = success }
+                return true
+            }
+            errorMessage = APIErrorText.from(response)
+            return false
         } catch {
-            await MainActor.run { self.errorMessage = error.localizedDescription }
+            errorMessage = error.localizedDescription
+            return false
         }
     }
 

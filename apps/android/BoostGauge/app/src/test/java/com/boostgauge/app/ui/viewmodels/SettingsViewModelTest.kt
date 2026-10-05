@@ -133,7 +133,7 @@ class SettingsViewModelTest {
     }
 
     @Test
-    fun timezoneSyncSendsOnlyTimezoneWithoutEpochMs() = runTest(dispatcher) {
+    fun timezoneSyncAppliesLocallyThenSendsTimezoneAndEpochOnExplicitSync() = runTest(dispatcher) {
         val transport = FakeBleTransport { method, path, _ ->
             when {
                 path == "config" && method == "GET" -> Resp(200, ApiFixtures.CONFIG)

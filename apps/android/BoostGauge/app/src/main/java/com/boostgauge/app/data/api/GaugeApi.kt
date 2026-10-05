@@ -96,16 +96,33 @@ class GaugeApi(private val transportProvider: () -> GaugeTransport) {
         parse(send("PUT", "sensors/supply", buildJsonObject { put("supplyVolts", volts) }.toString()))
 
     /**
-     * POST /time with ONLY the timezone. The gauge's DS3231 RTC is the sole
-     * time authority, so the phone epoch is never sent; the gauge rejects a
-     * body that omits either timezone field with 400.
+     * POST /time with the phone epoch for clock calibration plus the timezone.
+     * The gauge's DS3231 RTC stays authoritative: if it disagrees with the
+     * phone by more than BOOST_RTC_SYNC_TOLERANCE_MS the firmware answers 409
+     * `clock_rejected`, and the request is retried WITHOUT `epochMs` so the
+     * timezone still lands. A body omitting either timezone field is rejected
+     * with 400 regardless of `epochMs`; `epochMs` itself is optional.
      */
-    suspend fun syncTime(timezoneOffsetMinutes: Int, timezoneTz: String): Status =
-        parse(send("POST", "time", buildJsonObject {
+    suspend fun syncTime(timezoneOffsetMinutes: Int, timezoneTz: String): Status {
+        val transport = transportProvider()
+        val calibration = transport.send("POST", "time", buildJsonObject {
             put("epochMs", System.currentTimeMillis())
             put("timezoneOffsetMinutes", timezoneOffsetMinutes)
             put("timezoneTz", timezoneTz)
-        }.toString()))
+        }.toString())
+        // The raw status is inspected before check(): 409 is the calibration
+        // refusal, not a fatal error, so the timezone-only retry must happen
+        // instead of throwing.
+        val resp = if (calibration.status == 409) {
+            transport.send("POST", "time", buildJsonObject {
+                put("timezoneOffsetMinutes", timezoneOffsetMinutes)
+                put("timezoneTz", timezoneTz)
+            }.toString())
+        } else {
+            calibration
+        }
+        return parse(check(resp))
+    }
 
     suspend fun getNetworkStatus(): NetworkStatus = parse(get("network"))
     suspend fun scanWifi(): WifiScanPayload = parse(get("network/scan"))

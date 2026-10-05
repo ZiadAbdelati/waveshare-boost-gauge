@@ -126,9 +126,43 @@ class GaugeApiTest {
         val body = transport.requests.single().bodyJson!!
         assertTrue(body.contains("\"timezoneOffsetMinutes\":-240"))
         assertTrue(body.contains("\"timezoneTz\":\"EST5EDT,M3.2.0/2,M11.1.0/2\""))
-        // Firmware /time REQUIRES epochMs (POST /time 400s with invalid_time
-        // without it); the phone is the time authority, same as the web UI.
+        // First POST attempts clock calibration with the phone epoch alongside
+        // the timezone; the gauge's DS3231 stays authoritative on rejection.
         assertTrue(Regex("\"epochMs\":\\d+").containsMatchIn(body))
+    }
+
+    @Test
+    fun timeSyncClockRejectionRetriesWithoutEpoch() = runBlocking {
+        var calls = 0
+        val transport = FakeBleTransport { method, path, _ ->
+            assertEquals("POST", method)
+            assertEquals("time", path)
+            calls++
+            if (calls == 1) {
+                Resp(409, ApiFixtures.ERROR_CLOCK_REJECTED)
+            } else {
+                Resp(
+                    200,
+                    ApiFixtures.STATE.replace(
+                        "\"timezoneOffsetMinutes\": -240",
+                        "\"timezoneOffsetMinutes\": -480",
+                    ),
+                )
+            }
+        }
+        val api = GaugeApi { transport }
+
+        val status = api.syncTime(-480, "PST8PDT,M3.2.0/2,M11.1.0/2")
+
+        assertEquals(2, transport.requests.size)
+        val first = transport.requests[0].bodyJson!!
+        assertTrue(Regex("\"epochMs\":\\d+").containsMatchIn(first))
+        val retry = transport.requests[1].bodyJson!!
+        assertFalse(retry.contains("epochMs"))
+        assertTrue(retry.contains("\"timezoneOffsetMinutes\":-480"))
+        assertTrue(retry.contains("\"timezoneTz\":\"PST8PDT,M3.2.0/2,M11.1.0/2\""))
+        // Fields come from the retry response, not the rejected first POST.
+        assertEquals(-480, status.timezoneOffsetMinutes)
     }
 
     @Test

@@ -142,6 +142,26 @@ target_include_directories(test_pressure_ref PRIVATE
 )
 target_link_libraries(test_pressure_ref PRIVATE m)
 
+# Host-side unit test for the persisted panel rotation -> panel/touch
+# orientation mapping. The adapter will not rotate a PANEL_IF_OTHER (QSPI)
+# display, so the turn is applied to the CO5300 scan order at init; this test
+# re-derives the visible-window coverage from the flags and gaps, so a
+# transposed mirror or a gap left on the wrong side fails here instead of only
+# on glass. No LVGL or IDF dependency.
+add_executable(test_panel_orientation
+    ${CMAKE_CURRENT_SOURCE_DIR}/../tools/test_panel_orientation.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_theme.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_sim.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_units.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_pressure_ref.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_neon_geom.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_tpms_protocol.c
+)
+target_include_directories(test_panel_orientation PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main
+)
+target_link_libraries(test_panel_orientation PRIVATE m)
+
 add_custom_target(sim-screenshots
     COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_SOURCE_DIR}/../preview/sim
     COMMAND $<TARGET_FILE:boost_gauge_sim> --screenshot ${CMAKE_SOURCE_DIR}/../preview/sim

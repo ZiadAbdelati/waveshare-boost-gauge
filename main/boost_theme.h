@@ -157,18 +157,46 @@ void boost_theme_set_te_scanline(bool enabled);
 /**
  * Persisted panel rotation in degrees: **0, 90, 180 or 270 only**.
  *
- * Not an arbitrary angle. The LVGL adapter maps rotation onto the panel's scan
- * order, which is why quarter turns are free; any other angle would need a
- * full-frame affine resample every render, on a CPU-rasterised partial pipeline
- * with no 2D accelerator. The ledger already records a single full-screen
- * repaint costing ~45 ms, so an arbitrary angle would not hold 60 FPS.
+ * Not an arbitrary angle. A quarter turn is applied to the CO5300's own scan
+ * order (MADCTL swap/mirror), which costs nothing per frame; any other angle
+ * would need a full-frame affine resample every render, on a CPU-rasterised
+ * partial pipeline with no 2D accelerator. The ledger already records a single
+ * full-screen repaint costing ~45 ms, so an arbitrary angle would not hold
+ * 60 FPS.
  *
- * The adapter consumes rotation when the display is registered, so a change
- * takes effect on the next boot. set_rotation() ignores any other value rather
- * than snapping, so the API can report the rejection.
+ * The LVGL adapter does NOT rotate a PANEL_IF_OTHER display (QSPI/CO5300): it
+ * logs "SPI rotation is not handled by adapter" and ignores the profile's
+ * rotation. The turn is therefore applied at panel init through
+ * boost_theme_panel_orientation(), so a change takes effect on the next boot.
+ * set_rotation() ignores any other value rather than snapping, so the API can
+ * report the rejection.
  */
 uint16_t boost_theme_rotation(void);
 void boost_theme_set_rotation(uint16_t degrees);
+
+/**
+ * How a persisted quarter turn reaches the glass.
+ *
+ * The panel is 466x466 square, so LVGL's logical size and every coordinate the
+ * adapter hands the panel stay panel coordinates at all four angles: only the
+ * MADCTL scan order and the visible-window inset inside the CO5300's 480x480
+ * GRAM change. The touch flags are the rotation-0 calibration composed with the
+ * same turn, because bsp_touch_new() reads only the flags (it ignores the
+ * adapter rotation), so touch and panel have to be rotated together.
+ */
+typedef struct {
+    bool swap_xy;        /* esp_lcd_panel_swap_xy() */
+    bool mirror_x;       /* esp_lcd_panel_mirror(), x */
+    bool mirror_y;       /* esp_lcd_panel_mirror(), y */
+    int  gap_x;          /* esp_lcd_panel_set_gap(), x in the oriented frame */
+    int  gap_y;          /* esp_lcd_panel_set_gap(), y in the oriented frame */
+    bool touch_swap_xy;  /* esp_lcd_touch flags, composed with the rotation-0 */
+    bool touch_mirror_x; /* baseline (swap=0, mirror_x=1, mirror_y=1) */
+    bool touch_mirror_y;
+} boost_panel_orientation_t;
+
+/** Fill `out` for `degrees`; anything but 0/90/180/270 yields rotation 0. */
+void boost_theme_panel_orientation(uint16_t degrees, boost_panel_orientation_t *out);
 
 /*
  * Demo mode. OFF (the default) reads the real ADS1115/BMP280 sensors and shows

@@ -769,9 +769,10 @@ static esp_err_t themes_config_put(httpd_req_t *req)
     }
 
     /* Quarter turns only - see boost_theme.h for why an arbitrary angle is not
-     * on offer. Rejected rather than snapped so a typo is visible. The adapter
-     * takes rotation when the display is registered, so this needs a restart;
-     * the response carries restartRequired so the dashboard can say so. */
+     * on offer. Rejected rather than snapped so a typo is visible. The turn is
+     * applied to the panel's scan order at init, so it lands on the next boot;
+     * the dashboard says "restart to apply" for that reason (this response is
+     * the plain /themes payload and carries no restartRequired). */
     const cJSON *rot = cJSON_GetObjectItemCaseSensitive(root, "rotation");
     if (cJSON_IsNumber(rot)) {
         const double deg = rot->valuedouble;

@@ -45,6 +45,9 @@ class FakeBleTransportTest {
             assertEquals(409, e.status)
             assertEquals("clock_rejected", e.message)
         }
+        // The calibration POST is answered 409, so the timezone-only retry is
+        // attempted too; when that also fails the retry's status surfaces.
+        assertEquals(2, transport.requests.size)
     }
 
     @Test
