@@ -531,7 +531,7 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
-    /// Range ▸ Reference: persist the picker's selection (Atmospheric/Absolute).
+    /// Range ▸ Reference: persist the picker's selection (Relative/Absolute).
     ///
     /// Mirrors `selectPressureUnit`: the reference does NOT publish until the
     /// gauge confirms it (the PUT echo), and the monotonic `refWriteSeq`

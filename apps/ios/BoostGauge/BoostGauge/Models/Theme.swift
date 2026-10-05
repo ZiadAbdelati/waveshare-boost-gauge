@@ -24,7 +24,7 @@ struct ThemeList: Codable {
     let themes: [Theme]?
     /// Global pressure-display unit ("psi" | "bar" | "kPa"); units contract v1.
     let pressureUnit: String?
-    /// Global pressure reference: `false` = atmospheric/gauge (default),
+    /// Global pressure reference: `false` = relative/gauge (default),
     /// `true` = absolute (display = gauge + ambient reference); reference
     /// contract. Wire values stay gauge PSI; the reference is presentation-only.
     let pressureAbsolute: Bool?

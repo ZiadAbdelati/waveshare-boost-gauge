@@ -118,7 +118,7 @@ static bool s_qr_swipe_suppress;
 
 /* One centred PAIR of square buttons per toggle page, matching the sim tap
  * hook's PAGE-LOCAL row: page 1 = 0 OBD BLE / 1 APP BLE, page 2 = 0 UNITS /
- * 1 ATM-ABS. The pair is centred as a group with a gap smaller than the outer
+ * 1 REL-ABS. The pair is centred as a group with a gap smaller than the outer
  * margins, so the two read as one control cluster (the old 2-up-1-down triangle
  * is gone). */
 #define QR_BTN_SIZE  130
@@ -302,14 +302,17 @@ static void show_qr(void)
             /* Display reference. The primary line names the pair of modes and
              * the second line the one in force; `active` lights the square (and
              * its LED) only while ABSOLUTE is selected, so the on/off cue still
-             * means something. The label is "ATM/ABS", not "PRESSURE": at
-             * Montserrat 24 the latter measures 133 px against a 118 px label
-             * box and overflows, while "ATM/ABS" is 113 px - the same width as
-             * the proven "OBD BLE". */
+             * means something. The pair is abbreviated "REL/ABS" because the
+             * button's label box is QR_BTN_SIZE - 12 = 118 px: parsing LVGL's own
+             * montserrat_24 advance table, "GAUGE/ABS" is 148.7 px and
+             * "PRESSURE" 133.1 px (both overflow), while "REL/ABS" is 106.8 px -
+             * the same width class as the proven "OBD BLE" (113.1 px). The state
+             * line runs at montserrat_20, so it carries the full words: "RELATIVE"
+             * measures 99.9 px and "ABSOLUTE" 111.8 px. */
             s_qr_btn[1] = qr_make_square(s_qr_overlay, QR_PAIR_X1, QR_PAIR_Y,
                                          boost_theme_pressure_absolute(), 0xC792EA);
-            qr_square_set_text(s_qr_btn[1], "ATM/ABS",
-                               boost_theme_pressure_absolute() ? "ABS" : "ATM");
+            qr_square_set_text(s_qr_btn[1], "REL/ABS",
+                               boost_theme_pressure_absolute() ? "ABSOLUTE" : "RELATIVE");
             s_qr_btn_ref_label =
                 lv_obj_get_child(s_qr_btn[1], lv_obj_get_child_count(s_qr_btn[1]) - 1);
             lv_obj_add_event_cb(s_qr_btn[1], qr_swipe_press_cb, LV_EVENT_PRESSED, NULL);

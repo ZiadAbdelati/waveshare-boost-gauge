@@ -8,7 +8,7 @@ import org.junit.Test
 class PressureReferenceTest {
 
     @Test
-    fun atmosphericLeavesGaugeUntouched() {
+    fun relativeLeavesGaugeUntouched() {
         assertEquals(3.42, boostDisplayPsi(3.42, 101.325, absolute = false), 1e-9)
         assertEquals(-2.0, boostDisplayPsi(-2.0, null, absolute = false), 1e-9)
     }

@@ -1198,7 +1198,7 @@ static void stream_exec(char *line)
         }
     } else if (strcmp(line, "ref") == 0) {
         bool known = true;
-        if (strcmp(arg, "atm") == 0) {
+        if (strcmp(arg, "rel") == 0) {
             boost_theme_set_pressure_absolute(false);
         } else if (strcmp(arg, "abs") == 0) {
             boost_theme_set_pressure_absolute(true);
@@ -1209,7 +1209,7 @@ static void stream_exec(char *line)
         if (known) {
             stream_rebuild();
             /* The overlay page was built before the mode changed, so its
-             * PRESSURE/ATM-ABS square would keep the old state. Rebuild the
+             * PRESSURE/REL-ABS square would keep the old state. Rebuild the
              * open page in place, exactly as the device's own reference button
              * does; without this the panel can command a mode the overlay
              * still contradicts. */

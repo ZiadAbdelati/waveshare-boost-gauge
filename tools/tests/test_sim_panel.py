@@ -17,7 +17,7 @@ Guards the contract between ``sim/main.c --stream`` and the browser panel
     shut down without killing the process.
   * The physical settings overlay is drivable and observable: ``overlay
     show|hide|page <0..2>|next|prev`` reach the firmware page hooks, ``ref
-    atm|abs`` and ``atmosphere <kpa>`` reach the pressure reference, ``/state``
+    rel|abs`` and ``atmosphere <kpa>`` reach the pressure reference, ``/state``
     reports the overlay page and reference from the sim's ``[PANEL]`` line, and
     the three overlay pages render distinct frames with the active page dot
     moving. A restart (crash or rebuild) is a fresh process, so the panel
@@ -403,7 +403,7 @@ def _check_overlay(result: Result, port: int) -> None:
     # this function commands.
     _post_cmd(port, "psi 5")
     _post_cmd(port, "demo off")
-    _post_cmd(port, "ref atm")
+    _post_cmd(port, "ref rel")
     _post_cmd(port, "overlay hide")
     _wait_state(port, 5.0, lambda s: s.get("overlay") == -1)
     closed = _shot_png(port)
@@ -479,31 +479,31 @@ def _check_overlay(result: Result, port: int) -> None:
     result.check(st is not None and st.get("overlay") == -1,
                  "overlay hide closes the overlay and /state reports it", f"state={st}")
 
-    # Reference: absolute changes the numerals for a fixed reading; atmospheric
+    # Reference: absolute changes the numerals for a fixed reading; relative
     # is an exact passthrough and restores the frame byte-for-byte.
     _post_cmd(port, "psi 5")
     _post_cmd(port, "demo off")
-    _post_cmd(port, "ref atm")
-    st = _wait_state(port, 5.0, lambda s: s.get("ref") == "atm")
-    result.check(st is not None and st.get("ref") == "atm",
-                 "ref atm is reported by /state", f"state={st}")
-    atm1 = _shot_png(port)
+    _post_cmd(port, "ref rel")
+    st = _wait_state(port, 5.0, lambda s: s.get("ref") == "rel")
+    result.check(st is not None and st.get("ref") == "rel",
+                 "ref rel is reported by /state", f"state={st}")
+    rel1 = _shot_png(port)
 
     _post_cmd(port, "ref abs")
     st = _wait_state(port, 5.0, lambda s: s.get("ref") == "abs")
     result.check(st is not None and st.get("ref") == "abs",
                  "ref abs is reported by /state", f"state={st}")
     abs1 = _shot_png(port)
-    result.check(atm1 is not None and abs1 is not None and atm1 != abs1,
+    result.check(rel1 is not None and abs1 is not None and rel1 != abs1,
                  "ref abs changes the rendered frame at a fixed psi",
-                 "atmospheric and absolute frames encode identically")
+                 "relative and absolute frames encode identically")
 
-    _post_cmd(port, "ref atm")
-    _wait_state(port, 5.0, lambda s: s.get("ref") == "atm")
-    atm2 = _shot_png(port)
-    result.check(atm1 is not None and atm2 is not None and atm1 == atm2,
-                 "ref atm restores the atmospheric frame",
-                 "atmospheric frame changed after a round trip")
+    _post_cmd(port, "ref rel")
+    _wait_state(port, 5.0, lambda s: s.get("ref") == "rel")
+    rel2 = _shot_png(port)
+    result.check(rel1 is not None and rel2 is not None and rel1 == rel2,
+                 "ref rel restores the relative frame",
+                 "relative frame changed after a round trip")
 
     # Atmosphere: in absolute mode the reference value is the atmosphere, so
     # 80 kPa must render differently from the 101.325 kPa default.
@@ -530,12 +530,12 @@ def _check_overlay(result: Result, port: int) -> None:
 
     # A reference change must ALSO repaint an already-open overlay page: the
     # page was built before the mode flipped, so without an in-place rebuild
-    # its ATM/ABS square would keep the old state while the device is in ABS.
+    # its REL/ABS square would keep the old state while the device is in ABS.
     _post_cmd(port, "overlay show")
     _post_cmd(port, "overlay page 2")
     _wait_state(port, 5.0, lambda s: s.get("overlay") == 2)
-    _post_cmd(port, "ref atm")
-    _wait_state(port, 5.0, lambda s: s.get("ref") == "atm")
+    _post_cmd(port, "ref rel")
+    _wait_state(port, 5.0, lambda s: s.get("ref") == "rel")
     o1 = _shot_png(port)
     _post_cmd(port, "ref abs")
     st = _wait_state(port, 5.0, lambda s: s.get("ref") == "abs")
@@ -544,17 +544,17 @@ def _check_overlay(result: Result, port: int) -> None:
                  and o1 is not None and o2 is not None and o1 != o2,
                  "ref abs repaints an already-open overlay page",
                  "open overlay frame unchanged by the reference")
-    _post_cmd(port, "ref atm")
-    _wait_state(port, 5.0, lambda s: s.get("ref") == "atm")
+    _post_cmd(port, "ref rel")
+    _wait_state(port, 5.0, lambda s: s.get("ref") == "rel")
     o3 = _shot_png(port)
     result.check(o1 is not None and o3 is not None and o1 == o3,
-                 "ref atm restores the open overlay page",
-                 "open overlay frame did not return after ref atm")
+                 "ref rel restores the open overlay page",
+                 "open overlay frame did not return after ref rel")
 
 
 def check_restart_reasserts_settings(result: Result) -> None:
     """A restart is a NEW process: the atmosphere override reverts to 101.325
-    and the store may revert to atmospheric, so the panel must re-send what the
+    and the store may revert to relative, so the panel must re-send what the
     user asked for instead of leaving the page showing a state the fresh sim is
     not in. Uses a COPY of the binary so the real artifact stays untouched."""
     import shutil
@@ -608,7 +608,7 @@ def _check_reassert(result: Result, port: int, probe: pathlib.Path) -> None:
         return
 
     # The reference is report-driven, so it is the observable proof the panel
-    # re-sent it: a fresh sim would report atm until the re-assert lands.
+    # re-sent it: a fresh sim would report rel until the re-assert lands.
     state = _wait_state(port, 10.0, lambda s: s.get("ref") == "abs")
     result.check(state is not None and state.get("ref") == "abs",
                  "panel re-asserts the reference after a restart", f"state={state}")

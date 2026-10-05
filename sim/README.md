@@ -68,7 +68,7 @@ background, a pressure number + slider with a "follow the demo waveform"
 toggle, the organic and fast-sweep waveforms, the boost/TPMS page selector with
 the TPMS mock scenario, the physical **settings overlay** (open/close, one
 button per page — QR / Connections / Units — and `prev`/`next` page stepping),
-the pressure **reference** (Atmospheric / Absolute), an **atmosphere** value in
+the pressure **reference** (Relative / Absolute), an **atmosphere** value in
 kPa, and a "Save screenshot" button. Screenshots are written to
 `preview/panel/<theme>-<unit>-<psi>.png`. The panel restarts the sim if the
 subprocess dies and shuts it down on Ctrl-C.
@@ -105,7 +105,7 @@ Commands map to the same firmware entry points the settings UI drives:
 `layout <tube|segments|marquee>`, `neonfont <0|1>`, `preset <0..3>`,
 `page <boost|tpms>`, `tpms <normal|stale|disconnected>`, `needle <red|green>`,
 `tail <on|off>`, `dynoblack <on|off>`, `overlay <show|hide|page <0|1|2>|next|prev>`,
-`ref <atm|abs>`, `atmosphere <kpa>`, `quit`.
+`ref <rel|abs>`, `atmosphere <kpa>`, `quit`.
 
 - `overlay show` / `overlay hide` open and dismiss the physical settings
   overlay; `overlay page <0|1|2>` jumps straight to QR / Connections / Units
@@ -113,9 +113,9 @@ Commands map to the same firmware entry points the settings UI drives:
 - `overlay next` / `overlay prev` step the page cycle the way a horizontal
   swipe does: `next` is forward with wraparound (0→1→2→0), `prev` is backward
   (0→2→1→0).
-- `ref atm` / `ref abs` select the displayed pressure reference (gauge vs
+- `ref rel` / `ref abs` select the displayed pressure reference (gauge vs
   absolute) and rebuild the face; if the settings overlay is open, the current
-  page is rebuilt in place too, so its PRESSURE/ATM-ABS square matches.
+  page is rebuilt in place too, so its PRESSURE/REL-ABS square matches.
 - `atmosphere <kpa>` sets the sim BMP280 baseline (50–120 kPa; out of range is
   rejected with a stderr line). The sim starts at 101.325 kPa.
 

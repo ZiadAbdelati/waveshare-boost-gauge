@@ -288,7 +288,7 @@ struct SettingsView: View {
                     Task { await vm.selectPressureReference(absolute) }
                 }
             )) {
-                Text("Atmospheric").tag(false)
+                Text("Relative").tag(false)
                 Text("Absolute").tag(true)
             }
             HStack {

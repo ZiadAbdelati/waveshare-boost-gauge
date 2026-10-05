@@ -250,7 +250,7 @@ static bool s_demo_mode = false;
 static bool s_tpms_ble = false;
 /* Global pressure-display unit; see boost_units.h. Canonical values stay PSI. */
 static uint8_t s_pressure_unit = (uint8_t)BOOST_UNIT_DEFAULT;
-/* GLOBAL pressure reference: false = atmospheric/gauge (today's behaviour),
+/* GLOBAL pressure reference: false = relative/gauge (today's behaviour),
  * true = absolute. Presentation-only; canonical stored values stay gauge PSI.
  * Global, like s_pressure_unit - NOT per-theme. */
 static bool s_pressure_absolute;
@@ -481,7 +481,7 @@ void boost_theme_init(void)
         s_pressure_unit = (uint8_t)boost_units_clamp(pu);
     }
 
-    /* Absent key leaves the global default (false = atmospheric/gauge), so a
+    /* Absent key leaves the global default (false = relative/gauge), so a
      * panel that predates this setting keeps today's behaviour. */
     uint8_t pa = 0;
     if (nvs_get_u8(h, NVS_KEY_PRESSABS, &pa) == ESP_OK) {

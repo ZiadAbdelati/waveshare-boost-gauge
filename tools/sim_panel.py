@@ -76,8 +76,8 @@ class PanelState:
         # physical settings overlay is closed, else the open page
         # (0 QR, 1 Connections, 2 Units).
         self.overlay = -1
-        # "atm" | "abs", reported by the sim.
-        self.ref = "atm"
+        # "rel" | "abs", reported by the sim.
+        self.ref = "rel"
         # The atmosphere the panel last sent, kPa. Re-sent after a restart,
         # which is a fresh process whose override is back at 101.325; this is
         # user intent, not a report, so reset() preserves it.
@@ -93,7 +93,7 @@ class PanelState:
             self.unit = "psi"
             self.page = "boost"
             self.overlay = -1
-            self.ref = "atm"
+            self.ref = "rel"
             self.cmd_marker = 0
 
     def apply_command(self, cmd: str) -> None:
@@ -252,7 +252,7 @@ class SimProcess:
             for r in readers:
                 r.start()
             # A restart is a NEW process: the atmosphere override is back at
-            # 101.325 and the store may be back at atmospheric. Re-assert the
+            # 101.325 and the store may be back at relative. Re-assert the
             # user's reference and atmosphere so the panel cannot keep showing
             # a value the fresh sim is not in; the next [PANEL] report then
             # confirms it (or corrects the panel).
@@ -361,7 +361,7 @@ class SimProcess:
                     # actually rendered (frames carry pixels, not widget state).
                     with self.state.lock:
                         self.state.overlay = int(m.group(3))
-                        self.state.ref = "abs" if m.group(4) == b"1" else "atm"
+                        self.state.ref = "abs" if m.group(4) == b"1" else "rel"
 
     # ---- frames ----------------------------------------------------------
     def get_frame(self, after: int, timeout: float) -> tuple[int, int, int, bytes] | None:
@@ -679,7 +679,7 @@ PAGE_HTML = """<!doctype html>
         <button id="overlayPrev">prev</button>
         <button id="overlayNext">next</button></div>
       <div class="row"><label>reference</label>
-        <label><input type="radio" name="ref" value="atm"> Atmospheric</label>
+        <label><input type="radio" name="ref" value="rel"> Relative</label>
         <label><input type="radio" name="ref" value="abs"> Absolute</label></div>
       <div class="row"><label for="atmosphere">atmosphere</label>
         <input type="number" id="atmosphere" min="50" max="120" step="0.1" value="101.325">

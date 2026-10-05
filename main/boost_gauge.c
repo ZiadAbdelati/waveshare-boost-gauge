@@ -443,7 +443,16 @@ static const int k_vault_slot_x[VAULT_MAX_CELLS] = { -60, -36, -12, 12, 36, 60 }
  * next cell to the left of the leading integer digit. */
 #define VAULT_PITCH    24
 #define VAULT_ONES_X  (-12)  /* psi slot 2 = ones */
-#define VAULT_DOT_X   (VAULT_ONES_X + VAULT_PITCH)  /* psi slot 3 = '.' */
+/* bar is the only converted unit with a decimal point, and the POINT is what the
+ * eye centres: the readout box is symmetric about the face centre, so the point
+ * belongs on slot 0. Anchoring bar on psi's ones slot parked it at +12 - a
+ * visible half-cell right of centre, and it diverged from the web mirror, which
+ * has always drawn the vault decimal at x = 0. bar can never outgrow this
+ * anchor: the psi range's 40 psi ceiling is 2.76 bar, and even the absolute
+ * reference's +14.7 psi only reaches 3.77, so the field is sign + one integer
+ * digit + point + two decimals, landing on -48, -24, 0, +24, +48. */
+#define VAULT_BAR_ONES_X (-VAULT_PITCH)  /* the '.' lands on slot 0 = box centre */
+#define VAULT_BAR_DOT_X  (VAULT_BAR_ONES_X + VAULT_PITCH)
 /* Same rule as the arc's VALUE_KPA_ONES_X: a fractionless format has nothing to
  * the right of its units digit, so anchoring on psi's ones slot parks the block
  * left of centre (measured 12-36 px). The vault psi field is symmetric about the
@@ -6458,7 +6467,7 @@ static void vault_build_cells(float psi)
     const char *const dot = strchr(digits, '.');
     const int int_len = (dot != NULL) ? (int)(dot - digits) : (int)strlen(digits);
     const int frac_len = (dot != NULL) ? (int)strlen(dot + 1) : 0;
-    const int ones_x = (dot != NULL) ? VAULT_ONES_X : VAULT_KPA_ONES_X;
+    const int ones_x = (dot != NULL) ? VAULT_BAR_ONES_X : VAULT_KPA_ONES_X;
     const int lead_x = ones_x - (int_len - 1) * VAULT_PITCH;
     int n = 0;
     if (neg && n < VAULT_MAX_CELLS) {
@@ -6476,13 +6485,13 @@ static void vault_build_cells(float psi)
     if (dot != NULL && n < VAULT_MAX_CELLS) {
         s_vault_cell_ch[n][0] = '.';
         s_vault_cell_ch[n][1] = '\0';
-        s_vault_cell_x[n] = (int16_t)VAULT_DOT_X;
+        s_vault_cell_x[n] = (int16_t)VAULT_BAR_DOT_X;
         ++n;
     }
     for (int i = 0; i < frac_len && n < VAULT_MAX_CELLS; ++i) {
         s_vault_cell_ch[n][0] = dot[1 + i];
         s_vault_cell_ch[n][1] = '\0';
-        s_vault_cell_x[n] = (int16_t)(VAULT_DOT_X + (i + 1) * VAULT_PITCH);
+        s_vault_cell_x[n] = (int16_t)(VAULT_BAR_DOT_X + (i + 1) * VAULT_PITCH);
         ++n;
     }
     s_vault_cell_n = (uint8_t)n;

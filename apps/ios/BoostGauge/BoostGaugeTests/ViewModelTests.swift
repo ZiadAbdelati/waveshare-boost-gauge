@@ -519,7 +519,7 @@ final class ViewModelTests: XCTestCase {
 
     func testPressureReferenceAddsReferenceToBoostNumeralsOnly() {
         let session = AppSession(defaults: UserDefaults(suiteName: "pressure.ref.\(UUID().uuidString)")!)
-        // Atmospheric (default): gauge values pass through untouched.
+        // Relative (default): gauge values pass through untouched.
         XCTAssertFalse(session.pressureAbsolute)
         XCTAssertEqual(session.displayPsi(3.24, ambientKpa: 101.3), 3.24, accuracy: 0.0001)
 

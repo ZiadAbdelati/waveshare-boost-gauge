@@ -76,7 +76,7 @@ int main(void)
     boost_pressure_ref_set_atmosphere_kpa(0.0f);
     check(fabsf(boost_pressure_ref_atmosphere_kpa() - 95.0f) < 1e-4f, "clearing restores live");
 
-    /* ---- property 1: atmospheric mode is an exact passthrough ---- */
+    /* ---- property 1: relative mode is an exact passthrough ---- */
     boost_theme_set_pressure_absolute(false);
     check(!boost_pressure_ref_absolute(), "mode flag reaches the reference module");
 
@@ -107,7 +107,7 @@ int main(void)
                 passthrough++;
             }
         }
-        /* Ticks never fold; atmospheric mode must still change nothing. */
+        /* Ticks never fold; relative mode must still change nothing. */
         for (int i = -3000; i <= 4000; ++i) {
             const float psi = (float)i * 0.01f;
             char got_s[32], want_s[32];
@@ -207,7 +207,7 @@ int main(void)
     if (failures == 0) {
         printf("test_pressure_ref: PASS (%d passthrough compares, psi in [%.0f, %.0f] "
                "step 0.01, units psi/bar/kPa; fold-before-reference and "
-               "atmospheric-passthrough pinned)\n",
+               "relative-passthrough pinned)\n",
                passthrough, (double)DOMAIN_LO, (double)DOMAIN_HI);
         return 0;
     }

@@ -38,8 +38,8 @@ class StatusViewModelTest {
     }
 
     @Test
-    fun stateSampleFlipsReferenceEvenWhenThemesSaidAtmospheric() = runTest(dispatcher) {
-        // /themes is the initial-config source and says atmospheric; a live
+    fun stateSampleFlipsReferenceEvenWhenThemesSaidRelative() = runTest(dispatcher) {
+        // /themes is the initial-config source and says relative; a live
         // /state sample carrying true must still flip the mirror (the physical
         // panel can change the reference without any /themes refetch).
         val transport = FakeBleTransport { _, path, _ ->
@@ -58,7 +58,7 @@ class StatusViewModelTest {
         val reference = PressureReferenceState()
         val viewModel = StatusViewModel(repository, api, PressureUnitState(), reference)
         runCurrent()
-        assertFalse("themes fixture is atmospheric", reference.absolute.value)
+        assertFalse("themes fixture is relative", reference.absolute.value)
 
         repository.refresh()
         runCurrent()

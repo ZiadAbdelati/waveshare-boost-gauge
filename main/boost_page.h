@@ -38,7 +38,7 @@ void boost_page_show(boost_page_id_t page);
  * exercise all three pages, the swipe paging and dismissal. */
 bool boost_page_qr_active(void);
 /** Overlay page, or -1 while the overlay is closed.
- *  0 = QR, 1 = Connections (OBD BLE, APP BLE), 2 = Units (UNITS, ATM/ABS). */
+ *  0 = QR, 1 = Connections (OBD BLE, APP BLE), 2 = Units (UNITS, REL/ABS). */
 int boost_page_qr_page(void);
 /** Open the overlay on page 0 (the QR page). No-op while it is already open. */
 void boost_page_qr_show(void);
@@ -49,7 +49,7 @@ void boost_page_qr_swipe_left(void);
 /** Step BACKWARD one page (0 -> 2 -> 1 -> 0). */
 void boost_page_qr_swipe_right(void);
 /** Simulate a tap on a toggle SWITCH itself: the row is PAGE-LOCAL, so page 1
- *  row 0/1 = OBD BLE / APP BLE and page 2 row 0/1 = UNITS / ATM-ABS. Raises
+ *  row 0/1 = OBD BLE / APP BLE and page 2 row 0/1 = UNITS / REL-ABS. Raises
  *  CLICKED on that square exactly like an on-glass tap on the control. */
 void boost_page_qr_tap_switch(int row);
 /** Pending deferred-toggle request, or -1. Lets the sim assert the async

@@ -808,7 +808,7 @@ private fun RangeSection(
             label = "Pressure reference",
             selected = fields.pressureAbsolute,
             options = listOf(false, true),
-            optionLabel = { if (it) "Absolute" else "Atmospheric" },
+            optionLabel = { if (it) "Absolute" else "Relative" },
             enabled = !saving,
             onSelect = onReferenceSave,
         )

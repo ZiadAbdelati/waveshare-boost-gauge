@@ -15,7 +15,7 @@ private const val PSI_PER_KPA = 0.145037738
  * unit (which /state also carries), the reference has no /state field, so a
  * `/themes` payload is the only adoption path.
  *
- * `false` = atmospheric (gauge) psi — today's behaviour; `true` = absolute,
+ * `false` = relative (gauge) psi — today's behaviour; `true` = absolute,
  * i.e. displayed = gauge + the ambient reference. Canonical wire/geometry
  * values stay gauge PSI; the reference is added only when a value becomes text.
  */
@@ -29,7 +29,7 @@ class PressureReferenceState(initial: Boolean = false) {
 }
 
 /**
- * Boost-side display psi under [absolute]: gauge psi unchanged in atmospheric
+ * Boost-side display psi under [absolute]: gauge psi unchanged in relative
  * mode, or gauge + the reference in absolute mode. [ambientKpa] is the EXISTING
  * `/state.sensors.ambientKpa`; missing or non-positive values fall back to the
  * standard atmosphere (101.325 kPa -> 14.6959 psi). Pure — callers pass only

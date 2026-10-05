@@ -207,7 +207,7 @@ boost_unit_t boost_theme_pressure_unit(void);
 void boost_theme_set_pressure_unit(boost_unit_t unit);
 
 /*
- * Global pressure-display reference: false (default) = ATMOSPHERIC/gauge,
+ * Global pressure-display reference: false (default) = RELATIVE/gauge,
  * true = ABSOLUTE. GLOBAL, not per-theme - the same scope as pressure_unit.
  * Presentation-only: canonical stored psi (state, logs, CSV, TPMS, calibration,
  * needle/arc geometry) stays GAUGE psi; this only selects what the numerals

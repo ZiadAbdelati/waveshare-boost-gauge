@@ -113,7 +113,7 @@ const state = {
    * applyThemePayload() from /themes (and by host preview injections through
    * renderConfig's config.pressureUnit). */
   pressureUnit: "psi",
-  /* Global pressure reference for boost-side numerals. false = ATMOSPHERIC
+  /* Global pressure reference for boost-side numerals. false = RELATIVE
    * (gauge, today's behaviour); true = ABSOLUTE (gauge + the atmospheric
    * reference from /state's sensors.ambientKpa). Same scope and adoption paths
    * as pressureUnit. Zone colours/ids, gauge geometry and TPMS stay gauge. */
@@ -639,7 +639,7 @@ function neonZoneDisplayPsi(psi) {
   return arcReadoutDisplayPsi(psi);
 }
 
-/* ── Atmospheric reference (atmospheric vs absolute display) ───────────────
+/* ── Relative reference (relative vs absolute display) ───────────────
  * A persisted GLOBAL setting (state.pressureAbsolute, /themes) selects the
  * displayed reference for boost-side numerals only. Canonical wire data stays
  * GAUGE psi; absolute mode adds the atmosphere on top at the presentation
@@ -2762,7 +2762,7 @@ function applyThemePayload(payload, fallback = {}) {
   const unitValue = pick("pressureUnit");
   if (unitValue !== undefined) state.pressureUnit = normalizePressureUnit(unitValue);
 
-  /* Global pressure reference (contract: false = atmospheric/gauge, true =
+  /* Global pressure reference (contract: false = relative/gauge, true =
    * absolute). Same adoption shape as pressureUnit: a missing field leaves it
    * untouched, anything truthy/falsey coerces. */
   set("pressureAbsolute", bool("pressureAbsolute"));
@@ -3242,7 +3242,7 @@ function wireDisplayToggles() {
     });
   }
   if (el.pressureAbsolute) {
-    /* Pressure reference: Atmospheric (false) vs Absolute (true). Persists on
+    /* Pressure reference: Relative (false) vs Absolute (true). Persists on
      * the same endpoint as the unit, then re-derives every boost-side numeral
      * and repaints the cockpit canvases; zone colours/geometry stay gauge. */
     el.pressureAbsolute.addEventListener("change", async () => {
@@ -3256,7 +3256,7 @@ function wireDisplayToggles() {
         applyThemePayload(payload);
         if (state.config) state.config.pressureAbsolute = absolute;
         refreshPressureUnitPresentation();
-        showOk(absolute ? "Pressure reference absolute" : "Pressure reference atmospheric");
+        showOk(absolute ? "Pressure reference absolute" : "Pressure reference relative");
       } catch (error) {
         syncDisplayToggles();
         showError(error.message);

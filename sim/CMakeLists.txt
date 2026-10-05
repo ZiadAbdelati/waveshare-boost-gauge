@@ -126,7 +126,7 @@ target_link_libraries(test_units_format PRIVATE m)
 
 # Host-side unit test for the pressure display reference. Pins the two
 # load-bearing properties: the fold happens in GAUGE psi before the reference is
-# added, and atmospheric mode is an exact passthrough (every psi render must
+# added, and relative mode is an exact passthrough (every psi render must
 # stay byte-identical). No LVGL or IDF dependency.
 add_executable(test_pressure_ref
     ${CMAKE_CURRENT_SOURCE_DIR}/../tools/test_pressure_ref.c

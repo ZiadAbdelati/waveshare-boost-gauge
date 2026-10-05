@@ -1420,7 +1420,7 @@ HARDWARE: still not run — no board was attached. 1.0.0 remains host-built and
 simulator-verified; **v0.9.7 is the last hardware-verified baseline**.
 
 
-## 2026-10-04 — pressure display reference (ATM / ABS) and a three-page settings overlay
+## 2026-10-04 — pressure display reference (REL / ABS) and a three-page settings overlay
 
 User request: "add an option for displaying either atmospheric or absolute ... based on
 reading the bmp280 for reference", surfaced on the web UI, both apps and the physical gauge;
@@ -1435,7 +1435,7 @@ web SIM to walk the settings pages before flashing.
 already computes gauge psi as `map_abs - ambient`, so absolute mode displays the MAP sensor's
 absolute manifold pressure and the BMP280 ambient is exactly the right reference. New module
 `main/boost_pressure_ref.[ch]` owns it, NVS key `press_abs`, `/themes` key `pressureAbsolute`
-(default false = Atmospheric), parsed by BOTH config transports. `main/boost_sensors.c` now
+(default false = Relative), parsed by BOTH config transports. `main/boost_sensors.c` now
 aliases the single `BOOST_STANDARD_ATM_KPA` constant instead of carrying its own literal, so
 the sensor fallback (101.325 kPa) and the display reference cannot drift.
 
@@ -1445,19 +1445,22 @@ exactly 14.7 psi absolute, so in-band jitter cannot move the readout.
 
 ### Overlay: three pages, centred pairs
 
-Pages are 0 QR, 1 Connections (OBD BLE, APP BLE), 2 Units (UNITS, ATM/ABS); a horizontal
+Pages are 0 QR, 1 Connections (OBD BLE, APP BLE), 2 Units (UNITS, REL/ABS); a horizontal
 swipe steps one page in the DIRECTION OF THE DRAG with wraparound (left = forward), the
 vertical swipe still changes theme, a fresh tap still dismisses, and the indicator is three
 dots with the active one lit. Measured on the rendered pages: the pair lands at x 83..212 and
 253..382, y 150..279 (130 px squares, 40 px gap, symmetric 83 px outer margins), and the lit
 dot's centre moves 214.5 -> 232.5 -> 250.5 (18 px spacing) across pages 0/1/2.
 
-The reference button is labelled `ATM/ABS`, NOT `PRESSURE`, and that was a measurement, not a
-guess: parsing LVGL's own `lv_font_montserrat_24` glyph advance table, "PRESSURE" is 133.1 px
-against the button's 118 px label box (`QR_BTN_SIZE - 12`) and would overflow, while "ATM/ABS"
-is 113.6 px — the same width as the already-proven "OBD BLE" (113.1 px). Its square lights
-(glow + LED + "ABS") only while absolute mode is on, and the secondary line always names the
-current mode.
+The reference button is labelled `REL/ABS`, NOT `PRESSURE` or `GAUGE/ABS`, and that was a
+measurement, not a guess: parsing LVGL's own `lv_font_montserrat_24` glyph advance table,
+"PRESSURE" is 133.1 px and "GAUGE/ABS" 148.7 px against the button's 118 px label box
+(`QR_BTN_SIZE - 12`) — both overflow — while "REL/ABS" is 106.8 px, the same width class as the
+already-proven "OBD BLE" (113.1 px). The secondary line runs at `lv_font_montserrat_20`, so it
+carries the full words rather than abbreviations: "RELATIVE" 99.9 px, "ABSOLUTE" 111.8 px. Its
+square lights (glow + LED) only while absolute mode is on, and the secondary line always names
+the current mode. (The first cut of this row shipped the label "ATM/ABS" with abbreviations; the
+terminology round below renamed both.)
 
 ### Isolation: the psi render path is provably untouched
 
@@ -1466,7 +1469,7 @@ A baseline binary was built side by side whose ONLY difference is `main/boost_ga
 (-12.0 / 0.0 / 5.0 / 19.5 psi) through the `--stream` command path:
 
     dyno-cell 0/0/0   vault-tec 0/0/0   night-city 0/0/0   big-digit 0/0/0   neon 0/0/0   (psi/bar/kPa)
-    -> 60 renders, 0 differing pixels in atmospheric mode
+    -> 60 renders, 0 differing pixels in relative mode
 
 In absolute mode the same comparison changes pixels on every theme (dyno-cell 21388,
 vault-tec 12537, night-city 30747, big-digit 35074, neon 93321 over the four states), which is
@@ -1479,11 +1482,11 @@ numerals `-0.3 / 14.7 / 19.7 / 22.7 / 24.7` and `PEAK 19.7`. The zone word stays
 in both, because the zone decision is gauge-relative and keeps the fold-only call.
 
 Web mirror, checked in a real browser against `tools/mock_server.py`: the Range page's
-`#pressureAbsolute` control offers exactly `Atmospheric` / `Absolute`; in absolute mode the
+`#pressureAbsolute` control offers exactly `Relative` / `Absolute`; in absolute mode the
 cockpit canvas paints `13.0 PSI` while the zone headline still reads `VAC`, and the dial
-numerals relabel to `-0.3 / 14.7 / 19.7 / 22.7 / 24.7` (atmospheric: `1.1 PSI`, dial
+numerals relabel to `-0.3 / 14.7 / 19.7 / 22.7 / 24.7` (relative: `1.1 PSI`, dial
 `-15 / 0 / 5 / 8 / 10`). The conversion function itself is drift-free and was checked
-directly in-page: `boostDisplayPsi(5.0)` = 5 in atmospheric, 19.6923 in absolute (=
+directly in-page: `boostDisplayPsi(5.0)` = 5 in relative mode, 19.6923 in absolute (=
 5 + 101.3 x 0.145037738), and `neonZoneDisplayPsi` still delegates to the fold-only
 `arcReadoutDisplayPsi`.
 
@@ -1491,7 +1494,7 @@ directly in-page: `boostDisplayPsi(5.0)` = 5 in atmospheric, 19.6923 in absolute
 
 `tools/test_pressure_ref.c` (built by `sim/CMakeLists.txt` as `test_pressure_ref`, run like its
 siblings `test_units_format`/`test_neon_geom`) pins the two load-bearing properties over
-[-30, 40] psi step 0.01 in all three units: 63009 passthrough compares proving atmospheric mode
+[-30, 40] psi step 0.01 in all three units: 63009 passthrough compares proving relative mode
 is a byte-for-byte passthrough, and the fold-before-reference ordering with quoted strings
 (`0.0 -> 14.7`, `5.0 -> 19.7`, `-12.0 -> 2.7`, the atmosphere tick -> 14.7 psi / 101 kPa). It
 also pins the fallback ladder (non-positive, `ambient_is_fallback` and NaN all land on the
@@ -1577,3 +1580,69 @@ value reaches the wire.
 Re-verified after the fixes: `test_pressure_ref` PASS (63009 compares), `test_units_format`
 PASS, `test_neon_geom` PASS, `--qr-test` PASS (3 pages), `tools/tests/test_sim_panel.py` 44
 checks, `tools/test_suite.py` 14/14, `idf.py build` clean.
+
+## 2026-10-04 (later) — terminology: the mode pair is RELATIVE / ABSOLUTE, not "atmospheric"; and Vault-Tec's bar decimal lands on the box centre
+
+### The terminology was wrong, and the user was right to challenge it
+
+The feature shipped calling its two options "Atmospheric / Absolute". The user asked whether
+that was the correct terminology. It is not: the standard pair for this axis is **relative (or
+gauge) pressure** vs **absolute pressure** — `psig`/`psia`, "barg"/"bara" — and "atmospheric"
+names the *reference value*, not the mode. Worse, it collides with the atmospheric baseline this
+very feature adds (`atm` is also a unit of pressure), and the physical button's caption read
+`ATM/ABS`. So it was also ambiguous on the glass.
+
+Renamed to **Relative / Absolute** across every surface: the physical overlay button (caption
+`REL/ABS`, state line now the full words `RELATIVE` / `ABSOLUTE` at Montserrat 20), the web
+Range page option label and its hint text and save toast, the iOS Range picker, the Android
+Range dropdown and its save message, the sim panel's Reference radios, and the sim's stream
+command (`ref rel`, with `ref atm` now rejected outright — no alias shim).
+
+`Relative` was chosen over the equally standard `Gauge` for two measured reasons: `GAUGE/ABS`
+measures **148.7 px** against the physical button's 118 px label box (it overflows at 20 px too,
+123.9 px), so `Gauge` would have forced an invented caption; and "gauge" already names the
+device, so a button reading "GAUGE" on a boost gauge would read as the *device* mode. Everything
+else keeps its existing name, because it was already accurate: the row stays **Pressure
+reference**, and everything that names the BASELINE keeps `atmosphere` — `atmosphere <kpa>`,
+`BOOST_STANDARD_ATM_KPA`, `boost_pressure_ref_atmosphere_kpa()`, "measured atmosphere",
+"Calibrate MAP to ATM". The zone word `ATMO` (VAC/ATMO/BOOST) is a different axis and is
+untouched. No identifier, JSON key or NVS key changed: `pressureAbsolute`, `press_abs`,
+`boost_theme_pressure_absolute()` are all still correct.
+
+Re-verified after the rename: web assets regenerated (226995 gzip bytes, idempotent, check
+repeated on the regenerated .c by decompressing rather than grepping); Android **115 tests / 0
+failures** + `assembleDebug` BUILD SUCCESSFUL; iOS **115 tests / 113 passed / 2 failed**, both
+the known pre-existing `ViewModelTests` timezone failures; sim panel **44 checks** plus a live
+round trip (`ref abs` -> `/state ref=abs`, `ref rel` -> `ref=rel`, `ref atm` rejected).
+
+### Vault-Tec + bar: the decimal point now sits on the box centre
+
+User request: "on Vault Tec when using bar units ... move the readout such that the decimal
+point is centered in that box". The vault readout object is 146 px wide and centred on the face,
+so the box centre is slot 0 of the field's 24 px mono pitch. bar had been anchored on psi's ones
+slot (`VAULT_ONES_X` -12), which parked the point at **+12** — a visible half-cell right of
+centre — and, more tellingly, diverged from the web mirror, which has always drawn the vault
+decimal at x = 0 (`drawFixedDecimal(..., 0, 120)`). The fix anchors bar on `VAULT_BAR_ONES_X`
+(-24) so the point lands on 0; bar can never outgrow that anchor because the psi range's 40 psi
+ceiling is 2.76 bar and even the absolute reference's +14.7 psi reaches only 3.77, so the field
+is sign + one integer digit + point + two decimals, landing on -48, -24, 0, +24, +48.
+
+Measured with the `--screenshot` path (which re-renders the whole tree, so the readout is live —
+the `--stream` frames are NOT suitable for readout-geometry work; verified below), vault-tec,
+`gauge_boost` frame, bar:
+
+    build A (HEAD) ink runs: 210..231  241..248  259..278  282..303
+    build B (fix)  ink runs: 198..219  229..236  247..266  270..291
+    best-fit shift = 12 px left over the band (160 residual AA px; every other shift 648+)
+    decimal point (the w8 run): centre 244.5  ->  232.5   FACE / BOX CENTRE = 232.5
+
+The whole-frame diff is confined to **x 198..303, y 346..373** — the readout row — so nothing
+else on the face moved. Isolation against the same HEAD baseline binary, same screenshots:
+**psi: all four gauge frames byte-identical; kPa: all four byte-identical; bar: all four differ**
+(the intended change). This is the mirror divergence the earlier rounds' notes had left open for
+the vault readout; the web needed no change, the firmware moved to the web's anchor.
+
+A harness note worth keeping: the `--stream` path renders the vault readout from a stale state —
+a 48 px gross shift of the cell anchor produced a byte-identical `--stream` frame, while the
+same binaries differ under `--screenshot`. Any future readout-geometry measurement must use
+`--screenshot` (or the live panel), never blind `--stream` diffs.

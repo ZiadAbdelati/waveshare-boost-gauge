@@ -33,7 +33,7 @@ final class AppSession: ObservableObject {
     /// Same hold for a locally confirmed reference write.
     private var awaitingStateAbsolute: Bool?
 
-    /// App-wide pressure reference (reference contract). `false` = atmospheric
+    /// App-wide pressure reference (reference contract). `false` = relative
     /// (gauge) psi, today's behaviour; `true` = absolute, i.e. displayed =
     /// gauge + `ambientKpa` reference. Canonical wire values stay gauge PSI;
     /// the reference is added only at display time. Adopted from `/themes`
@@ -126,7 +126,7 @@ final class AppSession: ObservableObject {
     }
 
     /// Boost-side display psi under the current reference: gauge psi unchanged
-    /// in atmospheric mode, or gauge + the atmospheric reference in absolute
+    /// in relative mode, or gauge + the atmospheric reference in absolute
     /// mode. `ambientKpa` is the EXISTING `/state.sensors.ambientKpa`; missing
     /// or non-positive values fall back to the standard atmosphere (101.325 kPa
     /// -> 14.696 psi), per the reference contract. Canonical wire/geometry

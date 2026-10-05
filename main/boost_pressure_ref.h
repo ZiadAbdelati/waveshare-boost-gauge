@@ -1,5 +1,5 @@
 #pragma once
-/* Pressure DISPLAY reference: atmospheric (gauge) vs absolute.
+/* Pressure DISPLAY reference: relative (gauge) vs absolute.
  *
  * Canonical storage stays GAUGE psi everywhere: /state.psi, the CSV and BLE
  * logs, TPMS, calibration diagnostics, needle position, arc geometry and the
@@ -44,7 +44,7 @@ float boost_pressure_ref_psi(void);
 float boost_pressure_ref_atmosphere_kpa(void);
 
 /* Gauge psi -> displayed psi under the current reference. `fold_deadband`
- * applies the shared fold first. In atmospheric mode this is an EXACT
+ * applies the shared fold first. In relative mode this is an EXACT
  * passthrough - no arithmetic at all - which is what keeps every psi render
  * byte-identical to the pre-reference build. */
 float boost_pressure_ref_display(float gauge_psi, bool fold_deadband);

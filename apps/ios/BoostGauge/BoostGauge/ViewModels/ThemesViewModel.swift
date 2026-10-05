@@ -12,7 +12,7 @@ final class ThemesViewModel: ObservableObject {
     @Published private(set) var pressureUnit = PressureUnit.psi
     /// Pressure reference from the last `/themes` payload; injected into the
     /// web preview so the bundled renderer draws the selected reference
-    /// (reference contract). `false` = atmospheric (gauge), `true` = absolute.
+    /// (reference contract). `false` = relative (gauge), `true` = absolute.
     @Published private(set) var pressureAbsolute = false
     @Published var isLoading = false
     @Published var errorMessage: String?

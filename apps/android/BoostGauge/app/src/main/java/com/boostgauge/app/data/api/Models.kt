@@ -134,7 +134,7 @@ data class ThemesPayload(
     @EncodeDefault
     val pressureUnit: String = "psi",
     /**
-     * Global pressure reference: `false` = atmospheric/gauge (default),
+     * Global pressure reference: `false` = relative/gauge (default),
      * `true` = absolute (display = gauge + the ambient reference). Wire values
      * stay gauge PSI; the reference is presentation-only. Always encoded so
      * /themes echoes it, mirroring [pressureUnit].
