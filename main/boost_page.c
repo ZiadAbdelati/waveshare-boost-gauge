@@ -543,6 +543,14 @@ static void qr_toggle_apply_cb(lv_timer_t *timer)
         boost_theme_set_tpms_ble(req == 3);
         boost_obd_set_enabled(req == 3);
     }
+    /* The square's glow, its status LED and its ON/OFF line are all baked by
+     * show_qr() from boost_app_ble_enabled()/boost_obd_enabled(), and nothing
+     * else ever repaints the overlay (the 16 ms gauge path is gated on
+     * s_qr_active). Applying the toggle without this rebuild left the button
+     * looking dead until the next page step - the "BLE buttons don't respond to
+     * taps" report. Same in-place turnover the reference toggle does, and the
+     * same page, so the tap never appears to navigate. */
+    qr_goto_page(s_qr_page);
 }
 
 static void qr_toggle_request(int32_t req)
@@ -1115,4 +1123,14 @@ void boost_page_qr_tap_switch(int row)
 }
 
 int boost_page_qr_pending_toggle(void) { return (int)s_qr_toggle_req; }
+
+const char *boost_page_qr_switch_text(int row)
+{
+    if (s_qr_overlay == NULL || row < 0 || row >= QR_BTN_COUNT) return "";
+    lv_obj_t *b = s_qr_btn[row];
+    if (b == NULL || lv_obj_get_child_count(b) < 2) return "";
+    lv_obj_t *s = lv_obj_get_child(b, lv_obj_get_child_count(b) - 1);
+    if (!lv_obj_check_type(s, &lv_label_class)) return "";
+    return lv_label_get_text(s);
+}
 
