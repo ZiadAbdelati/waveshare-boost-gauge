@@ -1169,6 +1169,41 @@ static int run_qr_test(const char *out_dir)
         printf("switch flick steps the page without toggling: OK\n");
     }
 
+    /* (d2) The same rule across a TOGGLE->TOGGLE step (1 -> 2), which is the case
+     * where the overlay and the square are both re-created: the hook must not
+     * raise the square's CLICKED on the rebuilt page, so the OBD link must stay
+     * put. Durable witness: the persisted tpmsBle flag. */
+    boost_page_qr_dismiss();
+    pump_lvgl(30);
+    boost_page_qr_show();
+    pump_lvgl(30);
+    boost_page_qr_show_page(1);   /* Connections: OBD BLE + APP BLE */
+    pump_lvgl(60);
+    {
+        const bool tpms_before = boost_theme_tpms_ble();
+        const boost_unit_t unit_pre = boost_theme_pressure_unit();
+        boost_page_qr_switch_gesture(0, -300, 0);   /* flick left from OBD BLE */
+        pump_lvgl(60);
+        if (!boost_page_qr_active()) {
+            fprintf(stderr, "FAIL a toggle->toggle switch flick dismissed the overlay\n");
+            failures++;
+        } else if (boost_page_qr_page() != 2) {
+            fprintf(stderr, "FAIL toggle->toggle switch flick did not step 1 -> 2 (got %d)\n",
+                    boost_page_qr_page());
+            failures++;
+        } else if (boost_theme_tpms_ble() != tpms_before) {
+            fprintf(stderr, "FAIL a switch flick toggled the OBD link of the page it left\n");
+            failures++;
+        } else if (boost_theme_pressure_unit() != unit_pre) {
+            /* The rebuilt page's row-0 square is UNITS: a misplaced CLICKED would
+             * cycle the unit here, which is the hazard this case exists to catch. */
+            fprintf(stderr, "FAIL a switch flick tapped the rebuilt page's square\n");
+            failures++;
+        } else {
+            printf("toggle->toggle switch flick steps without toggling: OK\n");
+        }
+    }
+
     /* (e) One action per gesture: further PRESSING samples after a
      * page-stepping flick must not step a second page (the mid-drag rebuild
      * drops the origin; the one-shot latch is what keeps it to one action). */
