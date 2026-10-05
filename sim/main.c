@@ -1104,6 +1104,94 @@ static int run_qr_test(const char *out_dir)
         }
     }
 
+    /* (d) A drag that starts ON a switch is a drag too - the square owns the
+     * whole press stream on glass, and its tap callback must apply the same
+     * "a drag is not a tap" rule as the overlay background: a 30 px flick must
+     * not change the setting, while a 300 px horizontal flick steps the page.
+     * The SETTING is the durable witness: the deferred request is consumed by
+     * the next LVGL cycle, so a pending-request check would pass either way. */
+    boost_page_qr_dismiss();
+    pump_lvgl(30);
+    boost_page_qr_show();
+    pump_lvgl(30);
+    boost_page_qr_show_page(2);   /* Units: UNITS + REL/ABS */
+    pump_lvgl(60);
+    if (boost_page_qr_page() != 2) {
+        fprintf(stderr, "FAIL switch test did not open the Units page (got %d)\n",
+                boost_page_qr_page());
+        failures++;
+    }
+    const boost_unit_t unit_before = boost_theme_pressure_unit();
+    boost_page_qr_switch_gesture(0, 30, 12);   /* short flick on UNITS */
+    pump_lvgl(60);
+    if (!boost_page_qr_active()) {
+        fprintf(stderr, "FAIL a 30 px switch drag dismissed the overlay\n");
+        failures++;
+    } else if (boost_theme_pressure_unit() != unit_before) {
+        fprintf(stderr, "FAIL a 30 px drag starting on a switch changed the unit\n");
+        failures++;
+    } else {
+        printf("short switch drag does not toggle: OK\n");
+    }
+    boost_page_qr_tap_switch(0);   /* a real tap must still cycle the unit */
+    for (int i = 0; i < 10; ++i) { lv_tick_inc(16); lv_timer_handler(); usleep(16000); }
+    if (boost_theme_pressure_unit() == unit_before) {
+        fprintf(stderr, "FAIL a tap on the switch no longer cycles the unit\n");
+        failures++;
+    } else {
+        printf("switch tap still toggles: OK\n");
+    }
+    const boost_unit_t unit_after_tap = boost_theme_pressure_unit();
+    boost_page_qr_dismiss();
+    pump_lvgl(30);
+    boost_page_qr_show();
+    pump_lvgl(30);
+    boost_page_qr_show_page(2);
+    pump_lvgl(60);
+    boost_page_qr_switch_gesture(0, -300, 0);   /* flick left from UNITS */
+    pump_lvgl(60);
+    if (!boost_page_qr_active()) {
+        fprintf(stderr, "FAIL a switch flick dismissed the overlay\n");
+        failures++;
+    } else if (boost_page_qr_page() != 0) {
+        fprintf(stderr, "FAIL switch flick did not step 2 -> 0 (got %d)\n",
+                boost_page_qr_page());
+        failures++;
+    } else if (boost_theme_pressure_unit() != unit_after_tap) {
+        fprintf(stderr, "FAIL a switch flick also changed the unit\n");
+        failures++;
+    } else {
+        printf("switch flick steps the page without toggling: OK\n");
+    }
+
+    /* (e) One action per gesture: further PRESSING samples after a
+     * page-stepping flick must not step a second page (the mid-drag rebuild
+     * drops the origin; the one-shot latch is what keeps it to one action). */
+    boost_page_qr_dismiss();
+    pump_lvgl(30);
+    boost_page_qr_show();
+    pump_lvgl(30);
+    boost_page_qr_press(406, 233);
+    boost_page_qr_move(60, 233);
+    pump_lvgl(60);
+    if (boost_page_qr_page() != 1) {
+        fprintf(stderr, "FAIL the step flick did not reach page 1 (got %d)\n",
+                boost_page_qr_page());
+        failures++;
+    }
+    boost_page_qr_move(60, 233);
+    boost_page_qr_move(406, 233);
+    pump_lvgl(60);
+    if (boost_page_qr_page() != 1) {
+        fprintf(stderr, "FAIL two steps' worth of movement in one gesture re-stepped (got %d)\n",
+                boost_page_qr_page());
+        failures++;
+    } else {
+        printf("one page per gesture: OK\n");
+    }
+    boost_page_qr_release();
+    pump_lvgl(30);
+
     /* 4. Tap dismisses and gauge resumes */
     boost_page_qr_dismiss();
     pump_lvgl(50);

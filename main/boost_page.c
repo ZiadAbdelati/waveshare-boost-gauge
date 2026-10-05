@@ -158,6 +158,7 @@ static void qr_step(int32_t dir);
 static void qr_gesture_begin(int32_t x, int32_t y);
 static void qr_gesture_end(void);
 static void qr_gesture_reset(void);
+static void qr_gesture_rebuild(void);
 static void qr_drag_update(int32_t x, int32_t y);
 static void qr_tap_obd_cb(lv_event_t *event);
 static void qr_tap_app_cb(lv_event_t *event);
@@ -554,9 +555,11 @@ static void qr_toggle_request(int32_t req)
 static void qr_tap_obd_cb(lv_event_t *event)
 {
     (void)event;
-    /* Every CLICKED ends its gesture; a classified drag is not a tap, so it
-     * only clears the state (the switch must not toggle). */
-    const bool suppress = s_qr_swipe_suppress;
+    /* Every CLICKED ends its gesture. A drag is not a tap by either route - it
+     * classified as a swipe, or it only moved past the 12 px tap slop - so the
+     * switch must not toggle: a 20-47 px flick that began on a switch used to
+     * flip the setting (same rule as the overlay background in qr_click_cb). */
+    const bool suppress = s_qr_swipe_suppress || s_qr_drag_seen;
     qr_gesture_reset();
     if (suppress) return;
     qr_toggle_request(boost_obd_enabled() ? 2 : 3);
@@ -565,7 +568,7 @@ static void qr_tap_obd_cb(lv_event_t *event)
 static void qr_tap_app_cb(lv_event_t *event)
 {
     (void)event;
-    const bool suppress = s_qr_swipe_suppress;
+    const bool suppress = s_qr_swipe_suppress || s_qr_drag_seen;
     qr_gesture_reset();
     if (suppress) return;
     qr_toggle_request(boost_app_ble_enabled() ? 0 : 1);
@@ -574,7 +577,7 @@ static void qr_tap_app_cb(lv_event_t *event)
 static void qr_tap_units_cb(lv_event_t *event)
 {
     (void)event;
-    const bool suppress = s_qr_swipe_suppress;
+    const bool suppress = s_qr_swipe_suppress || s_qr_drag_seen;
     qr_gesture_reset();
     if (suppress) return;
     qr_toggle_request(4);
@@ -583,7 +586,7 @@ static void qr_tap_units_cb(lv_event_t *event)
 static void qr_tap_ref_cb(lv_event_t *event)
 {
     (void)event;
-    const bool suppress = s_qr_swipe_suppress;
+    const bool suppress = s_qr_swipe_suppress || s_qr_drag_seen;
     qr_gesture_reset();
     if (suppress) return;
     qr_toggle_request(5);
@@ -600,11 +603,14 @@ static void qr_goto_page(int32_t page)
     s_qr_overlay = NULL;
     s_qr_active = false;
     s_qr_page = page;
-    /* The gesture is still in flight (this rebuild steps its page), so only the
-     * origin is dropped: show_qr() below no longer touches gesture state, and
-     * the one-shot latch must stay set for the rest of this drag - clearing it
-     * here re-armed the classifier and let a slow swipe step a second page. */
-    qr_gesture_end();
+    /* The gesture is STILL IN FLIGHT: this rebuild is what its page step does.
+     * Drop only the origin, keep the one-shot classification latch, so the rest
+     * of the drag cannot act again (qr_drag_update() consults the latch BEFORE
+     * re-seeding, so a slow swipe steps exactly one page). On glass LVGL would
+     * also stop dispatching PRESSING at all here - lv_obj_delete() of the
+     * pressed overlay runs obj_indev_reset() -> lv_indev_wait_release() - but the
+     * state machine must not depend on that. */
+    qr_gesture_rebuild();
     boost_gauge_media_pause();   /* show_qr pauses again; keep state */
     show_qr();
 }
@@ -658,6 +664,15 @@ static void qr_gesture_reset(void)
     s_qr_drag_seen = false;
 }
 
+/* A mid-gesture scene/overlay rebuild (qr_goto_page) drops the origin, because
+ * the rebuilt object cannot receive the rest of the stream, but KEEPS the
+ * one-shot classification latch: one gesture = one action, whatever the rebuild
+ * does. qr_gesture_end() (a real release) clears both. */
+static void qr_gesture_rebuild(void)
+{
+    s_qr_press_tracking = false;
+}
+
 /* The shared gesture classifier. A predominantly horizontal drag of at least
  * SWIPE_MIN_PX steps the overlay page in the DIRECTION OF THE DRAG (dragging
  * left advances, dragging right goes back, both wrapping); a predominantly
@@ -669,6 +684,11 @@ static void qr_gesture_reset(void)
 static void qr_drag_update(int32_t x, int32_t y)
 {
     if (!s_qr_active) return;
+    /* One action per gesture. Consulted BEFORE the seeding fallback: a drag
+     * whose origin was dropped by a mid-gesture rebuild (qr_goto_page) must not
+     * re-seed and act again, which is what keeps a slow swipe to exactly one
+     * page if further PRESSING samples arrive. */
+    if (s_qr_drag_classified) return;
     if (!s_qr_press_tracking) {
         /* Fallback for a PRESSING whose PRESSED was not delivered: the first
          * sample of the gesture establishes the drag origin. */
@@ -682,7 +702,6 @@ static void qr_drag_update(int32_t x, int32_t y)
     /* Movement past the tap slop makes this gesture a DRAG, whatever it ends up
      * classifying as: its release must not dismiss the overlay. */
     if (ax >= TAP_SLOP_PX || ay >= TAP_SLOP_PX) s_qr_drag_seen = true;
-    if (s_qr_drag_classified) return;
     if (ax >= SWIPE_MIN_PX && (int64_t)ax * 4 >= (int64_t)ay * 5) {
         s_qr_drag_classified = true;
         s_qr_swipe_suppress = true;
@@ -1030,6 +1049,29 @@ void boost_page_qr_drag_unseeded(int x0, int y0, int x1, int y1)
     boost_page_qr_move(x0, y0);
     boost_page_qr_move(x1, y1);
     boost_page_qr_release();
+}
+
+void boost_page_qr_switch_gesture(int row, int dx, int dy)
+{
+    if (!s_qr_active || s_qr_page == QR_PAGE_QR) return;
+    if (row < 0 || row >= QR_BTN_COUNT || s_qr_btn[row] == NULL) return;
+    lv_obj_t *btn = s_qr_btn[row];
+    lv_area_t coords;
+    lv_obj_get_coords(btn, &coords);
+    const int32_t x0 = (coords.x1 + coords.x2) / 2;
+    const int32_t y0 = (coords.y1 + coords.y2) / 2;
+    /* A press starting on a square is OWNED by that square on glass: PRESSED,
+     * PRESSING, RELEASED and CLICKED all go to the square, never to the overlay.
+     * Model exactly that - the shared state machine plus the square's OWN tap
+     * callback, which is where the switch's drag rules live. */
+    qr_gesture_begin(x0, y0);
+    qr_drag_update(x0 + dx, y0 + dy);
+    qr_release_cb(NULL);
+    /* A page-stepping flick deleted this square, and glass would then deliver no
+     * CLICKED at all, so only raise it while the object is still alive. */
+    if (lv_obj_is_valid(btn) && s_qr_btn[row] == btn) {
+        lv_obj_send_event(btn, LV_EVENT_CLICKED, NULL);
+    }
 }
 
 void boost_page_qr_swipe_left(void)

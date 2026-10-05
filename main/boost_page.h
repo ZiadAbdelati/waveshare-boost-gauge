@@ -65,6 +65,12 @@ void boost_page_qr_drag(int x0, int y0, int x1, int y1);
  *  its own origin (the path a background press takes when the tracker still
  *  holds the previous gesture's point - the stale-origin regression). */
 void boost_page_qr_drag_unseeded(int x0, int y0, int x1, int y1);
+/** A drag that STARTS on a toggle switch: models the square owning the whole
+ *  PRESSED/PRESSING/RELEASED stream (plus the CLICKED it raises while it is
+ *  still alive), so the switch's own drag rules are exercised - a drag is not a
+ *  tap there either. Row is PAGE-LOCAL: page 1 = 0 OBD BLE / 1 APP BLE,
+ *  page 2 = 0 UNITS / 1 REL/ABS. */
+void boost_page_qr_switch_gesture(int row, int dx, int dy);
 /** Simulate a tap on a toggle SWITCH itself: the row is PAGE-LOCAL, so page 1
  *  row 0/1 = OBD BLE / APP BLE and page 2 row 0/1 = UNITS / REL/ABS. Raises
  *  CLICKED on that square exactly like an on-glass tap on the control. */

@@ -1991,8 +1991,9 @@ maps to a sentence of the report:
 
 **The documented behaviour is unchanged**: a horizontal drag still steps one page in the
 direction of the drag with wraparound, a vertical drag still changes the theme, a fresh tap
-still dismisses, and a drag starting on a square still feeds the same classifier without
-toggling the switch.
+still dismisses, and a drag starting on a square still feeds the same classifier: a
+classified drag steps the page instead of toggling, and (after the review round below) a 12-47 px
+drag no longer toggles either.
 
 **Verification (failing before → passing after, same assertions).** The host hooks used to
 bypass the classifier entirely (`boost_page_qr_swipe_left()` called `qr_step()` directly), so
@@ -2013,3 +2014,56 @@ byte-identical, only their call sites moved).
 **HARDWARE: not run.** The report came from glass, so the failure is real, but the fix's own
 run is host-only: the same pressure/rotation caveat as v1.1.1 applies, and the flick
 classification on glass (touch sampling rate, real finger arcs) is unmeasured.
+
+### 2026-10-05 (later) — review round on the overlay fix: the switches, the mid-drag rebuild, and the dispatch wiring
+
+A dedicated read-only review subagent re-derived the change and its LVGL model. Verdict **ship**
+with three items; all three are now closed.
+
+**1. The switches did not apply the new rule (minor, fixed).** `qr_click_cb` (the overlay
+background) swallowed a short drag, but the four square callbacks still gated on
+`s_qr_swipe_suppress` alone — so a 12-47 px flick that *started* on OBD BLE / APP BLE / UNITS /
+REL/ABS still toggled the setting. That was pre-existing behaviour rather than a new regression,
+but it contradicted both the rule this change establishes ("a drag is not a tap, by either
+route") and the sentence above, which claimed a square-origin drag never toggles. All five
+dismiss/toggle sites now gate on `s_qr_swipe_suppress || s_qr_drag_seen`.
+
+**2. The mid-drag rebuild comment was false, and the exposed hook could still double-step (nit,
+fixed properly).** `qr_goto_page()` commented that "only the origin is dropped" while calling
+`qr_gesture_end()`, which cleared the one-shot latch too; the protection it described actually
+came from LVGL (`lv_obj_delete` of the pressed overlay runs `obj_indev_reset()` →
+`lv_indev_wait_release()`, so no further `PRESSING` is dispatched — `lv_indev.c:1196`), and the
+public host hook `boost_page_qr_move()` could therefore still reproduce a two-page step. The
+state machine is now self-sufficient: the rebuild calls `qr_gesture_rebuild()` (origin only, latch
+kept) and `qr_drag_update()` consults `s_qr_drag_classified` **before** its seeding fallback, so
+one gesture = one action whatever the rebuild does. Pinned by the new `--qr-test` assertion that
+sends two further move samples after a page-stepping flick and requires the page to stay put.
+
+**3. The LVGL dispatch wiring was unverified (nit, closed).** The harness drives the production
+state machine and classifier, but not the event *registrations* — the actual fix — so deleting
+one would have left `--qr-test` green. `tools/tests/test_gesture_constants.py` now pins, in
+source: the three gesture callbacks registered on the overlay and in `qr_make_square()`,
+`qr_gesture_rebuild()` (not `qr_gesture_end()`) in `qr_goto_page()`, `show_qr()` touching no
+gesture state, and the both-latch rule in all five dismiss/toggle callbacks. Doctored to prove it
+bites: removing the overlay's `PRESSED` registration → 1 FAIL; reverting either `qr_click_cb` or
+one switch callback to the swipe latch alone → 1 FAIL each; clean source → 25/25.
+
+**The reviewer's LVGL-order re-derivation was a negative result, which is the useful kind:** the
+patch's model is correct against the vendored LVGL 9 — `LV_EVENT_PRESSED` goes to the hit object
+(and `LV_OBJ_FLAG_PRESS_LOCK`, set by default on every object with a parent, keeps
+`PRESSING`/`RELEASED`/`CLICKED` on that same object for the whole gesture), which is why a press
+starting on a square never reaches the overlay's own `qr_pressing_cb` and why registering the
+gesture callbacks inside the square factory is the right shape.
+
+**Refreshed evidence.** Pre-fix source with the extended harness: **4 failures** — "a 40 px drag
+dismissed the overlay", "overlay lost on the unseeded flick", "a 30 px drag starting on a switch
+changed the unit", "two steps' worth of movement in one gesture re-stepped". Post-fix: **0
+failures** across 11 assertions (page matrix, wraparound, toggle persistence, tap dismiss, short
+drag, switch short drag, switch tap still toggles, switch flick steps without toggling, vertical
+flick theme change, post-flick swipe, one page per gesture). Guard 25/25 with the doctoring proof
+above; host suite 15/15; firmware rebuilt clean (0x28efa0, 36 % free).
+
+**Still HARDWARE-unverified**, and now with a named risk the review surfaced: if a real CST9217
+tap commonly moves ≥12 px before release, that tap is now treated as a drag (the overlay could
+only be dismissed by a still finger). That is the deliberate meaning of the 12 px tap slop — the
+same rule page 0 has always used — but it is a glass measurement, not a host one.
