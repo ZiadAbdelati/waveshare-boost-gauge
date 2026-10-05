@@ -141,6 +141,13 @@ def main() -> int:
 
     # One gesture = one touch-down: the mid-drag rebuild must drop only the
     # origin, and show_qr() (also the rebuild path) must touch no gesture state.
+    # The overlay's classifier must not reach for the theme either: a vertical
+    # flick there does nothing (user decision 2026-10-05). Page 0's own theme
+    # swipe (finish_press) is a different function and is unaffected.
+    drag_body = body_of("static void qr_drag_update(int32_t x, int32_t y)", page)
+    result.check("apply_theme_delta" not in drag_body,
+                 "the overlay classifier never changes the theme",
+                 "a vertical flick on the settings overlay would switch themes")
     goto_body = body_of("static void qr_goto_page(int32_t page)", page)
     result.check("qr_gesture_rebuild()" in goto_body and "qr_gesture_end()" not in goto_body,
                  "qr_goto_page keeps the one-shot latch across the page rebuild",

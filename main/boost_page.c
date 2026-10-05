@@ -675,12 +675,17 @@ static void qr_gesture_rebuild(void)
 
 /* The shared gesture classifier. A predominantly horizontal drag of at least
  * SWIPE_MIN_PX steps the overlay page in the DIRECTION OF THE DRAG (dragging
- * left advances, dragging right goes back, both wrapping); a predominantly
- * vertical one changes theme (the gauge's direction: drag up = next theme).
- * The ratio tests match the gauge's finish_press() classification. The point is
- * passed in rather than read from an indev so the host harness drives THIS
- * function - the production classifier, not a copy of it (the headless sim has
- * no pointer device to synthesise real PRESSING events on). */
+ * left advances, dragging right goes back, both wrapping). A VERTICAL drag does
+ * nothing at all - user decision 2026-10-05: the theme is behind an opaque
+ * settings cover, so changing it there has no affordance and an accidental
+ * diagonal swipe read as the overlay "changing themes" (it used to call
+ * apply_theme_delta(); the gauge's own vertical theme swipe on page 0 is
+ * unchanged). Every drag still counts as a drag via s_qr_drag_seen, so a
+ * vertical flick neither acts nor dismisses. The ratio tests match the gauge's
+ * finish_press() classification. The point is passed in rather than read from an
+ * indev so the host harness drives THIS function - the production classifier,
+ * not a copy of it (the headless sim has no pointer device to synthesise real
+ * PRESSING events on). */
 static void qr_drag_update(int32_t x, int32_t y)
 {
     if (!s_qr_active) return;
@@ -706,10 +711,6 @@ static void qr_drag_update(int32_t x, int32_t y)
         s_qr_drag_classified = true;
         s_qr_swipe_suppress = true;
         qr_step(dx < 0 ? 1 : -1);
-    } else if (ay >= SWIPE_MIN_PX && (int64_t)ay * 4 >= (int64_t)ax * 5) {
-        s_qr_drag_classified = true;
-        s_qr_swipe_suppress = true;
-        apply_theme_delta(dy < 0 ? 1 : -1);
     }
 }
 

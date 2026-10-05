@@ -1447,7 +1447,7 @@ exactly 14.7 psi absolute, so in-band jitter cannot move the readout.
 
 Pages are 0 QR, 1 Connections (OBD BLE, APP BLE), 2 Units (UNITS, REL/ABS); a horizontal
 swipe steps one page in the DIRECTION OF THE DRAG with wraparound (left = forward), the
-vertical swipe still changes theme, a fresh tap still dismisses, and the indicator is three
+vertical swipe still changes theme (superseded 2026-10-05: a vertical drag on the overlay now does nothing), a fresh tap still dismisses, and the indicator is three
 dots with the active one lit. Measured on the rendered pages: the pair lands at x 83..212 and
 253..382, y 150..279 (130 px squares, 40 px gap, symmetric 83 px outer margins), and the lit
 dot's centre moves 214.5 -> 232.5 -> 250.5 (18 px spacing) across pages 0/1/2.
@@ -1990,7 +1990,8 @@ maps to a sentence of the report:
   the overlay closes (`hide_qr()`, `boost_page_create()`, and the host open hooks).
 
 **The documented behaviour is unchanged**: a horizontal drag still steps one page in the
-direction of the drag with wraparound, a vertical drag still changes the theme, a fresh tap
+direction of the drag with wraparound, a vertical drag does NOTHING on the overlay (it used to
+change the theme; removed by user decision, see the subsection below), a fresh tap
 still dismisses, and a drag starting on a square still feeds the same classifier: a
 classified drag steps the page instead of toggling, and (after the review round below) a 12-47 px
 drag no longer toggles either.
@@ -2002,11 +2003,11 @@ bypass the classifier entirely (`boost_page_qr_swipe_left()` called `qr_step()` 
 functions the LVGL callbacks call (`qr_gesture_begin`/`qr_drag_update`/`qr_release_cb`/
 `qr_click_cb`) — never a copy — and the swipe hooks are routed through them. New assertions in
 `./sim/build/boost_gauge_sim --qr-test DIR`: a 40 px flick must not dismiss; a vertical flick
-must change the theme face (raw frame comparison with the overlay down), keep the overlay, and
-be followed by a swipe that still steps exactly one page; and a flick whose `PRESSED` was never
-delivered must step one page rather than inherit the previous origin. Measured on the pre-fix
-source with the same harness: **2 failures** ("a 40 px drag dismissed the overlay", "overlay
-lost on the unseeded flick"); post-fix: **0 failures**, alongside the pre-existing page-matrix,
+must change NOTHING (the face captured with the overlay down must be byte-identical afterwards),
+keep the overlay, and be followed by a swipe that still steps exactly one page; and a flick whose
+`PRESSED` was never delivered must step one page rather than inherit the previous origin. Measured on the pre-fix
+source with the same harness: **2 failures** in this first harness revision ("a 40 px drag dismissed the overlay", "overlay
+lost on the unseeded flick" — 4 once the harness gained the switch and one-gesture assertions, see the review round below); post-fix: **0 failures**, alongside the pre-existing page-matrix,
 wraparound, toggle-persistence and tap-dismiss assertions. Host suite 15/15
 (`test_gesture_constants.py` included — the pinned thresholds and both ratio expressions are
 byte-identical, only their call sites moved).
@@ -2067,3 +2068,30 @@ above; host suite 15/15; firmware rebuilt clean (0x28efa0, 36 % free).
 tap commonly moves ≥12 px before release, that tap is now treated as a drag (the overlay could
 only be dismissed by a still finger). That is the deliberate meaning of the 12 px tap slop — the
 same rule page 0 has always used — but it is a glass measurement, not a host one.
+
+### 2026-10-05 (later still) — user decision: a vertical drag on the settings overlay does nothing
+
+Board follow-up after the gesture fix: "remove the changing theme while overlay is open, not sure
+why that was documented behavior." Fair — the overlay's vertical→theme branch was documented as
+intended in the 2026-10-04 three-page row, but it never had an affordance: the theme sits behind a
+fully opaque black cover, so the only visible effect of a vertical flick was that a slightly
+diagonal swipe appeared to "change themes" for no reason. That is also what made the stale-origin
+defect read so badly.
+
+`qr_drag_update()` now has no vertical branch at all: a vertical drag on the overlay is a drag (it
+sets `s_qr_drag_seen`, so it neither dismisses the overlay nor toggles a switch it started on) and
+it acts on nothing. The gauge's own vertical theme swipe on page 0 (`finish_press` →
+`apply_theme_delta`) is unchanged — `apply_theme_delta()` is still live, just no longer reachable
+from the overlay. AGENTS.md rows 188/191, `docs/gui-guide.md` and the 2026-10-04 row above carry
+the correction.
+
+Evidence, and the reason the removal is pinned rather than trusted: the harness assertion was
+inverted FIRST (a vertical flick must leave the face captured with the overlay down
+byte-identical) and run against the unmodified firmware, where it failed exactly once — "a
+vertical flick on the overlay changed the theme face" — then passed after the branch was removed
+(`--qr-test`, 11 assertions, 0 failures). `tools/tests/test_gesture_constants.py` additionally
+asserts that `qr_drag_update()` never mentions `apply_theme_delta`, so a future edit cannot quietly
+bring the theme swipe back: 26/26, and the new check was doctored to confirm it fails when the
+branch is restored. Host suite 15/15; firmware rebuilt clean (0x28f000, 36 % free).
+
+**HARDWARE: not run** — unchanged from the fix above.

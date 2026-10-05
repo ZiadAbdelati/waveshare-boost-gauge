@@ -1036,8 +1036,13 @@ static int run_qr_test(const char *out_dir)
         printf("short drag does not dismiss: OK\n");
     }
 
-    /* (b) vertical flick -> theme changes, overlay survives, next swipe works.
-     * Snapshot the theme-0 face with the overlay DOWN first. */
+    /* (b) A vertical flick while the overlay is open must change NOTHING: the
+     * theme behind an opaque settings cover has no affordance, and the user
+     * asked for the overlay to stop switching themes (it used to, documented,
+     * and it made an accidental diagonal swipe look like the overlay "changing
+     * themes"). The overlay must survive, stay on its page, and keep working.
+     * Snapshot the theme-0 face with the overlay DOWN first, to prove it is
+     * unchanged at the end. */
     boost_page_qr_dismiss();
     pump_lvgl(60);
     {
@@ -1047,10 +1052,10 @@ static int run_qr_test(const char *out_dir)
     }
     boost_page_qr_show();
     pump_lvgl(30);
-    boost_page_qr_drag(233, 400, 233, 100);   /* flick up: next theme */
+    boost_page_qr_drag(233, 400, 233, 100);   /* flick up: must be ignored */
     pump_lvgl(120);
     if (!boost_page_qr_active()) {
-        fprintf(stderr, "FAIL vertical flick lost the overlay\n");
+        fprintf(stderr, "FAIL a vertical flick on the overlay dismissed it\n");
         failures++;
     }
     if (boost_page_qr_page() != 0) {
@@ -1086,8 +1091,8 @@ static int run_qr_test(const char *out_dir)
         printf("unseeded flick steps one page: OK\n");
     }
 
-    /* (b, conclusion) the theme really changed: the face differs with the
-     * overlay down. */
+    /* (b, conclusion) the vertical flick changed nothing: the face must be
+     * byte-identical to the pre-flick capture. */
     boost_page_qr_dismiss();
     pump_lvgl(60);
     {
@@ -1096,11 +1101,11 @@ static int run_qr_test(const char *out_dir)
         snprintf(face_pre, sizeof(face_pre), "%s/qr_face_pre.raw", out_dir);
         if (!snapshot_screen(face_post)) return 2;
         /* raw_files_cmp: 0 = the files differ, 1 = identical, -1 = open error. */
-        if (raw_files_cmp(face_pre, face_post) != 0) {
-            fprintf(stderr, "FAIL the vertical flick did not change the theme face\n");
+        if (raw_files_cmp(face_pre, face_post) != 1) {
+            fprintf(stderr, "FAIL a vertical flick on the overlay changed the theme face\n");
             failures++;
         } else {
-            printf("vertical flick changed the theme: OK\n");
+            printf("vertical flick leaves the theme alone: OK\n");
         }
     }
 
