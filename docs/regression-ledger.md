@@ -2198,8 +2198,18 @@ reference and repaints; a tap ON the QR code falls through and dismisses.
 The harness is a genuine witness, not decoration: reverting the repaint fix makes **two of the
 real-tap assertions fail as well** (5 failures in the run), and all 14 pass again with it restored.
 The gesture machine still needs the injected hooks — a long `PRESSED` stream cannot be synthesised
-from a 33 ms read timer — so the two layers are complementary, and the *registrations* stay pinned
+from a 16 ms read timer (this repo's LV_DEF_REFR_PERIOD) — so the two layers are complementary, and the *registrations* stay pinned
 by `tools/tests/test_gesture_constants.py`.
+
+Known HOST limits of this section (measured by the harness review, not defects):
+- No GIF is loaded, so the UNITS/REL-ABS taps exercise the *unit/reference* rebuild but not
+  `qr_reassert_overlay()` — the guard for the documented "GIF playing → open overlay → tap UNITS"
+  defect is only reachable with media playing, which the host sim does not have. That one stays a
+  glass check.
+- The synthetic indev is created after `boost_page_create()`, so it is not among the indevs that
+  function subscribed `boost_page_indev_event` on: the app-level press tracking and the one-second
+  hold-to-dim are not driven by these taps. The overlay's own objects register their callbacks
+  themselves, which is what this section tests.
 
 Observed, deliberately NOT pinned: a real tap in the 40 px gap BETWEEN the two squares dismisses the
 overlay (the documented fresh-tap rule). With 130 px squares that is a plausible next board report;

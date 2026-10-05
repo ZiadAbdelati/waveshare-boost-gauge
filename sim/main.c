@@ -840,7 +840,9 @@ static void setup_tap_indev(void)
 }
 
 /* One finger-down and up at a point, delivered as two separate read cycles (the
- * 33 ms indev timer, so a press and the release that produces CLICKED do not
+ * 16 ms indev timer (this repo's LV_DEF_REFR_PERIOD, sim/lv_conf.h and the
+ * firmware's CONFIG_LV_DEF_REFR_PERIOD, not LVGL's 33 ms fallback), so a press and
+ * the release that produces CLICKED do not
  * share a cycle - the same shape a real touch takes). */
 static void real_tap(int32_t x, int32_t y)
 {
@@ -1392,7 +1394,7 @@ static int run_qr_test(const char *out_dir)
      * it is the only place that can catch a mis-targeted registration, a
      * CLICKED that bubbles to the overlay, or a square that never sees PRESSING.
      * (The gesture machine itself still needs the hooks, because a long PRESSED
-     * stream cannot be synthesised from a 33 ms read timer.) */
+     * stream cannot be synthesised from a 16 ms read timer.) */
     setup_tap_indev();
 #define RT(cond, label) do { \
         if (cond) { printf("real-tap %s: OK\n", label); } \
