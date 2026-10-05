@@ -16,8 +16,8 @@ android {
         // permission path (see manifest) covers BLE pre-12.
         minSdk = 29
         targetSdk = 34
-        versionCode = 10
-        versionName = "1.0.0"
+        versionCode = 11
+        versionName = "1.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

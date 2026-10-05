@@ -5,6 +5,18 @@ The latest release notes also ship in `release/` (see `release/README.md`). Preb
 > Notes for v0.9.x live in `release/README.md` and `docs/regression-ledger.md`;
 > this file resumes at v1.0.0.
 
+## v1.1.0
+
+The headline of v1.1.0 is the **pressure display reference**: the gauge, the dashboard and both companion apps can now show pressure either **Relative** (gauge — what a boost gauge normally reads, atmosphere = 0) or **Absolute** (atmosphere included), independently of the selected unit. The physical settings overlay also grew from two pages to **three** (QR → Connections → Units), and Vault-Tec's bar readout was corrected.
+
+- **Relative / Absolute display reference.** The reference is presentation-only, exactly like the unit: `/state.psi`, the `/logs` JSON and `/logs.csv` columns, TPMS comparisons, calibration, needle position, arc geometry and the zone-colour decision all stay gauge psi on the wire. The dead band (±0.1 psi) runs FIRST, in gauge psi, then the reference is applied, then the unit conversion — **Relative mode is a byte-for-byte passthrough of the previous renderer**, and the psi path remains the 60 FPS reference. Absolute mode adds the BMP280 ambient (`absolute = gauge + ambient`, falling back to the standard atmosphere when the sensor is absent), with the dial numerals baked at scene build.
+- **Three-page settings overlay.** QR → Connections → Units, with a three-dot indicator and wrap-around horizontal paging. The Units page carries the unit cycler and the **`REL/ABS`** reference toggle, whose state line reads the full word (`RELATIVE` / `ABSOLUTE`).
+- **Terminology corrected.** The mode pair shipped internally as "Atmospheric / Absolute"; that is not the standard pair for this axis — it is **relative (or gauge)** vs **absolute** pressure, and "atmospheric" names the reference value, not the mode. Renamed to Relative / Absolute on every surface, including the web option, both app pickers and the sim panel.
+- **Vault-Tec + bar.** The readout box is centred on the face, so bar now anchors its decimal **point** on the box centre (the web mirror always drew it there); psi keeps its historic six-slot field and kPa its own anchor.
+- **Pre-release review round.** Before the cut, four independent read-only reviews (firmware, clients, harness, release readiness) found and fixed two real defects — the arc PEAK label cached on the peak alone and so went stale as the ambient drifted, and the neon readout applied the dead band a second time after the reference — plus a web dial-tick rounding mismatch, a theme-preview ambient gap, and several tests that could not fail. Details in `docs/regression-ledger.md`.
+
+**Verification honesty: the firmware in this release is host-built and simulator-verified, NOT hardware-verified** — no board was attached when it was cut. Relative-mode psi byte-identity is measured (35/35 screenshot frames across all five themes against a side-by-side pre-change sim), the host suite is 15/15 with the new renderer call-site guard, and both app artifacts are verified from their built metadata (`versionName`/`versionCode`, the IPA's `Info.plist`). On-glass cadence, overlay paging and the reference/unit cycle remain unmeasured; `v0.9.7` is still the last hardware-verified release.
+
 ## v1.0.0
 
 The headline of v1.0.0 is a **global pressure unit**: the gauge, the dashboard and
