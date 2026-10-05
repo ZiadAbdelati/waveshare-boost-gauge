@@ -1934,3 +1934,82 @@ banner (`release/README.md`, `docs/release-notes.md`). The rotated panel's visib
 at 90/180/270, touch alignment under rotation, cadence/tear under rotation, and the forced-path
 serial line with the OSF-clearing RTC write all remain glass items; `v0.9.7` is still the last
 hardware-verified release.
+
+## 2026-10-05 — the settings overlay's gesture state machine (board report: "I can't swipe on the settings page")
+
+**Report.** After flashing v1.1.1: "I can't swipe on the settings qr page?? It just takes me
+out of the settings and changes themes?? Swiping in the settings pages has always been
+finicky but now it's just broken?"
+
+**Three defects, all in the overlay's gesture bookkeeping** (`main/boost_page.c`), not in the
+gesture geometry and not in the rotation/touch work that shipped in v1.1.1 — `boost_page.c` is
+byte-identical between v1.1.0 and v1.1.1, so the reported behaviour was reachable in both. Each
+maps to a sentence of the report:
+
+1. **A drag was dismissed as a tap unless it classified as a swipe.** `qr_click_cb()` only
+   swallowed the trailing `CLICKED` when `s_qr_swipe_suppress` was set, i.e. only for a drag
+   that crossed `SWIPE_MIN_PX` (48 px) *and* won one of the two axis-ratio tests. A 20-47 px
+   background flick — past the 12 px tap slop, short of the swipe threshold — classified as
+   neither branch, set no latch, and fell straight through to `qr_click_cb()` → `hide_qr()`:
+   **"it takes me out of settings"**. (So did a 45°/ambiguous drag of any length: the two ratio
+   tests leave a dead cone between 38.7° and 51.3°, and an unclassified drag dismissed.)
+2. **The origin and the one-shot latch outlived the gesture.** The drag origin was seeded only
+   by a `PRESSING` and only when `s_qr_press_tracking` happened to be false, and
+   `s_qr_drag_classified` was cleared only by `show_qr()`/`qr_goto_page()`/`hide_qr()`. After a
+   tap on a square (`qr_swipe_press_cb` seeded it and nothing cleared it) or after a vertical
+   (theme) classification — which never routes through `qr_goto_page()` — both stayed set. The
+   next background drag was then measured from the **previous gesture's touch-down point**
+   (a 20 px flick classifying as a 200 px one, i.e. an accidental theme change: **"it changes
+   themes"**) and, because `s_qr_drag_classified` was still latched, `qr_pressing_cb()` returned
+   early for the rest of it and for every later gesture: the overlay stopped stepping pages and
+   stopped dismissing — **"now it's just broken"**.
+3. **`show_qr()` clobbered the in-flight gesture.** It cleared `s_qr_press_tracking`,
+   `s_qr_drag_classified` and `s_qr_swipe_suppress`, but it is also the mid-drag rebuild path
+   (`qr_step()` → `qr_goto_page()` deletes and re-creates the overlay to step a page). A swipe
+   that stepped a page therefore re-armed the classifier for the remainder of the same drag
+   (a slow 300 px swipe could step two pages) and dropped the latch the release needs to swallow
+   its `CLICKED`.
+
+**Fix — one rule: one gesture = one touch-down.**
+
+- `qr_gesture_begin()` seeds origin + clears both one-shot latches; called from the overlay's own
+  `PRESSED` (`qr_press_cb`, newly registered) and from every square's `PRESSED` (now registered
+  once, centrally, in `qr_make_square()` instead of at four call sites; the old
+  `qr_swipe_press_cb()` is deleted). The `PRESSING` fallback still seeds when a `PRESSED` was
+  never delivered.
+- `qr_gesture_end()` (RELEASED, via the new `qr_release_cb`) drops the origin + the
+  classification latch, and the CLICKED handlers call `qr_gesture_reset()` for the two
+  release-consumed latches. `qr_gesture_end()` deliberately does NOT clear them: `CLICKED`
+  arrives after `RELEASED` and that callback decides whether this was a drag. (Getting that
+  order wrong was the first cut of this very fix — it cleared `s_qr_drag_seen` too early and the
+  harness caught it immediately.)
+- A drag is not a tap by either route: `s_qr_drag_seen` is set as soon as the gesture moves past
+  the 12 px tap slop (`TAP_SLOP_PX`), and `qr_click_cb()` swallows for it exactly as for
+  `s_qr_swipe_suppress`. Page-0 tap semantics and the overlay now agree.
+- `show_qr()` touches no gesture state; the state is reset at the gesture boundaries and when
+  the overlay closes (`hide_qr()`, `boost_page_create()`, and the host open hooks).
+
+**The documented behaviour is unchanged**: a horizontal drag still steps one page in the
+direction of the drag with wraparound, a vertical drag still changes the theme, a fresh tap
+still dismisses, and a drag starting on a square still feeds the same classifier without
+toggling the switch.
+
+**Verification (failing before → passing after, same assertions).** The host hooks used to
+bypass the classifier entirely (`boost_page_qr_swipe_left()` called `qr_step()` directly), so
+`--qr-test` never exercised a single gesture. `main/boost_page.c` now exposes
+`boost_page_qr_press/move/release/drag/drag_unseeded`, which call the *same* point-free
+functions the LVGL callbacks call (`qr_gesture_begin`/`qr_drag_update`/`qr_release_cb`/
+`qr_click_cb`) — never a copy — and the swipe hooks are routed through them. New assertions in
+`./sim/build/boost_gauge_sim --qr-test DIR`: a 40 px flick must not dismiss; a vertical flick
+must change the theme face (raw frame comparison with the overlay down), keep the overlay, and
+be followed by a swipe that still steps exactly one page; and a flick whose `PRESSED` was never
+delivered must step one page rather than inherit the previous origin. Measured on the pre-fix
+source with the same harness: **2 failures** ("a 40 px drag dismissed the overlay", "overlay
+lost on the unseeded flick"); post-fix: **0 failures**, alongside the pre-existing page-matrix,
+wraparound, toggle-persistence and tap-dismiss assertions. Host suite 15/15
+(`test_gesture_constants.py` included — the pinned thresholds and both ratio expressions are
+byte-identical, only their call sites moved).
+
+**HARDWARE: not run.** The report came from glass, so the failure is real, but the fix's own
+run is host-only: the same pressure/rotation caveat as v1.1.1 applies, and the flick
+classification on glass (touch sampling rate, real finger arcs) is unmeasured.

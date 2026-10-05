@@ -44,10 +44,27 @@ int boost_page_qr_page(void);
 void boost_page_qr_show(void);
 /** Open (or, while already open, jump to) a page: 0..2, out-of-range ignored. */
 void boost_page_qr_show_page(int page);
-/** Step FORWARD one page (0 -> 1 -> 2 -> 0). */
+/** Step FORWARD one page (0 -> 1 -> 2 -> 0): a leftward flick driven through
+ *  the production drag classifier, not qr_step() directly. */
 void boost_page_qr_swipe_left(void);
-/** Step BACKWARD one page (0 -> 2 -> 1 -> 0). */
+/** Step BACKWARD one page (0 -> 2 -> 1 -> 0); a rightward flick. */
 void boost_page_qr_swipe_right(void);
+/* --- Raw gesture injection (same functions the on-glass callbacks use) ------
+ * The sim has no pointer device, so a press/drag/release is injected here and
+ * runs the production gesture state machine and classifier. */
+/** Touch-down at (x, y): seeds the gesture origin. */
+void boost_page_qr_press(int x, int y);
+/** One PRESSING sample at (x, y). */
+void boost_page_qr_move(int x, int y);
+/** Release: runs the RELEASED cleanup and the CLICKED that follows it, which
+ *  dismisses the overlay only if the gesture never moved past the tap slop. */
+void boost_page_qr_release(void);
+/** press -> move -> release, one move sample: a complete flick. */
+void boost_page_qr_drag(int x0, int y0, int x1, int y1);
+/** move -> move -> release with NO touch-down: the first sample must establish
+ *  its own origin (the path a background press takes when the tracker still
+ *  holds the previous gesture's point - the stale-origin regression). */
+void boost_page_qr_drag_unseeded(int x0, int y0, int x1, int y1);
 /** Simulate a tap on a toggle SWITCH itself: the row is PAGE-LOCAL, so page 1
  *  row 0/1 = OBD BLE / APP BLE and page 2 row 0/1 = UNITS / REL/ABS. Raises
  *  CLICKED on that square exactly like an on-glass tap on the control. */
