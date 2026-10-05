@@ -2095,3 +2095,42 @@ bring the theme swipe back: 26/26, and the new check was doctored to confirm it 
 branch is restored. Host suite 15/15; firmware rebuilt clean (0x28f000, 36 % free).
 
 **HARDWARE: not run** — unchanged from the fix above.
+
+## 2026-10-05 — v1.1.2 release: the settings overlay's gesture state machine
+
+Firmware-only release (no dashboard or companion-app source change; the app artifacts are
+re-cut because the version surfaces move together). The three defect rows and the review rounds
+above are the substance; this row records the release itself.
+
+**Version hygiene caught its own drift again.** The source gate failed 3/20 mid-bump — "every iOS
+pbxproj MARKETING_VERSION matches version.txt", "project.yml and generated pbxproj agree",
+"iOS build number agrees" — because the checked-in pbxproj was still 1.1.1/10 until
+`xcodegen generate` regenerated it from the bumped spec. That is precisely the drift that once
+shipped a downgraded app, so the failure was the guard working; after regeneration the source
+gate is 20/20.
+
+Evidence: release gate **45/45** over the shipped bytes — `esp_app_desc.version = 1.1.2` at offset
+`0x30` of `boost_gauge.bin` and `0x20030` of the merged image, the IPA's `Info.plist`
+(1.1.2 / build 11) read from *inside* the IPA, the APK's `versionName`/`versionCode` from
+`aapt2 dump badging`, `release/README.md` naming the version, `flash.sh` agreeing with
+`flash_args` on mode/freq/size, and every `SHA256SUMS` digest re-hashed over all 10 shipped
+files. The merged image's four slices were verified byte-identical to the individual files and
+it is exactly `0x20000` bytes larger than the app image. Host suite **15/15**; overlay harness
+**0 failures / 12 assertions** (pre-fix source: 4 failures); gesture-constants contract
+**26/26** with five checks doctored to prove each one fails when reverted.
+
+Artifacts: app **2,682,816 B** (`0x28efc0`, 36 % of `ota_0` free, +160 B over v1.1.1 — a
+firmware-only gesture change), merged **2,813,888 B**, `bootloader.bin` / `partition-table.bin` /
+`ota_data_initial.bin` **byte-identical to v1.1.1** (checksums unchanged), IPA **1,326,418 B**,
+`.app` zip **1,326,082 B**, APK **61,392,100 B**. Android unit tests were deliberately not run:
+no app source changed.
+
+**HARDWARE: not run.** No board was attached, so the release ships under the explicit honesty
+banner (`release/README.md`, `docs/release-notes.md`). The glass acceptance step for this one is
+the overlay itself: horizontal flick steps a page, sub-48 px flick leaves it open, a swipe after
+any flick still steps, a short flick on a switch does not flip it while a tap does, and a
+vertical flick on the overlay does nothing — with the named risk that a real CST9217 tap
+drifting ≥12 px now reads as a drag (page 0's own tap slop). Everything v1.1.1 left open
+(rotated-panel insets/touch at 90/180/270, cadence/tear under rotation, the forced-clock RTC
+write) is unchanged by this release and still unmeasured on glass. `v0.9.7` remains the last
+hardware-verified release.
