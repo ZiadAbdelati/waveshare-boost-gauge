@@ -1056,6 +1056,7 @@ void boost_page_qr_switch_gesture(int row, int dx, int dy)
     if (!s_qr_active || s_qr_page == QR_PAGE_QR) return;
     if (row < 0 || row >= QR_BTN_COUNT || s_qr_btn[row] == NULL) return;
     lv_obj_t *btn = s_qr_btn[row];
+    lv_obj_t *overlay_before = s_qr_overlay;
     lv_area_t coords;
     lv_obj_get_coords(btn, &coords);
     const int32_t x0 = (coords.x1 + coords.x2) / 2;
@@ -1067,9 +1068,13 @@ void boost_page_qr_switch_gesture(int row, int dx, int dy)
     qr_gesture_begin(x0, y0);
     qr_drag_update(x0 + dx, y0 + dy);
     qr_release_cb(NULL);
-    /* A page-stepping flick deleted this square, and glass would then deliver no
-     * CLICKED at all, so only raise it while the object is still alive. */
-    if (lv_obj_is_valid(btn) && s_qr_btn[row] == btn) {
+    /* A page-stepping flick deleted this square (and the overlay with it), and
+     * glass would then deliver no CLICKED at all. Compare the OVERLAY object, not
+     * just the square pointer: lv_obj_is_valid() walks the live tree, and a
+     * reused allocator block could put the new page's square at the same address
+     * and same row, making a bare pointer check raise CLICKED on a switch this
+     * gesture never touched. */
+    if (s_qr_overlay == overlay_before && s_qr_btn[row] == btn && lv_obj_is_valid(btn)) {
         lv_obj_send_event(btn, LV_EVENT_CLICKED, NULL);
     }
 }

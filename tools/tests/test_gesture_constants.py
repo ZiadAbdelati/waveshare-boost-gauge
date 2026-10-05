@@ -121,18 +121,23 @@ def main() -> int:
                         return text[start:i + 1]
         return ""
 
-    for site, sig in (("the overlay", "static void show_qr(void)"),
-                      ("the square factory",
-                       "static lv_obj_t *qr_make_square(lv_obj_t *parent")):
+    # Target-ANCHORED on purpose: the point of this check is a mis-targeted
+    # registration, so a bare `[^,]+` target pattern is not enough - it passes
+    # any comma-free target, e.g. moving the overlay's press callback onto a
+    # square inside show_qr(). The target identifier is part of the assertion.
+    for site, sig, target in (("the overlay", "static void show_qr(void)", "s_qr_overlay"),
+                              ("the square factory",
+                               "static lv_obj_t *qr_make_square(lv_obj_t *parent", "b")):
         body = body_of(sig, page)
         result.check(bool(body), f"{site} definition found for the wiring check")
         for cb, ev in (("qr_press_cb", "LV_EVENT_PRESSED"),
                        ("qr_pressing_cb", "LV_EVENT_PRESSING"),
                        ("qr_release_cb", "LV_EVENT_RELEASED")):
             result.check(
-                bool(re.search(rf"lv_obj_add_event_cb\([^,]+,\s*{cb},\s*{ev},", body)),
-                f"{site} registers {cb} for {ev}",
-                "registration missing - that part of the dispatch path is dead")
+                bool(re.search(
+                    rf"lv_obj_add_event_cb\({re.escape(target)},\s*{cb},\s*{ev},", body)),
+                f"{site} registers {cb} for {ev} on {target}",
+                "registration missing, or targeted at the wrong object")
 
     # One gesture = one touch-down: the mid-drag rebuild must drop only the
     # origin, and show_qr() (also the rebuild path) must touch no gesture state.
