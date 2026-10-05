@@ -83,6 +83,9 @@ int boost_page_qr_pending_toggle(void);
  *  read back from the built widget, so it only reports a toggle once something
  *  has repainted the overlay - which is the property the sim asserts. */
 const char *boost_page_qr_switch_text(int row);
+/** Screen coordinates of a toggle square's centre (0 if the square is absent),
+ *  so a real synthetic tap can be aimed at it through the LVGL dispatch. */
+int boost_page_qr_switch_center(int row, int *x, int *y);
 /** Simulate a fresh tap: hides the overlay entirely. */
 void boost_page_qr_dismiss(void);
 

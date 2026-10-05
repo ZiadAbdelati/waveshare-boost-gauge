@@ -784,6 +784,87 @@ static bool qr_layout_overlap(void)
     return overlap;
 }
 
+/* --- Synthetic pointer indev: REAL taps through the LVGL dispatch ------------
+ * The hooks above call the overlay's own callbacks directly, which SKIPS the
+ * layer where the wiring lives: hit-testing, object ownership (square vs
+ * overlay), PRESSED/PRESSING/RELEASED/CLICKED delivery and event routing. A
+ * mis-targeted lv_obj_add_event_cb, a bubbling CLICKED, or a square that never
+ * receives PRESSING would all still leave a hook-driven harness green. This
+ * indEV feeds real press/move/release samples so everything downstream of
+ * `lv_indev_read_timer_cb` runs the production path. */
+typedef struct {
+    lv_point_t p;
+    lv_indev_state_t state;
+} sim_pt_t;
+
+#define SIM_PT_MAX 32
+static sim_pt_t s_pt[SIM_PT_MAX];
+static int s_pt_head, s_pt_tail;
+static lv_point_t s_pt_last = { 0, 0 };
+static lv_indev_state_t s_pt_last_state = LV_INDEV_STATE_RELEASED;
+
+static void sim_pt_push(int32_t x, int32_t y, lv_indev_state_t state)
+{
+    const int next = (s_pt_tail + 1) % SIM_PT_MAX;
+    if (next == s_pt_head) return;   /* full: drop (the harness never overruns) */
+    s_pt[s_pt_tail].p.x = x;
+    s_pt[s_pt_tail].p.y = y;
+    s_pt[s_pt_tail].state = state;
+    s_pt_tail = next;
+}
+
+static void sim_indev_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
+{
+    LV_UNUSED(indev);
+    if (s_pt_head != s_pt_tail) {
+        s_pt_last = s_pt[s_pt_head].p;
+        s_pt_last_state = s_pt[s_pt_head].state;
+        s_pt_head = (s_pt_head + 1) % SIM_PT_MAX;
+        data->point = s_pt_last;
+        data->state = s_pt_last_state;
+        data->continue_reading = (s_pt_head != s_pt_tail);
+        return;
+    }
+    /* Idle: hold the last sample so LVGL sees a stable state between touches. */
+    data->point = s_pt_last;
+    data->state = s_pt_last_state;
+    data->continue_reading = false;
+}
+
+static void setup_tap_indev(void)
+{
+    lv_indev_t *indev = lv_indev_create();
+    lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_read_cb(indev, sim_indev_read_cb);
+    lv_indev_set_display(indev, lv_display_get_default());
+}
+
+/* One finger-down and up at a point, delivered as two separate read cycles (the
+ * 16 ms indev timer (this repo's LV_DEF_REFR_PERIOD, sim/lv_conf.h and the
+ * firmware's CONFIG_LV_DEF_REFR_PERIOD, not LVGL's 33 ms fallback), so a press and
+ * the release that produces CLICKED do not
+ * share a cycle - the same shape a real touch takes). */
+static void real_tap(int32_t x, int32_t y)
+{
+    sim_pt_push(x, y, LV_INDEV_STATE_PRESSED);
+    pump_lvgl(45);
+    sim_pt_push(x, y, LV_INDEV_STATE_RELEASED);
+    pump_lvgl(45);
+}
+
+/* A real drag: down, one or more PRESSING samples, then up. */
+static void real_drag(int32_t x0, int32_t y0, int32_t x1, int32_t y1)
+{
+    sim_pt_push(x0, y0, LV_INDEV_STATE_PRESSED);
+    pump_lvgl(45);
+    sim_pt_push((x0 + x1) / 2, (y0 + y1) / 2, LV_INDEV_STATE_PRESSED);
+    pump_lvgl(45);
+    sim_pt_push(x1, y1, LV_INDEV_STATE_PRESSED);
+    pump_lvgl(45);
+    sim_pt_push(x1, y1, LV_INDEV_STATE_RELEASED);
+    pump_lvgl(45);
+}
+
 /* --qr-test: verify the two-finger QR overlay + the 3-page swipe cycle.
  *  1. show the overlay (QR page) -> snapshot qr_page0
  *  2. swipe left -> Connections page -> snapshot qr_page1
@@ -1304,6 +1385,167 @@ static int run_qr_test(const char *out_dir)
     }
     boost_page_qr_release();
     pump_lvgl(30);
+
+    /* 5. REAL taps through the LVGL dispatch. A synthetic pointer indev feeds
+     * press/move/release samples, so hit-testing, object ownership (square vs
+     * overlay), PRESSED/PRESSING/RELEASED/CLICKED delivery and event routing are
+     * all the production paths - precisely the layer the injected hooks above
+     * SKIP. This is the closest thing to a finger that exists on the host, and
+     * it is the only place that can catch a mis-targeted registration, a
+     * CLICKED that bubbles to the overlay, or a square that never sees PRESSING.
+     * (The gesture machine itself still needs the hooks, because a long PRESSED
+     * stream cannot be synthesised from a 16 ms read timer.) */
+    setup_tap_indev();
+#define RT(cond, label) do { \
+        if (cond) { printf("real-tap %s: OK\n", label); } \
+        else { fprintf(stderr, "FAIL real-tap %s\n", label); failures++; } \
+    } while (0)
+    {
+        extern bool g_sim_obd_state, g_sim_app_ble_state;
+        int cx0 = 0, cy0 = 0, cx1 = 0, cy1 = 0;
+
+        /* 5a. Connections page: a real tap on each square toggles it AND repaints
+         * it, without navigating - the board report, re-verified end-to-end. */
+        g_sim_obd_state = false;
+        g_sim_app_ble_state = false;
+        boost_page_qr_dismiss();
+        pump_lvgl(30);
+        boost_page_qr_show_page(1);
+        pump_lvgl(60);
+        if (!boost_page_qr_switch_center(0, &cx0, &cy0) ||
+            !boost_page_qr_switch_center(1, &cx1, &cy1)) {
+            fprintf(stderr, "FAIL real-tap test could not locate the squares\n");
+            failures++;
+        } else {
+            real_tap(cx0, cy0);
+            RT(g_sim_obd_state && strcmp(boost_page_qr_switch_text(0), "ON") == 0 &&
+               boost_page_qr_page() == 1,
+               "OBD square: a real tap toggles, repaints and stays on the page");
+
+            real_tap(cx1, cy1);
+            RT(g_sim_app_ble_state && strcmp(boost_page_qr_switch_text(1), "ON") == 0 &&
+               boost_page_qr_page() == 1,
+               "APP BLE square: a real tap toggles and repaints");
+
+            real_tap(cx0, cy0);
+            RT(!g_sim_obd_state && strcmp(boost_page_qr_switch_text(0), "OFF") == 0,
+               "OBD square: a second real tap turns it back off");
+
+            boost_theme_set_tpms_ble(false);
+            g_sim_obd_state = false;
+            g_sim_app_ble_state = false;
+
+            /* 5b. A real tap on a square must not ALSO reach the overlay as a
+             * fresh tap (a bubbling CLICKED would dismiss the whole page). */
+            boost_page_qr_show_page(1);
+            pump_lvgl(60);
+            real_tap(cx1, cy1);
+            RT(boost_page_qr_active() && boost_page_qr_page() == 1,
+               "a square tap does not bubble to the overlay and dismiss it");
+            g_sim_app_ble_state = false;
+        }
+
+        /* 5c. A real tap on the background (away from the buttons) dismisses -
+         * the documented fresh-tap rule, through real routing. */
+        boost_page_qr_show_page(1);
+        pump_lvgl(60);
+        real_tap(30, 430);
+        RT(!boost_page_qr_active(), "a real tap on the background dismisses");
+
+        /* 5d. A real SHORT drag is a drag, not a tap: no dismiss, no step. */
+        boost_page_qr_show_page(1);
+        pump_lvgl(60);
+        real_drag(60, 430, 90, 430);
+        RT(boost_page_qr_active() && boost_page_qr_page() == 1,
+           "a real 30 px drag neither dismisses nor steps");
+
+        /* 5e. ...and a real long horizontal flick steps exactly one page. */
+        real_drag(406, 430, 60, 430);
+        RT(boost_page_qr_active() && boost_page_qr_page() == 2,
+           "a real leftward flick steps exactly one page");
+
+        /* 5f. A real vertical flick on the overlay does nothing at all. */
+        boost_page_qr_dismiss();
+        pump_lvgl(30);
+        boost_page_qr_show_page(1);
+        pump_lvgl(60);
+        real_drag(233, 430, 233, 200);
+        RT(boost_page_qr_active() && boost_page_qr_page() == 1,
+           "a real vertical flick does nothing");
+
+        /* 5g. A real drag that STARTS on a square must not toggle it. */
+        boost_page_qr_show_page(1);
+        pump_lvgl(60);
+        if (boost_page_qr_switch_center(0, &cx0, &cy0)) {
+            real_drag(cx0 - 15, cy0, cx0 + 15, cy0);
+            RT(!g_sim_obd_state && boost_page_qr_active(),
+               "a real 30 px drag starting on a square does not toggle or dismiss");
+        }
+
+        /* 5h. A real tap carrying finger JITTER under the 12 px tap slop still
+         * counts as a tap - the CST9217 drift risk the release notes name. */
+        boost_page_qr_show_page(1);
+        pump_lvgl(60);
+        if (boost_page_qr_switch_center(0, &cx0, &cy0)) {
+            sim_pt_push(cx0, cy0, LV_INDEV_STATE_PRESSED);
+            pump_lvgl(45);
+            sim_pt_push(cx0 + 6, cy0 + 4, LV_INDEV_STATE_PRESSED);
+            pump_lvgl(45);
+            sim_pt_push(cx0 + 6, cy0 + 4, LV_INDEV_STATE_RELEASED);
+            pump_lvgl(45);
+            RT(g_sim_obd_state, "a real tap with 7 px of jitter still toggles");
+            boost_theme_set_tpms_ble(false);
+            g_sim_obd_state = false;
+        }
+
+        /* 5i. Units page: real taps cycle the unit and flip the reference. */
+        boost_page_qr_dismiss();
+        pump_lvgl(30);
+        boost_page_qr_show_page(2);
+        pump_lvgl(60);
+        {
+            const boost_unit_t u0 = boost_theme_pressure_unit();
+            const bool abs0 = boost_theme_pressure_absolute();
+            if (boost_page_qr_switch_center(0, &cx0, &cy0) &&
+                boost_page_qr_switch_center(1, &cx1, &cy1)) {
+                real_tap(cx0, cy0);
+                RT(boost_theme_pressure_unit() != u0 && boost_page_qr_page() == 2,
+                   "UNITS square: a real tap cycles the unit");
+
+                real_tap(cx1, cy1);
+                RT(boost_theme_pressure_absolute() != abs0 &&
+                   strcmp(boost_page_qr_switch_text(1),
+                          boost_theme_pressure_absolute() ? "ABSOLUTE" : "RELATIVE") == 0,
+                   "REL/ABS square: a real tap flips the reference and repaints");
+            }
+        }
+
+        /* 5j. QR page: a real tap ON the QR code must fall through to the overlay
+         * (a swallow here would make the overlay feel stuck), and so must one on
+         * the bare background. */
+        boost_page_qr_dismiss();
+        pump_lvgl(30);
+        boost_page_qr_show();
+        pump_lvgl(60);
+        real_tap(233, 233);   /* dead centre of the 320 px QR code */
+        RT(!boost_page_qr_active(), "a real tap on the QR code falls through and dismisses");
+        boost_page_qr_show();
+        pump_lvgl(60);
+        real_tap(30, 430);
+        RT(!boost_page_qr_active(), "a real tap on the QR page background dismisses");
+
+        /* Observation only, deliberately NOT pinned: what a tap in the 40 px gap
+         * BETWEEN the two squares does (the fresh-tap rule says dismiss, which is
+         * a plausible next board report). */
+        boost_page_qr_show_page(1);
+        pump_lvgl(60);
+        real_tap(233, 215);
+        printf("note: a real tap in the gap between the squares %s\n",
+               boost_page_qr_active() ? "leaves the overlay open" : "dismisses the overlay");
+        boost_page_qr_dismiss();
+        pump_lvgl(30);
+    }
+#undef RT
 
     /* 4. Tap dismisses and gauge resumes */
     boost_page_qr_dismiss();
