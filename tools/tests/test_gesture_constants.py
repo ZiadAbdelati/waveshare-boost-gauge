@@ -171,11 +171,14 @@ def main() -> int:
     # line from the live link state, and nothing else repaints the overlay (the
     # 16 ms gauge path is gated on s_qr_active), so applying a toggle without a
     # rebuild left the button looking dead until the next page step - the "BLE
-    # buttons don't respond to taps" report (2026-10-05). The unit/reference
-    # branches return early with their own scene rebuild; every BLE request
-    # falls through to this tail, so the tail IS the contract. The harness
-    # cannot see it either (its stubs make a stale square merely plausible), so
-    # pin the structure: the applier's last act is the overlay rebuild.
+    # buttons don't respond to taps" report (2026-10-05). Exactly THREE returns
+    # are legitimate: the no-request guard and the unit/reference branches, which
+    # each do their own scene rebuild. Every BLE request must FALL THROUGH to the
+    # tail rebuild - checking only the tail statement would stay green if a BLE
+    # branch grew its own `return;`, leaving the button stale. The harness also
+    # catches that behaviourally (its stubs are stateful, so a stale square shows
+    # up in the rendered text and the frame diff); this pins the source shape too,
+    # because a source contract is checkable without building or running the sim.
     toggle_body = body_of("static void qr_toggle_apply_cb(lv_timer_t *timer)", page)
     result.check(bool(toggle_body), "qr_toggle_apply_cb definition found for the repaint check")
     tail = toggle_body.rstrip()
@@ -187,6 +190,11 @@ def main() -> int:
                  "a BLE toggle repaints its square (the applier's tail rebuilds the overlay)",
                  "applying a BLE toggle without qr_goto_page(s_qr_page) leaves the button "
                  "stale until a page step")
+    returns = re.findall(r"\breturn\s*;", toggle_body)
+    result.check(len(returns) == 3,
+                 "every BLE toggle branch falls through to that rebuild",
+                 f"expected 3 early returns (no-request, unit, reference), found {len(returns)}: "
+                 "a BLE branch that returns skips the repaint")
 
     passed = result.checks - len(result.failures)
     print(f"\n{passed}/{result.checks} checks passed, {len(result.failures)} failed")

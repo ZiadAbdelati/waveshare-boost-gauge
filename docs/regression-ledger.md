@@ -2157,14 +2157,20 @@ because the overlay's swipe defects dominated the reports.
 Fix: the applier ends every fall-through branch with `qr_goto_page(s_qr_page)` — the same in-place
 turnover the reference toggle uses, on the same page (a toggle never appears to navigate).
 
-Evidence (host, harness + source contract):
-- `--qr-test` gained two witnesses and both reproduce the report on the unfixed source —
-  `OBD square still reads "OFF" after its own tap` and `the OBD tap left the overlay pixels
-  unchanged` (the tab text is read back from the BUILT widget, and the frames are diffed) —
-  then go green with the fix. 2 failures before, 0 after; the run is 16 assertions.
-- `tools/tests/test_gesture_constants.py` pins the structure that the harness cannot see (its stubs
-  make a stale square merely plausible): the applier's **last statement** must be
-  `qr_goto_page(s_qr_page)`; doctored by reverting that one line → 27/28, restored → 28/28.
+Evidence (host):
+- `--qr-test` gained three witnesses and all three reproduce the report on the unfixed source:
+  `OBD square still reads "OFF" after its own tap (the overlay did not repaint)`, `the OBD tap left
+  the overlay pixels unchanged (the square never repainted)` and `APP BLE square reads "OFF"
+  (link 1) after its own tap` — the rendered ON/OFF line is read back from the BUILT widget and the
+  frames around the tap are diffed. **3 failures before** (re-verified against origin/main's
+  `main/boost_page.c` with this change's harness), 0 after; every other assertion in the run stays
+  green.
+- `tools/tests/test_gesture_constants.py` pins the source shape: the applier's **last statement**
+  must be `qr_goto_page(s_qr_page)` and its body must hold exactly **three** early returns (the
+  no-request guard and the unit/reference branches, which do their own scene rebuild) — so a BLE
+  branch that grows its own `return;` cannot silently skip the repaint. Doctored both ways:
+  removing the tail line → 27/28, adding an early return to the OBD branch → 28/29 (the harness
+  fails the same doctored source, 2 failures), restored → 29/29.
 - Host suite 15/15 after the change.
 
 HARDWARE: not run. This is a repaint on the glass path and has not been seen on glass.
