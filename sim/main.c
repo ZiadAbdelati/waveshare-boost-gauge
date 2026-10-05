@@ -968,6 +968,79 @@ static int run_qr_test(const char *out_dir)
         }
     }
 
+    /* 2c-ii. A BLE toggle must REPAINT its own square. show_qr() reads the link
+     * state only at build time, and nothing else ever repaints the overlay (the
+     * 16 ms gauge path is gated on s_qr_active), so a toggle applied without a
+     * rebuild left the button looking dead until the next page step - the
+     * "BLE buttons don't respond to taps" report (2026-10-05). No page change
+     * here: the square's ON/OFF line, glow and status LED must follow the tap on
+     * the spot. The frame diff is the primary witness (the pixels on glass), the
+     * text read-back names the mechanism. */
+    {
+        extern bool g_sim_obd_state;
+        g_sim_obd_state = false;
+        boost_page_qr_show_page(1);   /* rebuild on Connections, square reads OFF */
+        pump_lvgl(50);
+        if (boost_page_qr_page() != 1) {
+            fprintf(stderr, "FAIL BLE repaint test did not reach the Connections page\n");
+            failures++;
+        }
+        char ble_before[512], ble_after[512];
+        snprintf(ble_before, sizeof(ble_before), "%s/qr_ble_before.raw", out_dir);
+        if (!snapshot_screen(ble_before)) return 2;
+        boost_page_qr_tap_switch(0);   /* OBD BLE square */
+        for (int i = 0; i < 10; ++i) { lv_tick_inc(16); lv_timer_handler(); usleep(16000); }
+        if (!g_sim_obd_state) {
+            fprintf(stderr, "FAIL BLE repaint test: the tap did not enable the link\n");
+            failures++;
+        }
+        const char *shown = boost_page_qr_switch_text(0);
+        if (strcmp(shown, "ON") != 0) {
+            fprintf(stderr, "FAIL OBD square still reads \"%s\" after its own tap "
+                            "(the overlay did not repaint)\n", shown);
+            failures++;
+        } else {
+            printf("OBD square repaints on tap: OK\n");
+        }
+        if (boost_page_qr_page() != 1) {
+            fprintf(stderr, "FAIL a BLE toggle changed the overlay page (%d)\n",
+                    boost_page_qr_page());
+            failures++;
+        }
+        snprintf(ble_after, sizeof(ble_after), "%s/qr_ble_after.raw", out_dir);
+        if (!snapshot_screen(ble_after)) return 2;
+        const int ble_cmp = raw_files_cmp(ble_before, ble_after);
+        if (ble_cmp < 0) {
+            fprintf(stderr, "FAIL BLE repaint test: cannot compare the frames\n");
+            failures++;
+        } else if (ble_cmp == 1) {
+            fprintf(stderr, "FAIL the OBD tap left the overlay pixels unchanged "
+                            "(the square never repainted)\n");
+            failures++;
+        } else {
+            printf("OBD tap repaints its square: OK (frames differ)\n");
+        }
+        boost_theme_set_tpms_ble(false);   /* leave the world as the 2c block did */
+
+        /* The APP BLE square is a separate request code path
+         * (boost_app_ble_set_enabled), so it needs its own witness. */
+        extern bool g_sim_app_ble_state;
+        g_sim_app_ble_state = false;
+        boost_page_qr_show_page(1);   /* rebuild so the square reads OFF */
+        pump_lvgl(50);
+        boost_page_qr_tap_switch(1);   /* APP BLE square */
+        for (int i = 0; i < 10; ++i) { lv_tick_inc(16); lv_timer_handler(); usleep(16000); }
+        const char *app_shown = boost_page_qr_switch_text(1);
+        if (!g_sim_app_ble_state || strcmp(app_shown, "ON") != 0) {
+            fprintf(stderr, "FAIL APP BLE square reads \"%s\" (link %d) after its own tap\n",
+                    app_shown, g_sim_app_ble_state ? 1 : 0);
+            failures++;
+        } else {
+            printf("APP BLE square repaints on tap: OK\n");
+        }
+        g_sim_app_ble_state = false;
+    }
+
     /* Reset stub link states so the round-trip determinism check holds. */
     {
         extern bool g_sim_obd_state, g_sim_app_ble_state;

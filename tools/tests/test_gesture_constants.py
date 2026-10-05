@@ -167,6 +167,27 @@ def main() -> int:
                      f"{cb} treats a short drag as a drag (both latches)",
                      "a 12-47 px flick would act as a tap and dismiss/toggle")
 
+    # A toggle must REPAINT. show_qr() bakes the square's glow, LED and ON/OFF
+    # line from the live link state, and nothing else repaints the overlay (the
+    # 16 ms gauge path is gated on s_qr_active), so applying a toggle without a
+    # rebuild left the button looking dead until the next page step - the "BLE
+    # buttons don't respond to taps" report (2026-10-05). The unit/reference
+    # branches return early with their own scene rebuild; every BLE request
+    # falls through to this tail, so the tail IS the contract. The harness
+    # cannot see it either (its stubs make a stale square merely plausible), so
+    # pin the structure: the applier's last act is the overlay rebuild.
+    toggle_body = body_of("static void qr_toggle_apply_cb(lv_timer_t *timer)", page)
+    result.check(bool(toggle_body), "qr_toggle_apply_cb definition found for the repaint check")
+    tail = toggle_body.rstrip()
+    if tail.endswith("}"):
+        tail = tail[:-1]
+    tail_lines = [ln.strip() for ln in tail.splitlines()
+                  if ln.strip() and not ln.strip().startswith(("/*", "*", "//"))]
+    result.check(bool(tail_lines) and tail_lines[-1] == "qr_goto_page(s_qr_page);",
+                 "a BLE toggle repaints its square (the applier's tail rebuilds the overlay)",
+                 "applying a BLE toggle without qr_goto_page(s_qr_page) leaves the button "
+                 "stale until a page step")
+
     passed = result.checks - len(result.failures)
     print(f"\n{passed}/{result.checks} checks passed, {len(result.failures)} failed")
     if result.failures:

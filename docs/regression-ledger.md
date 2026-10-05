@@ -2134,3 +2134,37 @@ drifting ≥12 px now reads as a drag (page 0's own tap slop). Everything v1.1.1
 (rotated-panel insets/touch at 90/180/270, cadence/tear under rotation, the forced-clock RTC
 write) is unchanged by this release and still unmeasured on glass. `v0.9.7` remains the last
 hardware-verified release.
+
+## 2026-10-05 — the overlay's BLE squares never repainted after a tap
+
+Board report on v1.1.2: *"The BLE buttons don't seem to respond to taps. I can tap them plenty of
+times and nothing happens. Only when switching pages away and switching back do they reflect any
+changes."*
+
+Diagnosis: the toggle WAS applied (which is why a page round-trip showed it), but the overlay never
+repainted. `show_qr()` bakes each square's glow, its status LED and its ON/OFF line from
+`boost_obd_enabled()` / `boost_app_ble_enabled()` **at build time**, and nothing else ever repaints
+the overlay — the 16 ms gauge path is gated on `s_qr_active`. The deferred applier
+(`qr_toggle_apply_cb`) rebuilds the scene for the unit cycle (`req 4`) and calls
+`qr_goto_page(s_qr_page)` for the reference toggle (`req 5`), but the two BLE branches simply
+applied the state and returned, so the button sat stale until a page step rebuilt the overlay.
+Nothing repainted the square in the meantime — the panel looked dead.
+
+NOT a v1.1.2 regression: `git show 2a4ce13:main/boost_page.c` (v1.1.1) shows the identical applier
+and the identical tap callbacks, so v1.1.0/v1.1.1 have the same behaviour. It was masked before only
+because the overlay's swipe defects dominated the reports.
+
+Fix: the applier ends every fall-through branch with `qr_goto_page(s_qr_page)` — the same in-place
+turnover the reference toggle uses, on the same page (a toggle never appears to navigate).
+
+Evidence (host, harness + source contract):
+- `--qr-test` gained two witnesses and both reproduce the report on the unfixed source —
+  `OBD square still reads "OFF" after its own tap` and `the OBD tap left the overlay pixels
+  unchanged` (the tab text is read back from the BUILT widget, and the frames are diffed) —
+  then go green with the fix. 2 failures before, 0 after; the run is 16 assertions.
+- `tools/tests/test_gesture_constants.py` pins the structure that the harness cannot see (its stubs
+  make a stale square merely plausible): the applier's **last statement** must be
+  `qr_goto_page(s_qr_page)`; doctored by reverting that one line → 27/28, restored → 28/28.
+- Host suite 15/15 after the change.
+
+HARDWARE: not run. This is a repaint on the glass path and has not been seen on glass.

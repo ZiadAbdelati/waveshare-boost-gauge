@@ -78,6 +78,11 @@ void boost_page_qr_tap_switch(int row);
 /** Pending deferred-toggle request, or -1. Lets the sim assert the async
  *  request was queued (and later applied by the LVGL timer). */
 int boost_page_qr_pending_toggle(void);
+/** The secondary line currently rendered inside a toggle square ("" if the
+ *  square is absent). This is the RENDERED state, not the link state: it is
+ *  read back from the built widget, so it only reports a toggle once something
+ *  has repainted the overlay - which is the property the sim asserts. */
+const char *boost_page_qr_switch_text(int row);
 /** Simulate a fresh tap: hides the overlay entirely. */
 void boost_page_qr_dismiss(void);
 
