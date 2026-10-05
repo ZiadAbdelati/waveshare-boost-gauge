@@ -152,17 +152,59 @@ class GaugeApiTest {
         }
         val api = GaugeApi { transport }
 
-        val status = api.syncTime(-480, "PST8PDT,M3.2.0/2,M11.1.0/2")
+        val result = api.syncTime(-480, "PST8PDT,M3.2.0/2,M11.1.0/2")
 
         assertEquals(2, transport.requests.size)
         val first = transport.requests[0].bodyJson!!
         assertTrue(Regex("\"epochMs\":\\d+").containsMatchIn(first))
+        assertFalse(first.contains("\"force\""))
         val retry = transport.requests[1].bodyJson!!
         assertFalse(retry.contains("epochMs"))
         assertTrue(retry.contains("\"timezoneOffsetMinutes\":-480"))
         assertTrue(retry.contains("\"timezoneTz\":\"PST8PDT,M3.2.0/2,M11.1.0/2\""))
         // Fields come from the retry response, not the rejected first POST.
-        assertEquals(-480, status.timezoneOffsetMinutes)
+        assertEquals(-480, result.status.timezoneOffsetMinutes)
+        // The UI needs to know the clock was refused and a timezone-only retry
+        // happened so it can point the user at Force clock.
+        assertTrue(result.clockRejected)
+    }
+
+    @Test
+    fun timeSyncForcedSendsForceTrueAndDoesNotRetry() = runBlocking {
+        val transport = FakeBleTransport { method, path, _ ->
+            assertEquals("POST", method)
+            assertEquals("time", path)
+            Resp(200, ApiFixtures.STATE)
+        }
+        val api = GaugeApi { transport }
+
+        val result = api.syncTime(-240, "EST5EDT,M3.2.0/2,M11.1.0/2", force = true)
+
+        // Exactly one POST: a forced set never falls back to timezone-only.
+        assertEquals(1, transport.requests.size)
+        val body = transport.requests.single().bodyJson!!
+        assertTrue(body.contains("\"force\":true"))
+        assertTrue(Regex("\"epochMs\":\\d+").containsMatchIn(body))
+        assertTrue(body.contains("\"timezoneOffsetMinutes\":-240"))
+        assertEquals(-240, result.status.timezoneOffsetMinutes)
+        assertFalse(result.clockRejected)
+    }
+
+    @Test
+    fun timeSyncForcedRejectionIsAnErrorAndDoesNotRetry() = runBlocking {
+        val transport = FakeBleTransport { _, _, _ ->
+            Resp(409, ApiFixtures.ERROR_CLOCK_REJECTED)
+        }
+        val api = GaugeApi { transport }
+
+        val error = runCatching {
+            api.syncTime(-240, "EST5EDT,M3.2.0/2,M11.1.0/2", force = true)
+        }.exceptionOrNull()
+
+        assertTrue(error is ApiException)
+        assertEquals(409, (error as ApiException).status)
+        // Still exactly one POST: the refused forced set is surfaced, not retried.
+        assertEquals(1, transport.requests.size)
     }
 
     @Test

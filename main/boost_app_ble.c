@@ -790,6 +790,13 @@ static int route_supply_put(const cJSON *body, char *out, size_t cap)
     return n > 0 && n < (int)cap ? 200 : 500;
 }
 
+/*
+ * Mirrors the HTTP `/time` handler exactly: `timezoneOffsetMinutes` is the only
+ * required field. An epoch-less body stores the timezone alone (the companion
+ * apps rely on this - their 409 clock_rejected retry drops `epochMs`, and over
+ * BLE this route is the only transport). `force` is the explicit recovery path
+ * for a genuinely wrong DS3231 and bypasses the disagreement guard.
+ */
 static int route_time_post(const cJSON *body, char *out, size_t cap)
 {
     const cJSON *epoch = body != NULL
@@ -798,14 +805,37 @@ static int route_time_post(const cJSON *body, char *out, size_t cap)
         ? cJSON_GetObjectItemCaseSensitive(body, "timezoneOffsetMinutes") : NULL;
     const cJSON *tzstr = body != NULL
         ? cJSON_GetObjectItemCaseSensitive(body, "timezoneTz") : NULL;
-    if (!cJSON_IsNumber(epoch) || !cJSON_IsNumber(tz)) {
+    const cJSON *force_item = body != NULL
+        ? cJSON_GetObjectItemCaseSensitive(body, "force") : NULL;
+    if (!cJSON_IsNumber(tz)) {
         snprintf(out, cap, "{\"error\":\"invalid_time\"}");
         return 400;
     }
+    /* Present-but-wrong-typed is a client bug, not an absent field (see the HTTP
+     * handler): a wrong-typed epochMs must not fall through to the timezone-only
+     * path, which would silently downgrade a clock sync to a zone write. */
+    if ((epoch != NULL && !cJSON_IsNumber(epoch)) ||
+        (tzstr != NULL && !cJSON_IsString(tzstr))) {
+        snprintf(out, cap, "{\"error\":\"invalid_time\"}");
+        return 400;
+    }
+    bool force = false;
+    if (force_item != NULL) {
+        if (!cJSON_IsBool(force_item)) {
+            snprintf(out, cap, "{\"error\":\"invalid_force\"}");
+            return 400;
+        }
+        force = cJSON_IsTrue(force_item);
+        if (force && !cJSON_IsNumber(epoch)) {
+            snprintf(out, cap, "{\"error\":\"invalid_time\"}");
+            return 400;
+        }
+    }
     const char *tz_tz = (cJSON_IsString(tzstr) && tzstr->valuestring != NULL)
         ? tzstr->valuestring : NULL;
-    const esp_err_t err = boost_model_set_time((int64_t)epoch->valuedouble,
-                                                tz->valueint, tz_tz);
+    const esp_err_t err = cJSON_IsNumber(epoch)
+        ? boost_model_set_time((int64_t)epoch->valuedouble, tz->valueint, tz_tz, force)
+        : boost_model_set_timezone(tz->valueint, tz_tz);
     if (err == ESP_ERR_INVALID_STATE) {
         snprintf(out, cap, "{\"error\":\"clock_rejected\"}");
         return 409;

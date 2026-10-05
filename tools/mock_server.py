@@ -1496,16 +1496,44 @@ class Handler(BaseHTTPRequestHandler):
         if err is not None:
             self.send_err(HTTPStatus.BAD_REQUEST, err)
             return
-        epoch = payload.get("epochMs")
+
+        def is_number(value: object) -> bool:
+            """cJSON_IsNumber(): a JSON boolean is not a number."""
+            return isinstance(value, (int, float)) and not isinstance(value, bool)
+
         tz = payload.get("timezoneOffsetMinutes")
-        if not isinstance(epoch, (int, float)) or not isinstance(tz, (int, float)):
+        if not is_number(tz):
             self.send_err(HTTPStatus.BAD_REQUEST, "invalid_time")
             return
-        epoch_ms = int(epoch)
-        if epoch_ms < BOOST_RTC_EPOCH_MIN_MS:
-            self.send_err(HTTPStatus.BAD_REQUEST, "time_not_set")
+        epoch = payload.get("epochMs")
+        force = payload.get("force", False)
+        # A present-but-wrong-typed field is a client bug, not an absent one: a
+        # wrong-typed epochMs must not fall through to the timezone-only path.
+        if "epochMs" in payload and not is_number(epoch):
+            self.send_err(HTTPStatus.BAD_REQUEST, "invalid_time")
             return
-        TIME_ANCHOR_MS = epoch_ms - uptime_ms()
+        if "timezoneTz" in payload and not isinstance(payload["timezoneTz"], str):
+            self.send_err(HTTPStatus.BAD_REQUEST, "invalid_time")
+            return
+        # `force` bypasses the DS3231 disagreement guard on the device (an
+        # explicit recovery path); here it only has to be shaped like the
+        # firmware expects, and a non-bool must be rejected rather than ignored.
+        if "force" in payload and not isinstance(force, bool):
+            self.send_err(HTTPStatus.BAD_REQUEST, "invalid_force")
+            return
+        if force and not is_number(epoch):
+            self.send_err(HTTPStatus.BAD_REQUEST, "invalid_time")
+            return
+        # epochMs is OPTIONAL: an epoch-less body stores the timezone alone and
+        # leaves the clock untouched (the DS3231 is the clock authority). The
+        # companion apps' 409 clock_rejected retry relies on this on BOTH
+        # transports - mirrored from boost_web.c / boost_app_ble.c.
+        if is_number(epoch):
+            epoch_ms = int(epoch)
+            if epoch_ms < BOOST_RTC_EPOCH_MIN_MS:
+                self.send_err(HTTPStatus.BAD_REQUEST, "time_not_set")
+                return
+            TIME_ANCHOR_MS = epoch_ms - uptime_ms()
         CONFIG["timezoneOffsetMinutes"] = max(-14 * 60, min(14 * 60, int(tz)))
         if isinstance(payload.get("timezoneTz"), str) and payload["timezoneTz"]:
             CONFIG["timezoneTz"] = payload["timezoneTz"]

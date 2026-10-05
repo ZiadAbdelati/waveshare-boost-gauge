@@ -116,7 +116,20 @@ esp_err_t boost_model_update_config(const boost_config_t *patch, uint32_t fields
 esp_err_t boost_model_set_active_theme(const char *id);
 esp_err_t boost_model_set_active_page(int page);
 const boost_theme_t *boost_model_active_theme(void);
-esp_err_t boost_model_set_time(int64_t epoch_ms, int timezone_offset_minutes, const char *timezone_tz);
+/**
+ * Set the wall clock (and timezone) from a client sync.
+ *
+ * The DS3231 is the clock authority once it is readable: an epoch more than
+ * BOOST_RTC_SYNC_TOLERANCE_MS away from it is rejected with ESP_ERR_INVALID_STATE
+ * (HTTP 409 `clock_rejected`), before anything is written. `force` is the
+ * deliberate, user-confirmed recovery action for an RTC that is genuinely wrong:
+ * it skips that comparison so the RTC can be corrected without pulling its
+ * battery. The plausibility floor (BOOST_RTC_EPOCH_MIN_MS) still applies either
+ * way, and a forced sync replaces the RTC and clears OSF like any other.
+ */
+esp_err_t boost_model_set_time(int64_t epoch_ms, int timezone_offset_minutes,
+                               const char *timezone_tz, bool force);
+/** Store the timezone alone: the clock and the clock-trusted flag are untouched. */
 esp_err_t boost_model_set_timezone(int timezone_offset_minutes, const char *timezone_tz);
 /** Current effective UTC offset in minutes (DST-aware) for the given epoch,
  *  from the applied timezone. newlib lacks tm_gmtoff/timegm, so it is derived

@@ -194,6 +194,7 @@ const el = {
   brightnessNow: document.getElementById("brightnessNow"),
   refreshBtn: document.getElementById("refreshBtn"),
   syncTimeBtn: document.getElementById("syncTimeBtn"),
+  forceTimeBtn: document.getElementById("forceTimeBtn"),
   tzOffset: document.getElementById("tzOffset"),
   scheduleEnabled: document.getElementById("scheduleEnabled"),
   scheduleStart: document.getElementById("scheduleStart"),
@@ -3962,16 +3963,20 @@ function connectEvents() {
 /* Push the browser clock to the device. The offset comes from tzOverride when
  * given, otherwise from the Time zone dropdown when populated, else the browser
  * offset. Updates the dropdown with the device's echoed offset on success. */
-async function syncDeviceClock(tzOverride) {
+async function syncDeviceClock(tzOverride, force = false) {
   const now = new Date();
   const tz = Number.isFinite(Number(tzOverride))
     ? Number(tzOverride)
     : Number.isFinite(Number(el.tzOffset?.value))
       ? Number(el.tzOffset.value)
       : -now.getTimezoneOffset();
+  const body = { epochMs: now.getTime(), timezoneOffsetMinutes: tz, timezoneTz: tzForOffset(tz) };
+  /* force is the deliberate recovery flag for a genuinely wrong RTC; it is
+   * omitted (not sent as false) so an ordinary Sync stays byte-identical. */
+  if (force) body.force = true;
   const response = await api("/time", {
     method: "POST",
-    body: JSON.stringify({ epochMs: now.getTime(), timezoneOffsetMinutes: tz, timezoneTz: tzForOffset(tz) }),
+    body: JSON.stringify(body),
   });
   /* /time returns the state, whose timezoneOffsetMinutes is the CURRENT (DST)
    * effective offset, while the dropdown keys on the stored standard offset
@@ -3988,8 +3993,28 @@ async function syncTime() {
     showOk("Time synchronized");
   } catch (error) {
     showError(error.message === "clock_rejected"
-      ? "Clock rejected: this computer's time disagrees with the device RTC by more than 5 min. If this computer's clock is right, pull the RTC battery for 2 s and Sync again."
+      ? "Clock rejected: this computer's time disagrees with the device RTC by more than 5 min. If this computer's clock is known correct, use Force clock to overwrite the device clock and RTC."
       : error.message);
+  }
+}
+
+/* Deliberate recovery path for a genuinely wrong RTC. The device refuses a
+ * >5 min disagreement with the DS3231 (409 clock_rejected, nothing written);
+ * only `force` lifts that guard, overwriting the gauge's clock AND RTC with
+ * this computer's time. Confirm first: unlike Save, a wrong computer clock
+ * replaces the device's clock authority, so this is only right when this
+ * computer's time is known correct. */
+async function forceDeviceClock() {
+  const confirmed = window.confirm(
+    "Force the gauge's clock and RTC to this computer's time, even if the gauge's RTC disagrees?\n\nOnly do this if this computer's clock is known correct."
+  );
+  if (!confirmed) return;
+  try {
+    const response = await syncDeviceClock(undefined, true);
+    renderState(response);
+    showOk("Clock forced");
+  } catch (error) {
+    showError(error.message);
   }
 }
 
@@ -4310,6 +4335,7 @@ function wireControls() {
   on(el.errorBox, "click", () => clearError(ERR_USER));
   on(el.refreshBtn, "click", () => refreshAll().catch((e) => showError(e.message)));
   on(el.syncTimeBtn, "click", () => syncTime().catch((error) => showError(error.message)));
+  on(el.forceTimeBtn, "click", () => forceDeviceClock().catch((error) => showError(error.message)));
   on(el.saveConfigBtn, "click", () => saveConfig().catch((error) => showError(error.message)));
   on(el.saveRangeBtn, "click", () => saveRange().catch((error) => showError(error.message)));
   on(el.loadLogsBtn, "click", () => loadLogs().catch((error) => showError(error.message)));

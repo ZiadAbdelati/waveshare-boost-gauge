@@ -425,6 +425,37 @@ def main() -> int:
         result.check(status == 200 and "psi" in resp,
                      "POST /time valid epoch returns full /state")
 
+        # ------------------------------------------------- /time (timezone-only + force)
+        # An epoch-less body stores the zone alone: the companion apps' 409 retry
+        # drops epochMs, so the endpoint must accept it (and the mock mirrors the
+        # firmware here).
+        status, resp = post_json(base, "/api/v1/time",
+                                 {"timezoneOffsetMinutes": -300,
+                                  "timezoneTz": "EST5EDT,M3.2.0/2,M11.1.0/2"})
+        result.check(status == 200 and "psi" in resp,
+                     "POST /time without epochMs stores the timezone alone -> 200")
+        # A JSON boolean is not a number (cJSON semantics), so epochMs:true is not a time.
+        status, _ = post_json(base, "/api/v1/time",
+                              {"epochMs": True, "timezoneOffsetMinutes": 0})
+        result.check(status == 400, "POST /time boolean epoch -> 400")
+        # force must be a real bool, must accompany an epoch, and must not skip the floor.
+        status, resp = post_json(base, "/api/v1/time",
+                                 {"timezoneOffsetMinutes": 0, "force": True})
+        result.check(status == 400, "POST /time force without epochMs -> 400 invalid_time")
+        status, resp = post_json(base, "/api/v1/time",
+                                 {"epochMs": now_ms, "timezoneOffsetMinutes": 0, "force": "yes"})
+        result.check(status == 400 and resp.get("error") == "invalid_force",
+                     "POST /time non-bool force -> 400 invalid_force")
+        status, _ = post_json(base, "/api/v1/time",
+                              {"epochMs": 1000, "timezoneOffsetMinutes": 0, "force": True})
+        result.check(status == 400,
+                     "POST /time forced below the plausibility floor still -> 400 time_not_set")
+        status, resp = post_json(base, "/api/v1/time",
+                                 {"epochMs": now_ms, "timezoneOffsetMinutes": -240,
+                                  "timezoneTz": "EST5EDT,M3.2.0/2,M11.1.0/2", "force": True})
+        result.check(status == 200 and "psi" in resp,
+                     "POST /time force:true with a valid epoch -> 200 (explicit recovery path)")
+
         # Firmware source contract: 409 clock_rejected on >5 min RTC mismatch.
         result.check("clock_rejected" in fw_web,
                      "boost_web.c maps RTC disagreement to clock_rejected")
@@ -435,6 +466,10 @@ def main() -> int:
         result.check("diff > BOOST_RTC_SYNC_TOLERANCE_MS || diff < -BOOST_RTC_SYNC_TOLERANCE_MS" in fw_model
                      and "return ESP_ERR_INVALID_STATE;" in fw_model,
                      "boost_model_set_time rejects >5-min client epoch before settimeofday")
+        result.check("invalid_force" in fw_web and "bool force" in fw_web,
+                     "boost_web.c accepts force only as a bool and validates it")
+        result.check("clock FORCED from client" in fw_model,
+                     "boost_model_set_time logs a forced override of the DS3231")
 
         # -------------------------------------------------------------- /logs
         status, logs = get_json(base, "/api/v1/logs?limit=5")

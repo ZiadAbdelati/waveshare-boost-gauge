@@ -1839,3 +1839,52 @@ plus a 409-fallback case; Android gained
 "firmware REQUIRES epochMs" comments are gone. The full Android unit suite is green
 (116 tests, 0 failures; 24 of them in the three touched classes); the web's clock-sync
 button is unchanged (it is a clock action with its own `clock_rejected` message).
+
+### 2026-10-05 (later) — the force-clock recovery path, and the BLE parity break it exposed
+
+The user asked how clock syncing actually works and pushed back on one consequence of the
+2026-08-17 guard: with a readable DS3231, an epoch more than 5 minutes away is *rejected*,
+so an RTC that is genuinely wrong cannot be corrected by any sync — the documented recovery
+was to pull the RTC battery (the web's own error message said so). Decision: keep the guard
+for automatic syncs, add an explicit force/reset path.
+
+`boost_model_set_time(..., bool force)` now skips the disagreement comparison when forced,
+logs `clock FORCED from client: overriding DS3231 by N ms` on serial, and still applies the
+plausibility floor (`BOOST_RTC_EPOCH_MIN_MS`) and still writes the RTC — the write clears
+OSF, so the corrected time becomes the new authority. `PUT`-shaped validation on both
+transports: `force` must be a bool (non-bool → 400 `invalid_force`) and must accompany an
+epoch (otherwise 400 `invalid_time`). The plausibility floor is not bypassable: a forced
+below-floor epoch is still 400 `time_not_set`.
+
+**A third shipped defect surfaced while wiring it.** `route_time_post()` in
+`main/boost_app_ble.c` required `epochMs` (`if (!cJSON_IsNumber(epoch) || !cJSON_IsNumber(tz))
+→ 400 invalid_time`) while the HTTP handler treats it as optional. So the zone-only 409 retry
+added earlier the same day answered **400 over BLE — the companion apps' primary transport** —
+meaning the timezone was still lost and the user still saw a sync failure on exactly the path
+the retry existed to fix. The BLE route now mirrors the HTTP semantics field for field.
+`tools/tests/test_gatt_contract.py` gains a body-parity check that extracts the BLE function
+body: the pre-existing "BLE routes are a subset of the HTTP control plane" check compared only
+path+method, which is precisely why a body-shape divergence could not be seen.
+
+**And a silent-downgrade class in the same handler.** A present-but-wrong-typed `epochMs`
+(e.g. `true`) failed `cJSON_IsNumber`, so the request silently took the timezone-only branch —
+a clock sync downgraded to a zone write with no error. Both transports now answer 400
+`invalid_time` for a wrong-typed `epochMs`/`timezoneTz`, the same rule as `pressureUnit`
+(a present-but-wrong-typed field is a client bug, not an absent one). The mock server mirrors
+all of it (`tools/mock_server.py` `handle_time_post`), and the new contract cases assert each
+shape — including that the mock's own boolean-epoch case is a 400, which is how the
+silent-downgrade was caught.
+
+Surfaces: the web Time-sync panel gains a confirmed **Force clock** button and its
+`clock_rejected` message now points at it instead of telling the user to pull the battery; iOS
+and Android gain the same secondary, destructive-styled **Force clock** action behind a
+confirmation, and their ordinary 409 path now reports that the zone was saved but the gauge's
+clock was rejected (>5 min off) and names the recovery action. `apps/PARITY.md` row 5 and the
+clock guard rails carry the contract.
+
+Evidence: `test_gatt_contract.py` 63/63, `test_web_api_contract.py` 239/239 (mock-backed, so
+the shapes are exercised over HTTP, not just grepped), firmware build clean, iOS/Android
+suites green.
+
+**HARDWARE: not run.** The forced path's serial line and the RTC OSF-clearing write are
+unverified on glass.

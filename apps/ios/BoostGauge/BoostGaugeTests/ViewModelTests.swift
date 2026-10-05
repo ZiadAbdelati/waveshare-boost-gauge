@@ -680,9 +680,43 @@ final class ViewModelTests: XCTestCase {
         XCTAssertNil(retry["epochMs"], "the retry drops the epoch and saves the zone alone")
         XCTAssertEqual(retry["timezoneOffsetMinutes"] as? Int, first["timezoneOffsetMinutes"] as? Int)
         XCTAssertEqual(retry["timezoneTz"] as? String, first["timezoneTz"] as? String)
-        XCTAssertEqual(vm.savedMessage, "Device timezone synced",
-                       "the retry's success is the reported outcome")
+        XCTAssertEqual(vm.savedMessage, SettingsViewModel.clockRejectedMessage,
+                       "the rescued sync must surface the clock rejection, not a plain success")
         XCTAssertNil(vm.errorMessage, "a rescued 409 must not leave an error set")
+    }
+
+    func testSettingsViewModelForceClockSendsForceAndEpoch() async throws {
+        let transport = FakeTransport()
+        transport.responses["time"] = FakeTransport.resp(200, ["ok": true])
+        let vm = SettingsViewModel()
+        vm.reset(transport: transport)
+        await vm.forceClock()
+
+        XCTAssertEqual(transport.recordedMethods, ["POST"])
+        XCTAssertEqual(transport.recordedPaths, ["time"])
+        let body = try XCTUnwrap(transport.recordedBodies.last)
+        XCTAssertEqual(body["force"] as? Bool, true, "the forced action must set force: true")
+        XCTAssertNotNil(body["epochMs"], "force: true requires the phone epoch")
+        XCTAssertNotNil(body["timezoneOffsetMinutes"])
+        XCTAssertNotNil(body["timezoneTz"])
+        XCTAssertEqual(vm.savedMessage, "Gauge clock forced")
+        XCTAssertNil(vm.errorMessage)
+    }
+
+    func testSettingsViewModelForceClockDoesNotRetryARejectedClock() async throws {
+        let transport = FakeTransport()
+        // A forced request is a deliberate override: if the gauge still rejects
+        // it, that is a hard error, never the epoch-less zone-only retry.
+        transport.responseQueues["time"] = [FakeTransport.resp(409, ["error": "clock_rejected"])]
+        transport.responses["time"] = FakeTransport.resp(200, ["ok": true])
+        let vm = SettingsViewModel()
+        vm.reset(transport: transport)
+        await vm.forceClock()
+
+        XCTAssertEqual(transport.recordedPaths, ["time"],
+                       "a forced request must not issue the epoch-less retry")
+        XCTAssertEqual(vm.errorMessage, "Device: clock_rejected")
+        XCTAssertNil(vm.savedMessage)
     }
 
     func testSettingsViewModelApplyTimezoneOptionPostsTimeThenSavesConfig() async throws {
