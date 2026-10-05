@@ -675,12 +675,17 @@ static void qr_gesture_rebuild(void)
 
 /* The shared gesture classifier. A predominantly horizontal drag of at least
  * SWIPE_MIN_PX steps the overlay page in the DIRECTION OF THE DRAG (dragging
- * left advances, dragging right goes back, both wrapping); a predominantly
- * vertical one changes theme (the gauge's direction: drag up = next theme).
- * The ratio tests match the gauge's finish_press() classification. The point is
- * passed in rather than read from an indev so the host harness drives THIS
- * function - the production classifier, not a copy of it (the headless sim has
- * no pointer device to synthesise real PRESSING events on). */
+ * left advances, dragging right goes back, both wrapping). A VERTICAL drag does
+ * nothing at all - user decision 2026-10-05: the theme is behind an opaque
+ * settings cover, so changing it there has no affordance and an accidental
+ * diagonal swipe read as the overlay "changing themes" (it used to call
+ * apply_theme_delta(); the gauge's own vertical theme swipe on page 0 is
+ * unchanged). Every drag still counts as a drag via s_qr_drag_seen, so a
+ * vertical flick neither acts nor dismisses. The ratio tests match the gauge's
+ * finish_press() classification. The point is passed in rather than read from an
+ * indev so the host harness drives THIS function - the production classifier,
+ * not a copy of it (the headless sim has no pointer device to synthesise real
+ * PRESSING events on). */
 static void qr_drag_update(int32_t x, int32_t y)
 {
     if (!s_qr_active) return;
@@ -706,10 +711,6 @@ static void qr_drag_update(int32_t x, int32_t y)
         s_qr_drag_classified = true;
         s_qr_swipe_suppress = true;
         qr_step(dx < 0 ? 1 : -1);
-    } else if (ay >= SWIPE_MIN_PX && (int64_t)ay * 4 >= (int64_t)ax * 5) {
-        s_qr_drag_classified = true;
-        s_qr_swipe_suppress = true;
-        apply_theme_delta(dy < 0 ? 1 : -1);
     }
 }
 
@@ -1056,7 +1057,7 @@ void boost_page_qr_switch_gesture(int row, int dx, int dy)
     if (!s_qr_active || s_qr_page == QR_PAGE_QR) return;
     if (row < 0 || row >= QR_BTN_COUNT || s_qr_btn[row] == NULL) return;
     lv_obj_t *btn = s_qr_btn[row];
-    lv_obj_t *overlay_before = s_qr_overlay;
+    const int32_t page_before = s_qr_page;
     lv_area_t coords;
     lv_obj_get_coords(btn, &coords);
     const int32_t x0 = (coords.x1 + coords.x2) / 2;
@@ -1069,12 +1070,14 @@ void boost_page_qr_switch_gesture(int row, int dx, int dy)
     qr_drag_update(x0 + dx, y0 + dy);
     qr_release_cb(NULL);
     /* A page-stepping flick deleted this square (and the overlay with it), and
-     * glass would then deliver no CLICKED at all. Compare the OVERLAY object, not
-     * just the square pointer: lv_obj_is_valid() walks the live tree, and a
-     * reused allocator block could put the new page's square at the same address
-     * and same row, making a bare pointer check raise CLICKED on a switch this
-     * gesture never touched. */
-    if (s_qr_overlay == overlay_before && s_qr_btn[row] == btn && lv_obj_is_valid(btn)) {
+     * glass would then deliver no CLICKED at all. The PAGE is the witness, not
+     * the object pointers: lv_obj_delete() frees the overlay's block LAST and
+     * show_qr() re-creates the overlay as the very next same-size allocation, so
+     * both `s_qr_overlay == overlay_before` and `s_qr_btn[row] == btn` can hold
+     * again after a step (and lv_obj_is_valid() only tests membership of the live
+     * tree) - which would raise CLICKED on a switch this gesture never touched.
+     * A page step always changes s_qr_page. */
+    if (s_qr_page == page_before && s_qr_btn[row] == btn) {
         lv_obj_send_event(btn, LV_EVENT_CLICKED, NULL);
     }
 }
