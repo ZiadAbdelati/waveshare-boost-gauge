@@ -2215,3 +2215,34 @@ Observed, deliberately NOT pinned: a real tap in the 40 px gap BETWEEN the two s
 overlay (the documented fresh-tap rule). With 130 px squares that is a plausible next board report;
 changing it would strand the user, since a fresh tap is the only way to close the overlay. Recorded
 here so the next report starts from the measurement, not from a guess.
+
+## 2026-10-05 — v1.1.2 re-cut: the BLE repaint fix, and the harness gap that let it ship
+
+The first v1.1.2 artifact set shipped the BLE repaint defect (the row above). The user's call was to
+**delete the release and its tag and re-cut the same version** rather than spend a version number on
+it. Recorded consequence, accepted deliberately: `v1.1.2` now names two different firmware images,
+so the version is not a unique build identifier — anything that downloaded the first cut must
+re-download, and `SHA256SUMS` is the only reliable identity.
+
+Artifacts rebuilt from `b3ec5e5` (the merged fix + real-tap harness), verified from each artifact's
+own metadata: app **2,682,832 B** (`0x28efd0`, `9bdf88e4…`, descriptor 1.1.2 at `0x30`), merged
+**2,813,904 B** (`56da903d…`, `1.1.2` at `0x20030`, four slices byte-identical, exactly `0x20000`
+larger than the app); `bootloader.bin` (22,576 B `b9647bf7…`), `partition-table.bin` (3,072 B
+`87f8356f…`) and `ota_data_initial.bin` (8,192 B `7d2c7ac4…`) byte-identical to the first cut, as
+nothing in their inputs changed; iOS IPA **1,326,431 B** (`851ee064…`, `CFBundleVersion 11` read
+from inside the IPA), `.app` zip **1,326,095 B** (`292708d7…`); Android APK **61,392,100 B**
+(`cde571a1…`, `versionCode 13` via `aapt2 dump badging`). Release gate **45/45** over the shipped
+bytes; host suite **15/15**. Both app artifacts were rebuilt even though no app source changed, so
+every shipped file comes from the same commit.
+
+The root cause of the *process* failure is not the repaint line — it is that two settings-overlay
+defects reached releases while the harness reported green. The hook-driven harness called the
+overlay's own callbacks and so never exercised hit-testing, ownership, CLICKED delivery or bubbling;
+a defect that only shows up in the *rendered* result of a tap (this one) or in a *latched* gesture
+(the previous one) could pass. The real-tap section (`setup_tap_indev()` + 14 assertions through
+`lv_indev_read_timer_cb`) and the "a toggle MUST repaint its square" guard are the corrections, and
+they are what made the re-cut defensible: reverting the fix now fails 5 assertions, two of them
+through LVGL's real dispatch.
+
+HARDWARE: still not run. The re-cut does not change that — the glass acceptance step is the tap
+check in `release/README.md`.
