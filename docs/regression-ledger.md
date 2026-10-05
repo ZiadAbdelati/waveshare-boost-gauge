@@ -1782,8 +1782,8 @@ logical dimensions and demanded a third full-size frame buffer this pipeline doe
 `bsp_touch_new()` forwards only `touch_flags` (it ignores the adapter rotation), so the touch
 frame has to be rotated with the panel. The composed flags are the **inverse** of the panel
 turn composed with the rotation-0 baseline — not the forward turn: copying the panel flags
-straight onto touch is wrong for **18 of the 24** sample taps (rotations 90 and 270 entirely,
-plus 180, which then needs the baseline mirrors it was given).
+straight onto touch is wrong at **every** rotation, **24 of 24** sample taps (the panel flags
+are never the required composed inverse).
 
 The trap inside the trap: `esp_lcd_touch` applies its flags in a fixed order — `mirror_x`,
 then `mirror_y`, then `swap_xy` (`esp_lcd_touch.c:91-104`) — and mirror and swap do **not**
