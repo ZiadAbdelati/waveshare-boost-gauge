@@ -1883,8 +1883,17 @@ clock was rejected (>5 min off) and names the recovery action. `apps/PARITY.md` 
 clock guard rails carry the contract.
 
 Evidence: `test_gatt_contract.py` 63/63, `test_web_api_contract.py` 239/239 (mock-backed, so
-the shapes are exercised over HTTP, not just grepped), firmware build clean, iOS/Android
-suites green.
+the shapes are exercised over HTTP, not just grepped), firmware build clean (`0x28ef30`, 36%
+free, regenerated dashboard embedded — verified by decompressing the asset array out of
+`main/generated_web_assets.c`), Android 121/121, host suite 15/15. iOS `ViewModelTests`: a
+control run of the same class on the base commit (`origin/main` = `6960a58`) reports **exactly
+the 2 known timezone failures**, while this branch reports **0 assertion failures** (63 started
+vs 60 at base: +2 force tests, +1 fallback). Two of this branch's runs had a random handful of
+tests "never report" because the iOS *test host* crashed mid-class (`nw_socket_connect … No
+route to host` from the app process, always in the Themes/preview tests, a different set each
+run, 0–5 per run, and 0 in the base control) — a load-dependent simulator flake, not a
+failure: no `XCTAssert` failure in any run, and the individual tests pass in isolation. Quote
+it as such rather than as a clean sweep.
 
 **HARDWARE: not run.** The forced path's serial line and the RTC OSF-clearing write are
 unverified on glass.
