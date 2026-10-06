@@ -5,6 +5,31 @@ The latest release notes also ship in `release/` (see `release/README.md`). Preb
 > Notes for v0.9.x live in `release/README.md` and `docs/regression-ledger.md`;
 > this file resumes at v1.0.0.
 
+## v1.1.3
+
+**The OBD2 BLE switch comes back when you turn it back on.**
+
+- Toggling the OBD2 link off and back on again mid-drive used to leave it unable
+  to reconnect until a reboot. NimBLE answers `ble_gap_connect()` with
+  `BLE_HS_EDONE` for a peer it already holds a connection to, and the driver had
+  lost track of that connection because it discarded the CONNECT event that
+  completed while the link was disabled. `OBD_EV_CONNECTED` now records the
+  handle **before** it consults the enabled flag and tears the link down if it
+  landed in the disabled window, and `try_connect()` now reads `EDONE` as
+  "already connected" and adopts the existing link instead of retrying it
+  forever (the serial signature was `connect failed: status=0x000e` repeating).
+- New host guard: a fake-NimBLE harness drives the **real** driver
+  (`tools/tests/test_obd_ble_lifecycle.py` → `tools/test_obd_ble_lifecycle.c`,
+  5 assertions). Against the unfixed source, invariants 2, 3 and 4 fail; with
+  the fix all five pass; each half of the fix was doctored in isolation to prove
+  its own guard fails without it.
+- Everything from v1.1.2 is included: the settings overlay's gesture state
+  machine (a drag is never a tap; one gesture = one touch-down), no vertical
+  theme change on the overlay, and a BLE toggle that repaints its own square.
+- Not verified on glass: this is a host-only result, and the OBD2 toggle
+  reconnect itself is the acceptance step. `v0.9.7` remains the last
+  hardware-verified release.
+
 ## v1.1.2
 
 The settings overlay stops fighting the finger. **Firmware-only** — no dashboard or companion-app source change (the app artifacts are re-cut only because the version surfaces move together); prompted by a board report on v1.1.1, where the overlay's gesture bookkeeping predated it unchanged (the file is byte-identical between v1.1.0 and v1.1.1). **This release was re-cut later the same day**: the first v1.1.2 artifact set shipped one further overlay defect found on glass — the BLE toggles applied but never repainted — so the release and its tag were deleted and republished with the fix included. Same version, new firmware bytes; the app binaries are unchanged because no app source changed.
