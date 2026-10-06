@@ -41,6 +41,12 @@ bool fake_conn_cancel_complete(void);
  * DISCONNECT asynchronously. Returns true if the handle existed. */
 bool fake_drop_link(uint16_t conn_handle);
 
+/* Plant a live connection record with NO CONNECT event delivered -- the state
+ * an ignored CONNECT leaves behind (NimBLE does no cleanup for it). The next
+ * ble_gap_connect() to that peer then returns BLE_HS_EDONE, as on the glass.
+ * Returns true if a connection slot was free. */
+bool fake_phantom_conn(const ble_addr_t *addr);
+
 /* Live connection table. */
 int  fake_conn_count(void);
 bool fake_conn_addr(int index, ble_addr_t *out_addr, uint16_t *out_handle);

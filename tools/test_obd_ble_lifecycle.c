@@ -3,13 +3,18 @@
  *
  * Drives the REAL driver black-box (boost_obd_ble_init/host_start/start/stop/
  * state) against the fake NimBLE host in tools/nimble_fake/, and asserts the
- * three invariants of the panel OFF/ON race:
+ * four invariants of the panel OFF/ON race:
  *
  *   1. plain off -> on: a disabled-then-enabled link reaches READY again.
  *   2. the race: a connect procedure that completes while the driver is
  *      disabled (and whose CONNECT event is therefore ignored) must not leave
  *      the central permanently unable to reach READY after re-enable.
  *   3. no phantom link: no live NimBLE connection may survive a disable.
+ *   4. adopt: a live link the driver was never told about (the same ignored
+ *      CONNECT, seen one enable later) must be ADOPTED when NimBLE refuses the
+ *      connect with BLE_HS_EDONE, not retried forever. This is the half of the
+ *      fix that rescues the on-glass ordering, so it has its own guard: without
+ *      it the EDONE retry loop never reaches READY.
  *
  * The fake models the six primary-source NimBLE facts (see nimble_fake.c).
  * Timing is real: the driver's own OBD_RECONNECT_MS (10 s) post-disconnect
@@ -215,6 +220,58 @@ static void scenario_race(bool *ok2, bool *ok3)
     fflush(stdout);
 }
 
+/* The stored peer (main() seeds the same address into the fake NVS). */
+static const ble_addr_t k_peer = {
+    .type = BLE_ADDR_PUBLIC,
+    .val = { 0x11, 0x22, 0x33, 0x44, 0x55, 0x66 },
+};
+
+/*
+ * Invariant 4: a live link the driver was never told about must be ADOPTED,
+ * not retried forever.
+ *
+ * This is the on-glass end state of the reported bug, one enable later. A
+ * connection that completed while the driver was disabled was ignored -- NimBLE
+ * keeps it (no cleanup for an unconsumed CONNECT event) -- so a live record
+ * existed with no handle in the driver, and the next enable's ble_gap_connect()
+ * was refused with BLE_HS_EDONE. EDONE never clears by itself, so the retry
+ * loop could never succeed: "connect failed: status=0x000e" repeating until a
+ * reboot. The fix must read EDONE as already-connected and adopt the link; this
+ * scenario is non-vacuous because it requires the refusal to have happened
+ * (rc == EDONE) before READY is accepted.
+ */
+static bool scenario_phantom_adopt(void)
+{
+    const uint64_t t0 = mono_ms();
+    if (!ensure_ready()) { diag("adopt: precondition not READY"); return false; }
+
+    /* Let the driver take its own link down, then plant a link it has no handle
+     * for -- exactly what an ignored CONNECT leaves behind. */
+    fake_set_auto_connect(false);
+    boost_obd_ble_stop();
+    const bool cleared = fake_wait_conn_count(0, 3000);
+    settle_after_disconnect();
+    diag("adopt: link cleared by the driver");
+
+    const bool planted = fake_phantom_conn(&k_peer);
+    diag("adopt: phantom link planted (no CONNECT delivered)");
+
+    /* try_connect() now hits NimBLE's already-connected refusal. */
+    boost_obd_ble_start();
+    const bool ready = wait_ready(8000);
+    const int rc = fake_last_connect_rc();
+    diag("adopt: after re-enable");
+
+    printf("[time] adopt took %llu ms (cleared=%d planted=%d rc=%s ready=%d)\n",
+           (unsigned long long)(mono_ms() - t0), (int)cleared, (int)planted,
+           fake_rc_str(rc), (int)ready);
+    fflush(stdout);
+
+    /* cleared && planted keep it honest: the driver must have had no link of its
+     * own and the refusal must really have been BLE_HS_EDONE. */
+    return cleared && planted && rc == BLE_HS_EDONE && ready;
+}
+
 static void report(const char *label, bool ok)
 {
     printf("obd-ble-lifecycle: %-78s: %s\n", label, ok ? "OK" : "FAIL");
@@ -238,22 +295,18 @@ int main(void)
 
     printf("== obd-ble-lifecycle: real boost_obd_ble.c on fake NimBLE ==\n");
 
-    const ble_addr_t peer = {
-        .type = BLE_ADDR_PUBLIC,
-        .val = { 0x11, 0x22, 0x33, 0x44, 0x55, 0x66 },
-    };
-
     fake_reset();
-    fake_nvs_seed_peer(&peer);      /* load_peer() finds a stored peer */
+    fake_nvs_seed_peer(&k_peer);    /* load_peer() finds a stored peer */
     boost_obd_ble_init();
     boost_obd_ble_host_start();
 
     const bool boot = scenario_bringup();
 
-    bool ok1 = false, ok2 = false, ok3 = false;
+    bool ok1 = false, ok2 = false, ok3 = false, ok4 = false;
     if (boot) {
         ok1 = scenario_plain_off_on();
         scenario_race(&ok2, &ok3);
+        ok4 = scenario_phantom_adopt();
     } else {
         diag("aborting: bring-up failed");
     }
@@ -266,8 +319,9 @@ int main(void)
      * race's disabled-window stop. */
     const bool no_phantom_any_stop = ok3 && g_check1_stop_clean;
     report("invariant-3: no connection survives boost_obd_ble_stop()", no_phantom_any_stop);
+    report("invariant-4: BLE_HS_EDONE on a live link is adopted, not retried", ok4);
 
-    const bool pass = boot && ok1 && ok2 && no_phantom_any_stop;
+    const bool pass = boot && ok1 && ok2 && no_phantom_any_stop && ok4;
     printf("obd-ble-lifecycle: %s\n", pass ? "PASS" : "FAIL");
     fflush(stdout);
     alarm(0);

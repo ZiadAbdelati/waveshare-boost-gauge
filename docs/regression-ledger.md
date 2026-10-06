@@ -2272,10 +2272,16 @@ Two app-side defects turned that into a permanent stall:
    disable — and each further toggle leaked another record out of the 3-connection pool
    (`CONFIG_BT_NIMBLE_MAX_CONNECTIONS=3`).
 2. Every subsequent `try_connect(&s_peer)` therefore returned `BLE_HS_EDONE`, which the driver
-   queued as `OBD_EV_CONNECT_FAIL`; the 60 s startup fast-retry window then retried every 2 s
-   (still EDONE), and once the window expired the scan path called `ble_gap_disc()` on a live link
-   → EBUSY → `publish_state(BOOST_OBD_BLE_DISCONNECTED)`. The state machine could never return to
-   READY. Serial signature: `connect failed: status=0x000e` (14 = `BLE_HS_EDONE`) repeating forever.
+   queued as `OBD_EV_CONNECT_FAIL`; the 60 s startup fast-retry window retried every 2 s and got
+   EDONE again. EDONE cannot clear while the phantom record lives, so no retry can ever succeed —
+   which is the whole permanence. Serial signature: `connect failed: status=0x000e`
+   (14 = `BLE_HS_EDONE`) repeating until reboot. **The scan path is not the mechanism:**
+   `ble_gap_disc_ext_validate()` returns EBUSY only for an in-flight connect **procedure**
+   (`ble_gap_conn_active()`, i.e. `ble_gap_master.op == BLE_GAP_OP_M_CONN`) — an established
+   connection does not block a scan at the host level, and `ble_gap_disc()` never consults
+   `ble_hs_conn_find_by_addr()`. Whether this controller then rejects `LE Set Scan Enable` with
+   Command Disallowed is unmeasured (it would surface on serial, not in the host source). The
+   harness's fake originally modelled EBUSY-on-live-link and was corrected to the source.
 
 A second, independent ordering reaches the same EDONE loop without any phantom: a stale
 `OBD_EV_CONNECT_FAIL` (queued by the `OBD_EV_START` handler's `try_connect` while the
@@ -2293,21 +2299,34 @@ EDONE, so a found handle is guaranteed. The second ordering above is fixed by th
 
 **Verification — a fake-NimBLE host harness, `tools/test_obd_ble_lifecycle.c` + `tools/nimble_fake/`.**
 It compiles and drives the **real** `main/boost_obd_ble.c` (no copy, no reimplementation) against a
-shim that models the four behaviours above from primary source: EDONE for an existing connection,
-EALREADY for `conn_cancel`, no cleanup for an ignored CONNECT, and GAP callbacks delivered
-asynchronously on a controller thread. Three invariants: (1) a plain enable→disable→enable reaches
-READY again; (2) a connect that completes **in the disabled window** still reaches READY; (3) no
-connection survives `boost_obd_ble_stop()` (both the plain and the disabled-window stop) *and* the
-scenario must actually have had a procedure in flight and completed — so it cannot pass vacuously.
-Inverted-first, on the **unfixed** source reconstructed with `git show HEAD:main/boost_obd_ble.c`:
-invariant-1 OK, **invariant-2 FAIL** (`last_connect_rc=EDONE`, `connect failed: status=0x000e`
-repeating), **invariant-3 FAIL** (the connection table still holds `h=3` after the stop), exit 1. On
-the fixed source: 4/4 assertions OK, exit 0, with the disabled-window link terminated inside
-`OBD_EV_CONNECTED` (`link dropped (reason 19)`) and READY reached after the re-enable. The wrapper
-`tools/tests/test_obd_ble_lifecycle.py` (registered **slow**, ~35 s) builds and runs it and fails on
-a non-zero exit, a `FAIL` line, a missing `PASS` line, or fewer than 4 `: OK` assertions; doctored
-against the unfixed binary it reports FAILED (2 OK, exit 1), and against a missing binary it reports
-SKIP. Authoritative firmware compile check: `idf.py build` rebuilt `boost_obd_ble.c.obj` and linked
+shim that models the behaviours above from primary source: EDONE for an existing connection,
+EALREADY for `conn_cancel`, no cleanup for an ignored CONNECT, EBUSY for `ble_gap_disc()` only while
+a connect *procedure* is in flight, and GAP callbacks delivered asynchronously on a controller
+thread. Four invariants: (1) a plain enable→disable→enable reaches READY again; (2) a connect that
+completes **in the disabled window** still reaches READY; (3) no connection survives
+`boost_obd_ble_stop()` (both the plain and the disabled-window stop) *and* the scenario must actually
+have had a procedure in flight and completed; (4) **the EDONE adopt** — the harness plants a live
+connection record with no CONNECT event delivered (exactly what an ignored CONNECT leaves), and the
+next enable must reach READY, which requires the refusal to have really been EDONE
+(`fake_last_connect_rc() == BLE_HS_EDONE`). None can pass vacuously.
+
+Inverted-first, each half doctored on its own:
+
+| Source under the harness | result |
+|---|---|
+| `origin/main` (both edits reverted) | invariant-2 FAIL, invariant-3 FAIL, invariant-4 FAIL, exit 1 |
+| edit 2 reverted (EDONE adopt kept) | invariant-2 FAIL, invariant-3 FAIL (the phantom survives), and invariant-4 fails behind it (the stuck driver never reaches the next scenario's precondition), exit 1 |
+| edit 1 reverted (record/terminate kept) | **invariant-4 FAIL, invariants 1-3 OK** |
+| the fix | 5/5 assertions OK, exit 0, `last_connect_rc=EDONE` adopted to READY |
+
+That third row is why invariant-4 exists: the first harness (three invariants) passed with the
+EDONE-adopt half removed, so the half that actually rescues the on-glass ordering had no guard. On
+the fixed source the disabled-window link is terminated inside `OBD_EV_CONNECTED`
+(`link dropped (reason 19)`) and the planted phantom is adopted after the EDONE refusal. The wrapper
+`tools/tests/test_obd_ble_lifecycle.py` (registered **slow**, ~40 s) builds and runs it and fails on
+a non-zero exit, a `FAIL` line, a missing `PASS` line, or fewer than 5 `: OK` assertions; doctored
+against an unfixed binary it reports FAILED, and against a missing binary it reports SKIP.
+Authoritative firmware compile check: `idf.py build` rebuilt `boost_obd_ble.c.obj` and linked
 (app `0x28f060`, 36 % free).
 
 **Not verified.** No board was attached: this is host-only. The acceptance step on glass is the

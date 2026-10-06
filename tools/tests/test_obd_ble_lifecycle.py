@@ -16,7 +16,10 @@ when enabled and tore down only the handle it remembered, so a link that landed
 in the disabled window became an unfindable phantom and the retry loop spun on
 EDONE for the rest of the drive. The harness reproduces exactly that
 (invariant-2 FAIL, invariant-3 FAIL, a ``connect failed: status=0x000e``
-storm) against the unfixed source and passes against the fix.
+storm) against the unfixed source, and invariant-4 ("BLE_HS_EDONE on a live
+link is adopted, not retried") covers the half of the fix that rescues the
+on-glass ordering -- reverting that half alone fails invariant-4 while the
+other three still pass.
 
 Run:  python3 tools/tests/test_obd_ble_lifecycle.py
       python3 tools/tests/test_obd_ble_lifecycle.py --bin <harness> --no-build
@@ -42,7 +45,7 @@ BUILD_TIMEOUT_S = 600
 # without running anything must not satisfy the guard.
 PASS_LINE = "obd-ble-lifecycle: PASS"
 FAIL_LINE = "obd-ble-lifecycle: FAIL"
-MIN_OK_LINES = 4  # precondition + invariant-1..3
+MIN_OK_LINES = 5  # precondition + invariant-1..4
 
 
 def find_cmake() -> str | None:

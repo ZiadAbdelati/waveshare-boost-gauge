@@ -831,9 +831,13 @@ int ble_gap_disc(uint8_t own_addr_type, int32_t duration_ms,
     pthread_mutex_lock(&g_lock);
     int rc;
     if (g_connect_proc) {
-        rc = BLE_HS_EBUSY;                 /* a connect procedure owns the radio */
-    } else if (conn_count_locked() > 0) {
-        rc = BLE_HS_EBUSY;                 /* a live link owns the radio */
+        /* Only a connect PROCEDURE blocks a scan: NimBLE's
+         * ble_gap_disc_ext_validate() returns EBUSY on ble_gap_conn_active(),
+         * which is `ble_gap_master.op == BLE_GAP_OP_M_CONN` (ble_gap.c), i.e. an
+         * in-flight initiate -- NOT an established connection. A live link does
+         * not block ble_gap_disc() on a multi-role host, so the fake must not
+         * claim it does. */
+        rc = BLE_HS_EBUSY;
     } else if (g_scan) {
         rc = BLE_HS_EALREADY;
     } else {
@@ -933,6 +937,31 @@ bool fake_conn_complete_now(void)
     if (had) complete_connect_locked();
     pthread_mutex_unlock(&g_lock);
     return had;
+}
+
+/*
+ * Plant a live connection record WITHOUT delivering a CONNECT event -- the
+ * state an ignored CONNECT leaves behind (NimBLE has no cleanup for an
+ * unconsumed CONNECT event, so the link stays live while the application never
+ * learns its handle). Used to drive the adopt path: the next ble_gap_connect()
+ * to this peer returns BLE_HS_EDONE, exactly as it would on the glass.
+ */
+bool fake_phantom_conn(const ble_addr_t *addr)
+{
+    bool ok = false;
+    pthread_mutex_lock(&g_lock);
+    for (int i = 0; i < FAKE_MAX_CONNECTIONS; ++i) {
+        if (!g_conns[i].used) {
+            g_conns[i].used = true;
+            g_conns[i].handle = g_next_handle++;
+            g_conns[i].addr = *addr;
+            ok = true;
+            break;
+        }
+    }
+    if (ok) pthread_cond_broadcast(&g_cond);
+    pthread_mutex_unlock(&g_lock);
+    return ok;
 }
 
 bool fake_conn_cancel_complete(void)
