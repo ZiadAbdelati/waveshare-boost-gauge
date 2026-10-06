@@ -2335,3 +2335,35 @@ overlay, and confirm the link comes back (the app/web OBD card returns to a live
 the driver's post-disconnect delay). Also unmeasured: a toggle during an in-flight connect (the race
 the harness reproduces) on a real CST9217 tap, and whether a disable ever leaves the adapter
 advertising again promptly. `v0.9.7` remains the last hardware-verified release.
+
+## 2026-10-05 — v1.1.3 release (the OBD2 BLE toggle reconnect)
+
+A new version rather than a third re-cut of v1.1.2: v1.1.2 already names two different firmware
+images (the first cut and the same-day re-cut), so a third would make the version meaningless. This
+is a distinct defect (a long-standing OBD2 lifecycle bug, `main/boost_obd_ble.c` unchanged since
+2026-08-28) reported after v1.1.2 was published, so it gets its own tag. Firmware-only; the app
+sources are unchanged and the IPA/APK are rebuilt only because the version surfaces move together.
+
+Artifacts, each verified from its own metadata (`version.txt` = 1.1.3, source gate 20/20, release
+gate 45/45 over the shipped bytes, host suite 16/16): app **2,682,976 B** (`0x28f060`, `a3ba25d6…`,
+descriptor `1.1.3` read back at `0x30` as bytes `31 2e 31 2e 33 00`), merged **2,814,048 B**
+(`0x2af060`, `a7e3b781…`, `1.1.3` at `0x20030`, exactly `0x20000` larger than the app, all four
+slices byte-identical to the individual partition files); bootloader (22,576 B), partition table
+(3,072 B) and `ota_data_initial.bin` (8,192 B) **byte-identical to v1.1.1/v1.1.2**
+(`b9647bf7…`/`87f8356f…`/`7d2c7ac4…`); iOS IPA **1,326,439 B** (`6c2dd06c…`, `CFBundleShortVersionString`
+1.1.3 / `CFBundleVersion` 12 / `MinimumOSVersion` 17.0 read from INSIDE the IPA), app zip
+**1,326,103 B** (`be5187a2…`); Android APK **61,392,100 B** (`d57f1cd9…`, `aapt2 dump badging`
+`versionName='1.1.3' versionCode='14'`, minSdk 29 / targetSdk 34). Every copied artifact's mtime was
+asserted to advance, and the APK was verified a byte-identical copy of the Gradle output.
+
+The fix and its guard are the rows above (`## 2026-10-05 — The OBD2 BLE toggle never reconnected
+mid-drive`); `tools/tests/test_obd_ble_lifecycle.py` is the shipped guard and is registered in the
+host suite (slow, ~40 s).
+
+HARDWARE: **not run**. No board was attached, so nothing about the glass path is measured: the
+acceptance step is the report itself (drive with the OBD2 link up, toggle OBD2 BLE OFF then ON from
+the settings overlay, confirm the link returns without a reboot), plus the still-open v1.1.1/v1.1.2
+items (rotated-panel insets and touch at 90/180/270, cadence under rotation, the forced-clock RTC
+write, the overlay's flick classification against a real CST9217 tap) and
+`tools/check_hardware_gates.py` on the dyno-cell face in demo mode. `v0.9.7` remains the last
+hardware-verified release.
