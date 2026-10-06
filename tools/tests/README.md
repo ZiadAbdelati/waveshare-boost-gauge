@@ -27,9 +27,9 @@ python3 tools/test_suite.py --list          # show the registry
 The runner invokes the four pre-existing standalone harnesses as subprocesses
 (`test_mock_api.py`, `test_ble_sim.py`, `test_map_conversion.py`,
 `test_rtc_epoch.py`) and then the ledger tests under `tools/tests/`. Exit code
-is non-zero if anything fails. `--quick` currently changes nothing (no host
-test is flagged slow yet; the slow benches are the hardware gates); the flag
-and its registry plumbing are the future-proofing mechanism.
+is non-zero if anything fails. `--quick` skips the tests flagged slow in the
+registry — today `test_obd_ble_lifecycle.py`, which costs ~35 s because the OBD2
+driver's own 10 s post-disconnect delay is part of the behaviour it exercises.
 
 ### tools/tests/ ledger tests
 
@@ -45,6 +45,7 @@ and its registry plumbing are the future-proofing mechanism.
 | `test_cadence_guard_math.py` | Pass/fail math of `check_display_cadence.py` (warmup, median ≥60, 59/60 edges, insufficient samples) and `bench_theme_matrix.py` demand coverage (≥95%, zero-demand idle, per-window cap) cross-checked against the real modules on synthetic samples |
 | `test_readout_deadzone.py` | dyno-cell readout ±0.1 psi dead zone: fold shape in `arc_readout_display_psi()` (boost_gauge.c) and `arcReadoutDisplayPsi()` (web/app.js), firmware/web band equality, edge-value reference table (incl. the sign-at-edge case a one-band shift would corrupt), wedge/zone excluded from the band, BLE-coex scan contract (default dwell at both `esp_wifi_scan_start(&)` sites, `WIFI_SCAN_ACTIVE_*` gone, background-scan retry); Neon zone colour/id fold (2026-09-09): `neon_zone_rgb`/`neon_zone_id` reference `boost_readout_display_psi` with no raw-`0.05` zone threshold left at those sites, web `neonZoneDisplayPsi` delegates (no second band constant) and both `drawNeonGauge` zone sites consume it |
 | `test_sim_panel.py` | `sim/main.c --stream` harness behind `tools/sim_panel.py`: stdout is pure BGFR framing (a leaked firmware log line desyncs it), 466x466 frames with `w*h*4` bytes, a `unit` command actually alters the rendered pixels, and `quit` exits rc 0. SKIPs when the sim binary is not built |
+| `test_obd_ble_lifecycle.py` | OBD2 BLE central off→on lifecycle (2026-10-05). Builds and drives the **real** `main/boost_obd_ble.c` on a fake-NimBLE host (`tools/nimble_fake/`, which models `BLE_HS_EDONE` for an existing connection, `EALREADY` for `ble_gap_conn_cancel()`, and no cleanup for an ignored CONNECT event) and requires three invariants: a plain stop→start reaches READY, a connect completing in the **disabled** window still reaches READY, and no connection survives `boost_obd_ble_stop()`. Reproduces the reported permanent failure against the unfixed source (a phantom link, `connect failed: status=0x000e` = `BLE_HS_EDONE`, retrying forever). Flagged **slow** (~35 s: the driver's own 10 s post-disconnect delay is part of the behaviour under test). SKIPs when the sim tree is not configured |
 
 ## Hardware gates
 

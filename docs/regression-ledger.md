@@ -2246,3 +2246,73 @@ through LVGL's real dispatch.
 
 HARDWARE: still not run. The re-cut does not change that — the glass acceptance step is the tap
 check in `release/README.md`.
+
+## 2026-10-05 — The OBD2 BLE toggle never reconnected mid-drive (NimBLE EDONE phantom link)
+
+**On-glass report.** "After toggling the obd2 ble off and back on again mid drive to test the buttons
+function, it never reconnected to the obd2 scanner." No recovery for the rest of the drive. The code
+is identical in v1.1.1, v1.1.2 and the v1.1.2 re-cut — `main/boost_obd_ble.c` had not changed since
+2026-08-28 — so this is a long-standing latent defect, not a regression from the overlay work.
+
+**Root cause, in NimBLE's terms.** `ble_gap_connect()` refuses a peer it is already connected to:
+`if (ble_hs_conn_find_by_addr(peer_addr) != NULL) rc = BLE_HS_EDONE;` (ESP-IDF 5.5.1
+`components/bt/host/nimble/nimble/nimble/host/src/ble_gap.c`, the connect path) — and `EDONE` never
+clears by itself. A connection record is freed only by `ble_gap_terminate()` (or a real link loss);
+**NimBLE does nothing for a `BLE_GAP_EVENT_CONNECT` the application ignores**, so the link stays
+live. `ble_gap_conn_cancel()` is not a substitute: `if (!ble_gap_conn_active()) rc =
+BLE_HS_EALREADY;` (ble_gap.c, `ble_gap_conn_cancel_no_lock`) — it cancels the *procedure* and never
+touches an established connection.
+
+Two app-side defects turned that into a permanent stall:
+
+1. `case OBD_EV_CONNECTED:` began `if (!s_enabled) break;` — a connection that completed in the
+   enabled→disabled window was **ignored**, leaving a live connection record with
+   `s_conn_handle == BLE_HS_CONN_HANDLE_NONE`. `OBD_EV_STOP` tears down only the handle it can name
+   (`s_conn_handle != NONE ? terminate : disc_cancel + conn_cancel`), so the phantom survived the
+   disable — and each further toggle leaked another record out of the 3-connection pool
+   (`CONFIG_BT_NIMBLE_MAX_CONNECTIONS=3`).
+2. Every subsequent `try_connect(&s_peer)` therefore returned `BLE_HS_EDONE`, which the driver
+   queued as `OBD_EV_CONNECT_FAIL`; the 60 s startup fast-retry window then retried every 2 s
+   (still EDONE), and once the window expired the scan path called `ble_gap_disc()` on a live link
+   → EBUSY → `publish_state(BOOST_OBD_BLE_DISCONNECTED)`. The state machine could never return to
+   READY. Serial signature: `connect failed: status=0x000e` (14 = `BLE_HS_EDONE`) repeating forever.
+
+A second, independent ordering reaches the same EDONE loop without any phantom: a stale
+`OBD_EV_CONNECT_FAIL` (queued by the `OBD_EV_START` handler's `try_connect` while the
+`OBD_EV_DISCONNECTED` handler's in-flight `try_connect` — behind its own 10 s `vTaskDelay` — was
+still running) is handled *after* the link is established, re-enters `try_connect`, and hits EDONE.
+
+**Fix** (`main/boost_obd_ble.c`, two edits, 39 lines changed):
+`case OBD_EV_CONNECTED` records `s_conn_handle = ev.conn_handle` **before** the enabled check and,
+when `!s_enabled`, immediately `ble_gap_terminate()`s that link and clears the handle; `try_connect()`
+now treats `rc == BLE_HS_EDONE` as **already connected** — `ble_gap_conn_find_by_addr(addr, &desc)`
+(public API, `host/ble_gap.h`) and post `OBD_EV_CONNECTED` instead of `OBD_EV_CONNECT_FAIL`. The
+comparator is self-consistent: `ble_hs_conn_find_by_addr()` is exactly the function that produced the
+EDONE, so a found handle is guaranteed. The second ordering above is fixed by the same EDONE branch
+(the stale CONNECT_FAIL becomes an adopt instead of an infinite retry).
+
+**Verification — a fake-NimBLE host harness, `tools/test_obd_ble_lifecycle.c` + `tools/nimble_fake/`.**
+It compiles and drives the **real** `main/boost_obd_ble.c` (no copy, no reimplementation) against a
+shim that models the four behaviours above from primary source: EDONE for an existing connection,
+EALREADY for `conn_cancel`, no cleanup for an ignored CONNECT, and GAP callbacks delivered
+asynchronously on a controller thread. Three invariants: (1) a plain enable→disable→enable reaches
+READY again; (2) a connect that completes **in the disabled window** still reaches READY; (3) no
+connection survives `boost_obd_ble_stop()` (both the plain and the disabled-window stop) *and* the
+scenario must actually have had a procedure in flight and completed — so it cannot pass vacuously.
+Inverted-first, on the **unfixed** source reconstructed with `git show HEAD:main/boost_obd_ble.c`:
+invariant-1 OK, **invariant-2 FAIL** (`last_connect_rc=EDONE`, `connect failed: status=0x000e`
+repeating), **invariant-3 FAIL** (the connection table still holds `h=3` after the stop), exit 1. On
+the fixed source: 4/4 assertions OK, exit 0, with the disabled-window link terminated inside
+`OBD_EV_CONNECTED` (`link dropped (reason 19)`) and READY reached after the re-enable. The wrapper
+`tools/tests/test_obd_ble_lifecycle.py` (registered **slow**, ~35 s) builds and runs it and fails on
+a non-zero exit, a `FAIL` line, a missing `PASS` line, or fewer than 4 `: OK` assertions; doctored
+against the unfixed binary it reports FAILED (2 OK, exit 1), and against a missing binary it reports
+SKIP. Authoritative firmware compile check: `idf.py build` rebuilt `boost_obd_ble.c.obj` and linked
+(app `0x28f060`, 36 % free).
+
+**Not verified.** No board was attached: this is host-only. The acceptance step on glass is the
+reported scenario itself — drive with the OBD2 link up, toggle OBD2 BLE OFF then ON from the settings
+overlay, and confirm the link comes back (the app/web OBD card returns to a live link within ~10 s,
+the driver's post-disconnect delay). Also unmeasured: a toggle during an in-flight connect (the race
+the harness reproduces) on a real CST9217 tap, and whether a disable ever leaves the adapter
+advertising again promptly. `v0.9.7` remains the last hardware-verified release.
