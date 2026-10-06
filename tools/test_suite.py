@@ -21,11 +21,12 @@ Usage:
     python3 tools/test_suite.py --filter gatt  # only tests whose name matches
     python3 tools/test_suite.py --quick        # skip slow-flagged tests
 
---quick exists to skip benches marked slow in the registry below. No current
-host test is marked slow (the slow benches are the hardware gates in
-tools/check_hardware_gates.py), so --quick is currently a no-op kept for
-future host-side benches; the plumbing is exercised and documented in
-tools/tests/README.md.
+--quick exists to skip tests marked slow in the registry below. Today that is
+`test_obd_ble_lifecycle.py` (it builds and drives the real firmware OBD2 BLE
+driver on a fake NimBLE host, and the driver's own 10 s post-disconnect delay is
+part of the behaviour under test, so it costs ~35 s); the slow benches in
+tools/check_hardware_gates.py are separate hardware gates. The plumbing is
+documented in tools/tests/README.md.
 """
 
 from __future__ import annotations
@@ -68,7 +69,12 @@ def build_registry() -> list[TestSpec]:
         "test_readout_deadzone.py",
         "test_pressure_ref_sites.py",
         "test_sim_panel.py",
+        "test_obd_ble_lifecycle.py",
     ]
+    # Builds and drives the real firmware driver on a fake NimBLE host; the
+    # driver's own 10 s post-disconnect delay is part of the behaviour under
+    # test, so the run costs ~35 s. Skip it with --quick.
+    slow = {"test_obd_ble_lifecycle.py"}
     specs = []
     for fname in existing:
         path = TOOLS / fname
@@ -79,7 +85,7 @@ def build_registry() -> list[TestSpec]:
     for fname in new:
         path = TOOLS / "tests" / fname
         if path.is_file():
-            specs.append(TestSpec(fname, path))
+            specs.append(TestSpec(fname, path, slow=fname in slow))
         else:
             specs.append(TestSpec(fname + " [MISSING]", TOOLS / "tests" / fname))
     return specs

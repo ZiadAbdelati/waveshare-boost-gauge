@@ -162,6 +162,27 @@ target_include_directories(test_panel_orientation PRIVATE
 )
 target_link_libraries(test_panel_orientation PRIVATE m)
 
+# Host-side lifecycle test for the OBD2 BLE central. This one compiles the REAL
+# main/boost_obd_ble.c against a fake NimBLE host (tools/nimble_fake/) that
+# models the six primary-source ordering facts behind the panel OFF/ON
+# phantom-connection defect: connect admission (EDONE/EALREADY/EBUSY/ENOMEM),
+# asynchronous GAP callbacks, terminate as the only cleanup, and
+# ble_gap_conn_cancel() not touching an established link. The fake include dir
+# MUST come first so the driver's IDF/NimBLE includes resolve to shims.
+add_executable(test_obd_ble_lifecycle
+    ${CMAKE_CURRENT_SOURCE_DIR}/../tools/test_obd_ble_lifecycle.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../tools/nimble_fake/nimble_fake.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/boost_obd_ble.c
+)
+target_include_directories(test_obd_ble_lifecycle PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../tools/nimble_fake/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main
+)
+target_link_libraries(test_obd_ble_lifecycle PRIVATE m)
+if(Threads_FOUND)
+    target_link_libraries(test_obd_ble_lifecycle PRIVATE Threads::Threads)
+endif()
+
 add_custom_target(sim-screenshots
     COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_SOURCE_DIR}/../preview/sim
     COMMAND $<TARGET_FILE:boost_gauge_sim> --screenshot ${CMAKE_SOURCE_DIR}/../preview/sim

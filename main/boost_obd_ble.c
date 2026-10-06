@@ -463,12 +463,29 @@ static void try_connect(const ble_addr_t *addr)
     publish_state(BOOST_OBD_BLE_CONNECTING);
     const int rc = ble_gap_connect(BLE_OWN_ADDR_PUBLIC, addr, 5000, &params,
                                    gap_event_fn, NULL);
-    if (rc != 0) {
-        obd_ble_event_t ev = { 0 };
-        ev.type = OBD_EV_CONNECT_FAIL;
-        ev.a = (uint16_t)rc;
-        xQueueSend(s_evq, &ev, 0);
+    if (rc == 0) return;
+    if (rc == BLE_HS_EDONE) {
+        /* NimBLE already holds a connection to this peer: ble_gap_connect()
+         * returns EDONE when ble_hs_conn_find_by_addr(peer) finds one
+         * (ble_gap.c). That is not a failure - it is what an enable looks like
+         * while a link that landed in the disabled window is still up, and
+         * what a just-terminated link looks like before its DISCONNECT event
+         * arrives. EDONE never clears by itself, so retrying it can never
+         * succeed; adopt the existing link instead of looping on CONNECT_FAIL.
+         * Without this the panel's OBD2 off->on never reconnected mid-drive. */
+        struct ble_gap_conn_desc desc;
+        if (ble_gap_conn_find_by_addr(addr, &desc) == 0) {
+            obd_ble_event_t ev = { 0 };
+            ev.type = OBD_EV_CONNECTED;
+            ev.conn_handle = desc.conn_handle;
+            xQueueSend(s_evq, &ev, 0);
+            return;
+        }
     }
+    obd_ble_event_t ev = { 0 };
+    ev.type = OBD_EV_CONNECT_FAIL;
+    ev.a = (uint16_t)rc;
+    xQueueSend(s_evq, &ev, 0);
 }
 
 static void driver_task(void *arg)
@@ -577,8 +594,24 @@ static void driver_task(void *arg)
             break;
         }
         case OBD_EV_CONNECTED: {
-            if (!s_enabled) break;
+            /* Record the handle BEFORE the enabled check. NimBLE frees a
+             * connection only on a terminate or a real link loss - it does
+             * nothing for a CONNECT event the application ignores - and
+             * OBD_EV_STOP can only tear down what s_conn_handle can name.
+             * Dropping this event while disabled therefore stranded a live
+             * link with no handle, and the next enable's ble_gap_connect()
+             * returned BLE_HS_EDONE for it (a connection to that peer already
+             * exists) until the next reboot (2026-10-05: the panel's OBD2
+             * off->on never reconnected mid-drive; repeated toggles also
+             * leak one conn per enable out of the 3-conn pool). */
             s_conn_handle = ev.conn_handle;
+            if (!s_enabled) {
+                /* A link that completed in the enabled -> disabled window must
+                 * not survive the disable. */
+                ble_gap_terminate(ev.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+                s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+                break;
+            }
             s_last_err = 0;   /* new link: reset the failure marker */
             s_backoff_ms = OBD_RECONNECT_MS;   /* peer found: restore the fast retry cadence */
             s_fast_until_ms = 0;               /* startup window consumed */
