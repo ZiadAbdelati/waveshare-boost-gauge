@@ -2315,7 +2315,7 @@ Inverted-first, each half doctored on its own:
 | Source under the harness | result |
 |---|---|
 | `origin/main` (both edits reverted) | invariant-2 FAIL, invariant-3 FAIL, invariant-4 FAIL, exit 1 |
-| edit 2 reverted (EDONE adopt kept) | invariant-2 FAIL, invariant-3 FAIL (the phantom survives), and invariant-4 fails behind it (the stuck driver never reaches the next scenario's precondition), exit 1 |
+| edit 2 reverted faithfully (EDONE adopt kept) | invariant-2 FAIL, invariant-3 FAIL (the phantom survives), **invariant-4 OK** — with the adopt branch still present it rescues the surviving phantom, which is exactly why invariant-4 exists as that branch's own guard — exit 1 |
 | edit 1 reverted (record/terminate kept) | **invariant-4 FAIL, invariants 1-3 OK** |
 | the fix | 5/5 assertions OK, exit 0, `last_connect_rc=EDONE` adopted to READY |
 
